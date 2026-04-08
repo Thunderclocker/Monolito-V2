@@ -144,6 +144,7 @@ export function formatHelp(): FormattedBlock {
     ["/compact [n]", "Compact messages (default 40)"],
     ["/stats", "Show session statistics"],
     ["/doctor", "Run system health check"],
+    ["/update", "Fetch and fast-forward from origin"],
     ["/config [show|set]", "Show or set configuration"],
     ["/model", "Interactive model configuration menu"],
     ["/tool [name] [json]", "Run a tool directly"],

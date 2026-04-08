@@ -65,22 +65,53 @@ Local orchestration runtime with daemon mode, terminal UI, persistent sessions, 
 - `/compact [max-messages]`
 - `/stats`
 - `/doctor`
+- `/update`
 - `/config [show|set <field> <value>]`
 - `/new`
+
+`/update` fetches from `origin` and applies a fast-forward pull on the current branch. It refuses to run if the working tree has local changes.
+
+## Installation
+
+An installer is not strictly required, but it helps standardize setup for people cloning the repository from GitHub.
+
+Prerequisites:
+
+- Node.js 22 or newer
+- npm
+- Build tooling required by native Node modules on your OS
+
+Install with:
+
+```bash
+git clone https://github.com/Thunderclocker/Monolito-V2.git
+cd Monolito-V2
+./install.sh
+```
+
+Manual install is also valid:
+
+```bash
+npm install
+```
+
+The installer creates a `monolito` launcher in `~/.local/bin/monolito`.
+If your shell does not find it automatically, add `~/.local/bin` to your `PATH`.
 
 ## Run
 
 ```bash
-npm run daemon
-npm run cli
+monolito
 ```
+
+The CLI starts the daemon automatically when it is not already running.
 
 ## Quick checks
 
 ```bash
-npm run cli -- /status
-npm run cli -- -p '/tool pwd'
-npm run cli -- -p '/mcp resources demo'
+monolito /status
+monolito -p '/tool pwd'
+monolito -p '/mcp resources demo'
 ```
 
 ## Notes

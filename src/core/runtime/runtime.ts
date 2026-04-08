@@ -1,5 +1,7 @@
+import { execFile } from "node:child_process"
 import { statSync } from "node:fs"
 import { join } from "node:path"
+import { promisify } from "node:util"
 import { type AgentEvent } from "../ipc/protocol.ts"
 import { StdioMcpClient, getDefaultMcpServers } from "../mcp/client.ts"
 import {
@@ -55,6 +57,8 @@ type TelegramTypingIndicator = {
   stop(): void
 }
 
+const execFileAsync = promisify(execFile)
+
 function createSessionBusyError(sessionId: string): SessionBusyError {
   const error = new Error(`Session ${sessionId} is already busy with another running turn.`) as SessionBusyError
   error.code = "SESSION_BUSY"
@@ -95,6 +99,15 @@ function getToolFailureMessage(toolName: string, output: unknown) {
 function outputWithError(output: unknown, message: string) {
   const value = asRecord(output)
   return value ? { ...value, error: message } : { error: message }
+}
+
+async function runGitCommand(rootDir: string, args: string[]) {
+  const result = await execFileAsync("git", args, {
+    cwd: rootDir,
+    timeout: 15_000,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+  })
+  return result.stdout.trim()
 }
 
 function getTelegramChatId(sessionId: string) {
@@ -455,6 +468,7 @@ export class MonolitoV2Runtime {
           "/compact [max-messages]",
           "/stats",
           "/doctor",
+          "/update",
           "/config [show|set <field> <value>]",
           "/new — Reset session and restart agent",
         ].join("\n")
@@ -500,6 +514,9 @@ export class MonolitoV2Runtime {
       }
       case "/doctor": {
         return this.runDoctor()
+      }
+      case "/update": {
+        return this.runUpdate()
       }
       case "/config": {
         return this.runConfig(rest)
@@ -721,6 +738,51 @@ export class MonolitoV2Runtime {
     lines.push(`Sessions: ${listSessions(this.rootDir).length}`)
     lines.push(`Cost: ${formatCostSummary(this.costState)}`)
     return lines.join("\n")
+  }
+
+  private async runUpdate(): Promise<string> {
+    try {
+      const branch = await runGitCommand(this.rootDir, ["rev-parse", "--abbrev-ref", "HEAD"])
+      if (!branch) return "Update failed: could not determine current git branch."
+
+      const remoteUrl = await runGitCommand(this.rootDir, ["remote", "get-url", "origin"]).catch(() => "")
+      if (!remoteUrl) {
+        return "Update failed: no git remote named 'origin' is configured."
+      }
+
+      const status = await runGitCommand(this.rootDir, ["status", "--porcelain"])
+      if (status.trim()) {
+        return [
+          "Update refused: the working tree has local changes.",
+          "Commit or stash your changes before running /update.",
+        ].join("\n")
+      }
+
+      const currentHead = await runGitCommand(this.rootDir, ["rev-parse", "HEAD"])
+      await runGitCommand(this.rootDir, ["fetch", "--prune", "origin", branch])
+      const remoteHead = await runGitCommand(this.rootDir, ["rev-parse", `origin/${branch}`]).catch(() => "")
+      if (!remoteHead) {
+        return `Update failed: origin/${branch} was not found after fetch.`
+      }
+      if (currentHead === remoteHead) {
+        return [
+          `Already up to date on ${branch}.`,
+          `Remote: ${remoteUrl}`,
+        ].join("\n")
+      }
+
+      await runGitCommand(this.rootDir, ["pull", "--ff-only", "origin", branch])
+      const nextHead = await runGitCommand(this.rootDir, ["rev-parse", "--short", "HEAD"])
+      return [
+        `Updated successfully from origin/${branch}.`,
+        `Remote: ${remoteUrl}`,
+        `Current revision: ${nextHead}`,
+        "Restart the daemon if it is already running so the new code is loaded.",
+      ].join("\n")
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return `Update failed: ${message}`
+    }
   }
 
   private async runConfig(rest: string[]): Promise<string> {

@@ -18,8 +18,8 @@ export async function runCliCommand(client: DaemonClient, args: CliArgs) {
   const { command, rest, prompt } = args
 
   if (command === "--help") {
-    writeLine("monolito-v2 [sessions|resume <id>|logs <id>|status <id>|history <id> [limit]|-p <prompt>]")
-    writeLine("Without arguments, opens the Monolito v2 terminal client.")
+    writeLine("monolito [sessions|resume <id>|logs <id>|status <id>|history <id> [limit]|-p <prompt>]")
+    writeLine("Without arguments, opens the Monolito terminal client and starts the daemon if needed.")
     return
   }
 
