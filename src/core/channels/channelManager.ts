@@ -38,6 +38,15 @@ async function registerTelegramCommands(token: string) {
   }
 }
 
+function normalizeTelegramCommand(text: string) {
+  const trimmed = text.trim()
+  if (!trimmed.startsWith("/")) return null
+
+  const [head, ...rest] = trimmed.split(/\s+/)
+  const normalizedHead = head.replace(/^\/([^@\s]+)@[\w_]+$/, "/$1")
+  return [normalizedHead, ...rest].join(" ").trim()
+}
+
 export function startChannels(runtime: MonolitoV2Runtime) {
   const config = readChannelsConfig()
   process.stderr.write(`[ChannelManager] startChannels called. Telegram enabled: ${!!config.telegram?.enabled}\n`)
@@ -74,14 +83,15 @@ export function startChannels(runtime: MonolitoV2Runtime) {
         }
         
         const sessionId = `telegram-${chatId}`
-        const wrappedText = `<channel source="telegram" chat_id="${chatId}">\n${msg.text}\n</channel>`
+        const slashCommand = normalizeTelegramCommand(msg.text)
+        const inboundText = slashCommand ?? `<channel source="telegram" chat_id="${chatId}">\n${msg.text}\n</channel>`
         
         logger.debug(`Recibido mensaje de Telegram [${chatId}]: ${msg.text}`)
         
         // Asegurar que la sesión exista antes de enviar el mensaje
         try {
           runtime.ensureSession(sessionId, `Telegram ${chatId}`)
-          await runtime.processMessage(sessionId, wrappedText)
+          await runtime.processMessage(sessionId, inboundText)
         } catch (error) {
           const err = error as Error & { code?: string }
           const detail = err.code ? ` code=${err.code}` : ""
