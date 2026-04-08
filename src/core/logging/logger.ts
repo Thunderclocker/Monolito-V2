@@ -1,0 +1,137 @@
+/**
+ * Structured logging for Monolito V2.
+ * Categories, timestamps, in-memory error buffer, and file sinks.
+ */
+
+import { appendFileSync, mkdirSync } from "node:fs"
+import { dirname } from "node:path"
+
+export type LogLevel = "debug" | "info" | "warn" | "error"
+
+export type LogEntry = {
+  timestamp: string
+  level: LogLevel
+  category: string
+  message: string
+  data?: Record<string, unknown>
+  durationMs?: number
+}
+
+type LogSink = (entry: LogEntry) => void
+
+const MAX_IN_MEMORY_ERRORS = 100
+
+const inMemoryErrors: LogEntry[] = []
+const sinks: LogSink[] = []
+let minLevel: LogLevel = "info"
+
+const LEVEL_ORDER: Record<LogLevel, number> = {
+  debug: 0,
+  info: 1,
+  warn: 2,
+  error: 3,
+}
+
+function shouldLog(level: LogLevel): boolean {
+  return LEVEL_ORDER[level] >= LEVEL_ORDER[minLevel]
+}
+
+function formatEntry(entry: LogEntry): string {
+  const parts = [entry.timestamp, `[${entry.level.toUpperCase()}]`, `[${entry.category}]`, entry.message]
+  if (entry.durationMs !== undefined) parts.push(`(${entry.durationMs}ms)`)
+  if (entry.data) {
+    const data = Object.entries(entry.data)
+      .map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`)
+      .join(" ")
+    if (data) parts.push(data)
+  }
+  return parts.join(" ")
+}
+
+function emit(entry: LogEntry) {
+  if (!shouldLog(entry.level)) return
+  if (entry.level === "error") {
+    if (inMemoryErrors.length >= MAX_IN_MEMORY_ERRORS) inMemoryErrors.shift()
+    inMemoryErrors.push(entry)
+  }
+  for (const sink of sinks) {
+    try {
+      sink(entry)
+    } catch {}
+  }
+}
+
+// --- Public API ---
+
+export function setLogLevel(level: LogLevel) {
+  minLevel = level
+}
+
+export function addLogSink(sink: LogSink) {
+  sinks.push(sink)
+  return () => {
+    const index = sinks.indexOf(sink)
+    if (index >= 0) sinks.splice(index, 1)
+  }
+}
+
+export function createFileSink(filePath: string): LogSink {
+  mkdirSync(dirname(filePath), { recursive: true })
+  return (entry: LogEntry) => {
+    appendFileSync(filePath, `${formatEntry(entry)}\n`)
+  }
+}
+
+export function getRecentErrors(): ReadonlyArray<LogEntry> {
+  return inMemoryErrors
+}
+
+export function clearRecentErrors() {
+  inMemoryErrors.length = 0
+}
+
+export function log(level: LogLevel, category: string, message: string, data?: Record<string, unknown>, durationMs?: number) {
+  emit({
+    timestamp: new Date().toISOString(),
+    level,
+    category,
+    message,
+    data,
+    durationMs,
+  })
+}
+
+export function logDebug(category: string, message: string, data?: Record<string, unknown>) {
+  log("debug", category, message, data)
+}
+
+export function logInfo(category: string, message: string, data?: Record<string, unknown>) {
+  log("info", category, message, data)
+}
+
+export function logWarn(category: string, message: string, data?: Record<string, unknown>) {
+  log("warn", category, message, data)
+}
+
+export function logError(category: string, message: string, data?: Record<string, unknown>) {
+  log("error", category, message, data)
+}
+
+/** Log with timing: returns a function that logs the elapsed time when called. */
+export function logTimed(level: LogLevel, category: string, message: string, data?: Record<string, unknown>) {
+  const start = Date.now()
+  return (extraData?: Record<string, unknown>) => {
+    log(level, category, message, { ...data, ...extraData }, Date.now() - start)
+  }
+}
+
+/** Create a scoped logger for a specific category. */
+export function createLogger(category: string) {
+  return {
+    debug: (message: string, data?: Record<string, unknown>) => logDebug(category, message, data),
+    info: (message: string, data?: Record<string, unknown>) => logInfo(category, message, data),
+    warn: (message: string, data?: Record<string, unknown>) => logWarn(category, message, data),
+    error: (message: string, data?: Record<string, unknown>) => logError(category, message, data),
+    timed: (level: LogLevel, message: string, data?: Record<string, unknown>) => logTimed(level, category, message, data),
+  }
+}

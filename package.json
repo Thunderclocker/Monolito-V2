@@ -1,0 +1,20 @@
+{
+  "name": "monolito-v2",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "daemon": "node --experimental-strip-types src/apps/daemon.ts",
+    "cli": "node --experimental-strip-types src/apps/cli.ts",
+    "mcp:demo": "node --experimental-strip-types src/core/mcp/devServer.ts",
+    "check": "node --experimental-strip-types src/apps/cli.ts --help"
+  },
+  "dependencies": {
+    "@xenova/transformers": "^2.17.2",
+    "better-sqlite3": "^12.8.0",
+    "sqlite-vec": "^0.1.9"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13"
+  }
+}

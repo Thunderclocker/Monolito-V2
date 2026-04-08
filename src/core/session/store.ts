@@ -1,0 +1,548 @@
+import { join } from "node:path"
+import Database from "better-sqlite3"
+import * as sqliteVec from "sqlite-vec"
+import { randomUUID } from "node:crypto"
+import {
+  type AgentEvent,
+  type SessionRecord,
+  type SessionSummary,
+  type SessionWorklogEntry,
+  ensureDirs,
+  getPaths,
+} from "../ipc/protocol.ts"
+import { generateEmbedding } from "./embeddings.ts"
+
+let dbInstance: Database.Database | null = null
+let dbPathCache: string | null = null
+
+export function getDb(rootDir: string): Database.Database {
+  const path = join(getPaths(rootDir).stateDir, "memory.sqlite")
+  if (dbInstance && dbPathCache === path) return dbInstance
+
+  if (dbInstance) dbInstance.close()
+  ensureDirs(rootDir)
+
+  const db = new Database(path)
+  sqliteVec.load(db)
+  
+  db.pragma(`journal_mode = WAL`);
+  db.pragma(`synchronous = NORMAL`);
+  db.pragma(`foreign_keys = ON`);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS profiles (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY,
+      profile_id TEXT DEFAULT 'default',
+      title TEXT,
+      state TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      FOREIGN KEY(profile_id) REFERENCES profiles(id)
+    );
+    
+    CREATE TABLE IF NOT EXISTS messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT,
+      role TEXT,
+      text TEXT,
+      at TEXT,
+      is_compacted INTEGER DEFAULT 0,
+      room_id TEXT,
+      FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    );
+    
+    CREATE TABLE IF NOT EXISTS worklog (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT,
+      type TEXT,
+      summary TEXT,
+      at TEXT,
+      FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    );
+    
+    CREATE TABLE IF NOT EXISTS events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT,
+      event_data TEXT,
+      FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS memory_drawers (
+      id TEXT PRIMARY KEY,
+      profile_id TEXT,
+      wing TEXT NOT NULL,
+      room TEXT NOT NULL,
+      memory_key TEXT,
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(profile_id) REFERENCES profiles(id)
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_memory_drawers_wing ON memory_drawers(wing);
+    CREATE INDEX IF NOT EXISTS idx_memory_drawers_room ON memory_drawers(room);
+    CREATE INDEX IF NOT EXISTS idx_memory_drawers_profile ON memory_drawers(profile_id);
+    
+    CREATE VIRTUAL TABLE IF NOT EXISTS vec_drawers USING vec0(
+      id TEXT PRIMARY KEY,
+      embedding float[384]
+    );
+
+    -- Insert default profile if not exists
+    INSERT OR IGNORE INTO profiles (id, name, description, created_at) 
+    VALUES ('default', 'Default Agent', 'El agente Monolito principal por defecto.', CURRENT_TIMESTAMP);
+  `)
+
+  // Migration: Add profile_id to sessions if missing (better-sqlite3)
+  const sessionInfo = db.prepare(`PRAGMA table_info(sessions)`).all() as any[]
+  if (!sessionInfo.find(c => c.name === "profile_id")) {
+    db.exec(`ALTER TABLE sessions ADD COLUMN profile_id TEXT DEFAULT 'default'`)
+  }
+
+  const memoryInfo = db.prepare(`PRAGMA table_info(memory_drawers)`).all() as any[]
+  if (!memoryInfo.find(c => c.name === "memory_key")) {
+    db.exec(`ALTER TABLE memory_drawers ADD COLUMN memory_key TEXT`)
+  }
+
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_drawers_key ON memory_drawers(memory_key)`)
+
+  // Shared memories are represented by a NULL profile_id.
+  db.exec(`UPDATE memory_drawers SET profile_id = NULL WHERE wing = 'SHARED'`)
+
+  dbInstance = db
+  dbPathCache = path
+  return db
+}
+
+function truncateSummary(text: string, max = 160) {
+  const normalized = text.replace(/\s+/g, " ").trim()
+  if (normalized.length <= max) return normalized
+  return `${normalized.slice(0, max - 1).trimEnd()}...`
+}
+
+function buildMessageSummary(role: "user" | "assistant" | "system", text: string) {
+  const label = role === "user" ? "User" : role === "assistant" ? "Assistant" : "System"
+  return `${label}: ${truncateSummary(text)}`
+}
+
+export function createSession(rootDir: string, title = "Monolito v2 Session", sessionId?: string, profileId = "default"): SessionRecord {
+  const db = getDb(rootDir)
+  const now = new Date().toISOString()
+  const id = sessionId ?? randomUUID()
+
+  const stmtSession = db.prepare(`INSERT INTO sessions (id, profile_id, title, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
+  stmtSession.run(id, profileId, title, "idle", now, now)
+
+  const stmtWorklog = db.prepare(`INSERT INTO worklog (session_id, type, summary, at) VALUES (?, ?, ?, ?)`)
+  const summary = `Session created: ${truncateSummary(title, 120)}`
+  stmtWorklog.run(id, "session", summary, now)
+
+  return getSession(rootDir, id)!
+}
+
+export function updateSessionProfile(rootDir: string, sessionId: string, profileId: string) {
+  const db = getDb(rootDir)
+  const stmt = db.prepare(`UPDATE sessions SET profile_id = ?, updated_at = ? WHERE id = ?`)
+  stmt.run(profileId, new Date().toISOString(), sessionId)
+}
+
+export function saveSession(rootDir: string, session: SessionRecord) {
+  // This function is less needed in SQL world, but to maintain the IPC API behavior,
+  // we update the metadata.
+  const db = getDb(rootDir)
+  session.updatedAt = new Date().toISOString()
+  const stmt = db.prepare(`UPDATE sessions SET title = ?, state = ?, updated_at = ? WHERE id = ?`)
+  stmt.run(session.title, session.state, session.updatedAt, session.id)
+}
+
+export function getSession(rootDir: string, sessionId: string): SessionRecord | null {
+  const db = getDb(rootDir)
+  
+  const stmtSession = db.prepare(`SELECT id, profile_id, title, state, created_at, updated_at FROM sessions WHERE id = ?`)
+  const row = stmtSession.get(sessionId) as any
+  if (!row) return null
+
+  const stmtMsgs = db.prepare(`SELECT role, text, at FROM messages WHERE session_id = ? ORDER BY id ASC`)
+  const messages = stmtMsgs.all(sessionId) as any[]
+
+  const stmtLogs = db.prepare(`SELECT type, summary, at FROM worklog WHERE session_id = ? ORDER BY id ASC`)
+  const worklogs = stmtLogs.all(sessionId) as any[]
+
+  return {
+    id: row.id,
+    profileId: row.profile_id,
+    title: row.title,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    state: row.state,
+    messages: messages.map(m => ({ at: m.at, role: m.role, text: m.text })),
+    worklog: worklogs.map(w => ({ at: w.at, type: w.type, summary: w.summary })),
+  } as any
+}
+
+export function ensureSession(rootDir: string, sessionId?: string, title?: string) {
+  if (sessionId) {
+    const existing = getSession(rootDir, sessionId)
+    if (existing) return existing
+  }
+  return createSession(rootDir, title, sessionId)
+}
+
+export function listSessions(rootDir: string, profileId?: string): SessionSummary[] {
+  const db = getDb(rootDir)
+  let sql = `SELECT id, profile_id, title, state, created_at, updated_at FROM sessions`
+  const params: any[] = []
+  if (profileId) {
+    sql += ` WHERE profile_id = ?`
+    params.push(profileId)
+  }
+  sql += ` ORDER BY updated_at DESC`
+  const stmt = db.prepare(sql)
+  const rows = stmt.all(...params) as any[]
+  return rows.map(r => ({
+    id: r.id,
+    profileId: r.profile_id,
+    title: r.title,
+    state: r.state,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at
+  }))
+}
+
+export function listSessionRecords(rootDir: string): SessionRecord[] {
+  const summaries = listSessions(rootDir)
+  return summaries.map(s => getSession(rootDir, s.id)!)
+}
+
+export function appendMessage(rootDir: string, sessionId: string, role: "user" | "assistant" | "system", text: string) {
+  const db = getDb(rootDir)
+  const now = new Date().toISOString()
+  
+  db.exec("BEGIN TRANSACTION")
+  try {
+    const stmtMsg = db.prepare(`INSERT INTO messages (session_id, role, text, at) VALUES (?, ?, ?, ?)`)
+    stmtMsg.run(sessionId, role, text, now)
+
+    const stmtWorklog = db.prepare(`INSERT INTO worklog (session_id, type, summary, at) VALUES (?, ?, ?, ?)`)
+    stmtWorklog.run(sessionId, "message", buildMessageSummary(role, text), now)
+
+    const stmtUpdate = db.prepare(`UPDATE sessions SET updated_at = ? WHERE id = ?`)
+    stmtUpdate.run(now, sessionId)
+    
+    db.exec("COMMIT")
+  } catch (err) {
+    db.exec("ROLLBACK")
+    throw err
+  }
+}
+
+export function appendWorklog(rootDir: string, sessionId: string, entry: Omit<SessionWorklogEntry, "at"> & { at?: string }) {
+  const db = getDb(rootDir)
+  const at = entry.at ?? new Date().toISOString()
+  const summary = truncateSummary(entry.summary, 220)
+  
+  db.exec("BEGIN TRANSACTION")
+  try {
+    const stmt = db.prepare(`INSERT INTO worklog (session_id, type, summary, at) VALUES (?, ?, ?, ?)`)
+    stmt.run(sessionId, entry.type, summary, at)
+
+    const stmtUpdate = db.prepare(`UPDATE sessions SET updated_at = ? WHERE id = ?`)
+    stmtUpdate.run(at, sessionId)
+    db.exec("COMMIT")
+  } catch (err) {
+    db.exec("ROLLBACK")
+    throw err
+  }
+}
+
+export function resetSession(rootDir: string, sessionId: string) {
+  const db = getDb(rootDir)
+  const now = new Date().toISOString()
+  db.exec("BEGIN TRANSACTION")
+  try {
+    db.prepare(`DELETE FROM messages WHERE session_id = ?`).run(sessionId)
+    db.prepare(`DELETE FROM worklog WHERE session_id = ?`).run(sessionId)
+    db.prepare(`DELETE FROM events WHERE session_id = ?`).run(sessionId)
+    db.prepare(`UPDATE sessions SET updated_at = ? WHERE id = ?`).run(now, sessionId)
+    db.prepare(`INSERT INTO worklog (session_id, type, summary, at) VALUES (?, ?, ?, ?)`).run(sessionId, "session", "Session reset via /new", now)
+    db.exec("COMMIT")
+  } catch (err) {
+    db.exec("ROLLBACK")
+    throw err
+  }
+}
+
+export function setSessionState(rootDir: string, sessionId: string, state: SessionRecord["state"]) {
+  const db = getDb(rootDir)
+  const stmt = db.prepare(`UPDATE sessions SET state = ?, updated_at = ? WHERE id = ?`)
+  stmt.run(state, new Date().toISOString(), sessionId)
+}
+
+export function recoverRunningSessions(rootDir: string, summary = "Recovered after daemon restart") {
+  const db = getDb(rootDir)
+  const stmt = db.prepare(`SELECT id FROM sessions WHERE state = 'running'`)
+  const rows = stmt.all() as { id: string }[]
+  
+  const recovered: string[] = []
+  const now = new Date().toISOString()
+  
+  for (const row of rows) {
+    db.exec("BEGIN TRANSACTION")
+    try {
+      const stmtUpdate = db.prepare(`UPDATE sessions SET state = 'idle', updated_at = ? WHERE id = ?`)
+      stmtUpdate.run(now, row.id)
+      
+      const stmtLog = db.prepare(`INSERT INTO worklog (session_id, type, summary, at) VALUES (?, ?, ?, ?)`)
+      stmtLog.run(row.id, "note", summary, now)
+      
+      db.exec("COMMIT")
+      recovered.push(row.id)
+    } catch {
+      db.exec("ROLLBACK")
+    }
+  }
+  return recovered
+}
+
+export function tailEvents(rootDir: string, sessionId: string, lines = 40): AgentEvent[] {
+  const db = getDb(rootDir)
+  const stmt = db.prepare(`SELECT event_data FROM events WHERE session_id = ? ORDER BY id DESC LIMIT ?`)
+  const rows = stmt.all(sessionId, lines) as { event_data: string }[]
+  
+  // They come out in DESC order, so reverse them for chronological tail
+  return rows.reverse().map(r => JSON.parse(r.event_data))
+}
+
+export function appendEvent(rootDir: string, event: AgentEvent) {
+  const db = getDb(rootDir)
+  const stmt = db.prepare(`INSERT INTO events (session_id, event_data) VALUES (?, ?)`)
+  stmt.run(event.sessionId, JSON.stringify(event))
+}
+
+// --- Session compaction ---
+
+const DEFAULT_COMPACT_MESSAGE_LIMIT = 40
+
+type CompactOptions = {
+  maxMessages?: number
+}
+
+function buildCompactMarker(count: number, role: "user" | "assistant"): string {
+  return `[${count} earlier ${role} message${count > 1 ? "s" : ""} compacted]`
+}
+
+export function compactSession(rootDir: string, sessionId: string, options: CompactOptions = {}): { compacted: number; remaining: number } {
+  const db = getDb(rootDir)
+  const maxMessages = options.maxMessages ?? DEFAULT_COMPACT_MESSAGE_LIMIT
+  
+  // We need to find how many messages there are.
+  const stmtCount = db.prepare(`SELECT count(id) as c FROM messages WHERE session_id = ?`)
+  const { c: totalMessages } = stmtCount.get(sessionId) as { c: number }
+  
+  if (totalMessages <= maxMessages) {
+    return { compacted: 0, remaining: totalMessages }
+  }
+  
+  const toRemoveCount = totalMessages - maxMessages
+  
+  // Get the ones to remove
+  const stmtToCompact = db.prepare(`SELECT id, role, at, text FROM messages WHERE session_id = ? ORDER BY id ASC LIMIT ?`)
+  const removed = stmtToCompact.all(sessionId, toRemoveCount) as any[]
+  
+  const userCount = removed.filter(m => m.role === "user").length
+  const assistantCount = removed.filter(m => m.role === "assistant").length
+  const systemCount = removed.filter(m => m.role === "system").length
+  
+  const firstAt = removed[0].at
+  const lastIdRemoved = removed[removed.length - 1].id
+
+  db.exec("BEGIN TRANSACTION")
+  try {
+    // Delete them
+    const stmtDel = db.prepare(`DELETE FROM messages WHERE session_id = ? AND id <= ?`)
+    stmtDel.run(sessionId, lastIdRemoved)
+    
+    // We insert compacted markers so they sit historically. 
+    // Wait, if we INSERT they get AUTOINCREMENTed to the end, breaking order!
+    // SQLite doesn't let us easily insert at the start of `id`. 
+    // Best way: keep the latest `id` of removed, but we want markers to appear BEFORE the kept messages.
+    // Let's modify the scheme: we can query by `id` ASC. If we update the last removed to be the marker, and delete the rest?
+    // Let's just do an UPDATE on the last few removed rows to turn them into markers, and delete the rest.
+    
+    const markers: { role: string, text: string }[] = []
+    if (systemCount > 0) {
+      markers.push({ role: "system", text: `[${systemCount} system message${systemCount > 1 ? "s" : ""} from earlier in session — last updated: ${new Date(removed[0]!.at).toLocaleDateString()}]` })
+    }
+    if (userCount > 0) markers.push({ role: "assistant", text: buildCompactMarker(userCount, "user") })
+    if (assistantCount > 0) markers.push({ role: "assistant", text: buildCompactMarker(assistantCount, "assistant") })
+    
+    // For each marker, update one of the rows instead of deleting, then delete the rest.
+    const toKeepAsMarkers = removed.slice(removed.length - markers.length) // grab last N rows
+    const toActualDelete = removed.slice(0, removed.length - markers.length)
+    
+    if (toActualDelete.length > 0) {
+      const delLimit = toActualDelete[toActualDelete.length - 1].id
+      const stmtDelReal = db.prepare(`DELETE FROM messages WHERE session_id = ? AND id <= ?`)
+      stmtDelReal.run(sessionId, delLimit)
+    }
+    
+    // Update the reserved rows with marker data
+    for (let i = 0; i < markers.length; i++) {
+      const rowToOverride = toKeepAsMarkers[i]
+      const marker = markers[i]
+      const stmtUpdateMsg = db.prepare(`UPDATE messages SET role = ?, text = ?, is_compacted = 1 WHERE id = ?`)
+      stmtUpdateMsg.run(marker.role, marker.text, rowToOverride.id)
+    }
+
+    db.exec("COMMIT")
+  } catch (err) {
+    db.exec("ROLLBACK")
+    throw err
+  }
+  
+  return { compacted: removed.length, remaining: maxMessages + (systemCount>0?1:0) + (userCount>0?1:0) + (assistantCount>0?1:0) }
+}
+
+export function getSessionStats(rootDir: string, sessionId: string) {
+  const db = getDb(rootDir)
+  const session = getSession(rootDir, sessionId)
+  if (!session) return null
+  
+  const totalChars = session.messages.reduce((sum, m) => sum + m.text.length, 0)
+  return {
+    id: session.id,
+    messageCount: session.messages.length,
+    totalChars,
+    worklogEntries: session.worklog.length,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    state: session.state,
+  }
+}
+
+// --- MemPalace Memory Storage ---
+
+export async function fileMemory(rootDir: string, wing: string, room: string, content: string, profileId = "default", key?: string) {
+  const db = getDb(rootDir)
+  const id = randomUUID()
+  const now = new Date().toISOString()
+  const rawWing = wing.trim()
+  const normalizedWing = rawWing.length === 0 ? "PRIVATE" : rawWing.toUpperCase() === "SHARED" ? "SHARED" : rawWing
+  const normalizedRoom = room.trim() || "general"
+  const normalizedKey = key?.trim() || null
+  const storedProfileId = normalizedWing.toUpperCase() === "SHARED" ? null : profileId
+  const floatArray = await generateEmbedding(rootDir, content)
+  
+  db.exec("BEGIN TRANSACTION")
+  try {
+    const stmt = db.prepare(`INSERT INTO memory_drawers (id, profile_id, wing, room, memory_key, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    stmt.run(id, storedProfileId, normalizedWing, normalizedRoom, normalizedKey, content, now)
+    
+    // Guardar vector matematico
+    const stmtVec = db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`)
+    stmtVec.run(id, floatArray)
+    
+    db.exec("COMMIT")
+  } catch (err) {
+    db.exec("ROLLBACK")
+    throw err
+  }
+  return id
+}
+
+export async function recallMemory(rootDir: string, wing?: string, room?: string, query?: string, profileId?: string, key?: string) {
+  const db = getDb(rootDir)
+  const params: any[] = []
+  const conditions: string[] = []
+  
+  if (wing) {
+    const normalizedWing = wing.trim().toUpperCase() === "SHARED" ? "SHARED" : wing.trim()
+    conditions.push(`m.wing = ?`)
+    params.push(normalizedWing)
+  }
+  if (room) { conditions.push(`m.room = ?`); params.push(room.trim()) }
+  if (key) { conditions.push(`m.memory_key = ?`); params.push(key.trim()) }
+  
+  // Shared memories are stored with NULL profile_id. Unscoped queries only see shared memory.
+  if (profileId) {
+    conditions.push(`(m.profile_id = ? OR m.profile_id IS NULL)`)
+    params.push(profileId)
+  } else {
+    conditions.push(`m.profile_id IS NULL`)
+  }
+  
+  if (query && query.trim().length > 0) {
+    const floatArray = await generateEmbedding(rootDir, query)
+    let sql = `
+      SELECT m.id, m.profile_id, m.wing, m.room, m.memory_key, m.content, m.created_at, v.distance
+      FROM vec_drawers v
+      JOIN memory_drawers m ON m.id = v.id
+      WHERE v.embedding MATCH ? AND k = 15
+    `
+    if (conditions.length > 0) {
+      sql += ` AND ` + conditions.join(" AND ")
+    }
+    sql += ` ORDER BY v.distance ASC LIMIT 15`
+    
+    const stmt = db.prepare(sql)
+    return stmt.all(floatArray, ...params) as any[]
+  } else {
+    // Non-semantic pure recall
+    let sql = `SELECT id, profile_id, wing, room, memory_key, content, created_at FROM memory_drawers m`
+    if (conditions.length > 0) {
+      sql += ` WHERE ` + conditions.join(" AND ")
+    }
+    sql += ` ORDER BY m.created_at DESC LIMIT 50`
+    
+    const stmt = db.prepare(sql)
+    return stmt.all(...params) as any[]
+  }
+}
+
+export function listProfiles(rootDir: string) {
+  const db = getDb(rootDir)
+  const stmt = db.prepare(`SELECT id, name, description, created_at FROM profiles ORDER BY name ASC`)
+  return stmt.all() as any[]
+}
+
+export function createProfile(rootDir: string, id: string, name: string, description?: string) {
+  const db = getDb(rootDir)
+  const now = new Date().toISOString()
+  const stmt = db.prepare(`INSERT INTO profiles (id, name, description, created_at) VALUES (?, ?, ?, ?)`)
+  stmt.run(id, name, description ?? null, now)
+  return id
+}
+
+export function listWings(rootDir: string, profileId?: string): string[] {
+  const db = getDb(rootDir)
+  let sql = `SELECT DISTINCT wing FROM memory_drawers`
+  if (profileId) {
+    sql += ` WHERE (profile_id = ? OR profile_id IS NULL)`
+  } else {
+    sql += ` WHERE profile_id IS NULL`
+  }
+  sql += ` ORDER BY wing ASC`
+  const stmt = db.prepare(sql)
+  return (stmt.all(...(profileId ? [profileId] : [])) as { wing: string }[]).map(r => r.wing)
+}
+
+export function listRooms(rootDir: string, wing: string, profileId?: string): string[] {
+  const db = getDb(rootDir)
+  let sql = `SELECT DISTINCT room FROM memory_drawers WHERE wing = ?`
+  if (profileId) {
+    sql += ` AND (profile_id = ? OR profile_id IS NULL)`
+  } else {
+    sql += ` AND profile_id IS NULL`
+  }
+  sql += ` ORDER BY room ASC`
+  const stmt = db.prepare(sql)
+  const params = [wing]
+  if (profileId) params.push(profileId)
+  return (stmt.all(...params) as { room: string }[]).map(r => r.room)
+}
