@@ -21,6 +21,7 @@ function isIgnorableSocketError(error: unknown) {
 
 export class MonolitoV2Daemon {
   private subscribers = new Map<string, Set<Socket>>()
+  private socketSubscriptions = new Map<Socket, Map<string, () => void>>()
   readonly rootDir: string
   readonly runtime: MonolitoV2Runtime
   private server: Server | null = null
@@ -163,6 +164,15 @@ export class MonolitoV2Daemon {
     })
     socket.on("close", () => {
       for (const [, sockets] of this.subscribers) sockets.delete(socket)
+      const unsubscribers = this.socketSubscriptions.get(socket)
+      if (unsubscribers) {
+        for (const unsubscribe of unsubscribers.values()) {
+          try {
+            unsubscribe()
+          } catch {}
+        }
+        this.socketSubscriptions.delete(socket)
+      }
     })
   }
 
@@ -183,13 +193,17 @@ export class MonolitoV2Daemon {
           list.add(socket)
           this.subscribers.set(sid, list)
 
-          const unsubscribe = this.runtime.onEvent(event => {
-            // Broadcast to specific session or global subscribers
-            if (event.sessionId === sid || sid === "*") {
-              this.safeWrite(socket, encodeEnvelope({ kind: "event", payload: event }))
-            }
-          })
-          socket.once("close", unsubscribe)
+          const socketSubs = this.socketSubscriptions.get(socket) ?? new Map<string, () => void>()
+          if (!socketSubs.has(sid)) {
+            const unsubscribe = this.runtime.onEvent(event => {
+              // Broadcast to specific session or global subscribers
+              if (event.sessionId === sid || sid === "*") {
+                this.safeWrite(socket, encodeEnvelope({ kind: "event", payload: event }))
+              }
+            })
+            socketSubs.set(sid, unsubscribe)
+            this.socketSubscriptions.set(socket, socketSubs)
+          }
           return { id: request.id, ok: true, data: { subscribed: sid } }
         }
         case "logs.tail":
