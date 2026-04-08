@@ -6,6 +6,7 @@ export type MenuResult = {
   nextState: MenuState
   tone: "neutral" | "info" | "success" | "error"
   refreshHeader?: boolean
+  restartDaemon?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -94,7 +95,10 @@ function handleMainMenu(input: string): MenuResult {
     }
     writeChannelsConfig(config)
     const tel = config.telegram
-    return openChannelMenu(`Telegram integration has been ${tel.enabled ? 'turned on' : 'turned off'}. (Restart daemon to apply).`, "success", true)
+    return {
+      ...openChannelMenu(`Telegram integration has been ${tel.enabled ? 'turned on' : 'turned off'}.`, "success", true),
+      restartDaemon: true,
+    }
   }
   
   if (input === "2") {
@@ -140,7 +144,10 @@ function handleTelToken(input: string): MenuResult {
   }
   writeChannelsConfig(config)
 
-  return openChannelMenu(`Token saved successfully. (Restart daemon to apply).`, "success")
+  return {
+    ...openChannelMenu("Token saved successfully.", "success"),
+    restartDaemon: true,
+  }
 }
 
 function handleTelChats(input: string): MenuResult {
@@ -156,7 +163,10 @@ function handleTelChats(input: string): MenuResult {
   if (input.toLowerCase() === "clear" || input.toLowerCase() === "limpiar") {
     config.telegram.allowedChats = []
     writeChannelsConfig(config)
-    return openChannelMenu("Authorized chats cleared. Any chat can send messages.", "success")
+    return {
+      ...openChannelMenu("Authorized chats cleared. Any chat can send messages.", "success"),
+      restartDaemon: true,
+    }
   }
 
   const ids = input.split(",").map(s => s.trim()).filter(Boolean).map(Number)
@@ -167,5 +177,8 @@ function handleTelChats(input: string): MenuResult {
 
   config.telegram.allowedChats = ids
   writeChannelsConfig(config)
-  return openChannelMenu(`✅ ${ids.length} authorized chat(s): ${ids.join(", ")}. (Restart daemon to apply).`, "success")
+  return {
+    ...openChannelMenu(`✅ ${ids.length} authorized chat(s): ${ids.join(", ")}.`, "success"),
+    restartDaemon: true,
+  }
 }
