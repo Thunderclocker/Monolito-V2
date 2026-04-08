@@ -98,6 +98,7 @@ npm install
 
 The installer creates a `monolito` launcher in `~/.local/bin/monolito`.
 If your shell does not find it automatically, add `~/.local/bin` to your `PATH`.
+The installer also aborts if it detects a duplicate nested clone such as `Monolito-V2/Monolito-V2`, because that can break `/update`.
 
 ## Run
 

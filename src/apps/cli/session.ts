@@ -151,7 +151,19 @@ async function stashLocalChangesForUpdate(rootDir: string) {
   await runGit(rootDir, ["stash", "push", "--include-untracked", "--message", stashLabel])
   const statusAfterStash = await runGit(rootDir, ["status", "--porcelain"])
   if (statusAfterStash.trim()) {
-    throw new Error(`working tree still dirty after automatic backup stash ${stashLabel}`)
+    const rootName = rootDir.split("/").filter(Boolean).at(-1) ?? "repo"
+    const nestedCloneMarker = `?? ${rootName}/`
+    const details = [
+      `working tree still dirty after automatic backup stash ${stashLabel}`,
+      statusAfterStash,
+    ]
+    if (statusAfterStash.includes(nestedCloneMarker)) {
+      details.push(
+        `Detected a nested clone or duplicate project directory inside the repo: ${rootName}/`,
+        `Move or remove ${rootName}/${rootName} if it exists, then run /update again.`,
+      )
+    }
+    throw new Error(details.join("\n"))
   }
   return stashLabel
 }

@@ -3,6 +3,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_NAME="$(basename "${ROOT_DIR}")"
 STATE_DIR="${HOME}/.monolito-v2"
 BIN_DIR="${HOME}/.local/bin"
 LAUNCHER_PATH="${BIN_DIR}/monolito"
@@ -27,6 +28,10 @@ parse_node_major() {
 
 main() {
   log "Starting Monolito V2 installation"
+
+  if [[ -d "${ROOT_DIR}/${ROOT_NAME}/.git" ]]; then
+    fail "Detected a nested git clone at ${ROOT_DIR}/${ROOT_NAME}. Remove or move that duplicate directory before installing."
+  fi
 
   require_bin node
   require_bin npm
