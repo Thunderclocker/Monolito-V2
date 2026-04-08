@@ -143,6 +143,19 @@ function getBootstrapStartupPrompt(isFreshSession: boolean) {
   return "The workspace bootstrap is still pending. Resume the onboarding ritual from the injected BOOTSTRAP, IDENTITY, USER, SOUL, and AGENTS context. Ask exactly one short next question, based on what is already known. Keep it natural and concise. Do not mention internal files unless the user asks."
 }
 
+async function stashLocalChangesForUpdate(rootDir: string) {
+  const status = await runGit(rootDir, ["status", "--porcelain"])
+  if (!status.trim()) return null
+
+  const stashLabel = `monolito-update-backup-${new Date().toISOString()}`
+  await runGit(rootDir, ["stash", "push", "--include-untracked", "--message", stashLabel])
+  const statusAfterStash = await runGit(rootDir, ["status", "--porcelain"])
+  if (statusAfterStash.trim()) {
+    throw new Error(`working tree still dirty after automatic backup stash ${stashLabel}`)
+  }
+  return stashLabel
+}
+
 function renderExternalTelegramEvent(event: AgentEvent): TranscriptBlock[] {
   const chatId = getTelegramSessionChatId(event.sessionId)
   if (!chatId) return []
@@ -577,17 +590,7 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
         if (!remoteUrl) {
           return { type: "text", tone: "error", content: "Update failed: no git remote named 'origin' is configured." }
         }
-        const status = await runGit(rootDir, ["status", "--porcelain"])
-        if (status.trim()) {
-          return {
-            type: "text",
-            tone: "error",
-            content: [
-              "Update refused: the working tree has local changes.",
-              "Commit or stash your changes before running /update.",
-            ].join("\n"),
-          }
-        }
+        const stashLabel = await stashLocalChangesForUpdate(rootDir)
         const currentHead = await runGit(rootDir, ["rev-parse", "HEAD"])
         await runGit(rootDir, ["fetch", "--prune", "origin", branch])
         const remoteHead = await runGit(rootDir, ["rev-parse", `origin/${branch}`]).catch(() => "")
@@ -617,8 +620,9 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
             `Updated successfully from origin/${branch}.`,
             `Remote: ${remoteUrl}`,
             `Current revision: ${nextHead}`,
+            stashLabel ? `Local changes were backed up automatically to stash: ${stashLabel}` : "",
             "Daemon restarted automatically.",
-          ].join("\n"),
+          ].filter(Boolean).join("\n"),
         }
       }
       if (cmd === "/config") {
