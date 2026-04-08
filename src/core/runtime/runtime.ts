@@ -185,6 +185,7 @@ export class MonolitoV2Runtime {
   private recentResumeAt = new Map<string, number>()
   private abortControllers = new Map<string, AbortController>()
   private costState = createCostState()
+  private restartRequested = false
   readonly orchestrator: AgentOrchestrator
 
   constructor(rootDir: string) {
@@ -391,6 +392,12 @@ export class MonolitoV2Runtime {
     if (controller) {
       controller.abort()
     }
+  }
+
+  consumeRestartRequest() {
+    const requested = this.restartRequested
+    this.restartRequested = false
+    return requested
   }
 
   private async transitionState(sessionId: string, state: "idle" | "running" | "error") {
@@ -756,11 +763,17 @@ export class MonolitoV2Runtime {
       }
 
       const status = await runGitCommand(this.rootDir, ["status", "--porcelain"])
+      let stashLabel = ""
       if (status.trim()) {
-        return [
-          "Update refused: the working tree has local changes.",
-          "Commit or stash your changes before running /update.",
-        ].join("\n")
+        stashLabel = `monolito-update-backup-${new Date().toISOString()}`
+        await runGitCommand(this.rootDir, ["stash", "push", "--include-untracked", "--message", stashLabel])
+        const statusAfterStash = await runGitCommand(this.rootDir, ["status", "--porcelain"])
+        if (statusAfterStash.trim()) {
+          return [
+            "Update failed: the working tree still has local changes after the automatic backup step.",
+            `Saved backup stash: ${stashLabel}`,
+          ].join("\n")
+        }
       }
 
       const currentHead = await runGitCommand(this.rootDir, ["rev-parse", "HEAD"])
@@ -778,12 +791,14 @@ export class MonolitoV2Runtime {
 
       await runGitCommand(this.rootDir, ["pull", "--ff-only", "origin", branch])
       const nextHead = await runGitCommand(this.rootDir, ["rev-parse", "--short", "HEAD"])
+      this.restartRequested = true
       return [
         `Updated successfully from origin/${branch}.`,
         `Remote: ${remoteUrl}`,
         `Current revision: ${nextHead}`,
-        "Restart the daemon if it is already running so the new code is loaded.",
-      ].join("\n")
+        stashLabel ? `Local changes were backed up automatically to stash: ${stashLabel}` : "",
+        "Daemon restart scheduled automatically.",
+      ].filter(Boolean).join("\n")
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       return `Update failed: ${message}`

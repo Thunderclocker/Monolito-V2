@@ -1,4 +1,5 @@
-import { appendFileSync, existsSync, unlinkSync, writeFileSync } from "node:fs"
+import { spawn } from "node:child_process"
+import { appendFileSync, existsSync, openSync, unlinkSync, writeFileSync } from "node:fs"
 import { createServer, type Server, type Socket } from "node:net"
 import {
   type DaemonLock,
@@ -23,6 +24,7 @@ export class MonolitoV2Daemon {
   readonly rootDir: string
   readonly runtime: MonolitoV2Runtime
   private server: Server | null = null
+  private restartInFlight = false
 
   constructor(rootDir: string) {
     this.rootDir = rootDir
@@ -77,6 +79,31 @@ export class MonolitoV2Daemon {
     try {
       if (existsSync(paths.pidFile)) unlinkSync(paths.pidFile)
     } catch {}
+  }
+
+  private scheduleSelfRestart() {
+    if (this.restartInFlight) return
+    this.restartInFlight = true
+
+    setTimeout(() => {
+      try {
+        const paths = getPaths(this.rootDir)
+        this.stop()
+        const stdout = openSync(paths.daemonLog, "a")
+        const stderr = openSync(paths.daemonLog, "a")
+        const daemonPath = `${this.rootDir}/src/apps/daemon.ts`
+        const child = spawn(process.execPath, ["--experimental-strip-types", daemonPath, "--foreground"], {
+          cwd: this.rootDir,
+          detached: true,
+          stdio: ["ignore", stdout, stderr],
+        })
+        child.unref()
+      } catch (error) {
+        this.writeDaemonLog(`daemon self-restart failed: ${error instanceof Error ? error.message : String(error)}`)
+      } finally {
+        process.exit(0)
+      }
+    }, 200)
   }
 
   private listenUnix(socketPath: string) {
@@ -169,6 +196,9 @@ export class MonolitoV2Daemon {
           return { id: request.id, ok: true, data: this.runtime.tailEvents(request.sessionId, request.lines) }
         case "message.send":
           await this.runtime.processMessage(request.sessionId, request.text)
+          if (this.runtime.consumeRestartRequest()) {
+            this.scheduleSelfRestart()
+          }
           return { id: request.id, ok: true, data: { accepted: true } }
         case "session.abort":
           this.runtime.abortSession(request.sessionId)
