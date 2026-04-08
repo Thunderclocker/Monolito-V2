@@ -1061,8 +1061,8 @@ async function executeNativeToolUses(
 
 async function callModelApi(rootDir: string, messages: AnthropicMessage[], system: string, abortSignal?: AbortSignal, retryPolicy: RetryPolicy = { unattended: false, background: false }) {
   const config = getEffectiveModelConfig()
-  if (config.provider === "ollama") {
-    return callOllamaApi(messages, system, abortSignal)
+  if (config.provider === "ollama" || config.provider === "openai_compatible") {
+    return callOpenAiCompatibleApi(config.provider, messages, system, abortSignal)
   }
   return callAnthropicLikeApi(rootDir, messages, system, abortSignal, retryPolicy)
 }
@@ -1451,7 +1451,7 @@ async function callAnthropicLikeApi(rootDir: string, messages: AnthropicMessage[
 }
 
 // ---------------------------------------------------------------------------
-// Ollama OpenAI-compatible API caller
+// OpenAI-compatible API caller
 // ---------------------------------------------------------------------------
 
 type OllamaToolCall = {
@@ -1483,7 +1483,7 @@ type OllamaChatResponse = {
   }
 }
 
-function anthropicToOllamaMessages(messages: AnthropicMessage[], system: string): OllamaMessage[] {
+function anthropicToOpenAiMessages(messages: AnthropicMessage[], system: string): OllamaMessage[] {
   const result: OllamaMessage[] = [{ role: "system", content: system }]
   
   for (const msg of messages) {
@@ -1550,7 +1550,7 @@ function anthropicToOllamaMessages(messages: AnthropicMessage[], system: string)
   return result
 }
 
-function ollamaResponseToAnthropic(response: OllamaChatResponse): AnthropicResponse {
+function openAiCompatibleResponseToAnthropic(response: OllamaChatResponse): AnthropicResponse {
   const choice = response.choices?.[0]
   const content: NonNullable<AnthropicResponse["content"]> = []
   
@@ -1585,15 +1585,15 @@ function ollamaResponseToAnthropic(response: OllamaChatResponse): AnthropicRespo
   }
 }
 
-async function callOllamaApi(messages: AnthropicMessage[], system: string, abortSignal?: AbortSignal): Promise<AnthropicResponse> {
-  const { baseUrl, model } = getEffectiveModelConfig()
-  if (!baseUrl) throw new Error("Model adapter is missing base URL for Ollama")
-  if (!model) throw new Error("Model adapter is missing model name for Ollama")
+async function callOpenAiCompatibleApi(provider: "ollama" | "openai_compatible", messages: AnthropicMessage[], system: string, abortSignal?: AbortSignal): Promise<AnthropicResponse> {
+  const { baseUrl, model, apiKey } = getEffectiveModelConfig()
+  if (!baseUrl) throw new Error(`Model adapter is missing base URL for ${provider}`)
+  if (!model) throw new Error(`Model adapter is missing model name for ${provider}`)
+  if (provider !== "ollama" && !apiKey) throw new Error(`Model adapter is missing API key for ${provider}`)
 
-  const ollamaMessages = anthropicToOllamaMessages(messages, system)
-  
-  // Convert Anthropic tools back to OpenAI tools format
-  const ollamaTools = listModelTools().map(t => ({
+  const openAiMessages = anthropicToOpenAiMessages(messages, system)
+
+  const openAiTools = listModelTools().map(t => ({
     type: "function",
     function: {
       name: t.name,
@@ -1606,11 +1606,15 @@ async function callOllamaApi(messages: AnthropicMessage[], system: string, abort
 
   const response = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    signal: abortSignal,
+    headers: {
+      "content-type": "application/json",
+      ...(provider === "ollama" ? {} : { authorization: `Bearer ${apiKey}` }),
+    },
     body: JSON.stringify({
       model,
-      messages: ollamaMessages,
-      tools: ollamaTools.length > 0 ? ollamaTools : undefined,
+      messages: openAiMessages,
+      tools: openAiTools.length > 0 ? openAiTools : undefined,
       stream: false,
     }),
   })
@@ -1618,11 +1622,11 @@ async function callOllamaApi(messages: AnthropicMessage[], system: string, abort
   if (!response.ok) {
     const body = await response.text().catch(() => "")
     const suffix = body ? ` ${body.slice(0, 300)}` : ""
-    throw new Error(`Ollama request failed: HTTP ${response.status} ${response.statusText}${suffix}`)
+    throw new Error(`${provider} request failed: HTTP ${response.status} ${response.statusText}${suffix}`)
   }
 
   const data = (await response.json()) as OllamaChatResponse
-  return ollamaResponseToAnthropic(data)
+  return openAiCompatibleResponseToAnthropic(data)
 }
 
 export function getEffectiveModelConfig() {

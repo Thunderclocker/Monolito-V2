@@ -477,7 +477,7 @@ function handleEditField(input: string, state: MenuState): MenuResult {
 
   const labelMap: Record<string, string> = {
     name: "Nombre",
-    provider: "Provider (minimax, ollama, anthropic_compatible)",
+    provider: "Provider (openai_compatible, anthropic_compatible, ollama, minimax)",
     baseUrl: "Base URL",
     apiKey: "API Key",
     model: "Model",
