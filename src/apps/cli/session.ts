@@ -1,4 +1,5 @@
 import { stdin, stdout } from "node:process"
+import { spawn } from "node:child_process"
 import type { AgentEvent, SessionRecord, SessionSummary } from "../../core/ipc/protocol.ts"
 import {
   parseTaskNotification,
@@ -78,6 +79,42 @@ function getTelegramSessionChatId(sessionId: string) {
 function unwrapChannelMessage(text: string) {
   const match = text.match(/^<channel\b[^>]*>\n?([\s\S]*?)\n?<\/channel>$/)
   return match?.[1] ?? text
+}
+
+async function ensureDaemon(client: DaemonClient, rootDir: string) {
+  try {
+    await client.connect()
+    return
+  } catch {
+    const daemonPath = `${rootDir}/src/apps/daemon.ts`
+    const child = spawn(process.execPath, ["--experimental-strip-types", daemonPath], {
+      cwd: rootDir,
+      detached: true,
+      stdio: "ignore",
+    })
+    child.unref()
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 250))
+      try {
+        await client.connect()
+        return
+      } catch {
+        // keep waiting
+      }
+    }
+    throw new Error("Daemon failed to start within 5s")
+  }
+}
+
+async function restartDaemon(client: DaemonClient, rootDir: string) {
+  try {
+    await client.stopDaemon()
+  } catch {
+    // continue; we still attempt to start a fresh daemon
+  }
+  client.close()
+  await new Promise(r => setTimeout(r, 500))
+  await ensureDaemon(client, rootDir)
 }
 
 function renderExternalTelegramEvent(event: AgentEvent): TranscriptBlock[] {
@@ -541,6 +578,25 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       transcript = appendTranscriptBlocks(transcript, [
         { type: "event", label: result.nextState ? "channels" : "channels", tone: result.tone, text: result.output },
       ])
+      if (result.restartDaemon) {
+        transcript = appendTranscriptBlocks(transcript, [
+          { type: "event", label: "daemon", tone: "info", text: "Restarting daemon to apply Telegram configuration..." },
+        ])
+        redraw()
+        try {
+          await restartDaemon(client, rootDir)
+          connectionHealthy = client.isConnected()
+          subscribedSessionId = null
+          transcript = appendTranscriptBlocks(transcript, [
+            { type: "event", label: "daemon", tone: "success", text: "Daemon restarted successfully." },
+          ])
+        } catch (error) {
+          connectionHealthy = client.isConnected()
+          transcript = appendTranscriptBlocks(transcript, [
+            { type: "event", label: "daemon", tone: "error", text: `Failed to restart daemon: ${error instanceof Error ? error.message : String(error)}` },
+          ])
+        }
+      }
       if (result.refreshHeader) refreshHeader()
       redraw()
       return
