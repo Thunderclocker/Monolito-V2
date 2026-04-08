@@ -45,6 +45,7 @@ import type {
 } from "./tui/types.ts"
 import { openModelMenu, processMenuInput } from "./tui/modelMenu.ts"
 import { openChannelMenu, processChannelMenuInput } from "./tui/channelMenu.ts"
+import { getWorkspaceContext } from "../../core/context/workspaceContext.ts"
 
 const execFileAsync = promisify(execFile)
 
@@ -128,6 +129,18 @@ async function runGit(rootDir: string, args: string[]) {
     env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
   })
   return result.stdout.trim()
+}
+
+function isBootstrapSessionCandidate(session: SessionRecord) {
+  if (session.id.startsWith("telegram-") || session.id.startsWith("agent-")) return false
+  return session.messages.length === 0
+}
+
+function getBootstrapStartupPrompt(isFreshSession: boolean) {
+  if (isFreshSession) {
+    return "A brand-new workspace bootstrap is pending. Start the first-run ritual now. Read the injected BOOTSTRAP, IDENTITY, USER, SOUL, and AGENTS context already present in this turn. Greet briefly, then ask exactly one short onboarding question focused on identity or user profile. Do not dump a checklist. Do not mention internal files unless the user asks."
+  }
+  return "The workspace bootstrap is still pending. Resume the onboarding ritual from the injected BOOTSTRAP, IDENTITY, USER, SOUL, and AGENTS context. Ask exactly one short next question, based on what is already known. Keep it natural and concise. Do not mention internal files unless the user asks."
 }
 
 function renderExternalTelegramEvent(event: AgentEvent): TranscriptBlock[] {
@@ -492,6 +505,29 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     return session
   }
 
+  const maybeStartBootstrap = async (session: SessionRecord, options?: { isFreshSession?: boolean }) => {
+    if (!isBootstrapSessionCandidate(session)) return false
+    const profileId = (session as SessionRecord & { profileId?: string }).profileId ?? "default"
+    const workspaceContext = getWorkspaceContext(rootDir, profileId, { isMainSession: true })
+    if (!workspaceContext.bootstrapPending) return false
+
+    composer.busy = true
+    composer.thinkingVisible = true
+    startThinkingAnimation()
+    redraw()
+    try {
+      const completion = waitForTurnCompletion(client, session.id)
+      await client.sendMessage(session.id, getBootstrapStartupPrompt(options?.isFreshSession ?? true))
+      await completion
+      return true
+    } finally {
+      composer.busy = false
+      stopThinkingAnimation()
+      refreshHeader()
+      redraw()
+    }
+  }
+
   const monitorConnection = async () => {
     const previousConnection = connectionHealthy
     const previousSessionId = activeSessionId
@@ -744,15 +780,18 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
         ])
         refreshHeader()
         redraw()
-        // Send a startup prompt so the agent re-reads core files and greets
-        composer.busy = true
-        composer.thinkingVisible = true
-        startThinkingAnimation()
-        redraw()
-        const SESSION_RESET_PROMPT = "A new session was started via /new. Run your Session Startup sequence — read your required core files (SOUL.md, IDENTITY.md, USER.md, AGENTS.md, TOOLS.md, MEMORY.md) before responding. Then greet the user in your configured persona. Keep it to 1-3 sentences. Do not mention internal steps, files, tools, or reasoning."
-        const completion = waitForTurnCompletion(client, activeSessionId)
-        await client.sendMessage(activeSessionId, SESSION_RESET_PROMPT)
-        await completion
+        const startedBootstrap = await maybeStartBootstrap(newSession, { isFreshSession: true })
+        if (!startedBootstrap) {
+          // Send a startup prompt so the agent re-reads core files and greets
+          composer.busy = true
+          composer.thinkingVisible = true
+          startThinkingAnimation()
+          redraw()
+          const SESSION_RESET_PROMPT = "A new session was started via /new. Run your Session Startup sequence — read your required core files (SOUL.md, IDENTITY.md, USER.md, AGENTS.md, TOOLS.md, MEMORY.md) before responding. Then greet the user in your configured persona. Keep it to 1-3 sentences. Do not mention internal steps, files, tools, or reasoning."
+          const completion = waitForTurnCompletion(client, activeSessionId)
+          await client.sendMessage(activeSessionId, SESSION_RESET_PROMPT)
+          await completion
+        }
       } catch {
         transcript = appendTranscriptBlocks(transcript, [
           { type: "event", label: "error", tone: "error", text: "Failed to create new session" },
@@ -1058,6 +1097,10 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     stdout.on("resize", onResize)
     stdout.write(`${ANSI.altScrollOff}${ANSI.altScreenOn}`)
     await monitorConnection()
+    if (activeSessionId !== "offline") {
+      const session = await ensureConnectedSession()
+      await maybeStartBootstrap(session, { isFreshSession: false })
+    }
     monitorTimer = setInterval(() => {
       void monitorConnection()
     }, 1500)

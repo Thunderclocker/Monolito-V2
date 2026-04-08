@@ -23,6 +23,7 @@ export type WorkspaceBootstrapContext = {
   files: WorkspaceBootstrapEntry[]
   profileId: string
   isMainSession: boolean
+  bootstrapPending: boolean
 }
 
 export const OPENCLAW_BOOTSTRAP_ORDER: WorkspaceBootstrapFile[] = [
@@ -73,6 +74,19 @@ function readWorkspaceFile(workspaceDir: string, fileName: WorkspaceBootstrapFil
   }
 }
 
+function isBootstrapPending(files: WorkspaceBootstrapEntry[]) {
+  const bootstrap = files.find(file => file.name === "BOOTSTRAP.md")
+  if (!bootstrap) return false
+  const normalized = bootstrap.content.trim().toLowerCase()
+  if (!normalized) return false
+  return !(
+    normalized.includes("bootstrap completed") ||
+    normalized.includes("bootstrap complete") ||
+    normalized.includes("bootstrap resolved") ||
+    normalized.includes("onboarding complete")
+  )
+}
+
 /**
  * OpenClaw-style bootstrap loading:
  * - inject stable workspace files every turn
@@ -108,5 +122,6 @@ export function getWorkspaceContext(rootDir: string, profileId = "default", opti
     files,
     profileId,
     isMainSession,
+    bootstrapPending: isBootstrapPending(files),
   }
 }

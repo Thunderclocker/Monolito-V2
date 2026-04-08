@@ -276,7 +276,12 @@ export class MonolitoV2Runtime {
         const reply = await this.runSlashCommand(sessionId, lastUserText)
         if (reply === "__SESSION_RESET__") {
           // Session was reset — run startup turn with fresh context
-          const startupPrompt = "A new session was started via /new. Run your Session Startup sequence — read your required core files (SOUL.md, IDENTITY.md, USER.md, AGENTS.md, TOOLS.md, MEMORY.md) before responding. Then greet the user in your configured persona. Keep it to 1-3 sentences. Do not mention internal steps, files, tools, or reasoning."
+          const resetSession = getSession(this.rootDir, sessionId)
+          const resetProfileId = (resetSession as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
+          const resetWorkspaceContext = getWorkspaceContext(this.rootDir, resetProfileId, { isMainSession: true })
+          const startupPrompt = resetWorkspaceContext.bootstrapPending
+            ? "A brand-new workspace bootstrap is pending. Start the first-run ritual now using the injected BOOTSTRAP, IDENTITY, USER, SOUL, and AGENTS context. Greet briefly, then ask exactly one short onboarding question. Do not dump a checklist or mention internal files unless the user asks."
+            : "A new session was started via /new. Run your Session Startup sequence — read your required core files (SOUL.md, IDENTITY.md, USER.md, AGENTS.md, TOOLS.md, MEMORY.md) before responding. Then greet the user in your configured persona. Keep it to 1-3 sentences. Do not mention internal steps, files, tools, or reasoning."
           this.activeSessions.delete(sessionId)
           return await this.processMessage(sessionId, startupPrompt)
         }
