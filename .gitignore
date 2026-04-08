@@ -1,0 +1,43 @@
+.DS_Store
+Thumbs.db
+
+# Dependencies
+node_modules/
+
+# Local runtime state
+.monolito-v2/
+
+# Local reference material / vendored research
+_references/
+
+# Local tool/editor state
+.claude/
+.codex
+.cursor/
+.vscode/
+
+# Build and cache output
+dist/
+build/
+coverage/
+.cache/
+.turbo/
+.next/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+
+# Databases and logs
+*.db
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.log
