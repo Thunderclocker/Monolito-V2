@@ -8,7 +8,7 @@ import { getSettingsPath, type ModelSettings, readModelSettings, maskApiKey } fr
 // Types
 // ---------------------------------------------------------------------------
 
-export type ModelProvider = "minimax" | "ollama" | "anthropic_compatible"
+export type ModelProvider = "minimax" | "ollama" | "openai_compatible" | "anthropic_compatible"
 
 export type ModelProfile = {
   id: string
@@ -48,6 +48,7 @@ export function getRegistryPath() {
 const PROVIDER_DEFAULTS: Record<ModelProvider, { baseUrl: string; needsApiKey: boolean }> = {
   minimax: { baseUrl: "https://api.minimax.chat", needsApiKey: true },
   ollama: { baseUrl: "http://localhost:11434", needsApiKey: false },
+  openai_compatible: { baseUrl: "https://api.openai.com", needsApiKey: true },
   anthropic_compatible: { baseUrl: "", needsApiKey: true },
 }
 
@@ -56,7 +57,7 @@ export function getProviderDefaults(provider: ModelProvider) {
 }
 
 export function getAvailableProviders(): ModelProvider[] {
-  return ["minimax", "ollama", "anthropic_compatible"]
+  return ["openai_compatible", "anthropic_compatible", "ollama", "minimax"]
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +162,7 @@ function inferProviderFromUrl(baseUrl: string): ModelProvider {
   const normalized = baseUrl.toLowerCase()
   if (normalized.includes("minimax")) return "minimax"
   if (normalized.includes("localhost:11434") || normalized.includes("ollama")) return "ollama"
+  if (normalized.includes("openai")) return "openai_compatible"
   return "anthropic_compatible"
 }
 

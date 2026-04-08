@@ -1,28 +1,72 @@
 # Monolito v2
 
-Clean extraction of the Monolito v1 operational core.
+Local orchestration runtime with daemon mode, terminal UI, persistent sessions, SQLite memory, multi-agent delegation, tool harness execution, slash commands, channel integration, and basic MCP support.
 
-Included:
+## Core capabilities
 
-- daemon
-- CLI terminal client
-- session handling and resume
-- runtime loop
-- slash-command routing
-- tool registry and executor
-- event-driven tool-use renderer
-- persisted model settings
-- basic MCP bridge
+- Daemon + CLI client with resumable local sessions
+- SQLite-backed session storage, worklog, events, and semantic memory retrieval
+- Profile-based workspaces with injected core files such as `SOUL.md`, `AGENTS.md`, `USER.md`, `TOOLS.md`, and `MEMORY.md`
+- Multi-agent orchestration with worker spawning, follow-up messaging, and stop controls
+- Tool harness for shell execution, web fetches, workspace file access, memory filing/recall, MCP calls, Telegram send, and task tracking
+- Slash-command interface for runtime inspection and control
+- Channel ingestion and reply flow for Telegram chats
+- Persisted model/profile settings, permission rules, and post-tool hooks
+- MCP bridge for listing tools/resources, reading resources, and calling remote MCP tools
+- Agnostic model backend selection across Anthropic-compatible endpoints, OpenAI-compatible endpoints, and local Ollama instances
 
-Excluded on purpose:
+## Memory system
 
-- inherited `free-code` entrypoint and UI tree
-- memory
-- hooks
-- skills
-- subagents
-- tier 2 tools
-- branding and extra UX baggage
+- Session history, messages, worklog entries, and runtime events are persisted locally.
+- Long-term memory uses SQLite plus `sqlite-vec` vector search with 384-dimension embeddings.
+- Memories are stored as `wing` and `room` entries in a "Memory Palace" structure.
+- `SHARED` wings are visible across profiles; other wings stay private to the current profile.
+- Recall supports structural filters (`wing`, `room`, `key`) and semantic lookup with embeddings.
+- Session history can also be compacted while keeping continuity markers.
+
+## Multi-agent model
+
+- Agents are represented as profile-scoped sub-sessions with their own workspace bootstrap files.
+- A parent session can spawn worker, researcher, or verifier agents in parallel.
+- Sub-agents report back through task notifications and can be continued or stopped explicitly.
+- Profiles can be created dynamically and keep separate identity, workspace, and task lists.
+- Main sessions auto-load curated memory; background agent sessions are isolated more tightly.
+
+## Tool harness
+
+- Tools run through a permission-checked execution harness rather than free-form shell instructions.
+- The registry includes local shell execution, MCP access, Telegram send, workspace read/write, memory filing/recall, todo/task tracking, and agent orchestration tools.
+- Tool starts, finishes, failures, and summaries are emitted as structured runtime events and appended to the worklog.
+- Post-tool hooks and per-profile/session permission rules are supported.
+
+## Channels
+
+- Telegram is currently the implemented external channel.
+- Incoming Telegram messages are mapped to dedicated `telegram-<chatId>` sessions.
+- The runtime can mirror replies, typing indicators, and agent updates back to the originating chat.
+- Allowed chat IDs can be restricted from the channel configuration menu.
+
+## Slash commands
+
+- `/help`
+- `/status`
+- `/sessions`
+- `/tool <name> <json>`
+- `/mcp tools <server>`
+- `/mcp resources <server>`
+- `/mcp read <server> <uri>`
+- `/mcp call <server> <tool> <json>`
+- `/model`
+- `/model info`
+- `/model set <base_url|api_key|model> <value>`
+- `/model reset`
+- `/history [limit]`
+- `/cost`
+- `/compact [max-messages]`
+- `/stats`
+- `/doctor`
+- `/config [show|set <field> <value>]`
+- `/new`
 
 ## Run
 
@@ -42,5 +86,9 @@ npm run cli -- -p '/mcp resources demo'
 ## Notes
 
 - Settings: `~/.monolito-v2/settings.json`
+- Model profiles: `~/.monolito-v2/models.json`
+- Channel config: `~/.monolito-v2/channels.json`
 - Session data: `.monolito-v2/` relative to the project root (created on first daemon start)
+- Local memory database: `.monolito-v2/memory/memory.sqlite`
+- Profile workspaces: `.monolito-v2/profiles/<profile-id>/workspace/`
 - Legacy v1 settings fallback: `~/.monolito/settings.json`
