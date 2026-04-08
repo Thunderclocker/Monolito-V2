@@ -101,6 +101,27 @@ function outputWithError(output: unknown, message: string) {
   return value ? { ...value, error: message } : { error: message }
 }
 
+function buildResidualUpdateError(rootDir: string, stashLabel: string, statusAfterStash: string) {
+  const rootName = rootDir.split("/").filter(Boolean).at(-1) ?? "repo"
+  const lines = [
+    "Update failed: the working tree still has local changes after the automatic backup step.",
+    `Saved backup stash: ${stashLabel}`,
+    "",
+    "Remaining paths:",
+    statusAfterStash,
+  ]
+
+  if (statusAfterStash.includes(`?? ${rootName}/`)) {
+    lines.push(
+      "",
+      `Detected a nested clone or duplicate project directory inside the repo: ${rootName}/`,
+      `Move or remove ${rootName}/${rootName} if it exists, then run /update again.`,
+    )
+  }
+
+  return lines.join("\n")
+}
+
 async function runGitCommand(rootDir: string, args: string[]) {
   const result = await execFileAsync("git", args, {
     cwd: rootDir,
@@ -769,10 +790,7 @@ export class MonolitoV2Runtime {
         await runGitCommand(this.rootDir, ["stash", "push", "--include-untracked", "--message", stashLabel])
         const statusAfterStash = await runGitCommand(this.rootDir, ["status", "--porcelain"])
         if (statusAfterStash.trim()) {
-          return [
-            "Update failed: the working tree still has local changes after the automatic backup step.",
-            `Saved backup stash: ${stashLabel}`,
-          ].join("\n")
+          return buildResidualUpdateError(this.rootDir, stashLabel, statusAfterStash)
         }
       }
 
