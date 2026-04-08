@@ -1,5 +1,7 @@
 import { stdin, stdout } from "node:process"
 import { spawn } from "node:child_process"
+import { execFile } from "node:child_process"
+import { promisify } from "node:util"
 import type { AgentEvent, SessionRecord, SessionSummary } from "../../core/ipc/protocol.ts"
 import {
   parseTaskNotification,
@@ -43,6 +45,8 @@ import type {
 } from "./tui/types.ts"
 import { openModelMenu, processMenuInput } from "./tui/modelMenu.ts"
 import { openChannelMenu, processChannelMenuInput } from "./tui/channelMenu.ts"
+
+const execFileAsync = promisify(execFile)
 
 function formatDuration(durationMs: number) {
   if (durationMs < 1000) return `${durationMs}ms`
@@ -115,6 +119,15 @@ async function restartDaemon(client: DaemonClient, rootDir: string) {
   client.close()
   await new Promise(r => setTimeout(r, 500))
   await ensureDaemon(client, rootDir)
+}
+
+async function runGit(rootDir: string, args: string[]) {
+  const result = await execFileAsync("git", args, {
+    cwd: rootDir,
+    timeout: 15_000,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+  })
+  return result.stdout.trim()
 }
 
 function renderExternalTelegramEvent(event: AgentEvent): TranscriptBlock[] {
@@ -519,6 +532,59 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
         return formatCompact(await client.queryCompact(activeSessionId ?? undefined, max) as string)
       }
       if (cmd === "/doctor") return formatDoctor(await client.queryDoctor() as string)
+      if (cmd === "/update") {
+        const branch = await runGit(rootDir, ["rev-parse", "--abbrev-ref", "HEAD"])
+        if (!branch) {
+          return { type: "text", tone: "error", content: "Update failed: could not determine current git branch." }
+        }
+        const remoteUrl = await runGit(rootDir, ["remote", "get-url", "origin"]).catch(() => "")
+        if (!remoteUrl) {
+          return { type: "text", tone: "error", content: "Update failed: no git remote named 'origin' is configured." }
+        }
+        const status = await runGit(rootDir, ["status", "--porcelain"])
+        if (status.trim()) {
+          return {
+            type: "text",
+            tone: "error",
+            content: [
+              "Update refused: the working tree has local changes.",
+              "Commit or stash your changes before running /update.",
+            ].join("\n"),
+          }
+        }
+        const currentHead = await runGit(rootDir, ["rev-parse", "HEAD"])
+        await runGit(rootDir, ["fetch", "--prune", "origin", branch])
+        const remoteHead = await runGit(rootDir, ["rev-parse", `origin/${branch}`]).catch(() => "")
+        if (!remoteHead) {
+          return { type: "text", tone: "error", content: `Update failed: origin/${branch} was not found after fetch.` }
+        }
+        if (currentHead === remoteHead) {
+          return {
+            type: "text",
+            tone: "info",
+            content: [
+              `Already up to date on ${branch}.`,
+              `Remote: ${remoteUrl}`,
+            ].join("\n"),
+          }
+        }
+
+        await runGit(rootDir, ["pull", "--ff-only", "origin", branch])
+        await restartDaemon(client, rootDir)
+        connectionHealthy = client.isConnected()
+        subscribedSessionId = null
+        const nextHead = await runGit(rootDir, ["rev-parse", "--short", "HEAD"])
+        return {
+          type: "text",
+          tone: "success",
+          content: [
+            `Updated successfully from origin/${branch}.`,
+            `Remote: ${remoteUrl}`,
+            `Current revision: ${nextHead}`,
+            "Daemon restarted automatically.",
+          ].join("\n"),
+        }
+      }
       if (cmd === "/config") {
         const [subcmd, field, ...valueParts] = args
         return formatConfig(await client.queryConfig(subcmd, field, valueParts.join(" ")) as string)
