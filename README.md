@@ -7,6 +7,7 @@ Local orchestration runtime with daemon mode, terminal UI, persistent sessions, 
 - Daemon + CLI client with resumable local sessions
 - SQLite-backed session storage, worklog, events, and semantic memory retrieval
 - Profile-based workspaces with injected core files such as `SOUL.md`, `AGENTS.md`, `USER.md`, `TOOLS.md`, and `MEMORY.md`
+- First-run bootstrap ritual that asks for agent identity and user profile, then persists the result into core files
 - Multi-agent orchestration with worker spawning, follow-up messaging, and stop controls
 - Tool harness for shell execution, web fetches, workspace file access, memory filing/recall, MCP calls, Telegram send, and task tracking
 - Slash-command interface for runtime inspection and control
@@ -105,6 +106,7 @@ monolito
 ```
 
 The CLI starts the daemon automatically when it is not already running.
+On a brand-new workspace, Monolito also starts a first-run onboarding ritual and asks for identity/user details one question at a time. When that bootstrap is completed, it clears `BOOTSTRAP.md` so the ritual does not repeat.
 
 ## Quick checks
 

@@ -718,7 +718,7 @@ function describeBootstrapFile(file: WorkspaceBootstrapEntry) {
     case "HEARTBEAT.md":
       return "Heartbeat checklist. Only act on it when the current message is a heartbeat-style poll."
     case "BOOTSTRAP.md":
-      return "First-run bootstrap instructions. Follow them if still relevant, then remove or update them."
+      return "First-run bootstrap instructions. If this file is still unresolved, complete the ritual, persist the result, and clear or finalize the file."
     case "MEMORY.md":
     case "memory.md":
       return "Curated long-term memory for the main session. Use it as durable context, not as a trigger for extra probing."
@@ -775,6 +775,17 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
       "3. The project root is for the USER'S code; your data is kept in `.monolito-v2/`.",
       `4. Main session bootstrap mode: ${bootstrap.isMainSession ? "yes" : "no"}${bootstrap.isMainSession ? " (MEMORY.md may be loaded)" : " (MEMORY.md is intentionally not auto-loaded)"}.`,
     )
+    if (bootstrap.bootstrapPending) {
+      sections.push(
+        "",
+        "BOOTSTRAP STATUS: pending.",
+        "- Prioritize the onboarding ritual before normal long-form assistance.",
+        "- Ask exactly one short question at a time.",
+        "- Do not ask for everything in one message.",
+        "- When facts are confirmed, persist them with WorkspaceWrite to IDENTITY, USER, and SOUL as needed.",
+        "- When the ritual is done, clear BOOTSTRAP.md or replace it with 'Bootstrap completed.' so it does not run again.",
+      )
+    }
     if (hasSoul) {
       sections.push("", "If SOUL.md is present, embody its persona and tone. Avoid stiff, generic replies; follow its guidance unless higher-priority instructions override it.")
     }
