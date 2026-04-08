@@ -69,7 +69,7 @@ Local orchestration runtime with daemon mode, terminal UI, persistent sessions, 
 - `/config [show|set <field> <value>]`
 - `/new`
 
-`/update` fetches from `origin` and applies a fast-forward pull on the current branch. It refuses to run if the working tree has local changes.
+`/update` fetches from `origin`, applies a fast-forward pull on the current branch, and restarts the daemon automatically. It refuses to run if the working tree has local changes.
 
 ## Installation
 
