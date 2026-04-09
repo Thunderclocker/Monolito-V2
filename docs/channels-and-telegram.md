@@ -64,6 +64,7 @@ If `allowedChats` is empty, all chats are accepted.
 Telegram can be configured through:
 
 - `/channels`
+- `/tts`
 
 Changing Telegram config schedules a daemon restart automatically.
 
@@ -93,6 +94,15 @@ That menu lets the user:
 Selecting `searxng` triggers the same managed local Docker flow used by the CLI.
 
 The selected web search mode is also a runtime-level setting shared by all sessions.
+
+## Telegram speech flow
+
+When the user asks for a spoken reply in Telegram, Monolito should:
+
+- generate the audio with `GenerateSpeech`
+- send it with `TelegramSendAudio` or `TelegramSendVoice`
+
+The runtime prompt also tells the model not to synthesize speech through ad-hoc shell commands when the dedicated TTS tools are available.
 
 ## Related files
 

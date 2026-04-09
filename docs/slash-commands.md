@@ -44,6 +44,7 @@ Monolito exposes runtime control commands in the CLI and, where supported, throu
 - `/websearch`: opens web search configuration controls through menus in the CLI and Telegram.
 - `/new`: resets the current session and restarts the agent startup sequence.
 - `/config set tts_base_url|tts_api_key|tts_voice|tts_model|tts_format|tts_speed|tts_managed|tts_auto_deploy|tts_port <value>`: configures the runtime TTS backend used by speech-generation tools.
+- `/tts deploy|stop|remove|list`: manages the local Docker-backed TTS service and cleans conflicting legacy Edge TTS containers when needed.
 
 ## Configuration scope
 

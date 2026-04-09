@@ -55,6 +55,12 @@ Supported `/config set` fields for TTS are:
 - `tts_auto_deploy`
 - `tts_port`
 
+Recommended defaults for managed Telegram speech are:
+
+- `tts_voice = es-AR-ElenaNeural`
+- `tts_managed = true`
+- `tts_auto_deploy = true`
+
 For OpenAI-compatible TTS backends such as `openai-edge-tts`, `tts_base_url` should point to the service root, for example:
 
 - `http://localhost:5050`

@@ -62,6 +62,16 @@ Further documentation lives in [`docs/`](./docs/README.md).
 - Allowed chat IDs can be restricted from the channel configuration menu.
 - Telegram slash commands can open inline menus for configuration-oriented actions such as `/channels` and `/websearch`.
 
+## Text To Speech
+
+- Monolito can generate speech audio files through an OpenAI-compatible TTS backend.
+- For Telegram-backed sessions, it can send those results as audio files or voice notes.
+- The default Spanish Argentina voice is `es-AR-ElenaNeural`.
+- Monolito can manage its own local Docker TTS backend with `/tts`.
+- Managed deployment cleans conflicting legacy Edge TTS containers such as `tts-edge`.
+- Recommended managed setup uses `tts_managed=true` and `tts_auto_deploy=true`.
+- See [`docs/tts.md`](./docs/tts.md) for the complete lifecycle and configuration flow.
+
 ## Web search
 
 - `/websearch` opens an interactive menu in the local CLI and a button-based menu in Telegram.
@@ -161,6 +171,7 @@ On a brand-new workspace, Monolito also starts a first-run onboarding ritual and
 monolito /status
 monolito -p '/tool pwd'
 monolito -p '/mcp resources demo'
+monolito -p '/tts status'
 ```
 
 ## Notes
