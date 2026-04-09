@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process"
-import { statSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import { homedir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import { type AgentEvent, type SessionRecord } from "../ipc/protocol.ts"
@@ -63,6 +64,8 @@ const execFileAsync = promisify(execFile)
 const SEARXNG_CONTAINER = "monolito-searxng"
 const SEARXNG_PORT = 8888
 const SEARXNG_URL = `http://127.0.0.1:${SEARXNG_PORT}`
+const SEARXNG_SETTINGS_DIR = join(homedir(), ".monolito-v2", "searxng")
+const SEARXNG_SETTINGS_FILE = join(SEARXNG_SETTINGS_DIR, "settings.yml")
 
 type SearxngContainerInfo = {
   id: string
@@ -152,6 +155,56 @@ async function getSearxngStatus(): Promise<"running" | "stopped" | "not_found" |
   }
 }
 
+function withJsonFormatEnabled(content: string) {
+  if (/^\s*-\s*json\s*$/m.test(content)) return content
+  return content.replace(/(^\s*formats:\n(?:\s*#.*\n)*\s*-\s*html\s*$)/m, `$1\n    - json`)
+}
+
+async function ensureSearxngSettingsFile(): Promise<{ ok: boolean; message?: string }> {
+  mkdirSync(SEARXNG_SETTINGS_DIR, { recursive: true })
+  if (existsSync(SEARXNG_SETTINGS_FILE)) {
+    const current = readFileSync(SEARXNG_SETTINGS_FILE, "utf8")
+    const updated = withJsonFormatEnabled(current)
+    if (updated !== current) writeFileSync(SEARXNG_SETTINGS_FILE, updated, "utf8")
+    if (/^\s*-\s*json\s*$/m.test(updated)) return { ok: true }
+  }
+
+  const bootstrapContainer = `${SEARXNG_CONTAINER}-bootstrap`
+  let createdBootstrap = false
+  try {
+    const status = await getSearxngStatus()
+    if (status === "not_found") {
+      await execFileAsync("docker", ["run", "-d", "--name", bootstrapContainer, "searxng/searxng:latest"], { timeout: 60_000 })
+      createdBootstrap = true
+      await new Promise(resolve => setTimeout(resolve, 3000))
+      await execFileAsync("docker", ["cp", `${bootstrapContainer}:/etc/searxng/settings.yml`, SEARXNG_SETTINGS_FILE], { timeout: 15_000 })
+    } else {
+      await execFileAsync("docker", ["cp", `${SEARXNG_CONTAINER}:/etc/searxng/settings.yml`, SEARXNG_SETTINGS_FILE], { timeout: 15_000 })
+    }
+    const updated = withJsonFormatEnabled(readFileSync(SEARXNG_SETTINGS_FILE, "utf8"))
+    writeFileSync(SEARXNG_SETTINGS_FILE, updated, "utf8")
+    return { ok: true }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return { ok: false, message: `No se pudo preparar settings.yml de SearxNG: ${message}` }
+  } finally {
+    if (createdBootstrap) {
+      await execFileAsync("docker", ["rm", "-f", bootstrapContainer], { timeout: 15_000 }).catch(() => {})
+    }
+  }
+}
+
+async function probeSearxngJsonApi() {
+  try {
+    const response = await fetch(`${SEARXNG_URL}/search?q=mountains&categories=images&format=json`, {
+      signal: AbortSignal.timeout(5000),
+    })
+    return response.ok
+  } catch {
+    return false
+  }
+}
+
 async function listSearxngContainers(): Promise<string> {
   const containers = await findAllSearxngContainers()
   if (containers.length === 0) return "No se encontraron contenedores SearxNG."
@@ -218,11 +271,13 @@ async function deploySearxngContainer(): Promise<{ ok: boolean; message: string 
   if (status === "running") {
     try {
       const probe = await fetch(`${SEARXNG_URL}/healthz`, { signal: AbortSignal.timeout(3000) })
-      if (probe.ok) return { ok: true, message: `SearxNG ya está corriendo en ${SEARXNG_URL}.` }
+      if (probe.ok && await probeSearxngJsonApi()) return { ok: true, message: `SearxNG ya está corriendo en ${SEARXNG_URL}.` }
     } catch {}
-    try {
-      await execFileAsync("docker", ["restart", SEARXNG_CONTAINER], { timeout: 30_000 })
-    } catch {}
+  }
+
+  const settings = await ensureSearxngSettingsFile()
+  if (!settings.ok) {
+    return { ok: false, message: settings.message ?? "No se pudo preparar la configuración de SearxNG." }
   }
 
   const containers = await findAllSearxngContainers()
@@ -230,7 +285,7 @@ async function deploySearxngContainer(): Promise<{ ok: boolean; message: string 
     await removeSearxngContainer(container.id)
   }
 
-  if (status === "stopped") {
+  if (status === "running" || status === "stopped") {
     await removeSearxngContainer(SEARXNG_CONTAINER)
   }
 
@@ -240,6 +295,7 @@ async function deploySearxngContainer(): Promise<{ ok: boolean; message: string 
       "--name", SEARXNG_CONTAINER,
       "-p", `127.0.0.1:${SEARXNG_PORT}:8080`,
       "--restart", "unless-stopped",
+      "-v", `${SEARXNG_SETTINGS_FILE}:/etc/searxng/settings.yml:ro`,
       "searxng/searxng:latest",
     ], { timeout: 120_000 })
   } catch (error) {
@@ -251,11 +307,11 @@ async function deploySearxngContainer(): Promise<{ ok: boolean; message: string 
     await new Promise(resolve => setTimeout(resolve, 1000))
     try {
       const probe = await fetch(`${SEARXNG_URL}/healthz`, { signal: AbortSignal.timeout(2000) })
-      if (probe.ok) return { ok: true, message: `SearxNG desplegado en ${SEARXNG_URL}.` }
+      if (probe.ok && await probeSearxngJsonApi()) return { ok: true, message: `SearxNG desplegado en ${SEARXNG_URL}.` }
     } catch {}
   }
 
-  return { ok: false, message: "SearxNG se inició pero no respondió dentro de 25s." }
+  return { ok: false, message: "SearxNG se inició pero su API JSON no respondió dentro de 25s." }
 }
 
 async function testSearxngQuery(query: string): Promise<string> {
