@@ -54,6 +54,15 @@ import {
   removeManagedTtsContainer,
   stopManagedTtsContainer,
 } from "../tts/managed.ts"
+import {
+  deployManagedSttContainer,
+  getManagedSttBaseUrl,
+  getManagedSttStatus,
+  listManagedSttContainers,
+  normalizeSttConfig,
+  removeManagedSttContainer,
+  stopManagedSttContainer,
+} from "../stt/managed.ts"
 
 type EventListener = (event: AgentEvent) => void
 
@@ -786,6 +795,7 @@ export class MonolitoV2Runtime {
           "/channels [show|on|off|token <token>|chats <id,id,...>|clear]",
           "/config [show|set <base_url|api_key|model|tts_base_url|tts_api_key|tts_voice|tts_model|tts_format|tts_speed|tts_managed|tts_auto_deploy|tts_port> <value>]",
           "/tts [show|on|off|deploy|stop|remove|list|status]",
+          "/stt [show|on|off|deploy|stop|remove|list|status]",
           "/adult — Toggle adult content mode",
           "/websearch — Open web search menu",
           "/new — Reset session and restart agent",
@@ -844,6 +854,9 @@ export class MonolitoV2Runtime {
       }
       case "/tts": {
         return this.runTtsCommand(rest)
+      }
+      case "/stt": {
+        return this.runSttCommand(rest)
       }
       case "/websearch": {
         return this.runWebSearchCommand(rest)
@@ -1181,6 +1194,63 @@ export class MonolitoV2Runtime {
     return "Usage: /tts [show|on|off|deploy|stop|remove|list|status]"
   }
 
+  private async runSttCommand(rest: string[]) {
+    const config = readChannelsConfig()
+    const action = (rest[0] ?? "show").trim().toLowerCase()
+    const stt = normalizeSttConfig(config.stt)
+
+    if (action === "show" || action === "status" || !action) {
+      const status = await getManagedSttStatus(stt)
+      return [
+        `STT managed: ${stt.managed ? "yes" : "no"}`,
+        `STT auto deploy: ${stt.autoDeploy ? "yes" : "no"}`,
+        `STT auto transcribe: ${stt.autoTranscribe ? "yes" : "no"}`,
+        `STT status: ${status}`,
+        `STT URL: ${getManagedSttBaseUrl(stt)}`,
+        `STT engine: ${stt.engine}`,
+        `STT model: ${stt.model}`,
+        `STT language: ${stt.language}`,
+      ].join("\n")
+    }
+
+    if (action === "on" || action === "enable") {
+      config.stt = { ...(config.stt ?? {}), managed: true, autoDeploy: true, autoTranscribe: true }
+      writeChannelsConfig(config)
+      const next = normalizeSttConfig(config.stt)
+      return `STT administrado habilitado. URL administrada: ${getManagedSttBaseUrl(next)}`
+    }
+
+    if (action === "off" || action === "disable") {
+      config.stt = { ...(config.stt ?? {}), autoTranscribe: false }
+      writeChannelsConfig(config)
+      return "Auto-transcripción STT deshabilitada."
+    }
+
+    if (action === "deploy" || action === "start") {
+      config.stt = { ...(config.stt ?? {}), managed: true }
+      writeChannelsConfig(config)
+      const next = normalizeSttConfig(config.stt)
+      const result = await deployManagedSttContainer(next)
+      return result.ok ? result.message : `Error: ${result.message}`
+    }
+
+    if (action === "stop") {
+      const result = await stopManagedSttContainer(stt)
+      return result.ok ? result.message : `Error: ${result.message}`
+    }
+
+    if (action === "remove" || action === "rm") {
+      const result = await removeManagedSttContainer(stt)
+      return result.ok ? result.message : `Error: ${result.message}`
+    }
+
+    if (action === "list" || action === "ls") {
+      return await listManagedSttContainers(stt)
+    }
+
+    return "Usage: /stt [show|on|off|deploy|stop|remove|list|status]"
+  }
+
   private async runWebSearchCommand(rest: string[]) {
     const config = readWebSearchConfig()
     const action = (rest[0] ?? "show").trim().toLowerCase()
@@ -1330,6 +1400,16 @@ export class MonolitoV2Runtime {
           autoDeploy: typeof tts.autoDeploy === "boolean" ? tts.autoDeploy : "",
           port: typeof tts.port === "number" ? tts.port : "",
         },
+        stt: {
+          managed: typeof channels.stt?.managed === "boolean" ? channels.stt.managed : "",
+          autoDeploy: typeof channels.stt?.autoDeploy === "boolean" ? channels.stt.autoDeploy : "",
+          autoTranscribe: typeof channels.stt?.autoTranscribe === "boolean" ? channels.stt.autoTranscribe : "",
+          port: typeof channels.stt?.port === "number" ? channels.stt.port : "",
+          model: typeof channels.stt?.model === "string" ? channels.stt.model : "",
+          language: typeof channels.stt?.language === "string" ? channels.stt.language : "",
+          engine: typeof channels.stt?.engine === "string" ? channels.stt.engine : "",
+          vadFilter: typeof channels.stt?.vadFilter === "boolean" ? channels.stt.vadFilter : "",
+        },
       }, null, 2)
     }
     if (action === "set") {
@@ -1380,6 +1460,43 @@ export class MonolitoV2Runtime {
         }
         writeChannelsConfig(nextChannels)
         return `Saved ${field} = ${field === "tts_api_key" ? maskApiKey(value) : value}`
+      } else if (field === "stt_managed" || field === "stt_auto_deploy" || field === "stt_auto_transcribe" || field === "stt_port" || field === "stt_model" || field === "stt_language" || field === "stt_engine" || field === "stt_vad_filter") {
+        const nextChannels = { ...channels, stt: { ...(channels.stt ?? {}) } }
+        const isTruthy = ["true", "on", "yes", "1"].includes(value.toLowerCase())
+        const isBoolLike = ["true", "false", "on", "off", "yes", "no", "1", "0"].includes(value.toLowerCase())
+        if (field === "stt_managed") {
+          if (!isBoolLike) return "Invalid: stt_managed must be true or false"
+          nextChannels.stt.managed = isTruthy
+        }
+        if (field === "stt_auto_deploy") {
+          if (!isBoolLike) return "Invalid: stt_auto_deploy must be true or false"
+          nextChannels.stt.autoDeploy = isTruthy
+        }
+        if (field === "stt_auto_transcribe") {
+          if (!isBoolLike) return "Invalid: stt_auto_transcribe must be true or false"
+          nextChannels.stt.autoTranscribe = isTruthy
+        }
+        if (field === "stt_vad_filter") {
+          if (!isBoolLike) return "Invalid: stt_vad_filter must be true or false"
+          nextChannels.stt.vadFilter = isTruthy
+        }
+        if (field === "stt_port") {
+          const parsed = Number(value)
+          if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 65535) {
+            return "Invalid: stt_port must be a number between 1 and 65535"
+          }
+          nextChannels.stt.port = Math.trunc(parsed)
+        }
+        if (field === "stt_model") nextChannels.stt.model = value
+        if (field === "stt_language") nextChannels.stt.language = value
+        if (field === "stt_engine") {
+          if (!["faster_whisper", "openai_whisper", "whisperx"].includes(value)) {
+            return "Invalid: stt_engine must be one of faster_whisper, openai_whisper, whisperx"
+          }
+          nextChannels.stt.engine = value as "faster_whisper" | "openai_whisper" | "whisperx"
+        }
+        writeChannelsConfig(nextChannels)
+        return `Saved ${field} = ${value}`
       } else {
         return `Unknown field: ${field}`
       }

@@ -25,6 +25,12 @@ Depending on the message, Monolito can include:
 - voice notes
 - video notes
 
+When an incoming Telegram message contains `audio` or `voice`, Monolito can also:
+
+- auto-deploy its managed STT backend
+- transcribe the audio before it reaches the model
+- preserve the original attachment metadata alongside the transcript
+
 Slash commands sent in Telegram are normalized and passed through the same runtime command handler when possible.
 Some commands, such as `/channels` and `/websearch`, are intercepted as interactive Telegram menus instead of plain text handlers.
 
@@ -65,6 +71,7 @@ Telegram can be configured through:
 
 - `/channels`
 - `/tts`
+- `/stt`
 
 Changing Telegram config schedules a daemon restart automatically.
 
@@ -103,6 +110,17 @@ When the user asks for a spoken reply in Telegram, Monolito should:
 - send it with `TelegramSendAudio` or `TelegramSendVoice`
 
 The runtime prompt also tells the model not to synthesize speech through ad-hoc shell commands when the dedicated TTS tools are available.
+
+## Telegram audio transcription flow
+
+When managed STT is enabled and auto-transcription is on, Monolito will:
+
+- download the incoming Telegram `audio` or `voice`
+- deploy its managed STT container automatically if needed
+- transcribe the file before passing the message to the model
+- inject the transcript into the normalized channel payload
+
+The current managed STT flow uses a Docker-backed Whisper webservice with `faster_whisper` as the default engine.
 
 ## Related files
 

@@ -110,6 +110,8 @@ const READ_ONLY_TOOLS = new Set([
   "TelegramGetFile",
   "TtsServiceStatus",
   "TtsServiceList",
+  "SttServiceStatus",
+  "SttServiceList",
 ])
 
 const EDIT_TOOLS = new Set([
@@ -133,6 +135,10 @@ const EDIT_TOOLS = new Set([
   "TtsServiceDeploy",
   "TtsServiceStop",
   "TtsServiceRemove",
+  "TranscribeAudio",
+  "SttServiceDeploy",
+  "SttServiceStop",
+  "SttServiceRemove",
 ])
 
 function getPermissionsPath(rootDir?: string) {
