@@ -91,16 +91,20 @@ export class MonolitoV2Daemon {
     setTimeout(() => {
       try {
         const paths = getPaths(this.rootDir)
-        this.stop()
         const stdout = openSync(paths.daemonLog, "a")
         const stderr = openSync(paths.daemonLog, "a")
         const daemonPath = `${this.rootDir}/src/apps/daemon.ts`
-        const child = spawn(process.execPath, ["--experimental-strip-types", daemonPath, "--foreground"], {
+        const restartScript = [
+          "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done",
+          "exec \"$2\" --experimental-strip-types \"$3\" --foreground",
+        ].join("; ")
+        const child = spawn("sh", ["-lc", restartScript, "monolito-restart", String(process.pid), process.execPath, daemonPath], {
           cwd: this.rootDir,
           detached: true,
           stdio: ["ignore", stdout, stderr],
         })
         child.unref()
+        this.stop()
       } catch (error) {
         this.writeDaemonLog(`daemon self-restart failed: ${error instanceof Error ? error.message : String(error)}`)
       } finally {
