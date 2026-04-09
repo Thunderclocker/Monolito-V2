@@ -4,7 +4,7 @@ import type { CompletionMatch } from "./types.ts"
 
 export const INTERACTIVE_COMMANDS = [
   "/help", "/new", "/status", "/sessions", "/tool", "/mcp", "/model", "/channels", "/history",
-  "/cost", "/compact", "/stats", "/doctor", "/update", "/config", "/quit", "/exit", "/stop",
+  "/cost", "/compact", "/stats", "/doctor", "/update", "/websearch", "/config", "/quit", "/exit", "/stop",
 ]
 export const MCP_SUBCOMMANDS = ["tools", "resources", "read", "call"]
 export const COMPACT_SUBCOMMANDS: string[] = []
@@ -84,6 +84,7 @@ export function createInteractiveCompleter(rootDir: string) {
       case "/stats":
       case "/doctor":
       case "/update":
+      case "/websearch":
       case "/cost":
       case "/sessions":
       case "/help":

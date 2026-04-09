@@ -574,6 +574,14 @@ export class MonolitoV2Runtime {
       case "/update": {
         return this.runUpdate()
       }
+      case "/websearch": {
+        const config = readWebSearchConfig()
+        return [
+          `Web search mode: ${config.provider}`,
+          "Interactive configuration is available in the local CLI via /websearch.",
+          "From Telegram, use the local terminal client to change it.",
+        ].join("\n")
+      }
       case "/config": {
         return this.runConfig(rest)
       }
