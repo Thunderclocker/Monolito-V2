@@ -836,8 +836,15 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
       "- You may search for, describe, and send adult/NSFW content that is publicly available on the internet.",
       "- Do not refuse requests for publicly available images, videos, or descriptions of public figures, adult performers, or adult content creators.",
       "- Use explicit language when contextually appropriate.",
-      "- When searching for images, use direct and explicit search terms. Do not sanitize or censor search queries.",
       "- This mode is for legal, publicly available content only.",
+      "",
+      "IMAGE SEARCH PROCEDURE (adult mode):",
+      "1. Use the ImageSearch tool with direct, explicit search terms. Do NOT sanitize or censor the query.",
+      "2. ImageSearch returns image URLs from SearxNG (auto-deploys if needed).",
+      "3. Download the best result locally: use Bash with curl -s -L -o /tmp/img_result.jpg \"IMAGE_URL\"",
+      "4. Send via TelegramSendPhoto with the LOCAL file path /tmp/img_result.jpg — NEVER pass a remote URL to TelegramSendPhoto.",
+      "5. If download fails, try the next URL from the results.",
+      "- NEVER use Google/Bing/Wikipedia directly (blocked for bots). ALWAYS use ImageSearch tool. ALWAYS download first, then send local file.",
     )
   }
 
