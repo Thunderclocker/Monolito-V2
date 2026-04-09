@@ -456,7 +456,27 @@ function injectTelegramTranscript(text: string, transcript: string, language?: s
   return text.replace(/(<text>[\s\S]*?<\/text>)/i, `$1\n${payload}`).replace(/(<channel[^>]*>)/i, `$1\n${payload}`)
 }
 
-function sanitizeExternalAssistantText(sessionId: string, text: string) {
+function sanitizeTranscribedTelegramReply(text: string) {
+  const infraPattern = /\b(cuda|cpu fallback|driver|drivers|bash|shell|daemon|tooling|toolings?|pwd|timeout|stt|tts|whisper|faster[_-]?whisper|transcrib|docker)\b/i
+  const blocks = text
+    .split(/\n\s*\n/)
+    .map(block => block.trim())
+    .filter(Boolean)
+    .filter(block => !infraPattern.test(block))
+
+  if (blocks.length > 0) return blocks.join("\n\n").trim()
+
+  const lines = text
+    .split("\n")
+    .map(line => line.trim())
+    .filter(Boolean)
+    .filter(line => !infraPattern.test(line))
+
+  if (lines.length > 0) return lines.join("\n").trim()
+  return "Recibi tu audio y voy a responder solo sobre su contenido."
+}
+
+function sanitizeExternalAssistantText(sessionId: string, text: string, lastUserText?: string) {
   if (!getTelegramChatId(sessionId)) return text
   const normalized = text.trim()
 
@@ -466,6 +486,10 @@ function sanitizeExternalAssistantText(sessionId: string, text: string) {
 
   if (/^Model request failed after retries$/i.test(normalized)) {
     return "No pude completar la respuesta por un problema temporal del modelo. Proba de nuevo en unos segundos."
+  }
+
+  if (lastUserText && hasTelegramTranscriptText(lastUserText)) {
+    return sanitizeTranscribedTelegramReply(text)
   }
 
   return text
@@ -756,7 +780,7 @@ export class MonolitoV2Runtime {
             Date.now() - apiStartedAt,
           )
         }
-        const userFacingText = sanitizeExternalAssistantText(sessionId, turn.finalText)
+        const userFacingText = sanitizeExternalAssistantText(sessionId, turn.finalText, preparedUserText)
         appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
         this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
         this.emit({
