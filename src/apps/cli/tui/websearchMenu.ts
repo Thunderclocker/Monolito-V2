@@ -1,11 +1,11 @@
 /**
  * Interactive web search configuration menu.
  *
- * /websearch opens this menu to select and configure the search engine
- * used by the agent for web and image searches.
+ * /websearch opens a selector for the web search strategy used by the agent.
  */
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
+import { readWebSearchConfig, writeWebSearchConfig, type WebSearchProvider } from "../../../core/websearch/config.ts"
 import type { MenuState } from "./types.ts"
 
 const execFileAsync = promisify(execFile)
@@ -20,34 +20,22 @@ export type WebSearchMenuResult = {
   tone: "neutral" | "info" | "success" | "error"
 }
 
-// ---------------------------------------------------------------------------
-// Container info type
-// ---------------------------------------------------------------------------
-
 type ContainerInfo = {
   id: string
   name: string
   image: string
   status: string
   ports: string
-  isOurs: boolean // name matches SEARXNG_CONTAINER
+  isOurs: boolean
 }
 
-// ---------------------------------------------------------------------------
-// SearxNG Docker helpers
-// ---------------------------------------------------------------------------
-
-/** Find ALL SearxNG containers (by image name), not just ours */
 async function findAllSearxngContainers(): Promise<ContainerInfo[]> {
   try {
-    // Search by image (catches any searxng container regardless of name)
     const { stdout: byImage } = await execFileAsync("docker", [
       "ps", "-a",
       "--filter", "ancestor=searxng/searxng",
       "--format", "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}",
     ], { timeout: 10_000 })
-
-    // Also search by name pattern (catches renamed or rebuilt containers)
     const { stdout: byName } = await execFileAsync("docker", [
       "ps", "-a",
       "--filter", "name=searxng",
@@ -56,7 +44,6 @@ async function findAllSearxngContainers(): Promise<ContainerInfo[]> {
 
     const seen = new Set<string>()
     const containers: ContainerInfo[] = []
-
     for (const line of [...byImage.trim().split("\n"), ...byName.trim().split("\n")]) {
       if (!line.trim()) continue
       const [id, name, image, status, ports] = line.split("\t")
@@ -77,11 +64,12 @@ async function findAllSearxngContainers(): Promise<ContainerInfo[]> {
   }
 }
 
-/** Get status of our specific container */
 async function getOurContainerStatus(): Promise<"running" | "stopped" | "not_found" | "docker_error"> {
   try {
     const { stdout } = await execFileAsync("docker", [
-      "ps", "-a", "--filter", `name=^/${SEARXNG_CONTAINER}$`, "--format", "{{.Status}}",
+      "ps", "-a",
+      "--filter", `name=^/${SEARXNG_CONTAINER}$`,
+      "--format", "{{.Status}}",
     ], { timeout: 10_000 })
     const status = stdout.trim()
     if (!status) return "not_found"
@@ -91,19 +79,15 @@ async function getOurContainerStatus(): Promise<"running" | "stopped" | "not_fou
   }
 }
 
-/** Check if port is already in use */
 async function isPortInUse(): Promise<{ inUse: boolean; detail?: string }> {
   try {
     const { stdout } = await execFileAsync("ss", ["-tlnp", `sport = :${SEARXNG_PORT}`], { timeout: 5_000 })
-    const lines = stdout.trim().split("\n").filter(l => l.includes(`:${SEARXNG_PORT}`))
+    const lines = stdout.trim().split("\n").filter(line => line.includes(`:${SEARXNG_PORT}`))
     if (lines.length > 0) return { inUse: true, detail: lines[0] }
-    return { inUse: false }
-  } catch {
-    return { inUse: false }
-  }
+  } catch {}
+  return { inUse: false }
 }
 
-/** Remove a container by ID or name */
 async function removeContainer(idOrName: string): Promise<{ ok: boolean; message: string }> {
   try {
     await execFileAsync("docker", ["rm", "-f", idOrName], { timeout: 15_000 })
@@ -114,7 +98,6 @@ async function removeContainer(idOrName: string): Promise<{ ok: boolean; message
   }
 }
 
-/** Remove ALL SearxNG containers found */
 async function removeAllSearxngContainers(): Promise<{ ok: boolean; message: string; count: number }> {
   const containers = await findAllSearxngContainers()
   if (containers.length === 0) {
@@ -122,21 +105,15 @@ async function removeAllSearxngContainers(): Promise<{ ok: boolean; message: str
   }
   const results: string[] = []
   let allOk = true
-  for (const c of containers) {
-    const r = await removeContainer(c.id)
-    results.push(`${c.name} (${c.id}): ${r.ok ? "eliminado" : r.message}`)
-    if (!r.ok) allOk = false
+  for (const container of containers) {
+    const result = await removeContainer(container.id)
+    results.push(`${container.name} (${container.id}): ${result.ok ? "eliminado" : result.message}`)
+    if (!result.ok) allOk = false
   }
-  return {
-    ok: allOk,
-    message: results.join("\n"),
-    count: containers.length,
-  }
+  return { ok: allOk, message: results.join("\n"), count: containers.length }
 }
 
-/** Deploy our SearxNG container, cleaning up conflicts first */
 async function deploySearxng(): Promise<{ ok: boolean; message: string }> {
-  // Check Docker availability
   try {
     await execFileAsync("docker", ["info"], { timeout: 10_000 })
   } catch {
@@ -144,33 +121,28 @@ async function deploySearxng(): Promise<{ ok: boolean; message: string }> {
   }
 
   const ourStatus = await getOurContainerStatus()
-
-  // If ours is running, just verify it responds
   if (ourStatus === "running") {
     try {
       const probe = await fetch(`${SEARXNG_URL}/healthz`, { signal: AbortSignal.timeout(3000) })
       if (probe.ok) return { ok: true, message: "SearxNG ya está corriendo y responde." }
     } catch {}
-    // Running but not responding — restart it
     try {
       await execFileAsync("docker", ["restart", SEARXNG_CONTAINER], { timeout: 30_000 })
     } catch {}
   }
 
-  // Check for OTHER searxng containers that might conflict
   const allContainers = await findAllSearxngContainers()
-  const foreignContainers = allContainers.filter(c => !c.isOurs)
+  const foreignContainers = allContainers.filter(container => !container.isOurs)
   const conflictMessages: string[] = []
 
   if (foreignContainers.length > 0) {
     conflictMessages.push(`Encontrados ${foreignContainers.length} contenedores SearxNG previos:`)
-    for (const c of foreignContainers) {
-      const r = await removeContainer(c.id)
-      conflictMessages.push(`  ${c.name} (${c.image}, ${c.status}): ${r.ok ? "eliminado" : r.message}`)
+    for (const container of foreignContainers) {
+      const result = await removeContainer(container.id)
+      conflictMessages.push(`  ${container.name} (${container.image}, ${container.status}): ${result.ok ? "eliminado" : result.message}`)
     }
   }
 
-  // Check port conflict from non-Docker processes
   const portCheck = await isPortInUse()
   if (portCheck.inUse) {
     return {
@@ -184,12 +156,10 @@ async function deploySearxng(): Promise<{ ok: boolean; message: string }> {
     }
   }
 
-  // Remove our stopped container if exists (clean re-deploy)
   if (ourStatus === "stopped") {
     await removeContainer(SEARXNG_CONTAINER)
   }
 
-  // Deploy fresh
   try {
     await execFileAsync("docker", [
       "run", "-d",
@@ -200,15 +170,11 @@ async function deploySearxng(): Promise<{ ok: boolean; message: string }> {
     ], { timeout: 120_000 })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    return {
-      ok: false,
-      message: [...conflictMessages, `Error desplegando: ${msg}`].join("\n"),
-    }
+    return { ok: false, message: [...conflictMessages, `Error desplegando: ${msg}`].join("\n") }
   }
 
-  // Wait for healthy
   for (let i = 0; i < 25; i++) {
-    await new Promise(r => setTimeout(r, 1000))
+    await new Promise(resolve => setTimeout(resolve, 1000))
     try {
       const probe = await fetch(`${SEARXNG_URL}/healthz`, { signal: AbortSignal.timeout(2000) })
       if (probe.ok) {
@@ -225,10 +191,7 @@ async function deploySearxng(): Promise<{ ok: boolean; message: string }> {
     } catch {}
   }
 
-  return {
-    ok: false,
-    message: [...conflictMessages, "SearxNG se inició pero no responde después de 25s."].join("\n"),
-  }
+  return { ok: false, message: [...conflictMessages, "SearxNG se inició pero no responde después de 25s."].join("\n") }
 }
 
 async function stopSearxng(): Promise<{ ok: boolean; message: string }> {
@@ -245,14 +208,48 @@ async function stopSearxng(): Promise<{ ok: boolean; message: string }> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Menu rendering
-// ---------------------------------------------------------------------------
+function providerLabel(provider: WebSearchProvider) {
+  switch (provider) {
+    case "default":
+      return "Default"
+    case "curl":
+      return "Curl / WebFetch"
+    case "searxng":
+      return "SearxNG local"
+  }
+}
 
-async function renderMainMenu(): Promise<string> {
+async function renderProviderMenu(): Promise<string> {
+  const config = readWebSearchConfig()
+  const searxStatus = await getOurContainerStatus()
+  const searxStatusLabel =
+    searxStatus === "running" ? "corriendo" :
+    searxStatus === "stopped" ? "detenido" :
+    searxStatus === "not_found" ? "no desplegado" :
+    "docker no disponible"
+
+  return [
+    "Web Search",
+    "----------",
+    `Metodo activo: ${providerLabel(config.provider)}`,
+    "",
+    "Elegi el comportamiento para busquedas web generales:",
+    "1. Default",
+    "2. Curl / WebFetch",
+    `3. SearxNG local (${searxStatusLabel})`,
+    "0. Salir",
+    "",
+    "Si elegis SearxNG, despues se abre su submenu de configuracion.",
+    "",
+    "Ingresá el número:",
+  ].join("\n")
+}
+
+async function renderSearxngMenu(): Promise<string> {
+  const config = readWebSearchConfig()
   const ourStatus = await getOurContainerStatus()
   const allContainers = await findAllSearxngContainers()
-  const foreignCount = allContainers.filter(c => !c.isOurs).length
+  const foreignCount = allContainers.filter(container => !container.isOurs).length
 
   const statusLabel =
     ourStatus === "running" ? "Corriendo" :
@@ -261,9 +258,9 @@ async function renderMainMenu(): Promise<string> {
     "Docker no disponible"
 
   const lines = [
-    `Web Search Configuration`,
-    `------------------------`,
-    `Motor: SearxNG (Docker local)`,
+    "Web Search / SearxNG",
+    "-------------------",
+    `Metodo activo: ${providerLabel(config.provider)}`,
     `Container: ${SEARXNG_CONTAINER}`,
     `Estado: ${statusLabel}`,
     `URL: ${SEARXNG_URL}`,
@@ -275,30 +272,26 @@ async function renderMainMenu(): Promise<string> {
   }
 
   lines.push(
-    ``,
-    `Opciones:`,
+    "",
+    "Opciones:",
     `1. ${ourStatus === "running" ? "Reiniciar" : "Desplegar"} SearxNG`,
-    `2. Detener SearxNG`,
+    "2. Detener SearxNG",
     `3. Eliminar container (${SEARXNG_CONTAINER})`,
   )
 
   if (foreignCount > 0) {
     lines.push(`4. Limpiar TODOS los contenedores SearxNG (${allContainers.length} total)`)
-    lines.push(`5. Test de búsqueda`)
+    lines.push("5. Test de búsqueda")
   } else {
-    lines.push(`4. Test de búsqueda`)
+    lines.push("4. Test de búsqueda")
   }
 
-  lines.push(`0. Salir`, ``, `Ingresá el número:`)
+  lines.push("9. Volver", "0. Salir", "", "Ingresá el número:")
   return lines.join("\n")
 }
 
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
-
 export async function openWebSearchMenu(prefixMessage?: string, tone: WebSearchMenuResult["tone"] = "info"): Promise<WebSearchMenuResult> {
-  const menu = await renderMainMenu()
+  const menu = await renderProviderMenu()
   return {
     output: prefixMessage ? `${prefixMessage}\n\n${menu}` : menu,
     nextState: { step: "ws-main", draft: {} },
@@ -306,21 +299,32 @@ export async function openWebSearchMenu(prefixMessage?: string, tone: WebSearchM
   }
 }
 
-// ---------------------------------------------------------------------------
-// Dispatch
-// ---------------------------------------------------------------------------
+async function openSearxngMenu(prefixMessage?: string, tone: WebSearchMenuResult["tone"] = "info"): Promise<WebSearchMenuResult> {
+  const menu = await renderSearxngMenu()
+  return {
+    output: prefixMessage ? `${prefixMessage}\n\n${menu}` : menu,
+    nextState: { step: "ws-searxng-main", draft: {} },
+    tone,
+  }
+}
 
 export async function processWebSearchMenuInput(input: string, state: MenuState): Promise<WebSearchMenuResult> {
   if (!state) return exitMenu("Menu cerrado.")
   const trimmed = input.trim()
+  const normalized = trimmed.toLowerCase()
 
-  if (["salir", "exit", "q", "0", "/websearch"].includes(trimmed.toLowerCase()) && state.step === "ws-main") {
+  if (state.step === "ws-main" && ["salir", "exit", "q", "0", "/websearch"].includes(normalized)) {
+    return exitMenu("Menu cerrado.")
+  }
+  if (state.step === "ws-searxng-main" && ["salir", "exit", "q", "0", "/websearch"].includes(normalized)) {
     return exitMenu("Menu cerrado.")
   }
 
   switch (state.step) {
     case "ws-main":
-      return handleMainMenu(trimmed)
+      return handleProviderMenu(trimmed)
+    case "ws-searxng-main":
+      return handleSearxngMenu(trimmed)
     case "ws-test-query":
       return handleTestQuery(trimmed)
     default:
@@ -328,85 +332,86 @@ export async function processWebSearchMenuInput(input: string, state: MenuState)
   }
 }
 
-// ---------------------------------------------------------------------------
-// Handlers
-// ---------------------------------------------------------------------------
+async function handleProviderMenu(input: string): Promise<WebSearchMenuResult> {
+  switch (input) {
+    case "1":
+      writeWebSearchConfig({ provider: "default" })
+      return openWebSearchMenu("✅ Metodo activo cambiado a Default.", "success")
+    case "2":
+      writeWebSearchConfig({ provider: "curl" })
+      return openWebSearchMenu("✅ Metodo activo cambiado a Curl / WebFetch.", "success")
+    case "3":
+      writeWebSearchConfig({ provider: "searxng" })
+      return openSearxngMenu("✅ Metodo activo cambiado a SearxNG local.", "success")
+    default:
+      return openWebSearchMenu(`❌ Opción "${input}" no válida.`, "error")
+  }
+}
 
-async function handleMainMenu(input: string): Promise<WebSearchMenuResult> {
+async function handleSearxngMenu(input: string): Promise<WebSearchMenuResult> {
   const allContainers = await findAllSearxngContainers()
-  const foreignCount = allContainers.filter(c => !c.isOurs).length
-  // Dynamic option mapping: if foreign containers exist, option 4 = clean all, 5 = test
-  // Otherwise, option 4 = test
+  const foreignCount = allContainers.filter(container => !container.isOurs).length
   const testOption = foreignCount > 0 ? "5" : "4"
   const cleanAllOption = foreignCount > 0 ? "4" : null
 
   switch (input) {
     case "1": {
       const result = await deploySearxng()
-      return openWebSearchMenu(
-        result.ok ? `✅ ${result.message}` : `❌ ${result.message}`,
-        result.ok ? "success" : "error",
-      )
+      return openSearxngMenu(result.ok ? `✅ ${result.message}` : `❌ ${result.message}`, result.ok ? "success" : "error")
     }
     case "2": {
       const result = await stopSearxng()
-      return openWebSearchMenu(
-        result.ok ? `✅ ${result.message}` : `❌ ${result.message}`,
-        result.ok ? "success" : "error",
-      )
+      return openSearxngMenu(result.ok ? `✅ ${result.message}` : `❌ ${result.message}`, result.ok ? "success" : "error")
     }
     case "3": {
       const result = await removeContainer(SEARXNG_CONTAINER)
-      return openWebSearchMenu(
-        result.ok ? `✅ ${result.message}` : `❌ ${result.message}`,
-        result.ok ? "success" : "error",
-      )
+      return openSearxngMenu(result.ok ? `✅ ${result.message}` : `❌ ${result.message}`, result.ok ? "success" : "error")
     }
+    case "9":
+      return openWebSearchMenu()
     default: {
       if (input === cleanAllOption) {
         const result = await removeAllSearxngContainers()
-        return openWebSearchMenu(
-          result.ok
-            ? `✅ ${result.count} contenedores eliminados:\n${result.message}`
-            : `❌ ${result.message}`,
+        return openSearxngMenu(
+          result.ok ? `✅ ${result.count} contenedores eliminados:\n${result.message}` : `❌ ${result.message}`,
           result.ok ? "success" : "error",
         )
       }
       if (input === testOption) {
         return {
           output: "Ingresá un término de búsqueda para probar (o 'cancel' para volver):",
-          nextState: { step: "ws-test-query" as any, draft: {} },
+          nextState: { step: "ws-test-query", draft: { provider: "searxng" } },
           tone: "info",
         }
       }
-      return openWebSearchMenu(`❌ Opción "${input}" no válida.`, "error")
+      return openSearxngMenu(`❌ Opción "${input}" no válida.`, "error")
     }
   }
 }
 
 async function handleTestQuery(input: string): Promise<WebSearchMenuResult> {
   if (["cancel", "cancelar", "0"].includes(input.toLowerCase())) {
-    return openWebSearchMenu()
+    return openSearxngMenu()
   }
 
   const query = encodeURIComponent(input.trim())
   try {
-    const res = await fetch(`${SEARXNG_URL}/search?q=${query}&format=json`, {
+    const response = await fetch(`${SEARXNG_URL}/search?q=${query}&format=json`, {
       signal: AbortSignal.timeout(10_000),
     })
-    if (!res.ok) {
-      return openWebSearchMenu(`❌ SearxNG respondió HTTP ${res.status}. ¿Está corriendo?`, "error")
+    if (!response.ok) {
+      return openSearxngMenu(`❌ SearxNG respondió HTTP ${response.status}. ¿Está corriendo?`, "error")
     }
-    const data = await res.json() as { results?: Array<{ title?: string; url?: string }> }
+    const data = await response.json() as { results?: Array<{ title?: string; url?: string }> }
     const results = (data.results ?? []).slice(0, 5)
     if (results.length === 0) {
-      return openWebSearchMenu(`Búsqueda "${input}" — 0 resultados.`, "info")
+      return openSearxngMenu(`Búsqueda "${input}" — 0 resultados.`, "info")
     }
-    const lines = results.map((r, i) => `  ${i + 1}. ${r.title ?? "(sin título)"}\n     ${r.url ?? ""}`).join("\n")
-    return openWebSearchMenu(`Búsqueda "${input}" — ${results.length} resultados:\n\n${lines}`, "success")
+    const lines = results.map((result, index) => `  ${index + 1}. ${result.title ?? "(sin título)"}\n     ${result.url ?? ""}`).join("\n")
+    return openSearxngMenu(`Búsqueda "${input}" — ${results.length} resultados:\n\n${lines}`, "success")
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    return openWebSearchMenu(`❌ Error: ${msg}. ¿SearxNG está corriendo?`, "error")
+    return openSearxngMenu(`❌ Error: ${msg}. ¿SearxNG está corriendo?`, "error")
   }
 }
 

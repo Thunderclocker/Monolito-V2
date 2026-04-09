@@ -37,6 +37,7 @@ import {
 } from "./modelConfig.ts"
 import { createCostState, recordApiCall, recordToolCall, formatCostSummary } from "../cost/tracker.ts"
 import { readChannelsConfig } from "../channels/config.ts"
+import { readWebSearchConfig } from "../websearch/config.ts"
 import { getDateContext, getGitContext } from "../context/gitContext.ts"
 import { getWorkspaceContext } from "../context/workspaceContext.ts"
 import { AgentOrchestrator } from "./orchestrator.ts"
@@ -371,6 +372,7 @@ export class MonolitoV2Runtime {
           Promise.resolve(getDateContext()),
           Promise.resolve(getWorkspaceContext(this.rootDir, profileId, { isMainSession })),
         ])
+        const webSearchConfig = readWebSearchConfig()
         const turn = await runAssistantTurn(
           session,
           this.rootDir,
@@ -382,7 +384,7 @@ export class MonolitoV2Runtime {
             profileId,
             orchestrator: this.orchestrator,
           },
-          { contextExtras: { gitContext, dateContext, workspaceContext, adultMode: this.adultModeSessions.has(sessionId) }, costState: this.costState, abortSignal: abortController.signal },
+          { contextExtras: { gitContext, dateContext, workspaceContext, adultMode: this.adultModeSessions.has(sessionId), webSearchProvider: webSearchConfig.provider }, costState: this.costState, abortSignal: abortController.signal },
         )
         if (turn.usage) {
           recordApiCall(
