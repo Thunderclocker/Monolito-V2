@@ -1,10 +1,12 @@
 import { createLogger } from "../logging/logger.ts"
-import { readChannelsConfig } from "./config.ts"
-import { createTelegramPoller, type TelegramMessage, type TelegramPoller } from "./telegramPoller.ts"
+import { readChannelsConfig, writeChannelsConfig } from "./config.ts"
+import { readWebSearchConfig, writeWebSearchConfig } from "../websearch/config.ts"
+import { createTelegramPoller, type TelegramCallbackQuery, type TelegramMessage, type TelegramPoller } from "./telegramPoller.ts"
 import type { MonolitoV2Runtime } from "../runtime/runtime.ts"
 
 const logger = createLogger("channels")
 let activePoller: TelegramPoller | null = null
+const pendingTelegramInputs = new Map<number, { kind: "channels-token" | "channels-chats" | "websearch-test" }>()
 
 const TELEGRAM_BOT_COMMANDS = [
   { command: "help", description: "Show available commands" },
@@ -12,10 +14,14 @@ const TELEGRAM_BOT_COMMANDS = [
   { command: "sessions", description: "List active sessions" },
   { command: "history", description: "Show recent session history" },
   { command: "cost", description: "Show token and cost summary" },
+  { command: "compact", description: "Compact current session" },
   { command: "model", description: "Show current model configuration" },
+  { command: "channels", description: "Configure Telegram channel settings" },
+  { command: "config", description: "Show or set configuration" },
   { command: "doctor", description: "Run a quick health check" },
+  { command: "adult", description: "Toggle adult mode" },
   { command: "update", description: "Fetch updates and restart daemon" },
-  { command: "websearch", description: "Show web search mode" },
+  { command: "websearch", description: "Configure web search mode" },
   { command: "new", description: "Start a fresh session" },
 ] as const
 
@@ -37,6 +43,121 @@ async function registerTelegramCommands(token: string) {
   if (!payload.ok) {
     throw new Error(payload.description || "Telegram rejected setMyCommands")
   }
+}
+
+type TelegramInlineButton = { text: string; callback_data: string }
+
+async function telegramApi(token: string, method: string, body: Record<string, unknown>) {
+  const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15000),
+  })
+  const data = await response.json() as { ok: boolean; result?: unknown; description?: string }
+  if (!data.ok) {
+    throw new Error(`Telegram API error: ${data.description ?? response.status}`)
+  }
+  return data.result
+}
+
+async function sendTelegramMenu(
+  token: string,
+  chatId: number,
+  text: string,
+  buttons: TelegramInlineButton[][],
+) {
+  return await telegramApi(token, "sendMessage", {
+    chat_id: chatId,
+    text,
+    reply_markup: { inline_keyboard: buttons },
+  })
+}
+
+async function editTelegramMenu(
+  token: string,
+  chatId: number,
+  messageId: number,
+  text: string,
+  buttons: TelegramInlineButton[][],
+) {
+  return await telegramApi(token, "editMessageText", {
+    chat_id: chatId,
+    message_id: messageId,
+    text,
+    reply_markup: { inline_keyboard: buttons },
+  })
+}
+
+async function answerTelegramCallback(token: string, callbackId: string, text?: string) {
+  await telegramApi(token, "answerCallbackQuery", {
+    callback_query_id: callbackId,
+    ...(text ? { text } : {}),
+  }).catch(() => {})
+}
+
+function parseAllowedChats(raw: string) {
+  const ids = raw.split(",").map(item => item.trim()).filter(Boolean).map(Number)
+  const invalid = ids.filter(item => !Number.isFinite(item) || item === 0)
+  return { ids, invalid }
+}
+
+function buildWebSearchMenuText() {
+  const config = readWebSearchConfig()
+  return [
+    "Web Search",
+    `Modo activo: ${config.provider}`,
+    "",
+    "Elegí el método de búsqueda web.",
+    "Si elegís SearxNG, podés desplegarlo y gestionarlo desde este menú.",
+  ].join("\n")
+}
+
+function buildWebSearchMenuButtons(): TelegramInlineButton[][] {
+  return [
+    [
+      { text: "Default", callback_data: "ws:set:default" },
+      { text: "Curl", callback_data: "ws:set:curl" },
+      { text: "SearxNG", callback_data: "ws:set:searxng" },
+    ],
+    [
+      { text: "Deploy", callback_data: "ws:act:deploy" },
+      { text: "Stop", callback_data: "ws:act:stop" },
+      { text: "Remove", callback_data: "ws:act:remove" },
+    ],
+    [
+      { text: "Clean", callback_data: "ws:act:clean" },
+      { text: "Test", callback_data: "ws:act:test" },
+      { text: "Refresh", callback_data: "ws:show" },
+    ],
+  ]
+}
+
+function buildChannelsMenuText() {
+  const config = readChannelsConfig()
+  const telegram = config.telegram ?? { token: "", enabled: false, allowedChats: [] }
+  return [
+    "Channels / Telegram",
+    `Enabled: ${telegram.enabled ? "yes" : "no"}`,
+    `Token: ${telegram.token ? "configured" : "missing"}`,
+    `Allowed chats: ${telegram.allowedChats.length > 0 ? telegram.allowedChats.join(", ") : "(all chats allowed)"}`,
+    "",
+    "Usá los botones o elegí una opción que espere tu próximo mensaje.",
+  ].join("\n")
+}
+
+function buildChannelsMenuButtons(): TelegramInlineButton[][] {
+  return [
+    [
+      { text: "On/Off", callback_data: "ch:toggle" },
+      { text: "Set Token", callback_data: "ch:token" },
+      { text: "Set Chats", callback_data: "ch:chats" },
+    ],
+    [
+      { text: "Clear Chats", callback_data: "ch:clear" },
+      { text: "Refresh", callback_data: "ch:show" },
+    ],
+  ]
 }
 
 function normalizeTelegramCommand(text: string) {
@@ -101,7 +222,124 @@ function buildTelegramInboundText(msg: TelegramMessage | undefined) {
   return parts.join("\n")
 }
 
-export function startChannels(runtime: MonolitoV2Runtime) {
+async function handleWebSearchCallback(token: string, callback: TelegramCallbackQuery) {
+  const data = (callback.data ?? "").trim()
+  const message = callback.message
+  if (!message) return false
+  const chatId = message.chat.id
+  const messageId = message.message_id
+
+  if (data === "ws:show") {
+    await editTelegramMenu(token, chatId, messageId, buildWebSearchMenuText(), buildWebSearchMenuButtons())
+    return true
+  }
+
+  if (data.startsWith("ws:set:")) {
+    const provider = data.slice("ws:set:".length)
+    if (provider === "default" || provider === "curl" || provider === "searxng") {
+      writeWebSearchConfig({ provider })
+      await editTelegramMenu(
+        token,
+        chatId,
+        messageId,
+        `${buildWebSearchMenuText()}\n\nModo cambiado a: ${provider}`,
+        buildWebSearchMenuButtons(),
+      )
+      return true
+    }
+  }
+
+  if (data === "ws:act:test") {
+    pendingTelegramInputs.set(chatId, { kind: "websearch-test" })
+    await editTelegramMenu(
+      token,
+      chatId,
+      messageId,
+      `${buildWebSearchMenuText()}\n\nMandá tu próximo mensaje con la query a probar en SearxNG.`,
+      buildWebSearchMenuButtons(),
+    )
+    return true
+  }
+
+  const command =
+    data === "ws:act:deploy" ? "/websearch searxng deploy" :
+    data === "ws:act:stop" ? "/websearch searxng stop" :
+    data === "ws:act:remove" ? "/websearch searxng remove" :
+    data === "ws:act:clean" ? "/websearch searxng clean" :
+    null
+
+  if (!command) return false
+  return command
+}
+
+async function handleChannelsCallback(token: string, callback: TelegramCallbackQuery) {
+  const data = (callback.data ?? "").trim()
+  const message = callback.message
+  if (!message) return false
+  const chatId = message.chat.id
+  const messageId = message.message_id
+  const config = readChannelsConfig()
+  const telegram = config.telegram ?? { token: "", enabled: false, allowedChats: [] }
+
+  if (data === "ch:show") {
+    await editTelegramMenu(token, chatId, messageId, buildChannelsMenuText(), buildChannelsMenuButtons())
+    return true
+  }
+
+  if (data === "ch:toggle") {
+    config.telegram = { ...telegram, enabled: !telegram.enabled }
+    writeChannelsConfig(config)
+    await editTelegramMenu(
+      token,
+      chatId,
+      messageId,
+      `${buildChannelsMenuText()}\n\nTelegram ${config.telegram.enabled ? "habilitado" : "deshabilitado"}.`,
+      buildChannelsMenuButtons(),
+    )
+    return "RESTART"
+  }
+
+  if (data === "ch:clear") {
+    config.telegram = { ...telegram, allowedChats: [] }
+    writeChannelsConfig(config)
+    await editTelegramMenu(
+      token,
+      chatId,
+      messageId,
+      `${buildChannelsMenuText()}\n\nLista de chats autorizados limpiada.`,
+      buildChannelsMenuButtons(),
+    )
+    return "RESTART"
+  }
+
+  if (data === "ch:token") {
+    pendingTelegramInputs.set(chatId, { kind: "channels-token" })
+    await editTelegramMenu(
+      token,
+      chatId,
+      messageId,
+      `${buildChannelsMenuText()}\n\nMandá tu próximo mensaje con el token de Telegram.`,
+      buildChannelsMenuButtons(),
+    )
+    return true
+  }
+
+  if (data === "ch:chats") {
+    pendingTelegramInputs.set(chatId, { kind: "channels-chats" })
+    await editTelegramMenu(
+      token,
+      chatId,
+      messageId,
+      `${buildChannelsMenuText()}\n\nMandá tu próximo mensaje con los chat IDs separados por coma.`,
+      buildChannelsMenuButtons(),
+    )
+    return true
+  }
+
+  return false
+}
+
+export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartRequested?: () => void }) {
   const config = readChannelsConfig()
   process.stderr.write(`[ChannelManager] startChannels called. Telegram enabled: ${!!config.telegram?.enabled}\n`)
 
@@ -118,6 +356,44 @@ export function startChannels(runtime: MonolitoV2Runtime) {
     
     activePoller = createTelegramPoller(config.telegram.token, {
       onUpdate: async (update) => {
+        if (update.callback_query) {
+          const callback = update.callback_query
+          const callbackMessage = callback.message
+          const chatId = callbackMessage?.chat.id ?? callback.from.id
+          if (config.telegram?.allowedChats && config.telegram.allowedChats.length > 0) {
+            if (!config.telegram.allowedChats.includes(chatId)) {
+              logger.warn(`Callback de Telegram bloqueado (chat no autorizado): ${chatId}`)
+              return
+            }
+          }
+
+          await answerTelegramCallback(config.telegram.token, callback.id)
+
+          try {
+            const websearchResult = await handleWebSearchCallback(config.telegram.token, callback)
+            if (websearchResult) {
+              if (typeof websearchResult === "string") {
+                const sessionId = `telegram-${chatId}`
+                runtime.ensureSession(sessionId, `Telegram ${chatId}`)
+                await runtime.processMessage(sessionId, websearchResult)
+              }
+              return
+            }
+
+            const channelResult = await handleChannelsCallback(config.telegram.token, callback)
+            if (channelResult) {
+              if (channelResult === "RESTART") {
+                options?.onRestartRequested?.()
+              }
+              return
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            logger.error(`Error procesando callback de Telegram en chat ${chatId}: ${message}`)
+          }
+          return
+        }
+
         const msg = update.message || update.channel_post
         if (!msg) return
         if (msg.from?.is_bot) {
@@ -136,6 +412,69 @@ export function startChannels(runtime: MonolitoV2Runtime) {
         }
         
         const sessionId = `telegram-${chatId}`
+        const normalized = normalizeTelegramCommand(msg.text?.trim() || msg.caption?.trim() || "")
+
+        const pending = pendingTelegramInputs.get(chatId)
+        if (pending) {
+          pendingTelegramInputs.delete(chatId)
+          try {
+            if (pending.kind === "channels-token") {
+              const token = (msg.text ?? msg.caption ?? "").trim()
+              if (!token) {
+                await sendTelegramMenu(config.telegram.token, chatId, "Token vacío. Probá /channels de nuevo.", buildChannelsMenuButtons())
+                return
+              }
+              const nextConfig = readChannelsConfig()
+              const telegram = nextConfig.telegram ?? { token: "", enabled: false, allowedChats: [] }
+              nextConfig.telegram = { ...telegram, token, enabled: true }
+              writeChannelsConfig(nextConfig)
+              await sendTelegramMenu(config.telegram.token, chatId, "Token guardado correctamente.", buildChannelsMenuButtons())
+              options?.onRestartRequested?.()
+              return
+            }
+            if (pending.kind === "channels-chats") {
+              const raw = (msg.text ?? msg.caption ?? "").trim()
+              const { ids, invalid } = parseAllowedChats(raw)
+              if (invalid.length > 0) {
+                await sendTelegramMenu(config.telegram.token, chatId, `IDs inválidos: ${invalid.join(", ")}`, buildChannelsMenuButtons())
+                return
+              }
+              const nextConfig = readChannelsConfig()
+              const telegram = nextConfig.telegram ?? { token: "", enabled: false, allowedChats: [] }
+              nextConfig.telegram = { ...telegram, allowedChats: ids }
+              writeChannelsConfig(nextConfig)
+              await sendTelegramMenu(config.telegram.token, chatId, `Chats autorizados guardados: ${ids.join(", ")}`, buildChannelsMenuButtons())
+              options?.onRestartRequested?.()
+              return
+            }
+            if (pending.kind === "websearch-test") {
+              const query = (msg.text ?? msg.caption ?? "").trim()
+              if (!query) {
+                await sendTelegramMenu(config.telegram.token, chatId, "Query vacía. Probá /websearch de nuevo.", buildWebSearchMenuButtons())
+                return
+              }
+              const sessionId = `telegram-${chatId}`
+              runtime.ensureSession(sessionId, `Telegram ${chatId}`)
+              await runtime.processMessage(sessionId, `/websearch searxng test ${query}`)
+              return
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            logger.error(`Error procesando input pendiente de Telegram en chat ${chatId}: ${message}`)
+            return
+          }
+        }
+
+        if (normalized === "/websearch") {
+          await sendTelegramMenu(config.telegram.token, chatId, buildWebSearchMenuText(), buildWebSearchMenuButtons())
+          return
+        }
+
+        if (normalized === "/channels") {
+          await sendTelegramMenu(config.telegram.token, chatId, buildChannelsMenuText(), buildChannelsMenuButtons())
+          return
+        }
+
         const inboundText = buildTelegramInboundText(msg)
         if (!inboundText) return
         

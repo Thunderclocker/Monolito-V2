@@ -62,7 +62,7 @@ export class MonolitoV2Daemon {
       })
       this.writeDaemonLog(`monolitod-v2 listening on tcp ${paths.tcpHost}:${paths.tcpPort}`)
     }
-    startChannels(this.runtime)
+    startChannels(this.runtime, { onRestartRequested: () => this.scheduleSelfRestart() })
     return this.server
   }
 
