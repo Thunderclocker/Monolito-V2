@@ -1145,6 +1145,92 @@ const tools: ToolDefinition[] = [
       return { ok: true, id: newId, status: "profile_created" }
     },
   },
+  // --- ImageSearch via SearxNG Docker ---
+  {
+    name: "ImageSearch",
+    description: "Search for images on the internet via SearxNG. Auto-deploys SearxNG Docker container if not running (localhost only). Returns image URLs.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search query for images. Be direct and specific." },
+        limit: { type: "number", description: "Max number of image URLs to return (default 5)." },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    async run(input) {
+      const query = requireString(input, "query")
+      const limit = optionalNumber(input, "limit") ?? 5
+      const SEARXNG_PORT = 18890
+      const SEARXNG_URL = `http://127.0.0.1:${SEARXNG_PORT}`
+      const CONTAINER_NAME = "monolito-searxng"
+
+      // 1. Check if SearxNG is reachable
+      let alive = false
+      try {
+        const probe = await fetch(`${SEARXNG_URL}/healthz`, { signal: AbortSignal.timeout(3000) })
+        alive = probe.ok
+      } catch {}
+
+      // 2. If not alive, ensure Docker container is running
+      if (!alive) {
+        // Check if container exists but stopped
+        try {
+          const { stdout: psOut } = await execFileAsync("docker", ["ps", "-a", "--filter", `name=${CONTAINER_NAME}`, "--format", "{{.Status}}"], { timeout: 10_000 })
+          const status = psOut.trim()
+          if (status && !status.startsWith("Up")) {
+            // Container exists but not running — start it
+            await execFileAsync("docker", ["start", CONTAINER_NAME], { timeout: 15_000 })
+          } else if (!status) {
+            // Container doesn't exist — create and run
+            await execFileAsync("docker", [
+              "run", "-d",
+              "--name", CONTAINER_NAME,
+              "-p", `127.0.0.1:${SEARXNG_PORT}:8080`,
+              "--restart", "unless-stopped",
+              "searxng/searxng:latest",
+            ], { timeout: 60_000 })
+          }
+        } catch (dockerErr) {
+          const msg = dockerErr instanceof Error ? dockerErr.message : String(dockerErr)
+          return { ok: false, error: `Failed to start SearxNG container: ${msg}` }
+        }
+
+        // Wait for SearxNG to become ready (up to 20s)
+        for (let i = 0; i < 20; i++) {
+          await new Promise(r => setTimeout(r, 1000))
+          try {
+            const probe = await fetch(`${SEARXNG_URL}/healthz`, { signal: AbortSignal.timeout(2000) })
+            if (probe.ok) { alive = true; break }
+          } catch {}
+        }
+        if (!alive) {
+          return { ok: false, error: "SearxNG container started but did not become healthy within 20s." }
+        }
+      }
+
+      // 3. Search
+      const encoded = encodeURIComponent(query)
+      const searchUrl = `${SEARXNG_URL}/search?q=${encoded}&categories=images&format=json`
+      try {
+        const res = await fetch(searchUrl, { signal: AbortSignal.timeout(15_000) })
+        if (!res.ok) {
+          return { ok: false, error: `SearxNG returned HTTP ${res.status}` }
+        }
+        const data = await res.json() as { results?: Array<{ img_src?: string; title?: string; source?: string; thumbnail_src?: string }> }
+        const results = (data.results ?? [])
+          .filter(r => r.img_src)
+          .slice(0, limit)
+          .map(r => ({ url: r.img_src, title: r.title, source: r.source, thumbnail: r.thumbnail_src }))
+
+        return { ok: true, query, count: results.length, results }
+      } catch (searchErr) {
+        const msg = searchErr instanceof Error ? searchErr.message : String(searchErr)
+        return { ok: false, error: `Search failed: ${msg}` }
+      }
+    },
+  },
 ]
 
 export function listTools() {
