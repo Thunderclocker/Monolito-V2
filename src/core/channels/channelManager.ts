@@ -21,6 +21,7 @@ const TELEGRAM_BOT_COMMANDS = [
   { command: "doctor", description: "Run a quick health check" },
   { command: "adult", description: "Toggle adult mode" },
   { command: "update", description: "Fetch updates and restart daemon" },
+  { command: "tts", description: "Manage local TTS service" },
   { command: "websearch", description: "Configure web search mode" },
   { command: "new", description: "Start a fresh session" },
 ] as const

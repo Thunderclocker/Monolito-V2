@@ -2,6 +2,8 @@
 
 Local orchestration runtime with daemon mode, terminal UI, persistent sessions, SQLite memory, multi-agent delegation, tool harness execution, slash commands, channel integration, and basic MCP support.
 
+Further documentation lives in [`docs/`](./docs/README.md).
+
 ## Core capabilities
 
 - Daemon + CLI client with resumable local sessions
@@ -10,8 +12,10 @@ Local orchestration runtime with daemon mode, terminal UI, persistent sessions, 
 - First-run bootstrap ritual that asks for agent identity and user profile, then persists the result into core files
 - Multi-agent orchestration with worker spawning, follow-up messaging, and stop controls
 - Tool harness for shell execution, web fetches, workspace file access, memory filing/recall, MCP calls, Telegram send, and task tracking
+- OpenAI-compatible text-to-speech generation into local audio files, with Telegram audio/voice delivery tools
 - Slash-command interface for runtime inspection and control
 - Channel ingestion and reply flow for Telegram chats
+- Web search mode switching with a menu-driven SearxNG local backend for web and image search
 - Persisted model/profile settings, permission rules, and post-tool hooks
 - MCP bridge for listing tools/resources, reading resources, and calling remote MCP tools
 - Agnostic model backend selection across Anthropic-compatible endpoints, OpenAI-compatible endpoints, and local Ollama instances
@@ -24,6 +28,16 @@ Local orchestration runtime with daemon mode, terminal UI, persistent sessions, 
 - `SHARED` wings are visible across profiles; other wings stay private to the current profile.
 - Recall supports structural filters (`wing`, `room`, `key`) and semantic lookup with embeddings.
 - Session history can also be compacted while keeping continuity markers.
+
+### Background Memory Agent
+
+- Monolito runs a background `Memory Agent` that reviews recent conversation and proposes memory updates without interrupting the main reply flow.
+- It can write to `USER.md` for stable personal preferences, `MEMORY.md` for durable relational context, and the SQLite Memory Palace for useful but less canonical context.
+- The agent is intentionally stricter for `USER.md` and `MEMORY.md` than for Memory Palace entries.
+- It is triggered after normal turns, before `/compact`, and before session resets such as `/new`.
+- Actions and failures are logged to `.monolito-v2/logs/memory-agent.log`.
+- Memory Agent updates are also summarized into the session worklog when something is applied.
+- See `docs/memory-agent.md` for routing and behavior details.
 
 ## Multi-agent model
 
@@ -46,6 +60,33 @@ Local orchestration runtime with daemon mode, terminal UI, persistent sessions, 
 - Incoming Telegram messages are mapped to dedicated `telegram-<chatId>` sessions.
 - The runtime can mirror replies, typing indicators, and agent updates back to the originating chat.
 - Allowed chat IDs can be restricted from the channel configuration menu.
+- Telegram slash commands can open inline menus for configuration-oriented actions such as `/channels` and `/websearch`.
+
+## Web search
+
+- `/websearch` opens an interactive menu in the local CLI and a button-based menu in Telegram.
+- The available modes are `default` and `searxng`.
+- Selecting `searxng` prepares and starts a local Docker container bound to `127.0.0.1:8888`.
+- Monolito also prepares a persisted `settings.yml` so the SearxNG JSON API is enabled, which is required by `ImageSearch`.
+- The menu can list detected SearxNG containers, stop the managed container, remove it, clean conflicting containers, and run a test query.
+- `ImageSearch` uses the same managed SearxNG backend as `/websearch`.
+- Web search mode is stored in `~/.monolito-v2/websearch.json`.
+- SearxNG settings are stored in `~/.monolito-v2/searxng/settings.yml`.
+
+## Interactive menus
+
+- `/model` opens the interactive model selection and configuration flow.
+- `/channels` opens Telegram channel configuration in the CLI and an inline menu in Telegram.
+- `/websearch` opens web search configuration in the CLI and an inline menu in Telegram.
+- Menu-driven commands are intended as the main user-facing interface for operational configuration.
+
+## Configuration scope
+
+- Model settings are global to the runtime.
+- Channel and Telegram settings are global to the runtime.
+- Web search mode is global to the runtime.
+- Adult mode is session-scoped and can differ between conversations.
+- Telegram chats map to stable `telegram-<chatId>` sessions, so each chat keeps its own session history and state.
 
 ## Slash commands
 
@@ -67,10 +108,15 @@ Local orchestration runtime with daemon mode, terminal UI, persistent sessions, 
 - `/stats`
 - `/doctor`
 - `/update`
+- `/channels`
+- `/tts`
 - `/config [show|set <field> <value>]`
+- `/websearch`
 - `/new`
 
 `/update` fetches from `origin`, applies a fast-forward pull on the current branch, and restarts the daemon automatically. If the working tree has local changes, Monolito backs them up to a git stash automatically before updating.
+
+Operationally, `/update` is meant to be a one-step refresh path for the running daemon rather than a manual multi-step deploy sequence.
 
 ## Installation
 
@@ -122,7 +168,11 @@ monolito -p '/mcp resources demo'
 - Settings: `~/.monolito-v2/settings.json`
 - Model profiles: `~/.monolito-v2/models.json`
 - Channel config: `~/.monolito-v2/channels.json`
+- Web search config: `~/.monolito-v2/websearch.json`
+- SearxNG settings: `~/.monolito-v2/searxng/settings.yml`
 - Session data: `.monolito-v2/` relative to the project root (created on first daemon start)
 - Local memory database: `.monolito-v2/memory/memory.sqlite`
+- Daemon log: `.monolito-v2/logs/monolitod-v2.log`
+- Memory Agent log: `.monolito-v2/logs/memory-agent.log`
 - Profile workspaces: `.monolito-v2/profiles/<profile-id>/workspace/`
 - Legacy v1 settings fallback: `~/.monolito/settings.json`

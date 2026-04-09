@@ -45,6 +45,15 @@ import { AgentOrchestrator } from "./orchestrator.ts"
 import { renderToolFinish, renderToolStart, renderToolStartText } from "../renderer/toolRenderer.ts"
 import { checkToolPermission, runPostToolHooks } from "./permissions.ts"
 import { runMemoryAgentReview } from "./memoryAgent.ts"
+import {
+  deployManagedTtsContainer,
+  getManagedTtsBaseUrl,
+  getManagedTtsStatus,
+  listManagedTtsContainers,
+  normalizeTtsConfig,
+  removeManagedTtsContainer,
+  stopManagedTtsContainer,
+} from "../tts/managed.ts"
 
 type EventListener = (event: AgentEvent) => void
 
@@ -775,7 +784,8 @@ export class MonolitoV2Runtime {
           "/doctor",
           "/update",
           "/channels [show|on|off|token <token>|chats <id,id,...>|clear]",
-          "/config [show|set <field> <value>]",
+          "/config [show|set <base_url|api_key|model|tts_base_url|tts_api_key|tts_voice|tts_model|tts_format|tts_speed|tts_managed|tts_auto_deploy|tts_port> <value>]",
+          "/tts [show|on|off|deploy|stop|remove|list|status]",
           "/adult — Toggle adult content mode",
           "/websearch — Open web search menu",
           "/new — Reset session and restart agent",
@@ -831,6 +841,9 @@ export class MonolitoV2Runtime {
       }
       case "/channels": {
         return this.runChannelsCommand(rest)
+      }
+      case "/tts": {
+        return this.runTtsCommand(rest)
       }
       case "/websearch": {
         return this.runWebSearchCommand(rest)
@@ -1113,6 +1126,61 @@ export class MonolitoV2Runtime {
     return "Usage: /channels [show|on|off|token <token>|chats <id,id,...>|clear]"
   }
 
+  private async runTtsCommand(rest: string[]) {
+    const config = readChannelsConfig()
+    const action = (rest[0] ?? "show").trim().toLowerCase()
+    const tts = normalizeTtsConfig(config.tts)
+
+    if (action === "show" || action === "status" || !action) {
+      const status = await getManagedTtsStatus(tts)
+      return [
+        `TTS managed: ${tts.managed ? "yes" : "no"}`,
+        `TTS auto deploy: ${tts.autoDeploy ? "yes" : "no"}`,
+        `TTS status: ${status}`,
+        `TTS URL: ${tts.managed ? getManagedTtsBaseUrl(tts) : (tts.baseUrl || "(not configured)")}`,
+        `TTS voice: ${tts.voice}`,
+        `TTS format: ${tts.responseFormat}`,
+      ].join("\n")
+    }
+
+    if (action === "on" || action === "enable") {
+      config.tts = { ...(config.tts ?? {}), managed: true, autoDeploy: true }
+      writeChannelsConfig(config)
+      const next = normalizeTtsConfig(config.tts)
+      return `TTS administrado habilitado. URL administrada: ${getManagedTtsBaseUrl(next)}`
+    }
+
+    if (action === "off" || action === "disable") {
+      config.tts = { ...(config.tts ?? {}), managed: false }
+      writeChannelsConfig(config)
+      return "TTS administrado deshabilitado."
+    }
+
+    if (action === "deploy" || action === "start") {
+      config.tts = { ...(config.tts ?? {}), managed: true }
+      writeChannelsConfig(config)
+      const next = normalizeTtsConfig(config.tts)
+      const result = await deployManagedTtsContainer(next)
+      return result.ok ? result.message : `Error: ${result.message}`
+    }
+
+    if (action === "stop") {
+      const result = await stopManagedTtsContainer(tts)
+      return result.ok ? result.message : `Error: ${result.message}`
+    }
+
+    if (action === "remove" || action === "rm") {
+      const result = await removeManagedTtsContainer(tts)
+      return result.ok ? result.message : `Error: ${result.message}`
+    }
+
+    if (action === "list" || action === "ls") {
+      return await listManagedTtsContainers(tts)
+    }
+
+    return "Usage: /tts [show|on|off|deploy|stop|remove|list|status]"
+  }
+
   private async runWebSearchCommand(rest: string[]) {
     const config = readWebSearchConfig()
     const action = (rest[0] ?? "show").trim().toLowerCase()
@@ -1246,8 +1314,23 @@ export class MonolitoV2Runtime {
   private async runConfig(rest: string[]): Promise<string> {
     const action = rest[0]
     const settings = readModelSettings()
+    const channels = readChannelsConfig()
     if (!action || action === "show") {
-      return JSON.stringify(redactSensitiveModelSettings(settings), null, 2)
+      const tts = channels.tts ?? {}
+      return JSON.stringify({
+        ...redactSensitiveModelSettings(settings),
+        tts: {
+          baseUrl: typeof tts.baseUrl === "string" ? tts.baseUrl : "",
+          apiKey: typeof tts.apiKey === "string" ? maskApiKey(tts.apiKey) : "Not set",
+          voice: typeof tts.voice === "string" ? tts.voice : "",
+          model: typeof tts.model === "string" ? tts.model : "",
+          responseFormat: typeof tts.responseFormat === "string" ? tts.responseFormat : "",
+          speed: typeof tts.speed === "number" ? tts.speed : "",
+          managed: typeof tts.managed === "boolean" ? tts.managed : "",
+          autoDeploy: typeof tts.autoDeploy === "boolean" ? tts.autoDeploy : "",
+          port: typeof tts.port === "number" ? tts.port : "",
+        },
+      }, null, 2)
     }
     if (action === "set") {
       const field = rest[1]
@@ -1257,7 +1340,49 @@ export class MonolitoV2Runtime {
       if (field === "base_url") draft.baseUrl = value
       else if (field === "api_key") draft.apiKey = value
       else if (field === "model") draft.model = value
-      else return `Unknown field: ${field}`
+      else if (field === "tts_base_url" || field === "tts_api_key" || field === "tts_voice" || field === "tts_model" || field === "tts_format" || field === "tts_speed" || field === "tts_managed" || field === "tts_auto_deploy" || field === "tts_port") {
+        const nextChannels = { ...channels, tts: { ...(channels.tts ?? {}) } }
+        if (field === "tts_base_url") nextChannels.tts.baseUrl = value
+        if (field === "tts_api_key") nextChannels.tts.apiKey = value
+        if (field === "tts_voice") nextChannels.tts.voice = value
+        if (field === "tts_model") nextChannels.tts.model = value
+        if (field === "tts_managed") {
+          if (!["true", "false", "on", "off", "yes", "no", "1", "0"].includes(value.toLowerCase())) {
+            return "Invalid: tts_managed must be true or false"
+          }
+          nextChannels.tts.managed = ["true", "on", "yes", "1"].includes(value.toLowerCase())
+        }
+        if (field === "tts_auto_deploy") {
+          if (!["true", "false", "on", "off", "yes", "no", "1", "0"].includes(value.toLowerCase())) {
+            return "Invalid: tts_auto_deploy must be true or false"
+          }
+          nextChannels.tts.autoDeploy = ["true", "on", "yes", "1"].includes(value.toLowerCase())
+        }
+        if (field === "tts_format") {
+          if (!["mp3", "opus", "aac", "flac", "wav", "pcm"].includes(value)) {
+            return "Invalid: tts_format must be one of mp3, opus, aac, flac, wav, pcm"
+          }
+          nextChannels.tts.responseFormat = value as "mp3" | "opus" | "aac" | "flac" | "wav" | "pcm"
+        }
+        if (field === "tts_speed") {
+          const parsed = Number(value)
+          if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 4) {
+            return "Invalid: tts_speed must be a number between 0 and 4"
+          }
+          nextChannels.tts.speed = parsed
+        }
+        if (field === "tts_port") {
+          const parsed = Number(value)
+          if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 65535) {
+            return "Invalid: tts_port must be a number between 1 and 65535"
+          }
+          nextChannels.tts.port = Math.trunc(parsed)
+        }
+        writeChannelsConfig(nextChannels)
+        return `Saved ${field} = ${field === "tts_api_key" ? maskApiKey(value) : value}`
+      } else {
+        return `Unknown field: ${field}`
+      }
       const errors = validateModelDraft(draft, process.env)
       if (errors.length > 0) return `Invalid: ${errors[0]}`
       const next = draftToSettings(draft, { env: process.env })

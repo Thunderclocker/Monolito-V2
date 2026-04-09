@@ -9,11 +9,23 @@ import { type StdioMcpClient, getDefaultMcpServers } from "../mcp/client.ts"
 import { readChannelsConfig } from "../channels/config.ts"
 import { fileMemory, recallMemory, listWings, listRooms, listProfiles, createProfile } from "../session/store.ts"
 import { type AgentOrchestrator } from "../runtime/orchestrator.ts"
+import {
+  deployManagedTtsContainer,
+  getManagedTtsBaseUrl,
+  getManagedTtsStatus,
+  listManagedTtsContainers,
+  normalizeTtsConfig,
+  removeManagedTtsContainer,
+  stopManagedTtsContainer,
+} from "../tts/managed.ts"
 
 const execFileAsync = promisify(execFile)
 const DEFAULT_GREP_LIMIT = 250
 const DEFAULT_BASH_TIMEOUT_MS = 120_000
 const MAX_EXEC_BUFFER = 4 * 1024 * 1024
+const TELEGRAM_AUDIO_FORMATS = new Set(["mp3", "m4a", "aac"])
+const TELEGRAM_VOICE_FORMATS = new Set(["ogg", "opus"])
+const TTS_RESPONSE_FORMATS = new Set(["mp3", "opus", "aac", "flac", "wav", "pcm"])
 
 export type ToolContext = {
   rootDir: string
@@ -94,6 +106,16 @@ function optionalNumber(input: Record<string, unknown>, key: string) {
 function optionalBoolean(input: Record<string, unknown>, key: string) {
   const value = input[key]
   return typeof value === "boolean" ? value : undefined
+}
+
+function inferExtensionFromFormat(format: string) {
+  if (format === "opus") return "ogg"
+  return format
+}
+
+function sanitizeFilenameSegment(value: string) {
+  const normalized = value.trim().replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/-+/g, "-")
+  return normalized.replace(/^-+|-+$/g, "") || "speech"
 }
 
 async function telegramApiCall(token: string, method: string, params: Record<string, unknown>) {
@@ -694,6 +716,169 @@ const tools: ToolDefinition[] = [
     },
   },
   {
+    name: "TtsServiceStatus",
+    aliases: ["tts_service_status"],
+    description: "Show the status of the managed local TTS service container.",
+    inputSchema: emptyInputSchema,
+    concurrencySafe: true,
+    async run() {
+      const config = readChannelsConfig()
+      const tts = normalizeTtsConfig(config.tts)
+      const status = await getManagedTtsStatus(tts)
+      return {
+        managed: tts.managed,
+        auto_deploy: tts.autoDeploy,
+        status,
+        base_url: getManagedTtsBaseUrl(tts),
+        container_name: tts.containerName,
+        image: tts.image,
+        port: tts.port,
+      }
+    },
+  },
+  {
+    name: "TtsServiceDeploy",
+    aliases: ["tts_service_deploy"],
+    description: "Deploy or restart the managed local TTS service container using Docker.",
+    inputSchema: emptyInputSchema,
+    concurrencySafe: false,
+    async run() {
+      const config = readChannelsConfig()
+      const tts = normalizeTtsConfig(config.tts)
+      return await deployManagedTtsContainer(tts)
+    },
+  },
+  {
+    name: "TtsServiceStop",
+    aliases: ["tts_service_stop"],
+    description: "Stop the managed local TTS service container without deleting it.",
+    inputSchema: emptyInputSchema,
+    concurrencySafe: false,
+    async run() {
+      const config = readChannelsConfig()
+      const tts = normalizeTtsConfig(config.tts)
+      return await stopManagedTtsContainer(tts)
+    },
+  },
+  {
+    name: "TtsServiceRemove",
+    aliases: ["tts_service_remove"],
+    description: "Remove the managed local TTS service container.",
+    inputSchema: emptyInputSchema,
+    concurrencySafe: false,
+    async run() {
+      const config = readChannelsConfig()
+      const tts = normalizeTtsConfig(config.tts)
+      return await removeManagedTtsContainer(tts)
+    },
+  },
+  {
+    name: "TtsServiceList",
+    aliases: ["tts_service_list"],
+    description: "List detected local TTS service containers related to the managed image or container name.",
+    inputSchema: emptyInputSchema,
+    concurrencySafe: true,
+    async run() {
+      const config = readChannelsConfig()
+      const tts = normalizeTtsConfig(config.tts)
+      return { message: await listManagedTtsContainers(tts) }
+    },
+  },
+  {
+    name: "GenerateSpeech",
+    aliases: ["generate_speech", "tts_generate"],
+    description: "Generate a speech audio file with the configured OpenAI-compatible TTS backend and save it to Monolito scratchpad storage.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "The text to synthesize into speech." },
+        base_url: { type: "string", description: "Optional TTS base URL override. The tool will call <base_url>/v1/audio/speech." },
+        api_key: { type: "string", description: "Optional TTS API key override." },
+        voice: { type: "string", description: "Optional voice override, for example es-AR-ElenaNeural." },
+        model: { type: "string", description: "Optional TTS model override, for example tts-1." },
+        response_format: { type: "string", enum: ["mp3", "opus", "aac", "flac", "wav", "pcm"], description: "Optional audio format override." },
+        speed: { type: "number", description: "Optional playback speed override. Typical range 0.25 to 4.0." },
+        filename: { type: "string", description: "Optional filename without directory. Saved under Monolito scratchpad." },
+      },
+      required: ["text"],
+      additionalProperties: false,
+    },
+    concurrencySafe: false,
+    validate: input => {
+      if (typeof input.text !== "string" || input.text.trim().length === 0) return "text must be a non-empty string"
+      const speed = optionalNumber(input, "speed")
+      if (speed !== undefined && (speed <= 0 || speed > 4)) return "speed must be between 0 and 4"
+      const format = optionalString(input, "response_format")
+      if (format && !TTS_RESPONSE_FORMATS.has(format)) return "response_format must be one of: mp3, opus, aac, flac, wav, pcm"
+      return null
+    },
+    async run(input, context) {
+      const text = requireString(input, "text")
+      const config = readChannelsConfig()
+      const tts = normalizeTtsConfig(config.tts)
+      let baseUrl = (optionalString(input, "base_url") ?? tts.baseUrl).replace(/\/+$/g, "")
+      if (tts.managed) {
+        baseUrl = getManagedTtsBaseUrl(tts)
+        if (tts.autoDeploy) {
+          const deploy = await deployManagedTtsContainer(tts)
+          if (!deploy.ok) throw new Error(deploy.message)
+        }
+      }
+      if (!baseUrl) {
+        throw new Error("TTS base URL is not configured. Use /config set tts_base_url <value> or enable managed TTS.")
+      }
+
+      const voice = optionalString(input, "voice") ?? tts.voice
+      const model = optionalString(input, "model") ?? tts.model
+      const responseFormat = optionalString(input, "response_format") ?? tts.responseFormat
+      const speed = optionalNumber(input, "speed") ?? tts.speed
+      const apiKey = optionalString(input, "api_key") ?? tts.apiKey
+      const paths = ensureDirs(context.rootDir, context.profileId)
+      const speechDir = join(paths.scratchpadDir, "tts")
+      mkdirSync(speechDir, { recursive: true })
+
+      const extension = inferExtensionFromFormat(responseFormat)
+      const requestedFilename = optionalString(input, "filename")
+      const filename = requestedFilename
+        ? sanitizeFilenameSegment(requestedFilename.replace(/\.[^.]+$/, ""))
+        : `${sanitizeFilenameSegment(voice)}-${randomUUID().slice(0, 8)}`
+      const localPath = join(speechDir, `${filename}.${extension}`)
+
+      const headers: Record<string, string> = { "Content-Type": "application/json" }
+      if (apiKey) headers.Authorization = `Bearer ${apiKey}`
+      const response = await fetch(`${baseUrl}/v1/audio/speech`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model,
+          input: text,
+          voice,
+          response_format: responseFormat,
+          speed,
+        }),
+        signal: AbortSignal.timeout(60_000),
+      })
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => "")
+        throw new Error(`TTS request failed: HTTP ${response.status}${body ? ` - ${body.slice(0, 400)}` : ""}`)
+      }
+
+      const buffer = Buffer.from(await response.arrayBuffer())
+      writeFileSync(localPath, buffer)
+
+      return {
+        ok: true,
+        local_path: localPath,
+        bytes: buffer.length,
+        voice,
+        model,
+        response_format: responseFormat,
+        speed,
+      }
+    },
+  },
+  {
     name: "TelegramSend",
     aliases: ["telegram_send"],
     description: "Send a message to a Telegram chat. Requires Telegram to be configured and enabled via /channels.",
@@ -733,6 +918,92 @@ const tools: ToolDefinition[] = [
       if (!data.ok) {
         throw new Error(`Telegram API error: ${data.description ?? response.status}`)
       }
+      return { ok: true, chat_id: chatId, message: data.result }
+    },
+  },
+  {
+    name: "TelegramSendAudio",
+    aliases: ["telegram_send_audio"],
+    description: "Send an audio file to a Telegram chat. Accepts a Telegram file_id, an HTTP URL, or a local file path. Local files should usually be mp3, m4a, or aac.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        chat_id: { type: "number", description: "The Telegram chat ID to send the audio to." },
+        audio: { type: "string", description: "Telegram file_id, HTTP URL, or local file path." },
+        caption: { type: "string", description: "Optional caption for the audio." },
+        title: { type: "string", description: "Optional title shown by Telegram." },
+        performer: { type: "string", description: "Optional performer shown by Telegram." },
+      },
+      required: ["chat_id", "audio"],
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    validate: input => {
+      if (typeof input.chat_id !== "number") return "chat_id must be a number"
+      if (typeof input.audio !== "string" || input.audio.length === 0) return "audio must be a non-empty string"
+      if (isLocalPath(input.audio) && !TELEGRAM_AUDIO_FORMATS.has((input.audio.split(".").pop() ?? "").toLowerCase())) {
+        return "local audio files should use mp3, m4a, or aac"
+      }
+      return null
+    },
+    async run(input) {
+      const chatId = input.chat_id as number
+      const audio = requireString(input, "audio")
+      const caption = optionalString(input, "caption")
+      const title = optionalString(input, "title")
+      const performer = optionalString(input, "performer")
+      const config = readChannelsConfig()
+      if (!config.telegram?.enabled || !config.telegram.token) {
+        throw new Error("Telegram is not configured or not enabled. Use /channels to set it up.")
+      }
+      const params: Record<string, unknown> = { chat_id: chatId, audio }
+      if (caption) params.caption = caption
+      if (title) params.title = title
+      if (performer) params.performer = performer
+      const data = isLocalPath(audio)
+        ? await telegramApiCallWithFile(config.telegram.token, "sendAudio", "audio", audio, params)
+        : await telegramApiCall(config.telegram.token, "sendAudio", params)
+      if (!data.ok) throw new Error(`Telegram API error: ${data.description ?? "sendAudio failed"}`)
+      return { ok: true, chat_id: chatId, message: data.result }
+    },
+  },
+  {
+    name: "TelegramSendVoice",
+    aliases: ["telegram_send_voice"],
+    description: "Send a voice note to a Telegram chat. Accepts a Telegram file_id, an HTTP URL, or a local file path. Local files should usually be ogg or opus.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        chat_id: { type: "number", description: "The Telegram chat ID to send the voice note to." },
+        voice: { type: "string", description: "Telegram file_id, HTTP URL, or local file path." },
+        caption: { type: "string", description: "Optional caption for the voice note." },
+      },
+      required: ["chat_id", "voice"],
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    validate: input => {
+      if (typeof input.chat_id !== "number") return "chat_id must be a number"
+      if (typeof input.voice !== "string" || input.voice.length === 0) return "voice must be a non-empty string"
+      if (isLocalPath(input.voice) && !TELEGRAM_VOICE_FORMATS.has((input.voice.split(".").pop() ?? "").toLowerCase())) {
+        return "local voice files should use ogg or opus"
+      }
+      return null
+    },
+    async run(input) {
+      const chatId = input.chat_id as number
+      const voice = requireString(input, "voice")
+      const caption = optionalString(input, "caption")
+      const config = readChannelsConfig()
+      if (!config.telegram?.enabled || !config.telegram.token) {
+        throw new Error("Telegram is not configured or not enabled. Use /channels to set it up.")
+      }
+      const params: Record<string, unknown> = { chat_id: chatId, voice }
+      if (caption) params.caption = caption
+      const data = isLocalPath(voice)
+        ? await telegramApiCallWithFile(config.telegram.token, "sendVoice", "voice", voice, params)
+        : await telegramApiCall(config.telegram.token, "sendVoice", params)
+      if (!data.ok) throw new Error(`Telegram API error: ${data.description ?? "sendVoice failed"}`)
       return { ok: true, chat_id: chatId, message: data.result }
     },
   },

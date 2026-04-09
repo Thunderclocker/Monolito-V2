@@ -10,8 +10,23 @@ export type TelegramConfig = {
   allowedChats: number[]
 }
 
+export type TtsConfig = {
+  baseUrl: string
+  apiKey: string
+  voice: string
+  model: string
+  responseFormat: "mp3" | "opus" | "aac" | "flac" | "wav" | "pcm"
+  speed: number
+  managed: boolean
+  autoDeploy: boolean
+  port: number
+  image: string
+  containerName: string
+}
+
 export type ChannelsConfig = {
   telegram?: TelegramConfig
+  tts?: Partial<TtsConfig>
 }
 
 export function readChannelsConfig(): ChannelsConfig {
