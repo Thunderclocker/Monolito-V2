@@ -839,15 +839,6 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
       "- Example: curl -s 'http://127.0.0.1:8888/search?q=<query>&format=json'",
       "- If the local SearxNG instance is unavailable, fall back to other appropriate tools.",
     )
-  } else if (contextExtras?.webSearchProvider === "curl") {
-    sections.push(
-      "",
-      "## WEB SEARCH MODE: CURL / WEBFETCH",
-      "- Prefer direct retrieval tools for web lookups.",
-      "- For straightforward pages or endpoints, prefer WebFetch.",
-      "- When a direct HTTP request is needed, prefer Bash curl against the target URL or API.",
-      "- Do not assume SearxNG is available in this mode.",
-    )
   } else {
     sections.push(
       "",

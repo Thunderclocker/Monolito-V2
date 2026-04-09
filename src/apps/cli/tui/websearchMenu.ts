@@ -89,6 +89,14 @@ async function isPortInUse(): Promise<{ inUse: boolean; detail?: string }> {
 }
 
 async function removeContainer(idOrName: string): Promise<{ ok: boolean; message: string }> {
+  if (idOrName === SEARXNG_CONTAINER) {
+    const containers = await findAllSearxngContainers()
+    const ours = containers.find(container => container.isOurs)
+    if (!ours) {
+      return { ok: true, message: "SearxNG no está desplegado." }
+    }
+    idOrName = ours.id
+  }
   try {
     await execFileAsync("docker", ["rm", "-f", idOrName], { timeout: 15_000 })
     return { ok: true, message: `Contenedor ${idOrName} eliminado.` }
@@ -212,8 +220,6 @@ function providerLabel(provider: WebSearchProvider) {
   switch (provider) {
     case "default":
       return "Default"
-    case "curl":
-      return "Curl / WebFetch"
     case "searxng":
       return "SearxNG local"
   }
@@ -235,11 +241,10 @@ async function renderProviderMenu(): Promise<string> {
     "",
     "Elegi el comportamiento para busquedas web generales:",
     "1. Default",
-    "2. Curl / WebFetch",
-    `3. SearxNG local (${searxStatusLabel})`,
+    `2. SearxNG local (${searxStatusLabel})`,
     "0. Salir",
     "",
-    "Si elegis SearxNG, despues se abre su submenu de configuracion.",
+    "Si elegis SearxNG, se despliega/inicia automaticamente y despues se abre su submenu.",
     "",
     "Ingresá el número:",
   ].join("\n")
@@ -271,10 +276,17 @@ async function renderSearxngMenu(): Promise<string> {
     lines.push(`Otros contenedores SearxNG: ${foreignCount} encontrados`)
   }
 
+  const knownContainers = allContainers.length > 0
+    ? allContainers.map(container => `- ${container.name || "(sin nombre)"} | ${container.id} | ${container.status}`).join("\n")
+    : "- ninguno"
+
   lines.push(
     "",
+    "Contenedores detectados:",
+    knownContainers,
+    "",
     "Opciones:",
-    `1. ${ourStatus === "running" ? "Reiniciar" : "Desplegar"} SearxNG`,
+    `1. ${ourStatus === "running" ? "Reiniciar" : "Iniciar"} SearxNG`,
     "2. Detener SearxNG",
     `3. Eliminar container (${SEARXNG_CONTAINER})`,
   )
@@ -338,11 +350,16 @@ async function handleProviderMenu(input: string): Promise<WebSearchMenuResult> {
       writeWebSearchConfig({ provider: "default" })
       return openWebSearchMenu("✅ Metodo activo cambiado a Default.", "success")
     case "2":
-      writeWebSearchConfig({ provider: "curl" })
-      return openWebSearchMenu("✅ Metodo activo cambiado a Curl / WebFetch.", "success")
-    case "3":
       writeWebSearchConfig({ provider: "searxng" })
-      return openSearxngMenu("✅ Metodo activo cambiado a SearxNG local.", "success")
+      {
+        const result = await deploySearxng()
+        return openSearxngMenu(
+          result.ok
+            ? `✅ Metodo activo cambiado a SearxNG local.\n${result.message}`
+            : `⚠️ Metodo activo cambiado a SearxNG local.\n${result.message}`,
+          result.ok ? "success" : "error",
+        )
+      }
     default:
       return openWebSearchMenu(`❌ Opción "${input}" no válida.`, "error")
   }
