@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { SessionRecord } from "../ipc/protocol.ts"
 import { getPaths } from "../ipc/protocol.ts"
@@ -30,6 +30,22 @@ const MAX_RECENT_MESSAGES = 10
 const MAX_ITEMS_PER_REVIEW = 2
 const MIN_CONFIDENCE_FOR_CORE = 0.74
 const MIN_CONFIDENCE_FOR_MEMPALACE = 0.58
+
+function logMemoryAgent(
+  rootDir: string,
+  message: string,
+  data?: Record<string, unknown>,
+) {
+  const paths = getPaths(rootDir)
+  mkdirSync(paths.logsDir, { recursive: true })
+  const timestamp = new Date().toISOString()
+  const suffix = data
+    ? ` ${Object.entries(data)
+        .map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`)
+        .join(" ")}`
+    : ""
+  appendFileSync(join(paths.logsDir, "memory-agent.log"), `${timestamp} ${message}${suffix}\n`)
+}
 
 function normalizeWhitespace(value: string) {
   return value.replace(/\s+/g, " ").trim()
@@ -177,34 +193,138 @@ export async function runMemoryAgentReview(
   profileId: string,
   trigger: MemoryTrigger,
 ) {
-  if (shouldSkipSession(session)) return
+  logMemoryAgent(rootDir, "review.start", {
+    sessionId: session.id,
+    profileId,
+    trigger,
+    messageCount: session.messages.length,
+  })
+  if (shouldSkipSession(session)) {
+    logMemoryAgent(rootDir, "review.skip", {
+      sessionId: session.id,
+      trigger,
+      reason: "session_filtered",
+    })
+    return
+  }
 
-  const { text } = await runBackgroundTextTask(
-    rootDir,
-    buildSystemPrompt(trigger),
-    buildUserPrompt(session, rootDir, profileId),
-  )
+  let text = ""
+  try {
+    const result = await runBackgroundTextTask(
+      rootDir,
+      buildSystemPrompt(trigger),
+      buildUserPrompt(session, rootDir, profileId),
+    )
+    text = result.text
+  } catch (error) {
+    logMemoryAgent(rootDir, "review.error", {
+      sessionId: session.id,
+      trigger,
+      stage: "model_call",
+      error: error instanceof Error ? error.message : String(error),
+    })
+    throw error
+  }
 
-  const parsed = extractJsonObject(text)
+  logMemoryAgent(rootDir, "review.model_response", {
+    sessionId: session.id,
+    trigger,
+    chars: text.length,
+    preview: clip(text, 240),
+  })
+
+  let parsed: MemoryReviewResult
+  try {
+    parsed = extractJsonObject(text)
+  } catch (error) {
+    logMemoryAgent(rootDir, "review.error", {
+      sessionId: session.id,
+      trigger,
+      stage: "json_parse",
+      error: error instanceof Error ? error.message : String(error),
+    })
+    throw error
+  }
   const proposals = Array.isArray(parsed.items) ? parsed.items.slice(0, MAX_ITEMS_PER_REVIEW) : []
-  if (proposals.length === 0) return
+  if (proposals.length === 0) {
+    logMemoryAgent(rootDir, "review.noop", {
+      sessionId: session.id,
+      trigger,
+      reason: "no_proposals",
+    })
+    return
+  }
 
   const appliedSummaries: string[] = []
   for (const proposal of proposals) {
-    if (!validateProposal(proposal)) continue
+    if (!validateProposal(proposal)) {
+      logMemoryAgent(rootDir, "proposal.skip", {
+        sessionId: session.id,
+        trigger,
+        reason: "invalid_proposal",
+        proposal,
+      })
+      continue
+    }
     const confidence = typeof proposal.confidence === "number" ? proposal.confidence : 0
     if (proposal.destination === "MEMPALACE") {
-      if (confidence < MIN_CONFIDENCE_FOR_MEMPALACE) continue
+      if (confidence < MIN_CONFIDENCE_FOR_MEMPALACE) {
+        logMemoryAgent(rootDir, "proposal.skip", {
+          sessionId: session.id,
+          trigger,
+          reason: "low_confidence_mempalace",
+          confidence,
+          destination: proposal.destination,
+          content: clip(proposal.content, 120),
+        })
+        continue
+      }
       const wing = proposal.wing?.trim() || "PERSONAL"
       const room = proposal.room?.trim() || "signals"
       await fileMemory(rootDir, wing, room, proposal.content.trim(), profileId)
       appliedSummaries.push(`MemPalace updated (${wing}/${room})`)
+      logMemoryAgent(rootDir, "proposal.applied", {
+        sessionId: session.id,
+        trigger,
+        destination: "MEMPALACE",
+        wing,
+        room,
+        confidence,
+        content: clip(proposal.content, 120),
+      })
       continue
     }
-    if (confidence < MIN_CONFIDENCE_FOR_CORE) continue
+    if (confidence < MIN_CONFIDENCE_FOR_CORE) {
+      logMemoryAgent(rootDir, "proposal.skip", {
+        sessionId: session.id,
+        trigger,
+        reason: "low_confidence_core",
+        confidence,
+        destination: proposal.destination,
+        content: clip(proposal.content, 120),
+      })
+      continue
+    }
     const updated = persistCoreMemory(rootDir, profileId, proposal.destination, proposal)
     if (updated) {
       appliedSummaries.push(`${proposal.destination}.md updated`)
+      logMemoryAgent(rootDir, "proposal.applied", {
+        sessionId: session.id,
+        trigger,
+        destination: proposal.destination,
+        action: proposal.action,
+        confidence,
+        content: clip(proposal.content, 120),
+      })
+    } else {
+      logMemoryAgent(rootDir, "proposal.skip", {
+        sessionId: session.id,
+        trigger,
+        reason: "no_effect",
+        destination: proposal.destination,
+        action: proposal.action,
+        content: clip(proposal.content, 120),
+      })
     }
   }
 
@@ -212,6 +332,17 @@ export async function runMemoryAgentReview(
     appendWorklog(rootDir, session.id, {
       type: "note",
       summary: `Memory agent: ${appliedSummaries.join(" · ")}`,
+    })
+    logMemoryAgent(rootDir, "review.done", {
+      sessionId: session.id,
+      trigger,
+      applied: appliedSummaries,
+    })
+  } else {
+    logMemoryAgent(rootDir, "review.noop", {
+      sessionId: session.id,
+      trigger,
+      reason: "no_applied_changes",
     })
   }
 }
