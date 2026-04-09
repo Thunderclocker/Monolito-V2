@@ -98,8 +98,6 @@ function webSearchProviderLabel(provider: WebSearchProvider) {
   switch (provider) {
     case "default":
       return "default"
-    case "curl":
-      return "curl"
     case "searxng":
       return "searxng"
   }
@@ -154,7 +152,25 @@ async function getSearxngStatus(): Promise<"running" | "stopped" | "not_found" |
   }
 }
 
+async function listSearxngContainers(): Promise<string> {
+  const containers = await findAllSearxngContainers()
+  if (containers.length === 0) return "No se encontraron contenedores SearxNG."
+  return [
+    `Contenedores SearxNG encontrados: ${containers.length}`,
+    ...containers.map(container =>
+      `- ${container.name || "(sin nombre)"} | ${container.id} | ${container.image} | ${container.status}${container.isOurs ? " | managed" : ""}`),
+  ].join("\n")
+}
+
 async function removeSearxngContainer(idOrName: string): Promise<{ ok: boolean; message: string }> {
+  if (idOrName === SEARXNG_CONTAINER) {
+    const containers = await findAllSearxngContainers()
+    const ours = containers.find(container => container.isOurs)
+    if (!ours) {
+      return { ok: true, message: "SearxNG no está desplegado." }
+    }
+    idOrName = ours.id
+  }
   try {
     await execFileAsync("docker", ["rm", "-f", idOrName], { timeout: 15_000 })
     return { ok: true, message: `Contenedor ${idOrName} eliminado.` }
@@ -705,7 +721,7 @@ export class MonolitoV2Runtime {
           "/channels [show|on|off|token <token>|chats <id,id,...>|clear]",
           "/config [show|set <field> <value>]",
           "/adult — Toggle adult content mode",
-          "/websearch [show|default|curl|searxng|searxng <deploy|stop|remove|clean|test <query>>]",
+          "/websearch [show|default|searxng|searxng <list|stop|remove|clean|test <query>>]",
           "/new — Reset session and restart agent",
         ].join("\n")
       case "/status": {
@@ -1054,9 +1070,8 @@ export class MonolitoV2Runtime {
         "",
         "Usage:",
         "/websearch default",
-        "/websearch curl",
         "/websearch searxng",
-        "/websearch searxng deploy",
+        "/websearch searxng list",
         "/websearch searxng stop",
         "/websearch searxng remove",
         "/websearch searxng clean",
@@ -1064,22 +1079,26 @@ export class MonolitoV2Runtime {
       ].join("\n")
     }
 
-    if (action === "default" || action === "curl") {
-      const provider: WebSearchProvider = action
-      writeWebSearchConfig({ provider })
-      return `Web search mode cambiado a ${action}.`
+    if (action === "default") {
+      writeWebSearchConfig({ provider: "default" })
+      return "Web search mode cambiado a default."
     }
 
     if (action === "searxng") {
       writeWebSearchConfig({ provider: "searxng" })
       const subaction = (rest[1] ?? "").trim().toLowerCase()
       if (!subaction) {
-        const status = await getSearxngStatus()
-        return `Web search mode cambiado a searxng.\nSearxNG status: ${status}\nURL: ${SEARXNG_URL}`
-      }
-      if (subaction === "deploy" || subaction === "start" || subaction === "restart") {
         const result = await deploySearxngContainer()
-        return result.ok ? result.message : `Error: ${result.message}`
+        const status = await getSearxngStatus()
+        return [
+          "Web search mode cambiado a searxng.",
+          result.ok ? result.message : `Error: ${result.message}`,
+          `SearxNG status: ${status}`,
+          `URL: ${SEARXNG_URL}`,
+        ].join("\n")
+      }
+      if (subaction === "list" || subaction === "ls" || subaction === "status") {
+        return await listSearxngContainers()
       }
       if (subaction === "stop") {
         const result = await stopSearxngContainer()
@@ -1098,10 +1117,10 @@ export class MonolitoV2Runtime {
         if (!query) return "Usage: /websearch searxng test <query>"
         return await testSearxngQuery(query)
       }
-      return "Usage: /websearch searxng <deploy|stop|remove|clean|test <query>>"
+      return "Usage: /websearch searxng <list|stop|remove|clean|test <query>>"
     }
 
-    return "Usage: /websearch [show|default|curl|searxng|searxng <deploy|stop|remove|clean|test <query>>]"
+    return "Usage: /websearch [show|default|searxng|searxng <list|stop|remove|clean|test <query>>]"
   }
 
   private async runDoctor(): Promise<string> {

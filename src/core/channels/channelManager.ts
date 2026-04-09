@@ -109,7 +109,7 @@ function buildWebSearchMenuText() {
     `Modo activo: ${config.provider}`,
     "",
     "Elegí el método de búsqueda web.",
-    "Si elegís SearxNG, podés desplegarlo y gestionarlo desde este menú.",
+    "Si elegís SearxNG, se despliega/inicia automáticamente si hace falta.",
   ].join("\n")
 }
 
@@ -117,18 +117,17 @@ function buildWebSearchMenuButtons(): TelegramInlineButton[][] {
   return [
     [
       { text: "Default", callback_data: "ws:set:default" },
-      { text: "Curl", callback_data: "ws:set:curl" },
       { text: "SearxNG", callback_data: "ws:set:searxng" },
     ],
     [
-      { text: "Deploy", callback_data: "ws:act:deploy" },
+      { text: "List", callback_data: "ws:act:list" },
       { text: "Stop", callback_data: "ws:act:stop" },
-      { text: "Remove", callback_data: "ws:act:remove" },
+      { text: "Refresh", callback_data: "ws:show" },
     ],
     [
+      { text: "Remove", callback_data: "ws:act:remove" },
       { text: "Clean", callback_data: "ws:act:clean" },
       { text: "Test", callback_data: "ws:act:test" },
-      { text: "Refresh", callback_data: "ws:show" },
     ],
   ]
 }
@@ -236,15 +235,18 @@ async function handleWebSearchCallback(token: string, callback: TelegramCallback
 
   if (data.startsWith("ws:set:")) {
     const provider = data.slice("ws:set:".length)
-    if (provider === "default" || provider === "curl" || provider === "searxng") {
+    if (provider === "default" || provider === "searxng") {
       writeWebSearchConfig({ provider })
       await editTelegramMenu(
         token,
         chatId,
         messageId,
-        `${buildWebSearchMenuText()}\n\nModo cambiado a: ${provider}`,
+        `${buildWebSearchMenuText()}\n\nModo cambiado a: ${provider}${provider === "searxng" ? "\n\nActivando SearxNG..." : ""}`,
         buildWebSearchMenuButtons(),
       )
+      if (provider === "searxng") {
+        return "/websearch searxng"
+      }
       return true
     }
   }
@@ -262,7 +264,7 @@ async function handleWebSearchCallback(token: string, callback: TelegramCallback
   }
 
   const command =
-    data === "ws:act:deploy" ? "/websearch searxng deploy" :
+    data === "ws:act:list" ? "/websearch searxng list" :
     data === "ws:act:stop" ? "/websearch searxng stop" :
     data === "ws:act:remove" ? "/websearch searxng remove" :
     data === "ws:act:clean" ? "/websearch searxng clean" :
