@@ -85,6 +85,8 @@ export class MonolitoV2Daemon {
   private scheduleSelfRestart() {
     if (this.restartInFlight) return
     this.restartInFlight = true
+    stopChannels()
+    this.writeDaemonLog("telegram channels stopped for self-restart")
 
     setTimeout(() => {
       try {
