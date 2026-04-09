@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process"
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
-import { type AgentEvent, type SessionRecord } from "../ipc/protocol.ts"
+import { getPaths, type AgentEvent, type SessionRecord } from "../ipc/protocol.ts"
 import { StdioMcpClient, getDefaultMcpServers } from "../mcp/client.ts"
 import {
   appendEvent,
@@ -403,6 +403,29 @@ async function runGitCommand(rootDir: string, args: string[]) {
     env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
   })
   return result.stdout.trim()
+}
+
+function acquireUpdateLock(rootDir: string) {
+  const paths = getPaths(rootDir)
+  mkdirSync(paths.runDir, { recursive: true })
+  const lockPath = join(paths.runDir, "update.lock")
+  try {
+    const fd = openSync(lockPath, "wx")
+    writeFileSync(fd, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`, "utf8")
+    return {
+      ok: true as const,
+      release() {
+        try {
+          unlinkSync(lockPath)
+        } catch {}
+      },
+    }
+  } catch {
+    return {
+      ok: false as const,
+      message: "Update already in progress in another Monolito process. Wait for it to finish and try /update again.",
+    }
+  }
 }
 
 function getTelegramChatId(sessionId: string) {
@@ -1332,6 +1355,8 @@ export class MonolitoV2Runtime {
   }
 
   private async runUpdate(): Promise<string> {
+    const lock = acquireUpdateLock(this.rootDir)
+    if (!lock.ok) return lock.message
     try {
       const branch = await runGitCommand(this.rootDir, ["rev-parse", "--abbrev-ref", "HEAD"])
       if (!branch) return "Update failed: could not determine current git branch."
@@ -1378,6 +1403,8 @@ export class MonolitoV2Runtime {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       return `Update failed: ${message}`
+    } finally {
+      if (lock.ok) lock.release()
     }
   }
 
