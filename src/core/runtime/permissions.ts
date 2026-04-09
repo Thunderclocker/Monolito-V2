@@ -106,6 +106,7 @@ const READ_ONLY_TOOLS = new Set([
   "TodoList",
   "ProfileList",
   "WebFetch",
+  "TelegramGetFile",
 ])
 
 const EDIT_TOOLS = new Set([
@@ -119,6 +120,10 @@ const EDIT_TOOLS = new Set([
   "AgentSendMessage",
   "AgentStop",
   "Bash",
+  "TelegramSend",
+  "TelegramSendPhoto",
+  "TelegramSendDocument",
+  "TelegramDownloadFile",
 ])
 
 function getPermissionsPath(rootDir?: string) {

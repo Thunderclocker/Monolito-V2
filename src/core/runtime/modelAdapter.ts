@@ -807,6 +807,8 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
       "TELEGRAM INTEGRATION: Active and configured.",
       `- Allowed chat IDs: ${allowedChats.length > 0 ? allowedChats.join(", ") : "(all chats allowed)"}`,
       "- Use the TelegramSend tool to send messages to Telegram chats.",
+      "- Use TelegramSendPhoto or TelegramSendDocument when the user asks for an actual file/image delivery into Telegram.",
+      "- Use TelegramGetFile or TelegramDownloadFile when an incoming Telegram message includes attachment file_id metadata.",
       "- When the user asks you to send a Telegram message, use TelegramSend with the appropriate chat_id and text.",
       `- Default chat_id for the user: ${allowedChats[0] ?? "(unknown — ask the user)"}`,
     )
