@@ -831,6 +831,7 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
       "- If a Telegram message already includes a transcript block, use that transcript directly. Do NOT try to re-transcribe the same audio with Bash.",
       "- If you need to transcribe a local audio file yourself, use TranscribeAudio or SttServiceDeploy/SttServiceStatus, not ad-hoc Bash with faster-whisper, whisper, python one-liners, or manual Docker commands.",
       "- Using Bash to transcribe audio directly is a rule violation when the dedicated STT tools are available.",
+      "- If an incoming Telegram audio cannot be transcribed automatically, respond briefly and neutrally. Do not joke, tease, or comment on the user repeating the same audio.",
     )
   }
 

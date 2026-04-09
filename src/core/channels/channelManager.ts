@@ -1,5 +1,5 @@
 import { createLogger } from "../logging/logger.ts"
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { readChannelsConfig, writeChannelsConfig } from "./config.ts"
 import { readWebSearchConfig, writeWebSearchConfig } from "../websearch/config.ts"
@@ -214,7 +214,7 @@ async function maybeTranscribeTelegramAudio(token: string, rootDir: string, msg:
   return await transcribeManagedAudioFile(localPath, stt)
 }
 
-function buildTelegramInboundText(msg: TelegramMessage | undefined, transcript?: { text: string; language?: string; error?: string } | null) {
+function buildTelegramInboundText(msg: TelegramMessage | undefined, transcript?: { text: string; language?: string } | null) {
   if (!msg) return null
   const text = msg.text?.trim() || msg.caption?.trim() || ""
   const slashCommand = normalizeTelegramCommand(text)
@@ -228,8 +228,6 @@ function buildTelegramInboundText(msg: TelegramMessage | undefined, transcript?:
   }
   if (transcript?.text) {
     parts.push(`<transcript source="stt" language="${escapeXml(transcript.language ?? "")}">${escapeXml(transcript.text)}</transcript>`)
-  } else if (transcript?.error) {
-    parts.push(`<transcript source="stt" error="${escapeXml(transcript.error)}" />`)
   }
 
   if (msg.photo?.length) {
@@ -520,18 +518,17 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
           return
         }
 
-        let transcript: { text: string; language?: string; error?: string } | null = null
+        let transcript: { text: string; language?: string } | null = null
         try {
           const result = await maybeTranscribeTelegramAudio(config.telegram.token, runtime.rootDir, msg)
           if (result) {
             transcript = result.ok
               ? { text: result.text, language: result.language }
-              : { text: "", error: result.error }
+              : null
           }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           logger.warn(`STT falló para Telegram chat ${chatId}: ${message}`)
-          transcript = { text: "", error: message }
         }
 
         const inboundText = buildTelegramInboundText(msg, transcript)
