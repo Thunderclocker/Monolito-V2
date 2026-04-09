@@ -721,7 +721,7 @@ export class MonolitoV2Runtime {
           "/channels [show|on|off|token <token>|chats <id,id,...>|clear]",
           "/config [show|set <field> <value>]",
           "/adult — Toggle adult content mode",
-          "/websearch [show|default|searxng|searxng <list|stop|remove|clean|test <query>>]",
+          "/websearch — Open web search menu",
           "/new — Reset session and restart agent",
         ].join("\n")
       case "/status": {
@@ -1068,14 +1068,7 @@ export class MonolitoV2Runtime {
         `SearxNG status: ${status}`,
         `SearxNG URL: ${SEARXNG_URL}`,
         "",
-        "Usage:",
-        "/websearch default",
-        "/websearch searxng",
-        "/websearch searxng list",
-        "/websearch searxng stop",
-        "/websearch searxng remove",
-        "/websearch searxng clean",
-        "/websearch searxng test <query>",
+        "Usá /websearch desde la CLI o Telegram para abrir el menú interactivo.",
       ].join("\n")
     }
 
