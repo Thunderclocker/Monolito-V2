@@ -142,6 +142,7 @@ export interface TelegramCallbackQuery {
   from: TelegramUser
   chat_instance: string
   data?: string
+  message?: TelegramMessage
 }
 
 export interface TelegramPoller {

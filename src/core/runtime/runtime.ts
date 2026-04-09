@@ -36,8 +36,8 @@ import {
   validateModelDraft,
 } from "./modelConfig.ts"
 import { createCostState, recordApiCall, recordToolCall, formatCostSummary } from "../cost/tracker.ts"
-import { readChannelsConfig } from "../channels/config.ts"
-import { readWebSearchConfig } from "../websearch/config.ts"
+import { readChannelsConfig, writeChannelsConfig } from "../channels/config.ts"
+import { readWebSearchConfig, writeWebSearchConfig, type WebSearchProvider } from "../websearch/config.ts"
 import { getDateContext, getGitContext } from "../context/gitContext.ts"
 import { getWorkspaceContext } from "../context/workspaceContext.ts"
 import { AgentOrchestrator } from "./orchestrator.ts"
@@ -60,6 +60,17 @@ type TelegramTypingIndicator = {
 }
 
 const execFileAsync = promisify(execFile)
+const SEARXNG_CONTAINER = "monolito-searxng"
+const SEARXNG_PORT = 8888
+const SEARXNG_URL = `http://127.0.0.1:${SEARXNG_PORT}`
+
+type SearxngContainerInfo = {
+  id: string
+  name: string
+  image: string
+  status: string
+  isOurs: boolean
+}
 
 function createSessionBusyError(sessionId: string): SessionBusyError {
   const error = new Error(`Session ${sessionId} is already busy with another running turn.`) as SessionBusyError
@@ -81,6 +92,177 @@ function truncateFailureDetail(value: string, max = 240) {
   const normalized = value.replace(/\s+/g, " ").trim()
   if (normalized.length <= max) return normalized
   return `${normalized.slice(0, max - 1).trimEnd()}...`
+}
+
+function webSearchProviderLabel(provider: WebSearchProvider) {
+  switch (provider) {
+    case "default":
+      return "default"
+    case "curl":
+      return "curl"
+    case "searxng":
+      return "searxng"
+  }
+}
+
+async function findAllSearxngContainers(): Promise<SearxngContainerInfo[]> {
+  try {
+    const { stdout: byImage } = await execFileAsync("docker", [
+      "ps", "-a",
+      "--filter", "ancestor=searxng/searxng",
+      "--format", "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}",
+    ], { timeout: 10_000 })
+    const { stdout: byName } = await execFileAsync("docker", [
+      "ps", "-a",
+      "--filter", "name=searxng",
+      "--format", "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}",
+    ], { timeout: 10_000 })
+
+    const seen = new Set<string>()
+    const containers: SearxngContainerInfo[] = []
+    for (const line of [...byImage.trim().split("\n"), ...byName.trim().split("\n")]) {
+      if (!line.trim()) continue
+      const [id, name, image, status] = line.split("\t")
+      if (!id || seen.has(id)) continue
+      seen.add(id)
+      containers.push({
+        id: id.slice(0, 12),
+        name: name ?? "",
+        image: image ?? "",
+        status: status ?? "",
+        isOurs: name === SEARXNG_CONTAINER,
+      })
+    }
+    return containers
+  } catch {
+    return []
+  }
+}
+
+async function getSearxngStatus(): Promise<"running" | "stopped" | "not_found" | "docker_error"> {
+  try {
+    const { stdout } = await execFileAsync("docker", [
+      "ps", "-a",
+      "--filter", `name=^/${SEARXNG_CONTAINER}$`,
+      "--format", "{{.Status}}",
+    ], { timeout: 10_000 })
+    const status = stdout.trim()
+    if (!status) return "not_found"
+    return status.startsWith("Up") ? "running" : "stopped"
+  } catch {
+    return "docker_error"
+  }
+}
+
+async function removeSearxngContainer(idOrName: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    await execFileAsync("docker", ["rm", "-f", idOrName], { timeout: 15_000 })
+    return { ok: true, message: `Contenedor ${idOrName} eliminado.` }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return { ok: false, message: `Error eliminando ${idOrName}: ${message}` }
+  }
+}
+
+async function stopSearxngContainer(): Promise<{ ok: boolean; message: string }> {
+  const status = await getSearxngStatus()
+  if (status === "not_found" || status === "docker_error") {
+    return { ok: true, message: "SearxNG no está desplegado." }
+  }
+  try {
+    await execFileAsync("docker", ["stop", SEARXNG_CONTAINER], { timeout: 15_000 })
+    return { ok: true, message: "SearxNG detenido." }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return { ok: false, message: `Error deteniendo SearxNG: ${message}` }
+  }
+}
+
+async function clearAllSearxngContainers(): Promise<{ ok: boolean; message: string }> {
+  const containers = await findAllSearxngContainers()
+  if (containers.length === 0) return { ok: true, message: "No se encontraron contenedores SearxNG." }
+  const lines: string[] = []
+  let allOk = true
+  for (const container of containers) {
+    const result = await removeSearxngContainer(container.id)
+    lines.push(`${container.name || container.id}: ${result.ok ? "eliminado" : result.message}`)
+    if (!result.ok) allOk = false
+  }
+  return { ok: allOk, message: lines.join("\n") }
+}
+
+async function deploySearxngContainer(): Promise<{ ok: boolean; message: string }> {
+  try {
+    await execFileAsync("docker", ["info"], { timeout: 10_000 })
+  } catch {
+    return { ok: false, message: "Docker no está disponible o no está corriendo." }
+  }
+
+  const status = await getSearxngStatus()
+  if (status === "running") {
+    try {
+      const probe = await fetch(`${SEARXNG_URL}/healthz`, { signal: AbortSignal.timeout(3000) })
+      if (probe.ok) return { ok: true, message: `SearxNG ya está corriendo en ${SEARXNG_URL}.` }
+    } catch {}
+    try {
+      await execFileAsync("docker", ["restart", SEARXNG_CONTAINER], { timeout: 30_000 })
+    } catch {}
+  }
+
+  const containers = await findAllSearxngContainers()
+  for (const container of containers.filter(item => !item.isOurs)) {
+    await removeSearxngContainer(container.id)
+  }
+
+  if (status === "stopped") {
+    await removeSearxngContainer(SEARXNG_CONTAINER)
+  }
+
+  try {
+    await execFileAsync("docker", [
+      "run", "-d",
+      "--name", SEARXNG_CONTAINER,
+      "-p", `127.0.0.1:${SEARXNG_PORT}:8080`,
+      "--restart", "unless-stopped",
+      "searxng/searxng:latest",
+    ], { timeout: 120_000 })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return { ok: false, message: `Error desplegando SearxNG: ${message}` }
+  }
+
+  for (let i = 0; i < 25; i++) {
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    try {
+      const probe = await fetch(`${SEARXNG_URL}/healthz`, { signal: AbortSignal.timeout(2000) })
+      if (probe.ok) return { ok: true, message: `SearxNG desplegado en ${SEARXNG_URL}.` }
+    } catch {}
+  }
+
+  return { ok: false, message: "SearxNG se inició pero no respondió dentro de 25s." }
+}
+
+async function testSearxngQuery(query: string): Promise<string> {
+  const encoded = encodeURIComponent(query)
+  const response = await fetch(`${SEARXNG_URL}/search?q=${encoded}&format=json`, {
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!response.ok) {
+    return `SearxNG respondió HTTP ${response.status}.`
+  }
+  const data = await response.json() as { results?: Array<{ title?: string; url?: string }> }
+  const results = (data.results ?? []).slice(0, 5)
+  if (results.length === 0) return `Búsqueda "${query}": 0 resultados.`
+  return [
+    `Búsqueda "${query}": ${results.length} resultados.`,
+    ...results.map((result, index) => `${index + 1}. ${result.title ?? "(sin título)"}\n${result.url ?? ""}`),
+  ].join("\n")
+}
+
+function parseAllowedChats(input: string) {
+  const ids = input.split(",").map(item => item.trim()).filter(Boolean).map(Number)
+  const invalid = ids.filter(item => !Number.isFinite(item) || item === 0)
+  return { ids, invalid }
 }
 
 function getToolFailureMessage(toolName: string, output: unknown) {
@@ -520,9 +702,10 @@ export class MonolitoV2Runtime {
           "/stats",
           "/doctor",
           "/update",
+          "/channels [show|on|off|token <token>|chats <id,id,...>|clear]",
           "/config [show|set <field> <value>]",
           "/adult — Toggle adult content mode",
-          "/websearch — Configure web search engine",
+          "/websearch [show|default|curl|searxng|searxng <deploy|stop|remove|clean|test <query>>]",
           "/new — Reset session and restart agent",
         ].join("\n")
       case "/status": {
@@ -574,13 +757,11 @@ export class MonolitoV2Runtime {
       case "/update": {
         return this.runUpdate()
       }
+      case "/channels": {
+        return this.runChannelsCommand(rest)
+      }
       case "/websearch": {
-        const config = readWebSearchConfig()
-        return [
-          `Web search mode: ${config.provider}`,
-          "Interactive configuration is available in the local CLI via /websearch.",
-          "From Telegram, use the local terminal client to change it.",
-        ].join("\n")
+        return this.runWebSearchCommand(rest)
       }
       case "/config": {
         return this.runConfig(rest)
@@ -793,6 +974,134 @@ export class MonolitoV2Runtime {
     const session = getSession(this.rootDir, sessionId)
     if (!session || session.worklog.length === 0) return "No history entries for this session yet."
     return session.worklog.slice(-limit).map(entry => `${entry.at} [${entry.type}] ${entry.summary}`).join("\n")
+  }
+
+  private async runChannelsCommand(rest: string[]) {
+    const action = (rest[0] ?? "show").trim().toLowerCase()
+    const config = readChannelsConfig()
+    const telegram = config.telegram ?? { token: "", enabled: false, allowedChats: [] }
+
+    if (action === "show" || action === "status" || !action) {
+      return [
+        "Telegram channel configuration:",
+        `Enabled: ${telegram.enabled ? "yes" : "no"}`,
+        `Token: ${telegram.token ? "configured" : "missing"}`,
+        `Allowed chats: ${telegram.allowedChats.length > 0 ? telegram.allowedChats.join(", ") : "(all chats allowed)"}`,
+        "",
+        "Usage:",
+        "/channels on",
+        "/channels off",
+        "/channels token <token>",
+        "/channels chats <id,id,...>",
+        "/channels clear",
+      ].join("\n")
+    }
+
+    if (action === "on" || action === "enable") {
+      config.telegram = { ...telegram, enabled: true }
+      writeChannelsConfig(config)
+      this.restartRequested = true
+      return "Telegram habilitado. Reinicio del daemon programado automáticamente."
+    }
+
+    if (action === "off" || action === "disable") {
+      config.telegram = { ...telegram, enabled: false }
+      writeChannelsConfig(config)
+      this.restartRequested = true
+      return "Telegram deshabilitado. Reinicio del daemon programado automáticamente."
+    }
+
+    if (action === "token") {
+      const token = rest.slice(1).join(" ").trim()
+      if (!token) return "Usage: /channels token <token>"
+      config.telegram = { ...telegram, token, enabled: true }
+      writeChannelsConfig(config)
+      this.restartRequested = true
+      return "Token de Telegram guardado. Reinicio del daemon programado automáticamente."
+    }
+
+    if (action === "chats") {
+      const raw = rest.slice(1).join(" ").trim()
+      if (!raw) return "Usage: /channels chats <id,id,...>"
+      const { ids, invalid } = parseAllowedChats(raw)
+      if (invalid.length > 0) return `IDs inválidos: ${invalid.join(", ")}`
+      config.telegram = { ...telegram, allowedChats: ids }
+      writeChannelsConfig(config)
+      this.restartRequested = true
+      return `Chats autorizados guardados: ${ids.join(", ")}. Reinicio del daemon programado automáticamente.`
+    }
+
+    if (action === "clear") {
+      config.telegram = { ...telegram, allowedChats: [] }
+      writeChannelsConfig(config)
+      this.restartRequested = true
+      return "Lista de chats autorizados limpiada. Reinicio del daemon programado automáticamente."
+    }
+
+    return "Usage: /channels [show|on|off|token <token>|chats <id,id,...>|clear]"
+  }
+
+  private async runWebSearchCommand(rest: string[]) {
+    const config = readWebSearchConfig()
+    const action = (rest[0] ?? "show").trim().toLowerCase()
+
+    if (action === "show" || action === "status" || !action) {
+      const status = await getSearxngStatus()
+      return [
+        `Web search mode: ${webSearchProviderLabel(config.provider)}`,
+        `SearxNG status: ${status}`,
+        `SearxNG URL: ${SEARXNG_URL}`,
+        "",
+        "Usage:",
+        "/websearch default",
+        "/websearch curl",
+        "/websearch searxng",
+        "/websearch searxng deploy",
+        "/websearch searxng stop",
+        "/websearch searxng remove",
+        "/websearch searxng clean",
+        "/websearch searxng test <query>",
+      ].join("\n")
+    }
+
+    if (action === "default" || action === "curl") {
+      const provider: WebSearchProvider = action
+      writeWebSearchConfig({ provider })
+      return `Web search mode cambiado a ${action}.`
+    }
+
+    if (action === "searxng") {
+      writeWebSearchConfig({ provider: "searxng" })
+      const subaction = (rest[1] ?? "").trim().toLowerCase()
+      if (!subaction) {
+        const status = await getSearxngStatus()
+        return `Web search mode cambiado a searxng.\nSearxNG status: ${status}\nURL: ${SEARXNG_URL}`
+      }
+      if (subaction === "deploy" || subaction === "start" || subaction === "restart") {
+        const result = await deploySearxngContainer()
+        return result.ok ? result.message : `Error: ${result.message}`
+      }
+      if (subaction === "stop") {
+        const result = await stopSearxngContainer()
+        return result.ok ? result.message : `Error: ${result.message}`
+      }
+      if (subaction === "remove" || subaction === "rm") {
+        const result = await removeSearxngContainer(SEARXNG_CONTAINER)
+        return result.ok ? result.message : `Error: ${result.message}`
+      }
+      if (subaction === "clean") {
+        const result = await clearAllSearxngContainers()
+        return result.ok ? result.message : `Error: ${result.message}`
+      }
+      if (subaction === "test") {
+        const query = rest.slice(2).join(" ").trim()
+        if (!query) return "Usage: /websearch searxng test <query>"
+        return await testSearxngQuery(query)
+      }
+      return "Usage: /websearch searxng <deploy|stop|remove|clean|test <query>>"
+    }
+
+    return "Usage: /websearch [show|default|curl|searxng|searxng <deploy|stop|remove|clean|test <query>>]"
   }
 
   private async runDoctor(): Promise<string> {
