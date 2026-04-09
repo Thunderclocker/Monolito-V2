@@ -821,6 +821,9 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
       "- Your responses will be sent directly to the user's Telegram chat.",
       "- Be concise and helpful.",
       "- You can use all your tools as normal, and the final text you output will be what the user sees on Telegram.",
+      "- For images or files, prefer this order: first obtain a stable direct file URL or local file, then use TelegramSendPhoto or TelegramSendDocument.",
+      "- If TelegramSendPhoto fails with a remote URL, do not keep retrying many URLs. Download one promising candidate locally, verify it, then send the local file path.",
+      "- If two send attempts fail, stop and send a short fallback message with a clean direct link instead of continuing noisy probes.",
     )
   }
 

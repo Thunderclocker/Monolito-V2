@@ -500,6 +500,7 @@ const tools: ToolDefinition[] = [
           taskId,
           pid: child.pid,
           outputPath,
+          command,
         }
       }
       try {
@@ -510,6 +511,8 @@ const tools: ToolDefinition[] = [
           env: process.env,
         })
         return {
+          command,
+          cwd: context.cwd,
           stdout: result.stdout,
           stderr: result.stderr,
           interrupted: false,
@@ -518,6 +521,8 @@ const tools: ToolDefinition[] = [
       } catch (error) {
         const typed = error as Error & { code?: number | string; killed?: boolean; stdout?: string; stderr?: string }
         return {
+          command,
+          cwd: context.cwd,
           stdout: typed.stdout ?? "",
           stderr: typed.stderr ?? typed.message,
           interrupted: typed.killed ?? false,

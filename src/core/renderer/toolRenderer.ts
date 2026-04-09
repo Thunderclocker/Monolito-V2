@@ -121,6 +121,15 @@ function getLastShellTarget(command: string) {
   return humanizePath(positional.at(-1) ?? ".")
 }
 
+function detectBashArtifact(command: string) {
+  const normalized = cleanShellCommand(command)
+  const redirect = normalized.match(/(?:^|\s)-o\s+(\S+)/)
+  if (redirect) return humanizePath(redirect[1]!.replace(/^['"]|['"]$/g, ""))
+  const chainedFile = normalized.match(/(?:cat|file|ls|stat)\s+(\S+\.(?:jpg|jpeg|png|gif|webp|pdf|txt|json|mp4|mp3|ogg|wav))/i)
+  if (chainedFile) return humanizePath(chainedFile[1]!.replace(/^['"]|['"]$/g, ""))
+  return null
+}
+
 function shellCommandDisplay(command: string) {
   const home = homedir()
   return cleanShellCommand(command).split(home).join("~")
@@ -452,15 +461,23 @@ export function renderToolFinish(tool: string, ok: boolean, output: unknown): To
       if (value?.background === true) {
         const pid = getNumber(value, "pid")
         const outputPath = getString(value, "outputPath")
+        const command = getString(value, "command")
         return {
           label,
           tone,
-          text: `Command running in background${pid ? ` pid ${pid}` : ""}${outputPath ? ` · log ${outputPath}` : ""}`,
+          text: `Command running in background${pid ? ` pid ${pid}` : ""}${outputPath ? ` · log ${outputPath}` : ""}${command ? ` · ${truncate(cleanShellCommand(command), 80)}` : ""}`,
         }
       }
       const exitCode = getNumber(value, "exitCode")
       const failed = typeof exitCode === "number" && exitCode !== 0
       if (failed) return { label: "error", tone: "error", text: `Command exited ${exitCode}` }
+      const stdout = getString(value, "stdout") ?? ""
+      const stderr = getString(value, "stderr") ?? ""
+      const command = getString(value, "command") ?? ""
+      const artifact = command ? detectBashArtifact(command) : null
+      if (!stdout.trim() && !stderr.trim() && artifact) {
+        return { label, tone, text: `Command completed: produced ${artifact}` }
+      }
       return { label: failed ? "error" : label, tone: failed ? "error" : tone, text: failed ? `Command exit ${exitCode}: no output` : "Command completed: no output" }
     }
     case "Read": {
