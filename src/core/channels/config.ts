@@ -24,9 +24,23 @@ export type TtsConfig = {
   containerName: string
 }
 
+export type SttConfig = {
+  managed: boolean
+  autoDeploy: boolean
+  autoTranscribe: boolean
+  port: number
+  image: string
+  containerName: string
+  engine: "faster_whisper" | "openai_whisper" | "whisperx"
+  model: string
+  language: string
+  vadFilter: boolean
+}
+
 export type ChannelsConfig = {
   telegram?: TelegramConfig
   tts?: Partial<TtsConfig>
+  stt?: Partial<SttConfig>
 }
 
 export function readChannelsConfig(): ChannelsConfig {

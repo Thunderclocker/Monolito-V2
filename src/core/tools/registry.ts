@@ -18,6 +18,16 @@ import {
   removeManagedTtsContainer,
   stopManagedTtsContainer,
 } from "../tts/managed.ts"
+import {
+  deployManagedSttContainer,
+  getManagedSttBaseUrl,
+  getManagedSttStatus,
+  listManagedSttContainers,
+  normalizeSttConfig,
+  removeManagedSttContainer,
+  stopManagedSttContainer,
+  transcribeManagedAudioFile,
+} from "../stt/managed.ts"
 
 const execFileAsync = promisify(execFile)
 const DEFAULT_GREP_LIMIT = 250
@@ -713,6 +723,105 @@ const tools: ToolDefinition[] = [
       mkdirSync(dirname(taskFile), { recursive: true })
       writeFileSync(taskFile, JSON.stringify(tasks, null, 2))
       return { task, total: tasks.length, profile: profileId }
+    },
+  },
+  {
+    name: "SttServiceStatus",
+    aliases: ["stt_service_status"],
+    description: "Show the status of the managed local speech-to-text service container.",
+    inputSchema: emptyInputSchema,
+    concurrencySafe: true,
+    async run() {
+      const config = readChannelsConfig()
+      const stt = normalizeSttConfig(config.stt)
+      const status = await getManagedSttStatus(stt)
+      return {
+        managed: stt.managed,
+        auto_deploy: stt.autoDeploy,
+        auto_transcribe: stt.autoTranscribe,
+        status,
+        base_url: getManagedSttBaseUrl(stt),
+        container_name: stt.containerName,
+        image: stt.image,
+        port: stt.port,
+        engine: stt.engine,
+        model: stt.model,
+      }
+    },
+  },
+  {
+    name: "SttServiceDeploy",
+    aliases: ["stt_service_deploy"],
+    description: "Deploy or restart the managed local speech-to-text service container using Docker. Cleans conflicting legacy Whisper containers first.",
+    inputSchema: emptyInputSchema,
+    concurrencySafe: false,
+    async run() {
+      const config = readChannelsConfig()
+      const stt = normalizeSttConfig(config.stt)
+      return await deployManagedSttContainer(stt)
+    },
+  },
+  {
+    name: "SttServiceStop",
+    aliases: ["stt_service_stop"],
+    description: "Stop the managed local speech-to-text service container without deleting it.",
+    inputSchema: emptyInputSchema,
+    concurrencySafe: false,
+    async run() {
+      const config = readChannelsConfig()
+      const stt = normalizeSttConfig(config.stt)
+      return await stopManagedSttContainer(stt)
+    },
+  },
+  {
+    name: "SttServiceRemove",
+    aliases: ["stt_service_remove"],
+    description: "Remove the managed local speech-to-text service container and conflicting legacy Whisper containers when found.",
+    inputSchema: emptyInputSchema,
+    concurrencySafe: false,
+    async run() {
+      const config = readChannelsConfig()
+      const stt = normalizeSttConfig(config.stt)
+      return await removeManagedSttContainer(stt)
+    },
+  },
+  {
+    name: "SttServiceList",
+    aliases: ["stt_service_list"],
+    description: "List detected local speech-to-text service containers related to the managed image or container name, including legacy Whisper containers.",
+    inputSchema: emptyInputSchema,
+    concurrencySafe: true,
+    async run() {
+      const config = readChannelsConfig()
+      const stt = normalizeSttConfig(config.stt)
+      return { message: await listManagedSttContainers(stt) }
+    },
+  },
+  {
+    name: "TranscribeAudio",
+    aliases: ["transcribe_audio"],
+    description: "Transcribe a local audio file using the managed speech-to-text backend. Deploys the service automatically when configured.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Local path to the audio file to transcribe." },
+      },
+      required: ["path"],
+      additionalProperties: false,
+    },
+    concurrencySafe: false,
+    validate: input => typeof input.path === "string" && input.path.length > 0 ? null : "path must be a non-empty string",
+    async run(input) {
+      const path = requireString(input, "path")
+      const config = readChannelsConfig()
+      const stt = normalizeSttConfig(config.stt)
+      if (stt.managed && stt.autoDeploy) {
+        const deploy = await deployManagedSttContainer(stt)
+        if (!deploy.ok) throw new Error(deploy.message)
+      }
+      const result = await transcribeManagedAudioFile(path, stt)
+      if (!result.ok) throw new Error(result.error ?? "STT transcription failed")
+      return result
     },
   },
   {

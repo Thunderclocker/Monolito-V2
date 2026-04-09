@@ -72,6 +72,14 @@ Further documentation lives in [`docs/`](./docs/README.md).
 - Recommended managed setup uses `tts_managed=true` and `tts_auto_deploy=true`.
 - See [`docs/tts.md`](./docs/tts.md) for the complete lifecycle and configuration flow.
 
+## Speech To Text
+
+- Incoming Telegram audio and voice notes can be transcribed automatically before they reach the model.
+- Monolito can manage its own local Docker STT backend with `/stt`.
+- The default managed STT flow uses a Whisper webservice with `faster_whisper` as the engine.
+- Managed deployment cleans conflicting legacy Whisper containers before starting its own service.
+- See [`docs/channels-and-telegram.md`](./docs/channels-and-telegram.md) and [`docs/model-and-config.md`](./docs/model-and-config.md) for the full STT configuration and runtime behavior.
+
 ## Web search
 
 - `/websearch` opens an interactive menu in the local CLI and a button-based menu in Telegram.
@@ -120,6 +128,7 @@ Further documentation lives in [`docs/`](./docs/README.md).
 - `/update`
 - `/channels`
 - `/tts`
+- `/stt`
 - `/config [show|set <field> <value>]`
 - `/websearch`
 - `/new`
@@ -172,6 +181,7 @@ monolito /status
 monolito -p '/tool pwd'
 monolito -p '/mcp resources demo'
 monolito -p '/tts status'
+monolito -p '/stt status'
 ```
 
 ## Notes

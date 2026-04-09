@@ -75,6 +75,39 @@ If `tts_managed` is enabled, Monolito manages a local Docker container for TTS a
 
 When the managed service is deployed, Monolito also removes conflicting legacy OpenAI Edge TTS containers, including older containers such as `tts-edge`.
 
+## Runtime STT settings
+
+Speech-to-text settings are also stored in:
+
+- `~/.monolito-v2/channels.json`
+
+Supported `/config set` fields for STT are:
+
+- `stt_managed`
+- `stt_auto_deploy`
+- `stt_auto_transcribe`
+- `stt_port`
+- `stt_model`
+- `stt_language`
+- `stt_engine`
+- `stt_vad_filter`
+
+Recommended defaults for incoming Telegram audio are:
+
+- `stt_managed = true`
+- `stt_auto_deploy = true`
+- `stt_auto_transcribe = true`
+- `stt_engine = faster_whisper`
+- `stt_model = small`
+- `stt_language = es`
+
+The managed STT service defaults to:
+
+- image: `onerahmet/openai-whisper-asr-webservice:latest`
+- endpoint: `http://127.0.0.1:<stt_port>/asr`
+
+Managed STT deployment also removes conflicting legacy Whisper containers before starting its own service.
+
 ## Model profiles
 
 The model registry supports provider-oriented profiles with:

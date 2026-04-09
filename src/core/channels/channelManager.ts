@@ -1,8 +1,12 @@
 import { createLogger } from "../logging/logger.ts"
+import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs"
+import { join } from "node:path"
 import { readChannelsConfig, writeChannelsConfig } from "./config.ts"
 import { readWebSearchConfig, writeWebSearchConfig } from "../websearch/config.ts"
 import { createTelegramPoller, type TelegramCallbackQuery, type TelegramMessage, type TelegramPoller } from "./telegramPoller.ts"
 import type { MonolitoV2Runtime } from "../runtime/runtime.ts"
+import { ensureDirs } from "../ipc/protocol.ts"
+import { deployManagedSttContainer, normalizeSttConfig, transcribeManagedAudioFile } from "../stt/managed.ts"
 
 const logger = createLogger("channels")
 let activePoller: TelegramPoller | null = null
@@ -22,6 +26,7 @@ const TELEGRAM_BOT_COMMANDS = [
   { command: "adult", description: "Toggle adult mode" },
   { command: "update", description: "Fetch updates and restart daemon" },
   { command: "tts", description: "Manage local TTS service" },
+  { command: "stt", description: "Manage local STT service" },
   { command: "websearch", description: "Configure web search mode" },
   { command: "new", description: "Start a fresh session" },
 ] as const
@@ -177,7 +182,39 @@ function escapeXml(text: string) {
     .replaceAll("\"", "&quot;")
 }
 
-function buildTelegramInboundText(msg: TelegramMessage | undefined) {
+async function downloadTelegramFile(token: string, fileId: string, rootDir: string, filenamePrefix: string) {
+  const fileInfo = await telegramApi(token, "getFile", { file_id: fileId }) as { file_path?: string }
+  if (!fileInfo.file_path) throw new Error("Telegram did not return file_path for this file_id.")
+  const response = await fetch(`https://api.telegram.org/file/bot${token}/${fileInfo.file_path}`, {
+    signal: AbortSignal.timeout(30_000),
+  })
+  if (!response.ok) throw new Error(`Failed to download Telegram file: HTTP ${response.status}`)
+  const paths = ensureDirs(rootDir)
+  const downloadsDir = join(paths.scratchpadDir, "telegram-downloads")
+  mkdirSync(downloadsDir, { recursive: true })
+  const originalName = fileInfo.file_path.split("/").at(-1) ?? fileId
+  const extension = originalName.includes(".") ? `.${originalName.split(".").at(-1)}` : ""
+  const localPath = join(downloadsDir, `${filenamePrefix}${extension}`)
+  writeFileSync(localPath, Buffer.from(await response.arrayBuffer()))
+  return localPath
+}
+
+async function maybeTranscribeTelegramAudio(token: string, rootDir: string, msg: TelegramMessage | undefined) {
+  if (!msg?.audio && !msg?.voice) return null
+  const fileId = msg.voice?.file_id ?? msg.audio?.file_id
+  if (!fileId) return null
+  const config = readChannelsConfig()
+  const stt = normalizeSttConfig(config.stt)
+  if (!stt.autoTranscribe) return null
+  if (stt.managed && stt.autoDeploy) {
+    const deploy = await deployManagedSttContainer(stt)
+    if (!deploy.ok) throw new Error(deploy.message)
+  }
+  const localPath = await downloadTelegramFile(token, fileId, rootDir, `telegram-audio-${msg.chat.id}-${fileId.slice(0, 8)}`)
+  return await transcribeManagedAudioFile(localPath, stt)
+}
+
+function buildTelegramInboundText(msg: TelegramMessage | undefined, transcript?: { text: string; language?: string; error?: string } | null) {
   if (!msg) return null
   const text = msg.text?.trim() || msg.caption?.trim() || ""
   const slashCommand = normalizeTelegramCommand(text)
@@ -188,6 +225,11 @@ function buildTelegramInboundText(msg: TelegramMessage | undefined) {
   const parts: string[] = [`<channel source="telegram" chat_id="${msg.chat.id}">`]
   if (text) {
     parts.push(`<text>${escapeXml(text)}</text>`)
+  }
+  if (transcript?.text) {
+    parts.push(`<transcript source="stt" language="${escapeXml(transcript.language ?? "")}">${escapeXml(transcript.text)}</transcript>`)
+  } else if (transcript?.error) {
+    parts.push(`<transcript source="stt" error="${escapeXml(transcript.error)}" />`)
   }
 
   if (msg.photo?.length) {
@@ -478,7 +520,21 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
           return
         }
 
-        const inboundText = buildTelegramInboundText(msg)
+        let transcript: { text: string; language?: string; error?: string } | null = null
+        try {
+          const result = await maybeTranscribeTelegramAudio(config.telegram.token, runtime.rootDir, msg)
+          if (result) {
+            transcript = result.ok
+              ? { text: result.text, language: result.language }
+              : { text: "", error: result.error }
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          logger.warn(`STT falló para Telegram chat ${chatId}: ${message}`)
+          transcript = { text: "", error: message }
+        }
+
+        const inboundText = buildTelegramInboundText(msg, transcript)
         if (!inboundText) return
         
         logger.debug(`Recibido mensaje de Telegram [${chatId}]`)
