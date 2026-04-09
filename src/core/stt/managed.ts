@@ -41,10 +41,18 @@ export function normalizeSttConfig(config?: Partial<SttConfig>): SttConfig {
       config?.engine === "faster_whisper" || config?.engine === "openai_whisper" || config?.engine === "whisperx"
         ? config.engine
         : "faster_whisper",
-    model: typeof config?.model === "string" && config.model.trim() ? config.model.trim() : "small",
+    model: typeof config?.model === "string" && config.model.trim() ? config.model.trim() : "base",
     language: typeof config?.language === "string" && config.language.trim() ? config.language.trim() : "es",
     vadFilter: typeof config?.vadFilter === "boolean" ? config.vadFilter : true,
   }
+}
+
+function buildModelFallbackChain(config: SttConfig) {
+  const requested = config.model.trim() || "base"
+  const candidates = [requested]
+  if (requested !== "base") candidates.push("base")
+  if (requested !== "tiny") candidates.push("tiny")
+  return [...new Set(candidates)]
 }
 
 export function getManagedSttBaseUrl(config: SttConfig) {
@@ -189,31 +197,45 @@ export async function deployManagedSttContainer(config: SttConfig): Promise<{ ok
   const cacheDir = join(homedir(), ".monolito-v2", "stt-cache")
   mkdirSync(cacheDir, { recursive: true })
 
-  try {
-    await execFileAsync("docker", [
-      "run", "-d",
-      "--name", config.containerName,
-      "-p", `127.0.0.1:${config.port}:9000`,
-      "--restart", "unless-stopped",
-      "-e", `ASR_ENGINE=${config.engine}`,
-      "-e", `ASR_MODEL=${config.model}`,
-      "-e", "ASR_DEVICE=cpu",
-      "-v", `${cacheDir}:/root/.cache/`,
-      config.image,
-    ], { timeout: 120_000 })
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    return { ok: false, message: `Error desplegando STT: ${message}`, baseUrl }
-  }
+  const modelCandidates = buildModelFallbackChain(config)
+  const failures: string[] = []
 
-  for (let i = 0; i < 45; i++) {
-    await new Promise(resolve => setTimeout(resolve, 1000))
-    if (await probeManagedStt(config)) {
-      return { ok: true, message: `STT desplegado en ${baseUrl}.`, baseUrl }
+  for (const candidateModel of modelCandidates) {
+    try {
+      await execFileAsync("docker", [
+        "run", "-d",
+        "--name", config.containerName,
+        "-p", `127.0.0.1:${config.port}:9000`,
+        "--restart", "unless-stopped",
+        "-e", `ASR_ENGINE=${config.engine}`,
+        "-e", `ASR_MODEL=${candidateModel}`,
+        "-e", "ASR_DEVICE=cpu",
+        "-e", "MODEL_IDLE_TIMEOUT=300",
+        "-v", `${cacheDir}:/root/.cache/`,
+        config.image,
+      ], { timeout: 120_000 })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      failures.push(`${candidateModel}: ${message}`)
+      await removeManagedSttContainer(config, config.containerName).catch(() => {})
+      continue
     }
+
+    for (let i = 0; i < 45; i++) {
+      await new Promise(resolve => setTimeout(resolve, 1000))
+      if (await probeManagedStt(config)) {
+        const suffix = candidateModel === config.model
+          ? ""
+          : ` Fallback aplicado a modelo ${candidateModel} por restricciones del servidor.`
+        return { ok: true, message: `STT desplegado en ${baseUrl}.${suffix}`, baseUrl }
+      }
+    }
+
+    failures.push(`${candidateModel}: no respondió dentro de 45s`)
+    await removeManagedSttContainer(config, config.containerName).catch(() => {})
   }
 
-  return { ok: false, message: "STT se inició pero no respondió dentro de 45s.", baseUrl }
+  return { ok: false, message: `STT no pudo iniciar en este servidor. Intentos: ${failures.join(" | ")}`, baseUrl }
 }
 
 export async function transcribeManagedAudioFile(filePath: string, config: SttConfig): Promise<SttTranscriptResult> {
