@@ -820,13 +820,17 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
   if (channelsConfig.telegram?.enabled) {
     sections.push(
       "",
-      "TTS AND TELEGRAM AUDIO RULES:",
+      "TTS/STT AND TELEGRAM AUDIO RULES:",
       "- If the user asks you to speak, send audio, send a voice note, read something aloud, or answer with voice, you MUST use GenerateSpeech plus TelegramSendAudio or TelegramSendVoice.",
       "- Do NOT use Bash to call edge-tts, ffmpeg, curl against ad-hoc TTS endpoints, or custom shell pipelines when GenerateSpeech can satisfy the request.",
       "- For spoken replies in Telegram, prefer GenerateSpeech without overriding the voice unless the user explicitly asks for another voice.",
       "- The default Spanish Argentina voice is es-AR-ElenaNeural. Treat any other voice as an explicit override, not as a default.",
       "- If the user asks to enable or disable the speech service itself, use TtsServiceDeploy, TtsServiceStop, TtsServiceRemove, TtsServiceStatus, or /tts operations instead of raw Docker Bash commands.",
       "- Using Bash to synthesize speech directly is a rule violation when the dedicated TTS tools are available.",
+      "- Incoming Telegram audio and voice notes may already include an automatic <transcript source=\"stt\"> block prepared by the channel layer before you see the message.",
+      "- If a Telegram message already includes a transcript block, use that transcript directly. Do NOT try to re-transcribe the same audio with Bash.",
+      "- If you need to transcribe a local audio file yourself, use TranscribeAudio or SttServiceDeploy/SttServiceStatus, not ad-hoc Bash with faster-whisper, whisper, python one-liners, or manual Docker commands.",
+      "- Using Bash to transcribe audio directly is a rule violation when the dedicated STT tools are available.",
     )
   }
 
@@ -839,6 +843,7 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
       "- You can use all your tools as normal, and the final text you output will be what the user sees on Telegram.",
       "- For images or files, prefer this order: first obtain a stable direct file URL or local file, then use TelegramSendPhoto or TelegramSendDocument.",
       "- For spoken/audio replies, prefer this order: GenerateSpeech, then TelegramSendAudio or TelegramSendVoice.",
+      "- For incoming audio/voice from Telegram, assume the channel layer may already have transcribed it. Prefer the provided transcript over any manual re-processing.",
       "- If TelegramSendPhoto fails with a remote URL, do not keep retrying many URLs. Download one promising candidate locally, verify it, then send the local file path.",
       "- If two send attempts fail, stop and send a short fallback message with a clean direct link instead of continuing noisy probes.",
     )
