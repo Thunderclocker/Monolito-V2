@@ -217,6 +217,7 @@ async function maybeTranscribeTelegramAudio(token: string, rootDir: string, msg:
 function buildTelegramInboundText(msg: TelegramMessage | undefined, transcript?: { text: string; language?: string } | null) {
   if (!msg) return null
   const text = msg.text?.trim() || msg.caption?.trim() || ""
+  const hasAudioLikeAttachment = Boolean(msg.audio || msg.voice)
   const slashCommand = normalizeTelegramCommand(text)
   if (slashCommand && !msg.photo && !msg.document && !msg.audio && !msg.video && !msg.voice && !msg.video_note) {
     return slashCommand
@@ -228,6 +229,8 @@ function buildTelegramInboundText(msg: TelegramMessage | undefined, transcript?:
   }
   if (transcript?.text) {
     parts.push(`<transcript source="stt" language="${escapeXml(transcript.language ?? "")}">${escapeXml(transcript.text)}</transcript>`)
+  } else if (hasAudioLikeAttachment) {
+    parts.push(`<transcript source="stt" status="unavailable" />`)
   }
 
   if (msg.photo?.length) {
