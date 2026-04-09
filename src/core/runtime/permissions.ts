@@ -211,10 +211,26 @@ function isDangerousBash(command: string) {
     /\bsystemctl\s+(stop|restart|disable)\b/i.test(command)
 }
 
+function isAdHocSpeechProcessingBash(command: string) {
+  const normalized = command.replace(/\s+/g, " ").trim().toLowerCase()
+  if (!normalized) return false
+  return (
+    /faster[_-]?whisper/.test(normalized) ||
+    /\bwhispermodel\b/.test(normalized) ||
+    /\bimport +whisper\b/.test(normalized) ||
+    /\bimport +faster_whisper\b/.test(normalized) ||
+    /openai-whisper-asr-webservice/.test(normalized) ||
+    /\bedge-tts\b/.test(normalized) ||
+    /\/v1\/audio\/speech/.test(normalized) ||
+    /\/asr(\?|["'\s]|$)/.test(normalized)
+  )
+}
+
 function isSafeReadOnlyBash(command: string) {
   const normalized = command.replace(/\s+/g, " ").trim()
   if (!normalized) return false
   if (isDangerousBash(normalized)) return false
+  if (isAdHocSpeechProcessingBash(normalized)) return false
   return DEFAULT_SAFE_BASH_PREFIXES.some(prefix => normalized === prefix || normalized.startsWith(`${prefix} `))
 }
 
@@ -224,6 +240,13 @@ function evaluateMode(mode: PermissionMode, toolName: string, input: Record<stri
   }
   if (toolName === "Bash") {
     const command = getBashCommand(input)
+    if (isAdHocSpeechProcessingBash(command)) {
+      return {
+        behavior: "deny",
+        source: "mode",
+        message: "Ad-hoc Bash speech processing is denied. Use GenerateSpeech, TranscribeAudio, TtsService*, or SttService* instead.",
+      }
+    }
     if (mode === "default") {
       return isSafeReadOnlyBash(command)
         ? { behavior: "allow", source: "mode" }
