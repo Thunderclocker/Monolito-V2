@@ -95,6 +95,99 @@ function optionalBoolean(input: Record<string, unknown>, key: string) {
   return typeof value === "boolean" ? value : undefined
 }
 
+async function telegramApiCall(token: string, method: string, params: Record<string, unknown>) {
+  const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+    signal: AbortSignal.timeout(15_000),
+  })
+  return await response.json() as { ok: boolean; result?: unknown; description?: string }
+}
+
+function isLocalPath(value: string) {
+  return value.startsWith("/") || value.startsWith("./") || value.startsWith("../") || value.startsWith("~/")
+}
+
+async function telegramApiCallWithFile(
+  token: string,
+  method: string,
+  fileField: string,
+  filePath: string,
+  params: Record<string, unknown>,
+) {
+  const resolvedPath = filePath.startsWith("~/")
+    ? filePath.replace("~/", `${process.env.HOME ?? ""}/`)
+    : filePath
+
+  if (!existsSync(resolvedPath)) {
+    return { ok: false, description: `File not found: ${resolvedPath}` }
+  }
+
+  const fileData = readFileSync(resolvedPath)
+  const fileName = resolvedPath.split("/").at(-1) ?? "upload.bin"
+  const formData = new FormData()
+  formData.append(fileField, new Blob([fileData]), fileName)
+
+  for (const [key, value] of Object.entries(params)) {
+    if (key === fileField) continue
+    if (value !== undefined && value !== null) {
+      formData.append(key, typeof value === "object" ? JSON.stringify(value) : String(value))
+    }
+  }
+
+  const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+    method: "POST",
+    body: formData,
+    signal: AbortSignal.timeout(30_000),
+  })
+  return await response.json() as { ok: boolean; result?: unknown; description?: string }
+}
+
+async function resolveTelegramDownload(
+  token: string,
+  fileId: string,
+  rootDir: string,
+  filename?: string,
+) {
+  const fileInfo = await telegramApiCall(token, "getFile", { file_id: fileId })
+  if (!fileInfo.ok || !fileInfo.result || typeof fileInfo.result !== "object") {
+    throw new Error(`Failed to get Telegram file info: ${fileInfo.description ?? "unknown error"}`)
+  }
+
+  const result = fileInfo.result as { file_path?: string }
+  if (!result.file_path) {
+    throw new Error("Telegram did not return file_path for this file_id.")
+  }
+
+  const response = await fetch(`https://api.telegram.org/file/bot${token}/${result.file_path}`, {
+    signal: AbortSignal.timeout(30_000),
+  })
+  if (!response.ok) {
+    throw new Error(`Failed to download Telegram file: HTTP ${response.status}`)
+  }
+
+  const paths = ensureDirs(rootDir)
+  const downloadsDir = join(paths.scratchpadDir, "telegram-downloads")
+  mkdirSync(downloadsDir, { recursive: true })
+  const originalName = result.file_path.split("/").at(-1) ?? fileId
+  const extension = originalName.includes(".") ? `.${originalName.split(".").at(-1)}` : ""
+  const saveName = filename
+    ? (filename.includes(".") ? filename : `${filename}${extension}`)
+    : originalName
+  const localPath = join(downloadsDir, saveName)
+  const buffer = Buffer.from(await response.arrayBuffer())
+  writeFileSync(localPath, buffer)
+
+  return {
+    ok: true,
+    file_id: fileId,
+    file_path: result.file_path,
+    local_path: localPath,
+    bytes: buffer.length,
+  }
+}
+
 async function runRg(args: string[], cwd: string) {
   try {
     return await execFileAsync("rg", args, {
@@ -635,6 +728,129 @@ const tools: ToolDefinition[] = [
         throw new Error(`Telegram API error: ${data.description ?? response.status}`)
       }
       return { ok: true, chat_id: chatId, message: data.result }
+    },
+  },
+  {
+    name: "TelegramSendPhoto",
+    description: "Send a photo to a Telegram chat. Accepts a Telegram file_id, an HTTP URL, or a local file path.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        chat_id: { type: "number", description: "The Telegram chat ID to send the photo to." },
+        photo: { type: "string", description: "Telegram file_id, HTTP URL, or local file path." },
+        caption: { type: "string", description: "Optional caption for the photo." },
+        parse_mode: { type: "string", enum: ["Markdown", "MarkdownV2", "HTML"], description: "Optional parse mode for the caption." },
+      },
+      required: ["chat_id", "photo"],
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    validate: input => {
+      if (typeof input.chat_id !== "number") return "chat_id must be a number"
+      if (typeof input.photo !== "string" || input.photo.length === 0) return "photo must be a non-empty string"
+      return null
+    },
+    async run(input) {
+      const chatId = input.chat_id as number
+      const photo = requireString(input, "photo")
+      const caption = optionalString(input, "caption")
+      const parseMode = optionalString(input, "parse_mode")
+      const config = readChannelsConfig()
+      if (!config.telegram?.enabled || !config.telegram.token) {
+        throw new Error("Telegram is not configured or not enabled. Use /channels to set it up.")
+      }
+      const params: Record<string, unknown> = { chat_id: chatId, photo }
+      if (caption) params.caption = caption
+      if (parseMode) params.parse_mode = parseMode
+      const data = isLocalPath(photo)
+        ? await telegramApiCallWithFile(config.telegram.token, "sendPhoto", "photo", photo, params)
+        : await telegramApiCall(config.telegram.token, "sendPhoto", params)
+      if (!data.ok) throw new Error(`Telegram API error: ${data.description ?? "sendPhoto failed"}`)
+      return { ok: true, chat_id: chatId, message: data.result }
+    },
+  },
+  {
+    name: "TelegramSendDocument",
+    description: "Send a document to a Telegram chat. Accepts a Telegram file_id, an HTTP URL, or a local file path.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        chat_id: { type: "number", description: "The Telegram chat ID to send the document to." },
+        document: { type: "string", description: "Telegram file_id, HTTP URL, or local file path." },
+        caption: { type: "string", description: "Optional caption for the document." },
+      },
+      required: ["chat_id", "document"],
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    validate: input => {
+      if (typeof input.chat_id !== "number") return "chat_id must be a number"
+      if (typeof input.document !== "string" || input.document.length === 0) return "document must be a non-empty string"
+      return null
+    },
+    async run(input) {
+      const chatId = input.chat_id as number
+      const document = requireString(input, "document")
+      const caption = optionalString(input, "caption")
+      const config = readChannelsConfig()
+      if (!config.telegram?.enabled || !config.telegram.token) {
+        throw new Error("Telegram is not configured or not enabled. Use /channels to set it up.")
+      }
+      const params: Record<string, unknown> = { chat_id: chatId, document }
+      if (caption) params.caption = caption
+      const data = isLocalPath(document)
+        ? await telegramApiCallWithFile(config.telegram.token, "sendDocument", "document", document, params)
+        : await telegramApiCall(config.telegram.token, "sendDocument", params)
+      if (!data.ok) throw new Error(`Telegram API error: ${data.description ?? "sendDocument failed"}`)
+      return { ok: true, chat_id: chatId, message: data.result }
+    },
+  },
+  {
+    name: "TelegramGetFile",
+    description: "Resolve a Telegram file_id into Telegram file metadata and a downloadable file_path.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        file_id: { type: "string", description: "The Telegram file_id to inspect." },
+      },
+      required: ["file_id"],
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    validate: input => typeof input.file_id === "string" && input.file_id.length > 0 ? null : "file_id must be a non-empty string",
+    async run(input) {
+      const fileId = requireString(input, "file_id")
+      const config = readChannelsConfig()
+      if (!config.telegram?.enabled || !config.telegram.token) {
+        throw new Error("Telegram is not configured or not enabled. Use /channels to set it up.")
+      }
+      const data = await telegramApiCall(config.telegram.token, "getFile", { file_id: fileId })
+      if (!data.ok) throw new Error(`Telegram API error: ${data.description ?? "getFile failed"}`)
+      return { ok: true, file: data.result }
+    },
+  },
+  {
+    name: "TelegramDownloadFile",
+    description: "Download a Telegram file_id into Monolito scratchpad storage and return the local path.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        file_id: { type: "string", description: "The Telegram file_id to download." },
+        filename: { type: "string", description: "Optional local filename override." },
+      },
+      required: ["file_id"],
+      additionalProperties: false,
+    },
+    concurrencySafe: false,
+    validate: input => typeof input.file_id === "string" && input.file_id.length > 0 ? null : "file_id must be a non-empty string",
+    async run(input, context) {
+      const fileId = requireString(input, "file_id")
+      const filename = optionalString(input, "filename")
+      const config = readChannelsConfig()
+      if (!config.telegram?.enabled || !config.telegram.token) {
+        throw new Error("Telegram is not configured or not enabled. Use /channels to set it up.")
+      }
+      return await resolveTelegramDownload(config.telegram.token, fileId, context.rootDir, filename)
     },
   },
   {

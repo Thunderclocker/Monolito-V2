@@ -1,6 +1,6 @@
 import { createLogger } from "../logging/logger.ts"
 import { readChannelsConfig } from "./config.ts"
-import { createTelegramPoller, type TelegramPoller } from "./telegramPoller.ts"
+import { createTelegramPoller, type TelegramMessage, type TelegramPoller } from "./telegramPoller.ts"
 import type { MonolitoV2Runtime } from "../runtime/runtime.ts"
 
 const logger = createLogger("channels")
@@ -47,6 +47,59 @@ function normalizeTelegramCommand(text: string) {
   return [normalizedHead, ...rest].join(" ").trim()
 }
 
+function escapeXml(text: string) {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;")
+}
+
+function buildTelegramInboundText(msg: TelegramMessage | undefined) {
+  if (!msg) return null
+  const text = msg.text?.trim() || msg.caption?.trim() || ""
+  const slashCommand = normalizeTelegramCommand(text)
+  if (slashCommand && !msg.photo && !msg.document && !msg.audio && !msg.video && !msg.voice && !msg.video_note) {
+    return slashCommand
+  }
+
+  const parts: string[] = [`<channel source="telegram" chat_id="${msg.chat.id}">`]
+  if (text) {
+    parts.push(`<text>${escapeXml(text)}</text>`)
+  }
+
+  if (msg.photo?.length) {
+    const largest = [...msg.photo].sort((a, b) => (b.file_size ?? 0) - (a.file_size ?? 0))[0]
+    if (largest) {
+      parts.push(`<attachment kind="photo" file_id="${largest.file_id}" width="${largest.width}" height="${largest.height}" />`)
+    }
+  }
+  if (msg.document) {
+    parts.push(
+      `<attachment kind="document" file_id="${msg.document.file_id}" file_name="${escapeXml(msg.document.file_name ?? "")}" mime_type="${escapeXml(msg.document.mime_type ?? "")}" />`,
+    )
+  }
+  if (msg.audio) {
+    parts.push(
+      `<attachment kind="audio" file_id="${msg.audio.file_id}" title="${escapeXml(msg.audio.title ?? "")}" performer="${escapeXml(msg.audio.performer ?? "")}" mime_type="${escapeXml(msg.audio.mime_type ?? "")}" />`,
+    )
+  }
+  if (msg.video) {
+    parts.push(
+      `<attachment kind="video" file_id="${msg.video.file_id}" mime_type="${escapeXml(msg.video.mime_type ?? "")}" width="${msg.video.width}" height="${msg.video.height}" />`,
+    )
+  }
+  if (msg.voice) {
+    parts.push(`<attachment kind="voice" file_id="${msg.voice.file_id}" mime_type="${escapeXml(msg.voice.mime_type ?? "")}" />`)
+  }
+  if (msg.video_note) {
+    parts.push(`<attachment kind="video_note" file_id="${msg.video_note.file_id}" length="${msg.video_note.length}" />`)
+  }
+
+  parts.push("</channel>")
+  return parts.join("\n")
+}
+
 export function startChannels(runtime: MonolitoV2Runtime) {
   const config = readChannelsConfig()
   process.stderr.write(`[ChannelManager] startChannels called. Telegram enabled: ${!!config.telegram?.enabled}\n`)
@@ -64,9 +117,8 @@ export function startChannels(runtime: MonolitoV2Runtime) {
     
     activePoller = createTelegramPoller(config.telegram.token, {
       onUpdate: async (update) => {
-        // Ignorar si no es mensaje de texto
         const msg = update.message || update.channel_post
-        if (!msg || !msg.text) return
+        if (!msg) return
         if (msg.from?.is_bot) {
           logger.debug(`Ignorando mensaje del propio bot o de otro bot en Telegram chat ${msg.chat.id}`)
           return
@@ -83,10 +135,10 @@ export function startChannels(runtime: MonolitoV2Runtime) {
         }
         
         const sessionId = `telegram-${chatId}`
-        const slashCommand = normalizeTelegramCommand(msg.text)
-        const inboundText = slashCommand ?? `<channel source="telegram" chat_id="${chatId}">\n${msg.text}\n</channel>`
+        const inboundText = buildTelegramInboundText(msg)
+        if (!inboundText) return
         
-        logger.debug(`Recibido mensaje de Telegram [${chatId}]: ${msg.text}`)
+        logger.debug(`Recibido mensaje de Telegram [${chatId}]`)
         
         // Asegurar que la sesión exista antes de enviar el mensaje
         try {

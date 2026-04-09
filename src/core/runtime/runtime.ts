@@ -135,6 +135,21 @@ function getTelegramChatId(sessionId: string) {
   return sessionId.startsWith("telegram-") ? sessionId.slice("telegram-".length) : null
 }
 
+function sanitizeExternalAssistantText(sessionId: string, text: string) {
+  if (!getTelegramChatId(sessionId)) return text
+  const normalized = text.trim()
+
+  if (/^Model request failed:/i.test(normalized) || /^Network\/model error after retries:/i.test(normalized)) {
+    return "Tengo un problema tecnico temporal con el proveedor del modelo. Proba de nuevo en unos segundos."
+  }
+
+  if (/^Model request failed after retries$/i.test(normalized)) {
+    return "No pude completar la respuesta por un problema temporal del modelo. Proba de nuevo en unos segundos."
+  }
+
+  return text
+}
+
 const TELEGRAM_MESSAGE_LIMIT = 4096
 
 function chunkTelegramMessage(text: string, maxLength = TELEGRAM_MESSAGE_LIMIT) {
@@ -360,8 +375,9 @@ export class MonolitoV2Runtime {
             Date.now() - apiStartedAt,
           )
         }
-        appendMessage(this.rootDir, sessionId, "assistant", turn.finalText)
-        this.emit({ type: "message.received", sessionId, role: "assistant", text: turn.finalText })
+        const userFacingText = sanitizeExternalAssistantText(sessionId, turn.finalText)
+        appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
+        this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
         this.emit({
           type: "turn.completed",
           sessionId,
@@ -371,11 +387,11 @@ export class MonolitoV2Runtime {
         })
         
         const telegramChatId = getTelegramChatId(sessionId)
-        if (telegramChatId && turn.finalText) {
+        if (telegramChatId && userFacingText) {
           try {
             const config = readChannelsConfig()
             if (config.telegram?.enabled && config.telegram.token) {
-              await sendTelegramMessage(config.telegram.token, telegramChatId, turn.finalText)
+              await sendTelegramMessage(config.telegram.token, telegramChatId, userFacingText)
             }
           } catch (e) {
             console.error("Failed to send reply back to telegram", e)
@@ -390,7 +406,7 @@ export class MonolitoV2Runtime {
         await this.transitionState(sessionId, "idle")
         throw error
       }
-      const message = error instanceof Error ? error.message : String(error)
+      const message = sanitizeExternalAssistantText(sessionId, error instanceof Error ? error.message : String(error))
       this.emit({ type: "error", sessionId, error: message })
       appendMessage(this.rootDir, sessionId, "assistant", message)
       this.emit({ type: "message.received", sessionId, role: "assistant", text: message })
@@ -441,28 +457,7 @@ export class MonolitoV2Runtime {
   private async mirrorTelegramEvent(event: AgentEvent) {
     const chatId = getTelegramChatId(event.sessionId)
     if (!chatId) return
-
-    const config = readChannelsConfig()
-    if (!config.telegram?.enabled || !config.telegram.token) return
-
-    let text: string | null = null
-    if (event.type === "tool.start") {
-      const line = renderToolStart(event.tool, event.input)
-      text = renderToolStartText(line, "  └─ ")
-    } else if (event.type === "tool.finish") {
-      const line = renderToolFinish(event.tool, event.ok, event.output)
-      text = line.text
-    } else if (event.type === "error") {
-      text = `Error: ${event.error}`
-    }
-
-    if (!text?.trim()) return
-
-    try {
-      await sendTelegramMessage(config.telegram.token, chatId, text)
-    } catch (error) {
-      console.error(`Failed to mirror runtime event to telegram chat ${chatId}:`, error)
-    }
+    void chatId
   }
 
   private async ensureMcpClient(serverName: string, sessionId: string) {
