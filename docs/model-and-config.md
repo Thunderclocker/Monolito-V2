@@ -67,6 +67,8 @@ If `tts_managed` is enabled, Monolito manages a local Docker container for TTS a
 
 - `http://127.0.0.1:<tts_port>`
 
+When the managed service is deployed, Monolito also removes conflicting legacy OpenAI Edge TTS containers, including older containers such as `tts-edge`.
+
 ## Model profiles
 
 The model registry supports provider-oriented profiles with:
