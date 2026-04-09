@@ -108,6 +108,8 @@ const READ_ONLY_TOOLS = new Set([
   "WebFetch",
   "ImageSearch",
   "TelegramGetFile",
+  "TtsServiceStatus",
+  "TtsServiceList",
 ])
 
 const EDIT_TOOLS = new Set([
@@ -125,6 +127,12 @@ const EDIT_TOOLS = new Set([
   "TelegramSendPhoto",
   "TelegramSendDocument",
   "TelegramDownloadFile",
+  "GenerateSpeech",
+  "TelegramSendAudio",
+  "TelegramSendVoice",
+  "TtsServiceDeploy",
+  "TtsServiceStop",
+  "TtsServiceRemove",
 ])
 
 function getPermissionsPath(rootDir?: string) {
