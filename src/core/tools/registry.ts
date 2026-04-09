@@ -1162,7 +1162,7 @@ const tools: ToolDefinition[] = [
     async run(input) {
       const query = requireString(input, "query")
       const limit = optionalNumber(input, "limit") ?? 5
-      const SEARXNG_PORT = 18890
+      const SEARXNG_PORT = 8888
       const SEARXNG_URL = `http://127.0.0.1:${SEARXNG_PORT}`
       const CONTAINER_NAME = "monolito-searxng"
 
@@ -1177,7 +1177,11 @@ const tools: ToolDefinition[] = [
       if (!alive) {
         // Check if container exists but stopped
         try {
-          const { stdout: psOut } = await execFileAsync("docker", ["ps", "-a", "--filter", `name=${CONTAINER_NAME}`, "--format", "{{.Status}}"], { timeout: 10_000 })
+          const { stdout: psOut } = await execFileAsync("docker", [
+            "ps", "-a",
+            "--filter", `name=^/${CONTAINER_NAME}$`,
+            "--format", "{{.Status}}",
+          ], { timeout: 10_000 })
           const status = psOut.trim()
           if (status && !status.startsWith("Up")) {
             // Container exists but not running — start it
