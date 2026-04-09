@@ -221,6 +221,7 @@ export class MonolitoV2Runtime {
   private recentResumeAt = new Map<string, number>()
   private abortControllers = new Map<string, AbortController>()
   private costState = createCostState()
+  private adultModeSessions = new Set<string>()
   private restartRequested = false
   readonly orchestrator: AgentOrchestrator
 
@@ -362,7 +363,7 @@ export class MonolitoV2Runtime {
             profileId,
             orchestrator: this.orchestrator,
           },
-          { contextExtras: { gitContext, dateContext, workspaceContext }, costState: this.costState, abortSignal: abortController.signal },
+          { contextExtras: { gitContext, dateContext, workspaceContext, adultMode: this.adultModeSessions.has(sessionId) }, costState: this.costState, abortSignal: abortController.signal },
         )
         if (turn.usage) {
           recordApiCall(
@@ -498,6 +499,7 @@ export class MonolitoV2Runtime {
           "/doctor",
           "/update",
           "/config [show|set <field> <value>]",
+          "/adult — Toggle adult content mode",
           "/new — Reset session and restart agent",
         ].join("\n")
       case "/status": {
@@ -548,6 +550,15 @@ export class MonolitoV2Runtime {
       }
       case "/config": {
         return this.runConfig(rest)
+      }
+      case "/adult": {
+        const isActive = this.adultModeSessions.has(sessionId)
+        if (isActive) {
+          this.adultModeSessions.delete(sessionId)
+          return "Modo adulto desactivado."
+        }
+        this.adultModeSessions.add(sessionId)
+        return "Modo adulto activado."
       }
       case "/new":
       case "/reset": {

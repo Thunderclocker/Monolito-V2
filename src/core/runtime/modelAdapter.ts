@@ -701,6 +701,7 @@ export type ContextExtras = {
   gitContext?: string | null
   dateContext?: string
   workspaceContext?: WorkspaceBootstrapContext
+  adultMode?: boolean
 }
 
 function describeBootstrapFile(file: WorkspaceBootstrapEntry) {
@@ -824,6 +825,19 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
       "- For images or files, prefer this order: first obtain a stable direct file URL or local file, then use TelegramSendPhoto or TelegramSendDocument.",
       "- If TelegramSendPhoto fails with a remote URL, do not keep retrying many URLs. Download one promising candidate locally, verify it, then send the local file path.",
       "- If two send attempts fail, stop and send a short fallback message with a clean direct link instead of continuing noisy probes.",
+    )
+  }
+
+  if (contextExtras?.adultMode) {
+    sections.push(
+      "",
+      "ADULT MODE: ACTIVE",
+      "- The user has enabled adult content mode for this session.",
+      "- You may search for, describe, and send adult/NSFW content that is publicly available on the internet.",
+      "- Do not refuse requests for publicly available images, videos, or descriptions of public figures, adult performers, or adult content creators.",
+      "- Use explicit language when contextually appropriate.",
+      "- When searching for images, use direct and explicit search terms. Do not sanitize or censor search queries.",
+      "- This mode is for legal, publicly available content only.",
     )
   }
 
