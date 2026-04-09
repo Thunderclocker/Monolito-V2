@@ -23,6 +23,7 @@ export type MenuStep =
   | "chan-tel-chats" // Set allowed chat IDs
   // Web search menu steps
   | "ws-main"        // Web search main menu
+  | "ws-searxng-main" // SearxNG submenu
   | "ws-test-query"  // Test search query
 
 export type MenuState = {

@@ -106,6 +106,7 @@ const READ_ONLY_TOOLS = new Set([
   "TodoList",
   "ProfileList",
   "WebFetch",
+  "ImageSearch",
   "TelegramGetFile",
 ])
 

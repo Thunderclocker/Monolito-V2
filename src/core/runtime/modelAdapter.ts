@@ -9,6 +9,7 @@ import { type ToolCallDirective, parseDirective } from "./directiveParser.ts"
 import { readModelSettings, refreshModelAuth } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider } from "./modelRegistry.ts"
 import { readChannelsConfig } from "../channels/config.ts"
+import type { WebSearchProvider } from "../websearch/config.ts"
 import { type CostState, type TurnUsage, createCostState, recordApiCall } from "../cost/tracker.ts"
 import { getDateContext, getGitContext } from "../context/gitContext.ts"
 import { createLogger } from "../logging/logger.ts"
@@ -702,6 +703,7 @@ export type ContextExtras = {
   dateContext?: string
   workspaceContext?: WorkspaceBootstrapContext
   adultMode?: boolean
+  webSearchProvider?: WebSearchProvider
 }
 
 function describeBootstrapFile(file: WorkspaceBootstrapEntry) {
@@ -825,6 +827,33 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
       "- For images or files, prefer this order: first obtain a stable direct file URL or local file, then use TelegramSendPhoto or TelegramSendDocument.",
       "- If TelegramSendPhoto fails with a remote URL, do not keep retrying many URLs. Download one promising candidate locally, verify it, then send the local file path.",
       "- If two send attempts fail, stop and send a short fallback message with a clean direct link instead of continuing noisy probes.",
+    )
+  }
+
+  if (contextExtras?.webSearchProvider === "searxng") {
+    sections.push(
+      "",
+      "## WEB SEARCH MODE: SEARXNG LOCAL",
+      `- Prefer the local SearxNG instance at http://127.0.0.1:8888 for web searching when the user asks you to search the web.`,
+      "- For web search, prefer Bash curl against that local SearxNG endpoint before generic site scraping.",
+      "- Example: curl -s 'http://127.0.0.1:8888/search?q=<query>&format=json'",
+      "- If the local SearxNG instance is unavailable, fall back to other appropriate tools.",
+    )
+  } else if (contextExtras?.webSearchProvider === "curl") {
+    sections.push(
+      "",
+      "## WEB SEARCH MODE: CURL / WEBFETCH",
+      "- Prefer direct retrieval tools for web lookups.",
+      "- For straightforward pages or endpoints, prefer WebFetch.",
+      "- When a direct HTTP request is needed, prefer Bash curl against the target URL or API.",
+      "- Do not assume SearxNG is available in this mode.",
+    )
+  } else {
+    sections.push(
+      "",
+      "## WEB SEARCH MODE: DEFAULT",
+      "- Use your normal tool judgment for web lookups.",
+      "- Do not assume SearxNG is available unless another instruction explicitly says so.",
     )
   }
 
