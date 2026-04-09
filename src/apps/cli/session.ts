@@ -2,7 +2,7 @@ import { stdin, stdout } from "node:process"
 import { spawn } from "node:child_process"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import type { AgentEvent, SessionRecord, SessionSummary } from "../../core/ipc/protocol.ts"
+import { readDaemonLock, type AgentEvent, type SessionRecord, type SessionSummary } from "../../core/ipc/protocol.ts"
 import {
   parseTaskNotification,
   renderToolFinish,
@@ -113,14 +113,34 @@ async function ensureDaemon(client: DaemonClient, rootDir: string) {
 }
 
 async function restartDaemon(client: DaemonClient, rootDir: string) {
+  const previousLock = readDaemonLock(rootDir)
+  const previousSignature = previousLock ? `${previousLock.pid}:${previousLock.startedAt}` : null
   try {
     await client.stopDaemon()
   } catch {
     // continue; we still attempt to start a fresh daemon
   }
   client.close()
-  await new Promise(r => setTimeout(r, 500))
-  await ensureDaemon(client, rootDir)
+  const deadline = Date.now() + 15_000
+  let lastError: unknown = null
+
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 300))
+    try {
+      await ensureDaemon(client, rootDir)
+      const nextLock = readDaemonLock(rootDir)
+      const nextSignature = nextLock ? `${nextLock.pid}:${nextLock.startedAt}` : null
+      if (!previousSignature || (nextSignature && nextSignature !== previousSignature)) {
+        return
+      }
+      client.close()
+    } catch (error) {
+      lastError = error
+    }
+  }
+
+  const detail = lastError instanceof Error ? `: ${lastError.message}` : ""
+  throw new Error(`Daemon restart could not be verified within 15s${detail}`)
 }
 
 async function runGit(rootDir: string, args: string[]) {
@@ -384,6 +404,8 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
   let thinkingTimer: NodeJS.Timeout | null = null
   let inputBuffer = ""
   let needsClear = true
+  let shouldRelaunchCli = false
+  let relaunchSessionId: string | undefined
 
   const refreshHeader = () => {
     header = getHeaderState(rootDir, activeSessionId, connectionHealthy)
@@ -626,6 +648,8 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
         connectionHealthy = client.isConnected()
         subscribedSessionId = null
         const nextHead = await runGit(rootDir, ["rev-parse", "--short", "HEAD"])
+        shouldRelaunchCli = true
+        relaunchSessionId = activeSessionId !== "offline" ? activeSessionId : undefined
         return {
           type: "text",
           tone: "success",
@@ -634,7 +658,8 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
             `Remote: ${remoteUrl}`,
             `Current revision: ${nextHead}`,
             stashLabel ? `Local changes were backed up automatically to stash: ${stashLabel}` : "",
-            "Daemon restarted automatically.",
+            "Daemon restart verified.",
+            "Restarting the interactive CLI to load updated commands and menus...",
           ].filter(Boolean).join("\n"),
         }
       }
@@ -660,6 +685,21 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     detachConnectionListener()
     client.close()
     stdout.write(`${ANSI.showCursor}${ANSI.altScreenOff}`)
+  }
+
+  const relaunchInteractiveCli = () => {
+    const cliPath = `${rootDir}/src/apps/cli.ts`
+    const args = ["--experimental-strip-types", cliPath]
+    if (relaunchSessionId) args.push("resume", relaunchSessionId)
+    try {
+      spawn(process.execPath, args, {
+        cwd: rootDir,
+        stdio: "inherit",
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      stdout.write(`\nFailed to relaunch CLI automatically: ${message}\n`)
+    }
   }
 
   const submitCurrentInput = async () => {
@@ -802,6 +842,11 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
         { type: "event", label: "command", tone: block.tone ?? "neutral", text: block.content },
       ])
       redraw()
+      if (shouldRelaunchCli) {
+        setTimeout(() => {
+          finish?.()
+        }, 250)
+      }
       return
     }
 
@@ -1157,6 +1202,9 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     })
   } finally {
     cleanup()
+    if (shouldRelaunchCli) {
+      relaunchInteractiveCli()
+    }
   }
 }
 
