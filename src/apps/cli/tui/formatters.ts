@@ -146,7 +146,7 @@ export function formatHelp(): FormattedBlock {
     ["/doctor", "Run system health check"],
     ["/update", "Fetch and fast-forward from origin"],
     ["/channels", "Interactive Telegram channel menu or text command"],
-    ["/websearch", "Interactive web search menu or text command"],
+    ["/websearch", "Interactive web search menu"],
     ["/config [show|set]", "Show or set configuration"],
     ["/model", "Interactive model configuration menu"],
     ["/tool [name] [json]", "Run a tool directly"],

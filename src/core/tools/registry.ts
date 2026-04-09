@@ -1166,6 +1166,59 @@ const tools: ToolDefinition[] = [
       const SEARXNG_URL = `http://127.0.0.1:${SEARXNG_PORT}`
       const CONTAINER_NAME = "monolito-searxng"
 
+      type SearxngContainerInfo = {
+        id: string
+        name: string
+        image: string
+        status: string
+        isOurs: boolean
+      }
+
+      async function findAllSearxngContainers(): Promise<SearxngContainerInfo[]> {
+        try {
+          const { stdout: byImage } = await execFileAsync("docker", [
+            "ps", "-a",
+            "--filter", "ancestor=searxng/searxng",
+            "--format", "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}",
+          ], { timeout: 10_000 })
+          const { stdout: byName } = await execFileAsync("docker", [
+            "ps", "-a",
+            "--filter", "name=searxng",
+            "--format", "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}",
+          ], { timeout: 10_000 })
+
+          const seen = new Set<string>()
+          const containers: SearxngContainerInfo[] = []
+          for (const line of [...byImage.trim().split("\n"), ...byName.trim().split("\n")]) {
+            if (!line.trim()) continue
+            const [id, name, image, status] = line.split("\t")
+            if (!id || seen.has(id)) continue
+            seen.add(id)
+            containers.push({
+              id: id.slice(0, 12),
+              name: name ?? "",
+              image: image ?? "",
+              status: status ?? "",
+              isOurs: name === CONTAINER_NAME,
+            })
+          }
+          return containers
+        } catch {
+          return []
+        }
+      }
+
+      async function waitForHealthy(seconds: number) {
+        for (let i = 0; i < seconds; i++) {
+          await new Promise(resolve => setTimeout(resolve, 1000))
+          try {
+            const probe = await fetch(`${SEARXNG_URL}/healthz`, { signal: AbortSignal.timeout(2000) })
+            if (probe.ok) return true
+          } catch {}
+        }
+        return false
+      }
+
       // 1. Check if SearxNG is reachable
       let alive = false
       try {
@@ -1175,19 +1228,21 @@ const tools: ToolDefinition[] = [
 
       // 2. If not alive, ensure Docker container is running
       if (!alive) {
-        // Check if container exists but stopped
         try {
-          const { stdout: psOut } = await execFileAsync("docker", [
-            "ps", "-a",
-            "--filter", `name=^/${CONTAINER_NAME}$`,
-            "--format", "{{.Status}}",
-          ], { timeout: 10_000 })
-          const status = psOut.trim()
-          if (status && !status.startsWith("Up")) {
-            // Container exists but not running — start it
-            await execFileAsync("docker", ["start", CONTAINER_NAME], { timeout: 15_000 })
-          } else if (!status) {
-            // Container doesn't exist — create and run
+          const containers = await findAllSearxngContainers()
+          const ours = containers.find(container => container.isOurs)
+
+          for (const container of containers.filter(container => !container.isOurs)) {
+            await execFileAsync("docker", ["rm", "-f", container.id], { timeout: 15_000 })
+          }
+
+          if (ours) {
+            if (ours.status.startsWith("Up")) {
+              await execFileAsync("docker", ["restart", CONTAINER_NAME], { timeout: 30_000 })
+            } else {
+              await execFileAsync("docker", ["start", CONTAINER_NAME], { timeout: 15_000 })
+            }
+          } else {
             await execFileAsync("docker", [
               "run", "-d",
               "--name", CONTAINER_NAME,
@@ -1201,16 +1256,9 @@ const tools: ToolDefinition[] = [
           return { ok: false, error: `Failed to start SearxNG container: ${msg}` }
         }
 
-        // Wait for SearxNG to become ready (up to 20s)
-        for (let i = 0; i < 20; i++) {
-          await new Promise(r => setTimeout(r, 1000))
-          try {
-            const probe = await fetch(`${SEARXNG_URL}/healthz`, { signal: AbortSignal.timeout(2000) })
-            if (probe.ok) { alive = true; break }
-          } catch {}
-        }
+        alive = await waitForHealthy(25)
         if (!alive) {
-          return { ok: false, error: "SearxNG container started but did not become healthy within 20s." }
+          return { ok: false, error: "SearxNG container started but did not become healthy within 25s." }
         }
       }
 
