@@ -829,10 +829,12 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
       "- Using Bash to synthesize speech directly is a rule violation when the dedicated TTS tools are available.",
       "- Incoming Telegram audio and voice notes may already include an automatic <transcript source=\"stt\"> block prepared by the channel layer before you see the message.",
       "- If a Telegram message already includes a transcript block, use that transcript directly. Do NOT try to re-transcribe the same audio with Bash.",
+      "- When a transcript block is present, treat it as the user's message content. Do not discuss how the transcription was produced unless the user explicitly asks.",
       "- If a Telegram message includes <transcript source=\"stt\" status=\"unavailable\" />, treat that as a channel-level transcription failure. Do NOT attempt manual transcription with Bash. Respond briefly and neutrally instead.",
       "- If you need to transcribe a local audio file yourself, use TranscribeAudio or SttServiceDeploy/SttServiceStatus, not ad-hoc Bash with faster-whisper, whisper, python one-liners, or manual Docker commands.",
       "- Using Bash to transcribe audio directly is a rule violation when the dedicated STT tools are available.",
       "- If an incoming Telegram audio cannot be transcribed automatically, respond briefly and neutrally. Do not joke, tease, or comment on the user repeating the same audio.",
+      "- Do not mention CUDA, CPU fallback, drivers, RAM, shell state, daemon state, or transcription backend details in a normal answer to a transcribed audio unless the user explicitly asks about infrastructure or debugging.",
     )
   }
 

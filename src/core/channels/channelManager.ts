@@ -102,6 +102,13 @@ async function answerTelegramCallback(token: string, callbackId: string, text?: 
   }).catch(() => {})
 }
 
+async function sendTelegramText(token: string, chatId: number, text: string) {
+  await telegramApi(token, "sendMessage", {
+    chat_id: chatId,
+    text,
+  })
+}
+
 function parseAllowedChats(raw: string) {
   const ids = raw.split(",").map(item => item.trim()).filter(Boolean).map(Number)
   const invalid = ids.filter(item => !Number.isFinite(item) || item === 0)
@@ -214,10 +221,18 @@ async function maybeTranscribeTelegramAudio(token: string, rootDir: string, msg:
   return await transcribeManagedAudioFile(localPath, stt)
 }
 
+function shouldShortCircuitAudioFailure(msg: TelegramMessage | undefined, transcript: { text: string; language?: string } | null) {
+  if (!msg) return false
+  const hasAudioLikeAttachment = Boolean(msg.audio || msg.voice)
+  const hasUserText = Boolean(msg.text?.trim() || msg.caption?.trim())
+  return hasAudioLikeAttachment && !hasUserText && !transcript?.text
+}
+
 function buildTelegramInboundText(msg: TelegramMessage | undefined, transcript?: { text: string; language?: string } | null) {
   if (!msg) return null
   const text = msg.text?.trim() || msg.caption?.trim() || ""
   const hasAudioLikeAttachment = Boolean(msg.audio || msg.voice)
+  const hideAudioAttachmentFromModel = Boolean(transcript?.text)
   const slashCommand = normalizeTelegramCommand(text)
   if (slashCommand && !msg.photo && !msg.document && !msg.audio && !msg.video && !msg.voice && !msg.video_note) {
     return slashCommand
@@ -244,7 +259,7 @@ function buildTelegramInboundText(msg: TelegramMessage | undefined, transcript?:
       `<attachment kind="document" file_id="${msg.document.file_id}" file_name="${escapeXml(msg.document.file_name ?? "")}" mime_type="${escapeXml(msg.document.mime_type ?? "")}" />`,
     )
   }
-  if (msg.audio) {
+  if (msg.audio && !hideAudioAttachmentFromModel) {
     parts.push(
       `<attachment kind="audio" file_id="${msg.audio.file_id}" title="${escapeXml(msg.audio.title ?? "")}" performer="${escapeXml(msg.audio.performer ?? "")}" mime_type="${escapeXml(msg.audio.mime_type ?? "")}" />`,
     )
@@ -254,7 +269,7 @@ function buildTelegramInboundText(msg: TelegramMessage | undefined, transcript?:
       `<attachment kind="video" file_id="${msg.video.file_id}" mime_type="${escapeXml(msg.video.mime_type ?? "")}" width="${msg.video.width}" height="${msg.video.height}" />`,
     )
   }
-  if (msg.voice) {
+  if (msg.voice && !hideAudioAttachmentFromModel) {
     parts.push(`<attachment kind="voice" file_id="${msg.voice.file_id}" mime_type="${escapeXml(msg.voice.mime_type ?? "")}" />`)
   }
   if (msg.video_note) {
@@ -532,6 +547,15 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           logger.warn(`STT falló para Telegram chat ${chatId}: ${message}`)
+        }
+
+        if (shouldShortCircuitAudioFailure(msg, transcript)) {
+          await sendTelegramText(
+            config.telegram.token,
+            chatId,
+            "No pude transcribir ese audio automaticamente en este momento. Reenviamelo mas tarde o mandame el texto.",
+          ).catch(() => {})
+          return
         }
 
         const inboundText = buildTelegramInboundText(msg, transcript)

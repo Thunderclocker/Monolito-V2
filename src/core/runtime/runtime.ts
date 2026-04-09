@@ -432,6 +432,30 @@ function getTelegramChatId(sessionId: string) {
   return sessionId.startsWith("telegram-") ? sessionId.slice("telegram-".length) : null
 }
 
+function extractTelegramAudioFileId(text: string) {
+  const voiceMatch = text.match(/<attachment kind="voice"[^>]*file_id="([^"]+)"/i)
+  if (voiceMatch?.[1]) return voiceMatch[1]
+  const audioMatch = text.match(/<attachment kind="audio"[^>]*file_id="([^"]+)"/i)
+  if (audioMatch?.[1]) return audioMatch[1]
+  return null
+}
+
+function hasTelegramTranscriptText(text: string) {
+  return /<transcript\b[^>]*>[^<\s][\s\S]*?<\/transcript>/i.test(text)
+}
+
+function hasTelegramTranscriptUnavailable(text: string) {
+  return /<transcript\b[^>]*status="unavailable"[^>]*\/>/i.test(text)
+}
+
+function injectTelegramTranscript(text: string, transcript: string, language?: string) {
+  const payload = `<transcript source="stt" language="${(language ?? "").replaceAll("\"", "&quot;")}">${transcript
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")}</transcript>`
+  return text.replace(/(<text>[\s\S]*?<\/text>)/i, `$1\n${payload}`).replace(/(<channel[^>]*>)/i, `$1\n${payload}`)
+}
+
 function sanitizeExternalAssistantText(sessionId: string, text: string) {
   if (!getTelegramChatId(sessionId)) return text
   const normalized = text.trim()
@@ -660,6 +684,46 @@ export class MonolitoV2Runtime {
       } else {
         const session = getSession(this.rootDir, sessionId)
         if (!session) throw new Error(`Session ${sessionId} not found`)
+        let preparedUserText = lastUserText
+        const incomingTelegramChatId = getTelegramChatId(sessionId)
+        if (incomingTelegramChatId && !hasTelegramTranscriptText(preparedUserText) && !hasTelegramTranscriptUnavailable(preparedUserText)) {
+          const fileId = extractTelegramAudioFileId(preparedUserText)
+          if (fileId) {
+            try {
+              const toolContext = {
+                rootDir: this.rootDir,
+                cwd: this.rootDir,
+                getMcpClient: async (serverName: string) => this.ensureMcpClient(serverName, sessionId),
+                profileId,
+                sessionId,
+                orchestrator: this.orchestrator,
+              }
+              const downloaded = await this.executeTool(sessionId, "TelegramDownloadFile", { file_id: fileId }, toolContext, undefined, profileId) as { local_path?: string }
+              if (downloaded.local_path) {
+                const transcribed = await this.executeTool(sessionId, "TranscribeAudio", { path: downloaded.local_path }, toolContext, undefined, profileId) as { text?: string; language?: string }
+                if (typeof transcribed.text === "string" && transcribed.text.trim()) {
+                  preparedUserText = injectTelegramTranscript(preparedUserText, transcribed.text.trim(), transcribed.language)
+                }
+              }
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error)
+              appendWorklog(this.rootDir, sessionId, {
+                type: "note",
+                summary: `Automatic Telegram audio transcription failed before model turn: ${message}`,
+              })
+            }
+          }
+        }
+        const preparedSession =
+          preparedUserText !== lastUserText && session.messages.length > 0
+            ? {
+                ...session,
+                messages: [
+                  ...session.messages.slice(0, -1),
+                  { ...session.messages[session.messages.length - 1], text: preparedUserText },
+                ],
+              }
+            : session
         const apiStartedAt = Date.now()
         const isMainSession = !session.id.startsWith("agent-") && !session.id.startsWith("telegram-")
         const [gitContext, dateContext, workspaceContext] = await Promise.all([
@@ -669,7 +733,7 @@ export class MonolitoV2Runtime {
         ])
         const webSearchConfig = readWebSearchConfig()
         const turn = await runAssistantTurn(
-          session,
+          preparedSession,
           this.rootDir,
           async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, sessionId, orchestrator: this.orchestrator }, toolUseId, profileId),
           {
