@@ -1100,12 +1100,19 @@ async function executeNativeToolUses(
   return records
 }
 
-async function callModelApi(rootDir: string, messages: AnthropicMessage[], system: string, abortSignal?: AbortSignal, retryPolicy: RetryPolicy = { unattended: false, background: false }) {
+async function callModelApi(
+  rootDir: string,
+  messages: AnthropicMessage[],
+  system: string,
+  abortSignal?: AbortSignal,
+  retryPolicy: RetryPolicy = { unattended: false, background: false },
+  includeTools = true,
+) {
   const config = getEffectiveModelConfig()
   if (config.provider === "ollama" || config.provider === "openai_compatible") {
-    return callOpenAiCompatibleApi(config.provider, messages, system, abortSignal)
+    return callOpenAiCompatibleApi(config.provider, messages, system, abortSignal, includeTools)
   }
-  return callAnthropicLikeApi(rootDir, messages, system, abortSignal, retryPolicy)
+  return callAnthropicLikeApi(rootDir, messages, system, abortSignal, retryPolicy, includeTools)
 }
 
 let fastModeCooldownUntil = 0
@@ -1323,7 +1330,14 @@ function maybeAggressivelyCompactMessages(messages: AnthropicMessage[]) {
   ]
 }
 
-async function callAnthropicLikeApi(rootDir: string, messages: AnthropicMessage[], system: string, abortSignal?: AbortSignal, retryPolicy: RetryPolicy) {
+async function callAnthropicLikeApi(
+  rootDir: string,
+  messages: AnthropicMessage[],
+  system: string,
+  abortSignal?: AbortSignal,
+  retryPolicy: RetryPolicy,
+  includeTools: boolean,
+) {
   let { baseUrl, apiKey, model, provider } = getEffectiveModelConfig()
   if (!baseUrl) throw new Error("Model adapter is missing ANTHROPIC_BASE_URL")
   if (!apiKey) throw new Error("Model adapter is missing ANTHROPIC_AUTH_TOKEN")
@@ -1354,7 +1368,7 @@ async function callAnthropicLikeApi(rootDir: string, messages: AnthropicMessage[
         model: requestModel,
         system,
         max_tokens: maxTokens,
-        tools: listModelTools(),
+        tools: includeTools ? listModelTools() : undefined,
         messages: requestMessages,
         ...(stream ? { stream: true } : {}),
       }),
@@ -1626,7 +1640,13 @@ function openAiCompatibleResponseToAnthropic(response: OllamaChatResponse): Anth
   }
 }
 
-async function callOpenAiCompatibleApi(provider: "ollama" | "openai_compatible", messages: AnthropicMessage[], system: string, abortSignal?: AbortSignal): Promise<AnthropicResponse> {
+async function callOpenAiCompatibleApi(
+  provider: "ollama" | "openai_compatible",
+  messages: AnthropicMessage[],
+  system: string,
+  abortSignal?: AbortSignal,
+  includeTools = true,
+): Promise<AnthropicResponse> {
   const { baseUrl, model, apiKey } = getEffectiveModelConfig()
   if (!baseUrl) throw new Error(`Model adapter is missing base URL for ${provider}`)
   if (!model) throw new Error(`Model adapter is missing model name for ${provider}`)
@@ -1655,7 +1675,7 @@ async function callOpenAiCompatibleApi(provider: "ollama" | "openai_compatible",
     body: JSON.stringify({
       model,
       messages: openAiMessages,
-      tools: openAiTools.length > 0 ? openAiTools : undefined,
+      tools: includeTools && openAiTools.length > 0 ? openAiTools : undefined,
       stream: false,
     }),
   })
@@ -2029,5 +2049,26 @@ export async function runAssistantTurn(
     finalText: "Turn ended without final result",
     steps: [{ type: "final", message: "Turn ended without final result" }],
     error: "Turn ended without final result",
+  }
+}
+
+export async function runBackgroundTextTask(
+  rootDir: string,
+  system: string,
+  userPrompt: string,
+  options?: { abortSignal?: AbortSignal },
+) {
+  const response = await callModelApi(
+    rootDir,
+    [{ role: "user", content: userPrompt }],
+    system,
+    options?.abortSignal,
+    { unattended: true, background: true },
+    false,
+  )
+  const { text } = extractAssistantText(response)
+  return {
+    text,
+    usage: extractUsage(response),
   }
 }
