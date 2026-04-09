@@ -21,6 +21,9 @@ export type MenuStep =
   | "chan-main"      // Channel main menu
   | "chan-tel-token" // Set Telegram bot token
   | "chan-tel-chats" // Set allowed chat IDs
+  // Web search menu steps
+  | "ws-main"        // Web search main menu
+  | "ws-test-query"  // Test search query
 
 export type MenuState = {
   step: MenuStep
@@ -51,6 +54,7 @@ export type ComposerState = {
   toolThinkingText: string
   menuState: MenuState
   channelMenuState: MenuState
+  websearchMenuState: MenuState
 }
 
 export type HeaderState = {

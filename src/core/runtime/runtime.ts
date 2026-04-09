@@ -2,7 +2,7 @@ import { execFile } from "node:child_process"
 import { statSync } from "node:fs"
 import { join } from "node:path"
 import { promisify } from "node:util"
-import { type AgentEvent } from "../ipc/protocol.ts"
+import { type AgentEvent, type SessionRecord } from "../ipc/protocol.ts"
 import { StdioMcpClient, getDefaultMcpServers } from "../mcp/client.ts"
 import {
   appendEvent,
@@ -42,6 +42,7 @@ import { getWorkspaceContext } from "../context/workspaceContext.ts"
 import { AgentOrchestrator } from "./orchestrator.ts"
 import { renderToolFinish, renderToolStart, renderToolStartText } from "../renderer/toolRenderer.ts"
 import { checkToolPermission, runPostToolHooks } from "./permissions.ts"
+import { runMemoryAgentReview } from "./memoryAgent.ts"
 
 type EventListener = (event: AgentEvent) => void
 
@@ -282,6 +283,23 @@ export class MonolitoV2Runtime {
     return getSession(this.rootDir, sessionId)
   }
 
+  private scheduleMemoryReview(
+    sessionId: string,
+    profileId: string,
+    trigger: "post-turn" | "pre-compact" | "session-end",
+    sessionSnapshot?: SessionRecord | null,
+  ) {
+    const snapshot = sessionSnapshot ?? getSession(this.rootDir, sessionId)
+    if (!snapshot || snapshot.id.startsWith("agent-")) return
+    void (async () => {
+      try {
+        await runMemoryAgentReview(this.rootDir, snapshot, profileId, trigger)
+      } catch (error) {
+        console.error(`Memory agent failed (${trigger}) for ${sessionId}:`, error)
+      }
+    })()
+  }
+
   tailEvents(sessionId: string, lines?: number) {
     return tailEvents(this.rootDir, sessionId, lines)
   }
@@ -341,6 +359,7 @@ export class MonolitoV2Runtime {
           } catch {}
         }
         await this.transitionState(sessionId, "idle")
+        this.scheduleMemoryReview(sessionId, profileId, "post-turn")
         return { finalText: reply, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } }
       } else {
         const session = getSession(this.rootDir, sessionId)
@@ -399,6 +418,7 @@ export class MonolitoV2Runtime {
           }
         }
         await this.transitionState(sessionId, turn.error ? "error" : "idle")
+        this.scheduleMemoryReview(sessionId, profileId, "post-turn")
         return turn
       }
     } catch (error) {
@@ -500,6 +520,7 @@ export class MonolitoV2Runtime {
           "/update",
           "/config [show|set <field> <value>]",
           "/adult — Toggle adult content mode",
+          "/websearch — Configure web search engine",
           "/new — Reset session and restart agent",
         ].join("\n")
       case "/status": {
@@ -526,6 +547,9 @@ export class MonolitoV2Runtime {
       case "/cost":
         return formatCostSummary(this.costState)
       case "/compact": {
+        const session = getSession(this.rootDir, sessionId)
+        const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
+        this.scheduleMemoryReview(sessionId, profileId, "pre-compact", session)
         const max = rest[0] ? Number.parseInt(rest[0], 10) : undefined
         const result = compactSession(this.rootDir, sessionId, max ? { maxMessages: max } : {})
         return `Compacted ${result.compacted} message${result.compacted !== 1 ? "s" : ""}. ${result.remaining} remaining.`
@@ -562,6 +586,9 @@ export class MonolitoV2Runtime {
       }
       case "/new":
       case "/reset": {
+        const session = getSession(this.rootDir, sessionId)
+        const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
+        this.scheduleMemoryReview(sessionId, profileId, "session-end", session)
         resetSession(this.rootDir, sessionId)
         return "__SESSION_RESET__"
       }

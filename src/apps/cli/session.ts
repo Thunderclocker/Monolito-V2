@@ -45,6 +45,7 @@ import type {
 } from "./tui/types.ts"
 import { openModelMenu, processMenuInput } from "./tui/modelMenu.ts"
 import { openChannelMenu, processChannelMenuInput } from "./tui/channelMenu.ts"
+import { openWebSearchMenu, processWebSearchMenuInput } from "./tui/websearchMenu.ts"
 import { getWorkspaceContext } from "../../core/context/workspaceContext.ts"
 
 const execFileAsync = promisify(execFile)
@@ -363,7 +364,7 @@ async function ensureCliSession(client: DaemonClient, sessionId?: string) {
 
 export async function openInteractiveSession(client: DaemonClient, sessionId?: string) {
   const rootDir = process.cwd()
-  const composer: ComposerState = { input: "", cursor: 0, busy: false, thinkingFrame: 0, thinkingVisible: false, suggestions: [], toolThinkingFrame: 0, toolThinkingText: "", menuState: null, channelMenuState: null }
+  const composer: ComposerState = { input: "", cursor: 0, busy: false, thinkingFrame: 0, thinkingVisible: false, suggestions: [], toolThinkingFrame: 0, toolThinkingText: "", menuState: null, channelMenuState: null, websearchMenuState: null }
   const history = createPromptHistory(rootDir)
   const completer = createInteractiveCompleter(rootDir)
   const formatter = new InteractiveTranscriptFormatter()
@@ -720,6 +721,34 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       return
     }
 
+    if (composer.websearchMenuState) {
+      composer.input = ""
+      composer.cursor = 0
+      transcript = appendTranscriptBlocks(transcript, [
+        { type: "message", role: "user", text: line },
+      ])
+      const result = await processWebSearchMenuInput(line, composer.websearchMenuState)
+      composer.websearchMenuState = result.nextState
+      transcript = appendTranscriptBlocks(transcript, [
+        { type: "event", label: "websearch", tone: result.tone, text: result.output },
+      ])
+      redraw()
+      return
+    }
+
+    // /websearch opens the interactive web search menu
+    if (line === "/websearch") {
+      composer.input = ""
+      composer.cursor = 0
+      const result = await openWebSearchMenu()
+      composer.websearchMenuState = result.nextState
+      transcript = appendTranscriptBlocks(transcript, [
+        { type: "event", label: "websearch", tone: result.tone, text: result.output },
+      ])
+      redraw()
+      return
+    }
+
     // /model opens the interactive model menu
     if (line === "/model") {
       composer.input = ""
@@ -863,9 +892,10 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
   }
 
   const exitActiveMenu = () => {
-    if (composer.menuState || composer.channelMenuState) {
+    if (composer.menuState || composer.channelMenuState || composer.websearchMenuState) {
       composer.menuState = null
       composer.channelMenuState = null
+      composer.websearchMenuState = null
       transcript = appendTranscriptBlocks(transcript, [
         { type: "event", label: "menu", tone: "info", text: "Interactive menu cancelled." },
       ])
