@@ -79,10 +79,20 @@ export async function findManagedTtsContainers(config: TtsConfig): Promise<Manag
       "--filter", `name=${config.containerName}`,
       "--format", "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}",
     ], { timeout: 10_000 })
+    const { stdout: legacyByName } = await execFileAsync("docker", [
+      "ps", "-a",
+      "--filter", "name=tts-edge",
+      "--format", "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}",
+    ], { timeout: 10_000 })
+    const { stdout: legacyByImage } = await execFileAsync("docker", [
+      "ps", "-a",
+      "--filter", "ancestor=travisvn/openai-edge-tts:latest",
+      "--format", "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}",
+    ], { timeout: 10_000 })
 
     const seen = new Set<string>()
     const containers: ManagedTtsContainerInfo[] = []
-    for (const line of [...byImage.trim().split("\n"), ...byName.trim().split("\n")]) {
+    for (const line of [...byImage.trim().split("\n"), ...byName.trim().split("\n"), ...legacyByName.trim().split("\n"), ...legacyByImage.trim().split("\n")]) {
       if (!line.trim()) continue
       const [id, name, image, status] = line.split("\t")
       if (!id || seen.has(id)) continue

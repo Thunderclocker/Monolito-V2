@@ -739,7 +739,7 @@ const tools: ToolDefinition[] = [
   {
     name: "TtsServiceDeploy",
     aliases: ["tts_service_deploy"],
-    description: "Deploy or restart the managed local TTS service container using Docker.",
+    description: "Deploy or restart the managed local TTS service container using Docker. Cleans conflicting legacy OpenAI Edge TTS containers first.",
     inputSchema: emptyInputSchema,
     concurrencySafe: false,
     async run() {
@@ -763,7 +763,7 @@ const tools: ToolDefinition[] = [
   {
     name: "TtsServiceRemove",
     aliases: ["tts_service_remove"],
-    description: "Remove the managed local TTS service container.",
+    description: "Remove the managed local TTS service container. Also removes conflicting legacy OpenAI Edge TTS containers when found.",
     inputSchema: emptyInputSchema,
     concurrencySafe: false,
     async run() {
@@ -775,7 +775,7 @@ const tools: ToolDefinition[] = [
   {
     name: "TtsServiceList",
     aliases: ["tts_service_list"],
-    description: "List detected local TTS service containers related to the managed image or container name.",
+    description: "List detected local TTS service containers related to the managed image or container name, including legacy OpenAI Edge TTS containers such as tts-edge.",
     inputSchema: emptyInputSchema,
     concurrencySafe: true,
     async run() {
