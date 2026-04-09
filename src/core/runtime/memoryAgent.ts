@@ -169,6 +169,8 @@ function buildSystemPrompt(trigger: MemoryTrigger) {
     `- Max ${MAX_ITEMS_PER_REVIEW} items.`,
     "- Do not require perfect permanence for MEMPALACE. It exists for context that is useful later even if it is not fully stable.",
     "- For MEMPALACE, prefer literal notes that stay close to what the person actually said. Avoid interpretive summaries when a simple factual note will do.",
+    "- Write the memory in the same language used by the person in the conversation. Do not switch languages or mix English words into Spanish unless the user did so first.",
+    "- Avoid advice, speculation, or invented future needs. Save the remembered fact itself, not what the assistant thinks might help.",
     "- Save only context that is likely to improve future conversations.",
     "- Never save one-off trivia with no future value.",
     "- Keep each content short, atomic, and standalone.",
@@ -194,6 +196,8 @@ function buildUserPrompt(session: SessionRecord, rootDir: string, profileId: str
     "",
     "Decide if something should be saved for future conversations.",
     "For MEMPALACE, prefer concise factual wording that stays close to the user's wording.",
+    "Keep the memory in the same language as the user's message.",
+    "Do not add suggestions, advice, or speculative follow-ups to the stored content.",
     "Return JSON only.",
   ].join("\n")
 }
