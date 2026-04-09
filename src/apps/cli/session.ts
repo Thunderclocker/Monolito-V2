@@ -406,6 +406,8 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
   let needsClear = true
   let shouldRelaunchCli = false
   let relaunchSessionId: string | undefined
+  let loadedRevision = ""
+  let revisionCheckInFlight = false
 
   const refreshHeader = () => {
     header = getHeaderState(rootDir, activeSessionId, connectionHealthy)
@@ -576,6 +578,38 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     }
   }
 
+  const monitorCodeRevision = async () => {
+    if (revisionCheckInFlight || shouldRelaunchCli) return
+    revisionCheckInFlight = true
+    try {
+      const currentRevision = await runGit(rootDir, ["rev-parse", "--short", "HEAD"]).catch(() => "")
+      if (!currentRevision) return
+      if (!loadedRevision) {
+        loadedRevision = currentRevision
+        return
+      }
+      if (currentRevision !== loadedRevision) {
+        loadedRevision = currentRevision
+        shouldRelaunchCli = true
+        relaunchSessionId = activeSessionId !== "offline" ? activeSessionId : undefined
+        transcript = appendTranscriptBlocks(transcript, [
+          {
+            type: "event",
+            label: "update",
+            tone: "info",
+            text: `Detected code update to ${currentRevision}. Reloading interactive CLI...`,
+          },
+        ])
+        redraw()
+        setTimeout(() => {
+          finish?.()
+        }, 250)
+      }
+    } finally {
+      revisionCheckInFlight = false
+    }
+  }
+
   const monitorConnection = async () => {
     const previousConnection = connectionHealthy
     const previousSessionId = activeSessionId
@@ -595,6 +629,7 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       }
       if (shouldRedraw) redraw()
     }
+    await monitorCodeRevision()
   }
 
   async function tryLocalCommand(client: DaemonClient, line: string): Promise<FormattedBlock | null> {
