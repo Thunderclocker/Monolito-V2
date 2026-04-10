@@ -7,8 +7,9 @@ import { dirname, join, relative, resolve } from "node:path"
 import { ensureDirs, getPaths } from "../ipc/protocol.ts"
 import { type StdioMcpClient, getDefaultMcpServers } from "../mcp/client.ts"
 import { readChannelsConfig } from "../channels/config.ts"
-import { fileMemory, recallMemory, listWings, listRooms, listProfiles, createProfile } from "../session/store.ts"
+import { fileMemory, recallMemory, listWings, listRooms, listProfiles, createProfile, readBootWing, writeBootWing, ensureBootWings } from "../session/store.ts"
 import { type AgentOrchestrator } from "../runtime/orchestrator.ts"
+import { BOOT_WING_ORDER, isBootWingName } from "../bootstrap/bootWings.ts"
 import {
   deployManagedTtsContainer,
   getManagedTtsBaseUrl,
@@ -1278,47 +1279,45 @@ const tools: ToolDefinition[] = [
     },
   },
   {
-    name: "WorkspaceRead",
-    description: "Read an injected core workspace file (SOUL, AGENTS, IDENTITY, USER, TOOLS, HEARTBEAT, BOOTSTRAP, MEMORY) without needing a path.",
+    name: "BootRead",
+    description: "Read a deterministic BOOT wing from SQLite without relying on legacy workspace files.",
     inputSchema: {
       type: "object",
       properties: {
-        file: { type: "string", enum: ["SOUL", "AGENTS", "IDENTITY", "USER", "TOOLS", "HEARTBEAT", "BOOTSTRAP", "MEMORY"] },
+        wing: { type: "string", enum: [...BOOT_WING_ORDER] },
       },
-      required: ["file"],
+      required: ["wing"],
       additionalProperties: false,
     },
     concurrencySafe: true,
     async run(input, context) {
-      const file = requireString(input, "file")
-      const paths = getPaths(context.rootDir, context.profileId)
-      const filePath = join(paths.workspaceDir, `${file}.md`)
-      if (!existsSync(filePath)) throw new Error(`Workspace file ${file}.md not found in profile ${context.profileId ?? "default"}`)
-      const content = readFileSync(filePath, "utf8")
-      return { file, content, profile: context.profileId ?? "default" }
+      const wing = requireString(input, "wing")
+      if (!isBootWingName(wing)) throw new Error(`Unsupported BOOT wing: ${wing}`)
+      ensureBootWings(context.rootDir, context.profileId ?? "default")
+      const content = readBootWing(context.rootDir, wing, context.profileId ?? "default")
+      if (content == null) throw new Error(`BOOT wing ${wing} not found in profile ${context.profileId ?? "default"}`)
+      return { wing, content, profile: context.profileId ?? "default" }
     },
   },
   {
-    name: "WorkspaceWrite",
-    description: "Update an injected core workspace file (SOUL, AGENTS, IDENTITY, USER, TOOLS, HEARTBEAT, BOOTSTRAP, MEMORY). Use this for durable identity, workspace rules, heartbeat/bootstrap instructions, or curated long-term notes.",
+    name: "BootWrite",
+    description: "Replace the canonical content of a deterministic BOOT wing in SQLite.",
     inputSchema: {
       type: "object",
       properties: {
-        file: { type: "string", enum: ["SOUL", "AGENTS", "IDENTITY", "USER", "TOOLS", "HEARTBEAT", "BOOTSTRAP", "MEMORY"] },
+        wing: { type: "string", enum: [...BOOT_WING_ORDER] },
         content: { type: "string" },
       },
-      required: ["file", "content"],
+      required: ["wing", "content"],
       additionalProperties: false,
     },
     concurrencySafe: false,
     async run(input, context) {
-      const file = requireString(input, "file")
+      const wing = requireString(input, "wing")
       const content = requireString(input, "content")
-      const paths = getPaths(context.rootDir, context.profileId)
-      const filePath = join(paths.workspaceDir, `${file}.md`)
-      mkdirSync(dirname(filePath), { recursive: true })
-      writeFileSync(filePath, content, "utf8")
-      return { file, ok: true, bytes: Buffer.byteLength(content), profile: context.profileId ?? "default" }
+      if (!isBootWingName(wing)) throw new Error(`Unsupported BOOT wing: ${wing}`)
+      const result = writeBootWing(context.rootDir, wing, content, context.profileId ?? "default")
+      return { wing, ok: true, changed: result.changed, bytes: result.bytes, profile: context.profileId ?? "default" }
     },
   },
   {
@@ -1521,7 +1520,8 @@ const tools: ToolDefinition[] = [
       const description = optionalString(input, "description")
       
       const newId = createProfile(context.rootDir, id, name, description)
-      ensureDirs(context.rootDir, newId) // Initializes files
+      ensureDirs(context.rootDir, newId)
+      ensureBootWings(context.rootDir, newId)
       
       return { ok: true, id: newId, status: "profile_created" }
     },

@@ -1,9 +1,10 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { appendFileSync, mkdirSync } from "node:fs"
 import { join } from "node:path"
 import type { SessionRecord } from "../ipc/protocol.ts"
 import { getPaths } from "../ipc/protocol.ts"
-import { appendWorklog, fileMemory } from "../session/store.ts"
+import { appendWorklog, fileMemory, readBootWing, writeBootWing } from "../session/store.ts"
 import { runBackgroundTextTask } from "./modelAdapter.ts"
+import type { BootWingName } from "../bootstrap/bootWings.ts"
 
 type MemoryTrigger = "post-turn" | "pre-compact" | "session-end"
 
@@ -76,10 +77,9 @@ function formatRecentConversation(session: SessionRecord) {
     .join("\n\n")
 }
 
-function readCoreFile(rootDir: string, profileId: string, file: "USER" | "MEMORY") {
-  const path = join(getPaths(rootDir, profileId).workspaceDir, `${file}.md`)
-  if (!existsSync(path)) return ""
-  return readFileSync(path, "utf8")
+function readCoreWing(rootDir: string, profileId: string, destination: "USER" | "MEMORY") {
+  const wing: BootWingName = destination === "USER" ? "BOOT_USER" : "BOOT_MEMORY"
+  return readBootWing(rootDir, wing, profileId) ?? ""
 }
 
 function appendMemoryLine(content: string, line: string) {
@@ -107,14 +107,14 @@ function persistCoreMemory(
   file: "USER" | "MEMORY",
   proposal: MemoryProposal,
 ) {
-  const path = join(getPaths(rootDir, profileId).workspaceDir, `${file}.md`)
-  const current = existsSync(path) ? readFileSync(path, "utf8") : ""
+  const wing: BootWingName = file === "USER" ? "BOOT_USER" : "BOOT_MEMORY"
+  const current = readBootWing(rootDir, wing, profileId) ?? ""
   const next =
     proposal.action === "replace" && proposal.old_text
       ? replaceMemoryLine(current, proposal.old_text, proposal.content)
       : appendMemoryLine(current, proposal.content)
   if (next !== current) {
-    writeFileSync(path, next, "utf8")
+    writeBootWing(rootDir, wing, next, profileId)
     return true
   }
   return false
@@ -162,7 +162,7 @@ function buildSystemPrompt(trigger: MemoryTrigger) {
     "- Trivial, purely fleeting, or not useful later -> save nothing.",
     "",
     "Contradictions:",
-    "- If new information clearly updates or contradicts existing USER.md or MEMORY.md, use action='replace' and set old_text.",
+    "- If new information clearly updates or contradicts existing BOOT_USER or BOOT_MEMORY, use action='replace' and set old_text.",
     "- If the information is useful but not certain enough to replace core memory, prefer MEMPALACE.",
     "",
     "Rules:",
@@ -182,13 +182,13 @@ function buildSystemPrompt(trigger: MemoryTrigger) {
 }
 
 function buildUserPrompt(session: SessionRecord, rootDir: string, profileId: string) {
-  const userCore = clip(readCoreFile(rootDir, profileId, "USER"), 6000)
-  const memoryCore = clip(readCoreFile(rootDir, profileId, "MEMORY"), 6000)
+  const userCore = clip(readCoreWing(rootDir, profileId, "USER"), 6000)
+  const memoryCore = clip(readCoreWing(rootDir, profileId, "MEMORY"), 6000)
   return [
-    "Current USER.md:",
+    "Current BOOT_USER:",
     userCore || "(empty)",
     "",
-    "Current MEMORY.md:",
+    "Current BOOT_MEMORY:",
     memoryCore || "(empty)",
     "",
     "Recent conversation:",
@@ -322,7 +322,7 @@ export async function runMemoryAgentReview(
     }
     const updated = persistCoreMemory(rootDir, profileId, proposal.destination, proposal)
     if (updated) {
-      appliedSummaries.push(`${proposal.destination}.md updated`)
+      appliedSummaries.push(proposal.destination === "USER" ? "BOOT_USER updated" : "BOOT_MEMORY updated")
       logMemoryAgent(rootDir, "proposal.applied", {
         sessionId: session.id,
         trigger,

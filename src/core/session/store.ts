@@ -11,9 +11,17 @@ import {
   getPaths,
 } from "../ipc/protocol.ts"
 import { generateEmbedding } from "./embeddings.ts"
+import {
+  BOOT_WING_ORDER,
+  DEFAULT_BOOT_WING_CONTENT,
+  isBootWingName,
+  type BootWingEntry,
+  type BootWingName,
+} from "../bootstrap/bootWings.ts"
 
 let dbInstance: Database.Database | null = null
 let dbPathCache: string | null = null
+const BOOTSTRAP_SOURCE_ROOM = "__bootstrap__"
 
 export function getDb(rootDir: string): Database.Database {
   const path = join(getPaths(rootDir).stateDir, "memory.sqlite")
@@ -118,6 +126,123 @@ export function getDb(rootDir: string): Database.Database {
   dbInstance = db
   dbPathCache = path
   return db
+}
+
+function bootWingProfileWhereClause(profileId?: string | null) {
+  if (profileId) {
+    return {
+      clause: "(profile_id = ? OR profile_id IS NULL)",
+      params: [profileId],
+    }
+  }
+  return {
+    clause: "profile_id IS NULL",
+    params: [] as string[],
+  }
+}
+
+export function ensureBootWings(rootDir: string, profileId = "default") {
+  const db = getDb(rootDir)
+  const now = new Date().toISOString()
+  const countStmt = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM memory_drawers
+    WHERE wing = ? AND profile_id = ?
+  `)
+  const insertStmt = db.prepare(`
+    INSERT INTO memory_drawers (id, profile_id, wing, room, memory_key, content, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `)
+
+  db.exec("BEGIN TRANSACTION")
+  try {
+    for (const wing of BOOT_WING_ORDER) {
+      const existing = countStmt.get(wing, profileId) as { count: number }
+      if (existing.count > 0) continue
+      insertStmt.run(randomUUID(), profileId, wing, BOOTSTRAP_SOURCE_ROOM, wing, DEFAULT_BOOT_WING_CONTENT[wing], now)
+    }
+    db.exec("COMMIT")
+  } catch (error) {
+    db.exec("ROLLBACK")
+    throw error
+  }
+}
+
+export function readBootWing(rootDir: string, wing: BootWingName, profileId = "default"): string | null {
+  ensureBootWings(rootDir, profileId)
+  const db = getDb(rootDir)
+  const stmt = db.prepare(`
+    SELECT content
+    FROM memory_drawers
+    WHERE wing = ?
+      AND (profile_id = ? OR profile_id IS NULL)
+    ORDER BY CASE WHEN profile_id = ? THEN 0 ELSE 1 END ASC, created_at DESC, id DESC
+    LIMIT 1
+  `)
+  const row = stmt.get(wing, profileId, profileId) as { content: string } | undefined
+  return row?.content ?? null
+}
+
+export function writeBootWing(rootDir: string, wing: BootWingName, content: string, profileId = "default") {
+  ensureBootWings(rootDir, profileId)
+  const db = getDb(rootDir)
+  const now = new Date().toISOString()
+  const rows = db.prepare(`
+    SELECT id
+    FROM memory_drawers
+    WHERE wing = ? AND profile_id = ?
+    ORDER BY created_at DESC, id DESC
+  `).all(wing, profileId) as { id: string }[]
+  const current = rows.length > 0
+    ? db.prepare(`SELECT content FROM memory_drawers WHERE id = ?`).get(rows[0]!.id) as { content: string }
+    : null
+  if ((current?.content ?? "") === content) {
+    return { changed: false, bytes: Buffer.byteLength(content) }
+  }
+
+  db.exec("BEGIN TRANSACTION")
+  try {
+    if (rows.length > 0) {
+      const deleteMemory = db.prepare(`DELETE FROM memory_drawers WHERE id = ?`)
+      const deleteVec = db.prepare(`DELETE FROM vec_drawers WHERE id = ?`)
+      for (const row of rows) {
+        deleteVec.run(row.id)
+        deleteMemory.run(row.id)
+      }
+    }
+    db.prepare(`
+      INSERT INTO memory_drawers (id, profile_id, wing, room, memory_key, content, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(randomUUID(), profileId, wing, BOOTSTRAP_SOURCE_ROOM, wing, content, now)
+    db.exec("COMMIT")
+  } catch (error) {
+    db.exec("ROLLBACK")
+    throw error
+  }
+  return { changed: true, bytes: Buffer.byteLength(content) }
+}
+
+export function listBootEntries(rootDir: string, profileId = "default", options?: { includeMemory?: boolean; maxCharsPerEntry?: number; maxTotalChars?: number }) {
+  ensureBootWings(rootDir, profileId)
+  const includeMemory = options?.includeMemory ?? true
+  const maxCharsPerEntry = options?.maxCharsPerEntry ?? 20_000
+  let remainingChars = options?.maxTotalChars ?? 150_000
+  const entries: BootWingEntry[] = []
+
+  for (const wing of BOOT_WING_ORDER) {
+    if (!includeMemory && wing === "BOOT_MEMORY") continue
+    if (remainingChars <= 0) break
+    const content = readBootWing(rootDir, wing, profileId)?.trim() ?? ""
+    if (!content) continue
+    const maxChars = Math.max(1, Math.min(maxCharsPerEntry, remainingChars))
+    const truncated = content.length > maxChars
+      ? { content: `${content.slice(0, maxChars).trimEnd()}\n\n[truncated]`, truncated: true }
+      : { content, truncated: false }
+    entries.push({ wing, content: truncated.content, truncated: truncated.truncated })
+    remainingChars -= truncated.content.length
+  }
+
+  return entries
 }
 
 function truncateSummary(text: string, max = 160) {
@@ -433,6 +558,9 @@ export async function fileMemory(rootDir: string, wing: string, room: string, co
   const id = randomUUID()
   const now = new Date().toISOString()
   const rawWing = wing.trim()
+  if (rawWing.toUpperCase().startsWith("BOOT_")) {
+    throw new Error("BOOT_* wings are reserved for deterministic bootstrap state. Use BootWrite instead.")
+  }
   const normalizedWing = rawWing.length === 0 ? "PRIVATE" : rawWing.toUpperCase() === "SHARED" ? "SHARED" : rawWing
   const normalizedRoom = room.trim() || "general"
   const normalizedKey = key?.trim() || null
@@ -459,7 +587,7 @@ export async function fileMemory(rootDir: string, wing: string, room: string, co
 export async function recallMemory(rootDir: string, wing?: string, room?: string, query?: string, profileId?: string, key?: string) {
   const db = getDb(rootDir)
   const params: any[] = []
-  const conditions: string[] = []
+  const conditions: string[] = [`m.wing NOT LIKE 'BOOT\\_%' ESCAPE '\\'`]
   
   if (wing) {
     const normalizedWing = wing.trim().toUpperCase() === "SHARED" ? "SHARED" : wing.trim()
@@ -521,11 +649,11 @@ export function createProfile(rootDir: string, id: string, name: string, descrip
 
 export function listWings(rootDir: string, profileId?: string): string[] {
   const db = getDb(rootDir)
-  let sql = `SELECT DISTINCT wing FROM memory_drawers`
+  let sql = `SELECT DISTINCT wing FROM memory_drawers WHERE wing NOT LIKE 'BOOT\\_%' ESCAPE '\\'`
   if (profileId) {
-    sql += ` WHERE (profile_id = ? OR profile_id IS NULL)`
+    sql += ` AND (profile_id = ? OR profile_id IS NULL)`
   } else {
-    sql += ` WHERE profile_id IS NULL`
+    sql += ` AND profile_id IS NULL`
   }
   sql += ` ORDER BY wing ASC`
   const stmt = db.prepare(sql)
@@ -534,6 +662,7 @@ export function listWings(rootDir: string, profileId?: string): string[] {
 
 export function listRooms(rootDir: string, wing: string, profileId?: string): string[] {
   const db = getDb(rootDir)
+  if (wing.trim().toUpperCase().startsWith("BOOT_")) return []
   let sql = `SELECT DISTINCT room FROM memory_drawers WHERE wing = ?`
   if (profileId) {
     sql += ` AND (profile_id = ? OR profile_id IS NULL)`

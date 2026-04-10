@@ -40,9 +40,9 @@ Important constraints:
 Monolito distinguishes between:
 
 - general workspace files
-- injected core files
+- injected BOOT wings
 
-Core files like `SOUL.md`, `USER.md`, and `MEMORY.md` have dedicated read/write tools so the model can update durable persona and memory state without relying on arbitrary file paths.
+Deterministic BOOT wings like `BOOT_SOUL`, `BOOT_USER`, and `BOOT_MEMORY` have dedicated read/write tools so the model can update durable persona and memory state without relying on arbitrary file paths or legacy workspace files.
 
 ## Memory tools
 

@@ -411,17 +411,17 @@ export function renderToolStart(tool: string, input: unknown): ToolRenderLine {
         text: `Creating profile ${truncate(getString(value, "id") ?? "profile", 80)}...`,
         detail: truncate(getString(value, "description") ?? getString(value, "name") ?? "", 140),
       }
-    case "WorkspaceRead":
+    case "BootRead":
       return {
         label: "",
         tone: "info",
-        text: `Reading ${getString(value, "file") ?? "workspace file"}...`,
+        text: `Reading ${getString(value, "wing") ?? "BOOT wing"}...`,
       }
-    case "WorkspaceWrite":
+    case "BootWrite":
       return {
         label: "",
         tone: "info",
-        text: `Updating ${getString(value, "file") ?? "workspace file"}...`,
+        text: `Updating ${getString(value, "wing") ?? "BOOT wing"}...`,
       }
     case "WorkspaceMemoryFiling":
       return {
@@ -520,10 +520,10 @@ export function renderToolFinish(tool: string, ok: boolean, output: unknown): To
       return { label, tone, text: truncate(getString(value, "message") ?? "Agent stopped.", 180) }
     case "ProfileCreate":
       return { label, tone, text: `Profile ${getString(value, "id") ?? "profile"} created` }
-    case "WorkspaceRead":
-      return { label, tone, text: `Read ${getString(value, "file") ?? "workspace file"}` }
-    case "WorkspaceWrite":
-      return { label, tone, text: `Updated ${getString(value, "file") ?? "workspace file"}` }
+    case "BootRead":
+      return { label, tone, text: `Read ${getString(value, "wing") ?? "BOOT wing"}` }
+    case "BootWrite":
+      return { label, tone, text: `Updated ${getString(value, "wing") ?? "BOOT wing"}` }
     case "WorkspaceMemoryFiling": {
       const shared = getBoolean(value, "shared") === true
       const wing = getString(value, "wing") ?? (shared ? "SHARED" : "PRIVATE")
