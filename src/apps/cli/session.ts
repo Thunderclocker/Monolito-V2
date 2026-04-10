@@ -46,6 +46,9 @@ import type {
 import { openModelMenu, processMenuInput } from "./tui/modelMenu.ts"
 import { openChannelMenu, processChannelMenuInput } from "./tui/channelMenu.ts"
 import { openWebSearchMenu, processWebSearchMenuInput } from "./tui/websearchMenu.ts"
+import { isMenuSchemaEnvelope } from "../../core/menu/schema.ts"
+import { buildMasterDashboard } from "../../core/menu/masterDashboard.ts"
+import { openMasterDashboard, processMasterMenuInput } from "./tui/uiManager.ts"
 import { getWorkspaceContext } from "../../core/context/workspaceContext.ts"
 
 const execFileAsync = promisify(execFile)
@@ -384,7 +387,7 @@ async function ensureCliSession(client: DaemonClient, sessionId?: string) {
 
 export async function openInteractiveSession(client: DaemonClient, sessionId?: string) {
   const rootDir = process.cwd()
-  const composer: ComposerState = { input: "", cursor: 0, busy: false, thinkingFrame: 0, thinkingVisible: false, suggestions: [], toolThinkingFrame: 0, toolThinkingText: "", menuState: null, channelMenuState: null, websearchMenuState: null }
+  const composer: ComposerState = { input: "", cursor: 0, busy: false, thinkingFrame: 0, thinkingVisible: false, suggestions: [], toolThinkingFrame: 0, toolThinkingText: "", menuState: null, channelMenuState: null, websearchMenuState: null, masterMenuState: null }
   const history = createPromptHistory(rootDir)
   const completer = createInteractiveCompleter(rootDir)
   const formatter = new InteractiveTranscriptFormatter()
@@ -461,6 +464,18 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     if (event.type === "tool.finish") {
       composer.toolThinkingText = ""
       composer.toolThinkingFrame = 0
+    }
+
+    // Intercept MenuSchemaEnvelope from tool output — activate master dashboard
+    if (event.type === "tool.finish" && event.ok && isMenuSchemaEnvelope(event.output)) {
+      const { result, state } = openMasterDashboard(event.output)
+      composer.masterMenuState = state
+      transcript = appendTranscriptBlocks(transcript, [
+        { type: "event", label: "config", tone: result.tone, text: result.output },
+      ])
+      if (pinnedToBottom) transcript.scrollOffset = 0
+      redraw()
+      return
     }
 
     const blocks = formatter.render(event)
@@ -743,6 +758,42 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     composer.suggestions = []
     transcript.scrollOffset = 0
 
+    // --- Master Dashboard menu mode ---
+    if (composer.masterMenuState) {
+      composer.input = ""
+      composer.cursor = 0
+      transcript = appendTranscriptBlocks(transcript, [
+        { type: "message", role: "user", text: line },
+      ])
+      const { result, state } = await processMasterMenuInput(line, composer.masterMenuState)
+      composer.masterMenuState = state
+      transcript = appendTranscriptBlocks(transcript, [
+        { type: "event", label: "config", tone: result.tone, text: result.output },
+      ])
+      if (result.restartDaemon) {
+        transcript = appendTranscriptBlocks(transcript, [
+          { type: "event", label: "daemon", tone: "info", text: "Restarting daemon to apply configuration..." },
+        ])
+        redraw()
+        try {
+          await restartDaemon(client, rootDir)
+          connectionHealthy = client.isConnected()
+          subscribedSessionId = null
+          transcript = appendTranscriptBlocks(transcript, [
+            { type: "event", label: "daemon", tone: "success", text: "Daemon restarted successfully." },
+          ])
+        } catch (error) {
+          connectionHealthy = client.isConnected()
+          transcript = appendTranscriptBlocks(transcript, [
+            { type: "event", label: "daemon", tone: "error", text: `Failed to restart daemon: ${error instanceof Error ? error.message : String(error)}` },
+          ])
+        }
+      }
+      if (result.refreshHeader) refreshHeader()
+      redraw()
+      return
+    }
+
     // --- Interactive menu mode ---
     if (composer.menuState) {
       composer.input = ""
@@ -819,6 +870,20 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       composer.websearchMenuState = result.nextState
       transcript = appendTranscriptBlocks(transcript, [
         { type: "event", label: "websearch", tone: result.tone, text: result.output },
+      ])
+      redraw()
+      return
+    }
+
+    // /dashboard opens the Master Configuration Hub
+    if (line === "/dashboard") {
+      composer.input = ""
+      composer.cursor = 0
+      const envelope = buildMasterDashboard()
+      const { result, state } = openMasterDashboard(envelope)
+      composer.masterMenuState = state
+      transcript = appendTranscriptBlocks(transcript, [
+        { type: "event", label: "config", tone: result.tone, text: result.output },
       ])
       redraw()
       return

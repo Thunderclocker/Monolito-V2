@@ -1718,6 +1718,22 @@ const tools: ToolDefinition[] = [
       }
     },
   },
+
+  // ---------------------------------------------------------------------------
+  // Master Configuration Hub
+  // ---------------------------------------------------------------------------
+  {
+    name: "show_master_dashboard",
+    aliases: ["master_config", "config_hub"],
+    description:
+      "Opens the Master Configuration Hub — an interactive menu for managing all system settings: models, channels, web search, audio/voice, and system configuration. Use this when the user wants to configure the system or change settings.",
+    inputSchema: emptyInputSchema,
+    concurrencySafe: true,
+    async run() {
+      const { buildMasterDashboard } = await import("../menu/masterDashboard.ts")
+      return buildMasterDashboard()
+    },
+  },
 ]
 
 export function listTools() {

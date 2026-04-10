@@ -909,6 +909,7 @@ export class MonolitoV2Runtime {
           "/stt [show|on|off|deploy|stop|remove|list|status]",
           "/adult — Toggle adult content mode",
           "/websearch — Open web search menu",
+          "/dashboard — Open Master Configuration Hub",
           "/new — Reset session and restart agent",
         ].join("\n")
       case "/status": {
