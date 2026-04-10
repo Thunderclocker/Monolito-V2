@@ -1242,6 +1242,13 @@ function hasOverageDisabled(headers: Headers) {
   return headers.get("overage-disabled") !== null || headers.get("x-overage-disabled") !== null
 }
 
+function buildRateLimitMessage(provider: string, retryAfterMs?: number | null) {
+  const retryHint = retryAfterMs && retryAfterMs > 0
+    ? ` Retry after about ${Math.ceil(retryAfterMs / 1000)}s.`
+    : ""
+  return `Model request failed: ${provider} rate limited the request (HTTP 429).${retryHint}`
+}
+
 function isUnattendedRetryEnabled(policy: RetryPolicy) {
   return policy.unattended || /^(1|true|yes)$/i.test(process.env.MONOLITO_V2_UNATTENDED_RETRY ?? "")
 }
@@ -1554,6 +1561,17 @@ async function callAnthropicLikeApi(
       if ((error as Partial<ModelHttpError>)?.status === 429) {
         const headers = (error as ModelHttpError).headers
         const retryAfterMs = getRetryAfterMs(headers)
+        if (!persistent && !retryPolicy.background) {
+          logger.warn("interactive model request rate-limited; failing fast", {
+            provider,
+            model: requestModel,
+            retryAfterMs: retryAfterMs ?? undefined,
+          })
+          return {
+            content: [{ type: "text", text: buildRateLimitMessage(provider, retryAfterMs) }],
+            stop_reason: "end_turn",
+          }
+        }
         if (hasOverageDisabled(headers)) {
           fastModeCooldownUntil = Number.POSITIVE_INFINITY
         } else if (retryAfterMs !== null && retryAfterMs < SHORT_RETRY_THRESHOLD_MS) {
