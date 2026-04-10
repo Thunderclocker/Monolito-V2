@@ -15,7 +15,12 @@ function isProcessRunning(pid: number) {
 async function runDaemon() {
   const rootDir = process.cwd()
   const daemon = new MonolitoV2Daemon(rootDir)
-  await daemon.start()
+  try {
+    await daemon.start()
+  } catch (error) {
+    daemon.stop()
+    throw error
+  }
 
   const shutdown = (reason?: unknown) => {
     if (reason instanceof Error) {
@@ -55,8 +60,7 @@ function startDetachedDaemon() {
     stdio: ["ignore", stdout, stderr],
   })
   child.unref()
-
-  process.stdout.write(`monolitod-v2 started\n`)
+  process.stdout.write(`monolitod-v2 starting\n`)
   process.stdout.write(`pid: ${child.pid}\n`)
   process.stdout.write(`process: ${process.execPath} ${args.join(" ")}\n`)
   process.stdout.write(`log: ${paths.daemonLog}\n`)
@@ -65,7 +69,13 @@ function startDetachedDaemon() {
 }
 
 if (process.argv.includes("--foreground")) {
-  await runDaemon()
+  try {
+    await runDaemon()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    process.stderr.write(`${message}\n`)
+    process.exit(message.includes("already running") ? 0 : 1)
+  }
 } else {
   startDetachedDaemon()
 }

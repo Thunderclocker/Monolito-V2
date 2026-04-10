@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process"
-import { appendFileSync, existsSync, openSync, unlinkSync, writeFileSync } from "node:fs"
+import { appendFileSync, closeSync, existsSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
 import { createServer, type Server, type Socket } from "node:net"
 import {
   type DaemonLock,
@@ -26,6 +26,7 @@ export class MonolitoV2Daemon {
   readonly runtime: MonolitoV2Runtime
   private server: Server | null = null
   private restartInFlight = false
+  private ownerFd: number | null = null
 
   constructor(rootDir: string) {
     this.rootDir = rootDir
@@ -38,6 +39,7 @@ export class MonolitoV2Daemon {
 
   async start() {
     const paths = ensureDirs(this.rootDir)
+    this.acquireOwnership(paths)
     if (existsSync(paths.socketPath)) unlinkSync(paths.socketPath)
     writeFileSync(paths.pidFile, String(process.pid))
     this.runtime.recoverSessions("Recovered after daemon restart")
@@ -80,6 +82,63 @@ export class MonolitoV2Daemon {
     try {
       if (existsSync(paths.pidFile)) unlinkSync(paths.pidFile)
     } catch {}
+    try {
+      if (this.ownerFd !== null) {
+        closeSync(this.ownerFd)
+        this.ownerFd = null
+      }
+    } catch {}
+    try {
+      if (existsSync(paths.ownerFile)) unlinkSync(paths.ownerFile)
+    } catch {}
+  }
+
+  private acquireOwnership(paths: ReturnType<typeof getPaths>) {
+    const claim = {
+      pid: process.pid,
+      claimedAt: new Date().toISOString(),
+      rootDir: this.rootDir,
+    }
+
+    const tryClaim = () => {
+      this.ownerFd = openSync(paths.ownerFile, "wx")
+      writeFileSync(paths.ownerFile, `${JSON.stringify(claim, null, 2)}\n`)
+    }
+
+    try {
+      tryClaim()
+      return
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error
+        ? String((error as NodeJS.ErrnoException).code ?? "")
+        : ""
+      if (code !== "EEXIST") throw error
+    }
+
+    const existing = this.readOwnerClaim(paths.ownerFile)
+    if (existing?.pid && this.isProcessRunning(existing.pid)) {
+      throw new Error(`monolitod-v2 already running (pid ${existing.pid})`)
+    }
+
+    rmSync(paths.ownerFile, { force: true })
+    tryClaim()
+  }
+
+  private readOwnerClaim(path: string): { pid?: number } | null {
+    try {
+      return JSON.parse(readFileSync(path, "utf8")) as { pid?: number }
+    } catch {
+      return null
+    }
+  }
+
+  private isProcessRunning(pid: number) {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch {
+      return false
+    }
   }
 
   private scheduleSelfRestart() {
