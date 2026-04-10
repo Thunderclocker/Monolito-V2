@@ -1,8 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { randomUUID } from "node:crypto"
-import { homedir } from "node:os"
-import { dirname, join } from "node:path"
-import { getSettingsPath, type ModelSettings, readModelSettings, maskApiKey } from "./modelConfig.ts"
+import { readModelSettings, maskApiKey } from "./modelConfig.ts"
+import { appendActionLog, readConfigWing, writeConfigWing } from "../session/store.ts"
+import { MONOLITO_ROOT } from "../system/root.ts"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -38,7 +37,7 @@ export type ModelRegistry = {
 // ---------------------------------------------------------------------------
 
 export function getRegistryPath() {
-  return join(homedir(), ".monolito-v2", "models.json")
+  return `${MONOLITO_ROOT}/CONF_MODELS`
 }
 
 // ---------------------------------------------------------------------------
@@ -69,18 +68,8 @@ function createEmptyRegistry(): ModelRegistry {
 }
 
 export function readRegistry(): ModelRegistry {
-  const path = getRegistryPath()
-  if (!existsSync(path)) {
-    // Try to migrate from legacy settings
-    const migrated = migrateFromLegacy()
-    if (migrated) {
-      saveRegistry(migrated)
-      return migrated
-    }
-    return createEmptyRegistry()
-  }
+  const raw = readConfigWing(process.cwd(), "CONF_MODELS") as Partial<ModelRegistry>
   try {
-    const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<ModelRegistry>
     if (!Array.isArray(raw.profiles)) return createEmptyRegistry()
     return {
       version: 1,
@@ -92,10 +81,7 @@ export function readRegistry(): ModelRegistry {
 }
 
 export function saveRegistry(registry: ModelRegistry) {
-  const path = getRegistryPath()
-  mkdirSync(dirname(path), { recursive: true })
-  // Redact API keys before saving (store masked version? No — store real keys)
-  writeFileSync(path, `${JSON.stringify(registry, null, 2)}\n`, "utf8")
+  writeConfigWing(process.cwd(), "CONF_MODELS", registry)
 }
 
 function normalizeProfile(raw: unknown): ModelProfile | null {
@@ -110,52 +96,6 @@ function normalizeProfile(raw: unknown): ModelProfile | null {
   const active = typeof profile.active === "boolean" ? profile.active : false
   if (!id || !model) return null
   return { id, name: name || model, provider, baseUrl, apiKey, model, active }
-}
-
-// ---------------------------------------------------------------------------
-// Legacy migration
-// ---------------------------------------------------------------------------
-
-function migrateFromLegacy(): ModelRegistry | null {
-  try {
-    const settingsPath = getSettingsPath()
-    if (!existsSync(settingsPath)) {
-      // Also try from env vars
-      const envBaseUrl = process.env.ANTHROPIC_BASE_URL?.trim() ?? ""
-      const envApiKey = (process.env.ANTHROPIC_AUTH_TOKEN ?? process.env.ANTHROPIC_API_KEY ?? "").trim()
-      const envModel = process.env.ANTHROPIC_MODEL?.trim() ?? ""
-      if (!envModel) return null
-      const provider = inferProviderFromUrl(envBaseUrl)
-      const profile: ModelProfile = {
-        id: randomUUID(),
-        name: envModel,
-        provider,
-        baseUrl: envBaseUrl,
-        apiKey: envApiKey,
-        model: envModel,
-        active: true,
-      }
-      return { version: 1, profiles: [profile] }
-    }
-    const settings = readModelSettings()
-    const baseUrl = settings.env.ANTHROPIC_BASE_URL.trim()
-    const apiKey = settings.env.ANTHROPIC_AUTH_TOKEN.trim()
-    const model = settings.env.ANTHROPIC_MODEL.trim()
-    if (!model) return null
-    const provider = inferProviderFromUrl(baseUrl)
-    const profile: ModelProfile = {
-      id: randomUUID(),
-      name: model,
-      provider,
-      baseUrl,
-      apiKey,
-      model,
-      active: true,
-    }
-    return { version: 1, profiles: [profile] }
-  } catch {
-    return null
-  }
 }
 
 function inferProviderFromUrl(baseUrl: string): ModelProvider {
@@ -203,6 +143,12 @@ export function addProfile(draft: ModelProfileDraft): ModelProfile {
   }
   registry.profiles.push(profile)
   saveRegistry(registry)
+  appendActionLog(process.cwd(), "Perfil de modelo creado", {
+    profileId: profile.id,
+    name: profile.name,
+    provider: profile.provider,
+    model: profile.model,
+  })
   return profile
 }
 
@@ -221,6 +167,12 @@ export function updateProfile(id: string, draft: Partial<ModelProfileDraft>): Mo
   }
   registry.profiles[index] = updated
   saveRegistry(registry)
+  appendActionLog(process.cwd(), "Perfil de modelo actualizado", {
+    profileId: updated.id,
+    name: updated.name,
+    provider: updated.provider,
+    model: updated.model,
+  })
   return updated
 }
 
@@ -236,6 +188,10 @@ export function deleteProfile(id: string): string {
     registry.profiles[0]!.active = true
   }
   saveRegistry(registry)
+  appendActionLog(process.cwd(), "Perfil de modelo eliminado", {
+    profileId: removed.id,
+    name: removed.name,
+  })
   return removed.name
 }
 
@@ -247,6 +203,12 @@ export function activateProfile(id: string): ModelProfile {
     profile.active = profile.id === id
   }
   saveRegistry(registry)
+  appendActionLog(process.cwd(), "Cambio de modelo exitoso", {
+    profileId: target.id,
+    name: target.name,
+    provider: target.provider,
+    model: target.model,
+  })
   return target
 }
 
@@ -258,6 +220,12 @@ export function activateProfileByIndex(index: number): ModelProfile {
     profile.active = profile.id === target.id
   }
   saveRegistry(registry)
+  appendActionLog(process.cwd(), "Cambio de modelo exitoso", {
+    profileId: target.id,
+    name: target.name,
+    provider: target.provider,
+    model: target.model,
+  })
   return target
 }
 

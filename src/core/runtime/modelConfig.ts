@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
-import { dirname, join } from "node:path"
 import { getActiveProfile, type ModelProfile } from "./modelRegistry.ts"
+import { createDefaultSystemConfig } from "../config/configWings.ts"
+import { readConfigWing, writeConfigWing, appendActionLog } from "../session/store.ts"
+import { MONOLITO_ROOT } from "../system/root.ts"
 
 export const MODEL_PROTOCOL = "anthropic_compatible"
 export const SYSTEM_AUTH_TOKEN_ENV = "MONOLITO_V2_SYSTEM_ANTHROPIC_AUTH_TOKEN"
@@ -31,18 +31,6 @@ type ReadSettingsOptions = {
   env?: NodeJS.ProcessEnv
 }
 
-type LegacyV1Settings = {
-  modelConfig?: {
-    protocol?: string
-  }
-  env?: {
-    ANTHROPIC_BASE_URL?: string
-    ANTHROPIC_AUTH_TOKEN?: string
-    ANTHROPIC_MODEL?: string
-    API_TIMEOUT_MS?: string
-  }
-}
-
 function normalizeString(value: unknown) {
   return typeof value === "string" ? value : ""
 }
@@ -55,23 +43,11 @@ function getSystemValue(env: NodeJS.ProcessEnv, preservedKey: string, liveKey: s
 }
 
 export function getSettingsPath() {
-  const localPath = join(process.cwd(), ".monolito-v2", "settings.json")
-  if (existsSync(localPath)) return localPath
-  return join(homedir(), ".monolito-v2", "settings.json")
+  return `${MONOLITO_ROOT}/CONF_SYSTEM`
 }
 
 export function getLegacyV1SettingsPath() {
-  return join(homedir(), ".monolito", "settings.json")
-}
-
-function readLegacyV1Settings() {
-  const path = getLegacyV1SettingsPath()
-  if (!existsSync(path)) return null
-  try {
-    return JSON.parse(readFileSync(path, "utf8")) as LegacyV1Settings
-  } catch {
-    return null
-  }
+  return `${MONOLITO_ROOT}/LEGACY_DISABLED`
 }
 
 export function ensureSystemModelEnvMarkers(env: NodeJS.ProcessEnv = process.env) {
@@ -89,7 +65,7 @@ export function ensureSystemModelEnvMarkers(env: NodeJS.ProcessEnv = process.env
 export function createDefaultSettings(options: ReadSettingsOptions = {}): ModelSettings {
   const env = options.env ?? process.env
   ensureSystemModelEnvMarkers(env)
-  const legacy = readLegacyV1Settings()
+  const defaults = createDefaultSystemConfig()
   return {
     modelConfig: {
       protocol: MODEL_PROTOCOL,
@@ -97,39 +73,32 @@ export function createDefaultSettings(options: ReadSettingsOptions = {}): ModelS
     env: {
       ANTHROPIC_BASE_URL:
         getSystemValue(env, SYSTEM_BASE_URL_ENV, "ANTHROPIC_BASE_URL") ||
-        normalizeString(legacy?.env?.ANTHROPIC_BASE_URL),
+        defaults.env.ANTHROPIC_BASE_URL,
       ANTHROPIC_AUTH_TOKEN:
         getSystemValue(env, SYSTEM_AUTH_TOKEN_ENV, "ANTHROPIC_AUTH_TOKEN") ||
         getSystemValue(env, SYSTEM_AUTH_TOKEN_ENV, "ANTHROPIC_API_KEY") ||
-        normalizeString(legacy?.env?.ANTHROPIC_AUTH_TOKEN),
+        defaults.env.ANTHROPIC_AUTH_TOKEN,
       ANTHROPIC_MODEL:
         getSystemValue(env, SYSTEM_MODEL_ENV, "ANTHROPIC_MODEL") ||
-        normalizeString(legacy?.env?.ANTHROPIC_MODEL),
-      API_TIMEOUT_MS: normalizeString(legacy?.env?.API_TIMEOUT_MS) || "3000000",
+        defaults.env.ANTHROPIC_MODEL,
+      API_TIMEOUT_MS: defaults.env.API_TIMEOUT_MS,
     },
   }
 }
 
 export function readModelSettings(options: ReadSettingsOptions = {}): ModelSettings {
   const defaults = createDefaultSettings(options)
-  const path = getSettingsPath()
-  if (!existsSync(path)) return defaults
-
-  try {
-    const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<ModelSettings>
-    return {
-      modelConfig: {
-        protocol: normalizeString(raw.modelConfig?.protocol) || defaults.modelConfig.protocol,
-      },
-      env: {
-        ANTHROPIC_BASE_URL: normalizeString(raw.env?.ANTHROPIC_BASE_URL) || defaults.env.ANTHROPIC_BASE_URL,
-        ANTHROPIC_AUTH_TOKEN: normalizeString(raw.env?.ANTHROPIC_AUTH_TOKEN) || defaults.env.ANTHROPIC_AUTH_TOKEN,
-        ANTHROPIC_MODEL: normalizeString(raw.env?.ANTHROPIC_MODEL) || defaults.env.ANTHROPIC_MODEL,
-        API_TIMEOUT_MS: normalizeString(raw.env?.API_TIMEOUT_MS) || defaults.env.API_TIMEOUT_MS,
-      },
-    }
-  } catch {
-    return defaults
+  const raw = readConfigWing(process.cwd(), "CONF_SYSTEM") as Partial<ModelSettings>
+  return {
+    modelConfig: {
+      protocol: normalizeString(raw.modelConfig?.protocol) || defaults.modelConfig.protocol,
+    },
+    env: {
+      ANTHROPIC_BASE_URL: normalizeString(raw.env?.ANTHROPIC_BASE_URL) || defaults.env.ANTHROPIC_BASE_URL,
+      ANTHROPIC_AUTH_TOKEN: normalizeString(raw.env?.ANTHROPIC_AUTH_TOKEN) || defaults.env.ANTHROPIC_AUTH_TOKEN,
+      ANTHROPIC_MODEL: normalizeString(raw.env?.ANTHROPIC_MODEL) || defaults.env.ANTHROPIC_MODEL,
+      API_TIMEOUT_MS: normalizeString(raw.env?.API_TIMEOUT_MS) || defaults.env.API_TIMEOUT_MS,
+    },
   }
 }
 
@@ -176,9 +145,12 @@ export function validateModelDraft(draft: ModelDraft, env: NodeJS.ProcessEnv = p
 }
 
 export function saveModelSettings(settings: ModelSettings) {
-  const path = getSettingsPath()
-  mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`, "utf8")
+  writeConfigWing(process.cwd(), "CONF_SYSTEM", settings)
+  appendActionLog(process.cwd(), "Cambio de configuracion del sistema", {
+    wing: "CONF_SYSTEM",
+    model: settings.env.ANTHROPIC_MODEL,
+    baseUrl: settings.env.ANTHROPIC_BASE_URL,
+  })
 }
 
 export function maskApiKey(value: string) {

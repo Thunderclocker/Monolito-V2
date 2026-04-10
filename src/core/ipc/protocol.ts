@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, existsSync, writeFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { dirname, join } from "node:path"
+import { MONOLITO_ROOT } from "../system/root.ts"
 
 export type AgentEvent =
   | { type: "session.created"; sessionId: string; title: string }
@@ -104,7 +105,7 @@ export function decodeLines(buffer: string): { messages: Envelope[]; rest: strin
 }
 
 export function getPaths(rootDir: string, profileId: string = "default") {
-  const baseDir = join(rootDir, ".monolito-v2")
+  const baseDir = MONOLITO_ROOT
   const runDir = join(baseDir, "run")
   const logsDir = join(baseDir, "logs")
   const profilesDir = join(baseDir, "profiles")
@@ -114,7 +115,7 @@ export function getPaths(rootDir: string, profileId: string = "default") {
   const socketSuffix = createHash("sha1").update(rootDir).digest("hex").slice(0, 12)
   const socketPath = join("/tmp", `monolitod-v2-${socketSuffix}.sock`)
   const pidFile = join(runDir, "monolitod-v2.pid")
-  const daemonLog = join(logsDir, "monolitod-v2.log")
+  const daemonLog = join(logsDir, "monolitod.log")
   const lockFile = join(runDir, "daemon-lock.json")
   const ownerFile = join(runDir, "daemon-owner.json")
   const envFile = join(baseDir, ".env")

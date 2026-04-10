@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync } from "node:fs"
-import { homedir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import type { SttConfig } from "../channels/config.ts"
+import { MONOLITO_ROOT } from "../system/root.ts"
 
 const execFileAsync = promisify(execFile)
 
@@ -194,7 +194,7 @@ export async function deployManagedSttContainer(config: SttConfig): Promise<{ ok
     await removeManagedSttContainer(config, config.containerName)
   }
 
-  const cacheDir = join(homedir(), ".monolito-v2", "stt-cache")
+  const cacheDir = join(MONOLITO_ROOT, "stt-cache")
   mkdirSync(cacheDir, { recursive: true })
 
   const modelCandidates = buildModelFallbackChain(config)

@@ -1,15 +1,17 @@
 import { execFile, spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { homedir } from "node:os"
 import { promisify } from "node:util"
 import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { dirname, join, relative, resolve } from "node:path"
 import { ensureDirs, getPaths } from "../ipc/protocol.ts"
 import { type StdioMcpClient, getDefaultMcpServers } from "../mcp/client.ts"
 import { readChannelsConfig } from "../channels/config.ts"
-import { fileMemory, recallMemory, listWings, listRooms, listProfiles, createProfile, readBootWing, writeBootWing, ensureBootWings } from "../session/store.ts"
+import { fileMemory, recallMemory, listWings, listRooms, listProfiles, createProfile, readBootWing, writeBootWing, ensureBootWings, readConfigWing, writeConfigWing, appendActionLog } from "../session/store.ts"
 import { type AgentOrchestrator } from "../runtime/orchestrator.ts"
 import { BOOT_WING_ORDER, isBootWingName } from "../bootstrap/bootWings.ts"
+import { CONFIG_WING_ORDER, type ConfigWingName } from "../config/configWings.ts"
+import { loadAndApplyModelSettings } from "../runtime/modelConfig.ts"
+import { MONOLITO_ROOT } from "../system/root.ts"
 import {
   deployManagedTtsContainer,
   getManagedTtsBaseUrl,
@@ -1546,7 +1548,7 @@ const tools: ToolDefinition[] = [
       const SEARXNG_PORT = 8888
       const SEARXNG_URL = `http://127.0.0.1:${SEARXNG_PORT}`
       const CONTAINER_NAME = "monolito-searxng"
-      const SETTINGS_DIR = join(homedir(), ".monolito-v2", "searxng")
+      const SETTINGS_DIR = join(MONOLITO_ROOT, "searxng")
       const SETTINGS_FILE = join(SETTINGS_DIR, "settings.yml")
 
       type SearxngContainerInfo = {
@@ -1732,6 +1734,49 @@ const tools: ToolDefinition[] = [
   // ---------------------------------------------------------------------------
   // Master Configuration Hub
   // ---------------------------------------------------------------------------
+  {
+    name: "tool_manage_config",
+    description: "Read or update technical configuration stored in SQLite CONF_* wings. Use this instead of reading or writing JSON config files manually.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["read", "write"] },
+        wing: { type: "string", enum: [...CONFIG_WING_ORDER] },
+        value: {},
+      },
+      required: ["action", "wing"],
+      additionalProperties: false,
+    },
+    concurrencySafe: false,
+    async run(input, context) {
+      const action = requireString(input, "action") as "read" | "write"
+      const wing = requireString(input, "wing") as ConfigWingName
+      if (action === "read") {
+        return { wing, value: readConfigWing(context.rootDir, wing) }
+      }
+      const value = input.value
+      if (value === undefined) throw new Error("value is required when action='write'")
+      const result = writeConfigWing(context.rootDir, wing, value as never)
+      if (wing === "CONF_SYSTEM" || wing === "CONF_MODELS") {
+        loadAndApplyModelSettings(process.env)
+      }
+      appendActionLog(context.rootDir, "Configuracion tecnica modificada", {
+        wing,
+        changed: result.changed,
+      })
+      return {
+        wing,
+        ok: true,
+        changed: result.changed,
+        bytes: result.bytes,
+        effect: wing === "CONF_SYSTEM" || wing === "CONF_MODELS"
+          ? "model_config_reloaded"
+          : wing === "CONF_WEBSEARCH"
+            ? "websearch_config_applied"
+            : "stored",
+      }
+    },
+  },
   {
     name: "show_master_dashboard",
     aliases: ["master_config", "config_hub"],

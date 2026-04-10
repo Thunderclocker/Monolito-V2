@@ -17,6 +17,8 @@ import { applyCompletion, createInteractiveCompleter, findCommonPrefix } from ".
 import { ANSI } from "./tui/ansi.ts"
 import { getHeaderState } from "./tui/header.ts"
 import { commitPromptHistory, createPromptHistory, historyDown, historyUp } from "./tui/history.ts"
+import { readModelSettings } from "../../core/runtime/modelConfig.ts"
+import { getActiveProfile } from "../../core/runtime/modelRegistry.ts"
 import {
   formatCompact,
   formatConfig,
@@ -162,9 +164,27 @@ function isBootstrapSessionCandidate(session: SessionRecord) {
 
 function getBootstrapStartupPrompt(isFreshSession: boolean) {
   if (isFreshSession) {
-    return "A brand-new workspace bootstrap is pending. Start the first-run ritual now. Use the injected BOOT_BOOTSTRAP, BOOT_IDENTITY, BOOT_USER, BOOT_SOUL, and BOOT_AGENTS context already present in this turn. Greet briefly, then ask exactly one short onboarding question focused on identity or user profile. Do not dump a checklist. Do not mention internal storage unless the user asks."
+    return "El bootstrap del workspace sigue pendiente. Inicia ahora el ritual de primer arranque usando el contexto inyectado de BOOT_BOOTSTRAP, BOOT_IDENTITY, BOOT_USER, BOOT_SOUL y BOOT_AGENTS. Deja que el modelo orqueste la conversacion segun lo ya sabido. Responde en el idioma del usuario; si aun no hay una preferencia clara, comienza en espanol neutro y adapta el idioma enseguida si el usuario marca otro. Saluda brevemente y haz exactamente una sola pregunta corta por turno. No recites una checklist ni menciones almacenamiento interno salvo que el usuario lo pida."
   }
-  return "The workspace bootstrap is still pending. Resume the onboarding ritual from the injected BOOT_BOOTSTRAP, BOOT_IDENTITY, BOOT_USER, BOOT_SOUL, and BOOT_AGENTS context. Ask exactly one short next question, based on what is already known. Keep it natural and concise. Do not mention internal storage unless the user asks."
+  return "El bootstrap del workspace sigue pendiente. Retoma el onboarding desde el contexto inyectado de BOOT_BOOTSTRAP, BOOT_IDENTITY, BOOT_USER, BOOT_SOUL y BOOT_AGENTS. Deja que el modelo conduzca la siguiente pregunta segun lo ya conocido. Responde en el idioma del usuario y mantente natural, breve y conversacional. Haz exactamente una sola pregunta corta por turno. No menciones almacenamiento interno salvo que el usuario lo pida."
+}
+
+function hasConfiguredModel() {
+  const activeProfileModel = getActiveProfile()?.model?.trim() ?? ""
+  if (activeProfileModel) return true
+  const settings = readModelSettings({ env: process.env })
+  const configuredModel = settings.env.ANTHROPIC_MODEL.trim() || process.env.ANTHROPIC_MODEL?.trim() || ""
+  return configuredModel.length > 0
+}
+
+function openMissingModelMenu() {
+  return openModelMenu(
+    [
+      "No hay modelo configurado todavía.",
+      "Abrí la configuración de modelos automáticamente para que elijas uno antes de arrancar.",
+    ].join("\n"),
+    "info",
+  )
 }
 
 async function stashLocalChangesForUpdate(rootDir: string) {
@@ -575,6 +595,15 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     const profileId = (session as SessionRecord & { profileId?: string }).profileId ?? "default"
     const workspaceContext = getWorkspaceContext(rootDir, profileId, { isMainSession: true })
     if (!workspaceContext.bootstrapPending) return false
+    if (!hasConfiguredModel()) {
+      const result = openMissingModelMenu()
+      composer.menuState = result.nextState
+      transcript = appendTranscriptBlocks(transcript, [
+        { type: "event", label: "model", tone: result.tone, text: result.output },
+      ])
+      redraw()
+      return false
+    }
 
     composer.busy = true
     composer.thinkingVisible = true
@@ -970,8 +999,20 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
         ])
         refreshHeader()
         redraw()
-        const startedBootstrap = await maybeStartBootstrap(newSession, { isFreshSession: true })
+        const modelConfigured = hasConfiguredModel()
+        const startedBootstrap = modelConfigured
+          ? await maybeStartBootstrap(newSession, { isFreshSession: true })
+          : false
         if (!startedBootstrap) {
+          if (!modelConfigured) {
+            const result = openMissingModelMenu()
+            composer.menuState = result.nextState
+            transcript = appendTranscriptBlocks(transcript, [
+              { type: "event", label: "model", tone: result.tone, text: result.output },
+            ])
+            redraw()
+            return
+          }
           // Send a startup prompt so the agent reuses injected BOOT context and greets
           composer.busy = true
           composer.thinkingVisible = true
@@ -1290,7 +1331,15 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     await monitorConnection()
     if (activeSessionId !== "offline") {
       const session = await ensureConnectedSession()
-      await maybeStartBootstrap(session, { isFreshSession: false })
+      if (hasConfiguredModel()) {
+        await maybeStartBootstrap(session, { isFreshSession: false })
+      } else {
+        const result = openMissingModelMenu()
+        composer.menuState = result.nextState
+        transcript = appendTranscriptBlocks(transcript, [
+          { type: "event", label: "model", tone: result.tone, text: result.output },
+        ])
+      }
     }
     monitorTimer = setInterval(() => {
       void monitorConnection()

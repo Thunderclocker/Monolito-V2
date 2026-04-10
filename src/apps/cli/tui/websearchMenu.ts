@@ -5,10 +5,10 @@
  */
 import { execFile } from "node:child_process"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import { readWebSearchConfig, writeWebSearchConfig, type WebSearchProvider } from "../../../core/websearch/config.ts"
+import { MONOLITO_ROOT } from "../../../core/system/root.ts"
 import type { MenuState } from "./types.ts"
 
 const execFileAsync = promisify(execFile)
@@ -16,7 +16,7 @@ const execFileAsync = promisify(execFile)
 const SEARXNG_CONTAINER = "monolito-searxng"
 const SEARXNG_PORT = 8888
 const SEARXNG_URL = `http://127.0.0.1:${SEARXNG_PORT}`
-const SEARXNG_SETTINGS_DIR = join(homedir(), ".monolito-v2", "searxng")
+const SEARXNG_SETTINGS_DIR = join(MONOLITO_ROOT, "searxng")
 const SEARXNG_SETTINGS_FILE = join(SEARXNG_SETTINGS_DIR, "settings.yml")
 
 export type WebSearchMenuResult = {
