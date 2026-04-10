@@ -76,9 +76,9 @@ export class MonolitoV2Daemon {
 
   stop() {
     this.writeDaemonLog("daemon stop requested")
+    stopChannels()
     this.runtime.close()
     this.server?.close()
-    stopChannels()
     const paths = getPaths(this.rootDir)
     const owner = this.readOwnerClaim(paths.ownerFile)
     const ownsSharedState = owner?.pid === process.pid
