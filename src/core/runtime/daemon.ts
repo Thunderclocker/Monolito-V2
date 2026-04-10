@@ -43,7 +43,10 @@ export class MonolitoV2Daemon {
     this.acquireOwnership(paths)
     if (existsSync(paths.socketPath)) unlinkSync(paths.socketPath)
     writeFileSync(paths.pidFile, String(process.pid))
-    this.runtime.recoverSessions("Recovered after daemon restart")
+    const recoveredOnStart = this.runtime.recoverSessions("Recovered after daemon restart")
+    if (recoveredOnStart.length > 0) {
+      this.writeDaemonLog(`recovered ${recoveredOnStart.length} running session(s) after daemon restart`)
+    }
 
     try {
       this.server = await this.listenUnix(paths.socketPath)
@@ -72,6 +75,7 @@ export class MonolitoV2Daemon {
   }
 
   stop() {
+    this.writeDaemonLog("daemon stop requested")
     this.runtime.close()
     this.server?.close()
     stopChannels()
@@ -242,6 +246,7 @@ export class MonolitoV2Daemon {
           stdio: ["ignore", stdout, stderr],
         })
         child.unref()
+        this.writeDaemonLog(`daemon self-restart spawned child pid ${child.pid ?? "unknown"}`)
         this.stop()
       } catch (error) {
         this.writeDaemonLog(`daemon self-restart failed: ${error instanceof Error ? error.message : String(error)}`)

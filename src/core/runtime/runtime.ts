@@ -48,6 +48,7 @@ import { AgentOrchestrator } from "./orchestrator.ts"
 import { renderToolFinish, renderToolStart, renderToolStartText } from "../renderer/toolRenderer.ts"
 import { checkToolPermission, runPostToolHooks } from "./permissions.ts"
 import { runMemoryAgentReview } from "./memoryAgent.ts"
+import { logAgentTrace } from "./agentTrace.ts"
 import {
   deployManagedTtsContainer,
   getManagedTtsBaseUrl,
@@ -584,6 +585,21 @@ export class MonolitoV2Runtime {
   private restartRequested = false
   readonly orchestrator: AgentOrchestrator
 
+  private describeResumeReason(session: SessionRecord) {
+    const lastEntry = session.worklog.at(-1)
+    if (!lastEntry) return "session reopened"
+    if (lastEntry.type === "note" && /Recovered after daemon (restart|shutdown)/.test(lastEntry.summary)) {
+      return lastEntry.summary
+    }
+    if (lastEntry.type === "tool") {
+      return `session reopened after tool activity: ${lastEntry.summary}`
+    }
+    if (lastEntry.type === "message") {
+      return `session reopened after ${lastEntry.summary}`
+    }
+    return "session reopened"
+  }
+
   constructor(rootDir: string) {
     this.rootDir = rootDir
     this.orchestrator = new AgentOrchestrator(this)
@@ -624,11 +640,18 @@ export class MonolitoV2Runtime {
       const lastWasRecentResume =
         Date.now() - lastResumeAt < 5_000 ||
         lastEntry?.type === "session" &&
-        lastEntry.summary === "Session resumed" &&
+        lastEntry.summary.startsWith("Session resumed") &&
         Date.now() - Date.parse(lastEntry.at) < 5_000
       if (!lastWasRecentResume) {
         this.recentResumeAt.set(session.id, Date.now())
-        appendWorklog(this.rootDir, session.id, { type: "session", summary: "Session resumed" })
+        appendWorklog(this.rootDir, session.id, {
+          type: "session",
+          summary: `Session resumed (${this.describeResumeReason(existing)})`,
+        })
+        logAgentTrace(this.rootDir, session.id, "session.resumed", {
+          profileId,
+          details: { reason: this.describeResumeReason(existing) },
+        })
         this.emit({ type: "session.resumed", sessionId: session.id })
       }
     } else {
@@ -673,6 +696,17 @@ export class MonolitoV2Runtime {
     this.activeSessions.add(sessionId)
     loadAndApplyModelSettings(process.env)
     appendMessage(this.rootDir, sessionId, "user", text)
+    appendWorklog(this.rootDir, sessionId, {
+      type: "session",
+      summary: `Turn started (${text.trim().startsWith("/") ? "slash-command" : "user-message"})`,
+    })
+    logAgentTrace(this.rootDir, sessionId, "turn.started", {
+      profileId,
+      details: {
+        inputKind: text.trim().startsWith("/") ? "slash-command" : "user-message",
+        chars: text.length,
+      },
+    })
     this.emit({ type: "message.received", sessionId, role: "user", text })
     await this.transitionState(sessionId, "running")
     
@@ -704,6 +738,18 @@ export class MonolitoV2Runtime {
           return await this.processMessage(sessionId, startupPrompt)
         }
         appendMessage(this.rootDir, sessionId, "assistant", reply)
+        appendWorklog(this.rootDir, sessionId, {
+          type: "session",
+          summary: "Turn completed (slash-command)",
+        })
+        logAgentTrace(this.rootDir, sessionId, "turn.completed", {
+          profileId,
+          details: {
+            mode: "slash-command",
+            durationMs: Date.now() - turnStartedAt,
+            replyChars: reply.length,
+          },
+        })
         this.emit({ type: "message.received", sessionId, role: "assistant", text: reply })
         this.emit({
           type: "turn.completed",
@@ -800,6 +846,22 @@ export class MonolitoV2Runtime {
         }
         const userFacingText = sanitizeExternalAssistantText(sessionId, turn.finalText, preparedUserText)
         appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
+        appendWorklog(this.rootDir, sessionId, {
+          type: "session",
+          summary: turn.error ? `Turn completed with model error: ${clipForWorklog(turn.error)}` : "Turn completed",
+        })
+        logAgentTrace(this.rootDir, sessionId, "turn.completed", {
+          profileId,
+          details: {
+            mode: "assistant-turn",
+            durationMs: Date.now() - turnStartedAt,
+            replyChars: userFacingText.length,
+            hadError: Boolean(turn.error),
+            inputTokens: turn.usage?.inputTokens ?? 0,
+            outputTokens: turn.usage?.outputTokens ?? 0,
+            totalTokens: turn.usage?.totalTokens ?? 0,
+          },
+        })
         this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
         this.emit({
           type: "turn.completed",
@@ -826,11 +888,30 @@ export class MonolitoV2Runtime {
       }
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") {
+        appendWorklog(this.rootDir, sessionId, {
+          type: "session",
+          summary: "Turn aborted by operator",
+        })
+        logAgentTrace(this.rootDir, sessionId, "turn.aborted", {
+          profileId,
+          details: { durationMs: Date.now() - turnStartedAt },
+        })
         this.emit({ type: "error", sessionId, error: "Stopped" })
         await this.transitionState(sessionId, "idle")
         throw error
       }
       const message = sanitizeExternalAssistantText(sessionId, error instanceof Error ? error.message : String(error))
+      appendWorklog(this.rootDir, sessionId, {
+        type: "session",
+        summary: `Turn failed: ${clipForWorklog(message)}`,
+      })
+      logAgentTrace(this.rootDir, sessionId, "turn.failed", {
+        profileId,
+        details: {
+          durationMs: Date.now() - turnStartedAt,
+          error: message,
+        },
+      })
       this.emit({ type: "error", sessionId, error: message })
       appendMessage(this.rootDir, sessionId, "assistant", message)
       this.emit({ type: "message.received", sessionId, role: "assistant", text: message })
@@ -1065,9 +1146,19 @@ export class MonolitoV2Runtime {
         type: "tool",
         summary: `Tool ${tool.name} blocked: ${message}`,
       })
+      logAgentTrace(this.rootDir, sessionId, "tool.failed", {
+        profileId: profileId ?? context.profileId,
+        toolName: tool.name,
+        details: { blocked: true, error: message },
+      })
       this.emit({ type: "error", sessionId, error: message })
       throw new Error(message)
     }
+    logAgentTrace(this.rootDir, sessionId, "tool.started", {
+      profileId: profileId ?? context.profileId,
+      toolName: tool.name,
+      details: { toolUseId, input },
+    })
     this.emit({ type: "tool.start", sessionId, toolUseId, tool: tool.name, input })
     const toolStartedAt = Date.now()
     try {
@@ -1088,6 +1179,11 @@ export class MonolitoV2Runtime {
         tool: tool.name,
         sessionId,
       })
+      logAgentTrace(this.rootDir, sessionId, "tool.completed", {
+        profileId: profileId ?? context.profileId,
+        toolName: tool.name,
+        details: { toolUseId, durationMs: Date.now() - toolStartedAt },
+      })
       this.emit({ type: "tool.finish", sessionId, toolUseId, tool: tool.name, ok: true, output })
       return output
     } catch (error) {
@@ -1097,6 +1193,11 @@ export class MonolitoV2Runtime {
       appendWorklog(this.rootDir, sessionId, {
         type: "tool",
         summary: `Tool ${tool.name} failed: ${message}`,
+      })
+      logAgentTrace(this.rootDir, sessionId, "tool.failed", {
+        profileId: profileId ?? context.profileId,
+        toolName: tool.name,
+        details: { toolUseId, durationMs: Date.now() - toolStartedAt, error: message },
       })
       this.emit({ type: "tool.finish", sessionId, toolUseId, tool: tool.name, ok: false, output: outputWithError(output, message) })
       throw error
@@ -1689,4 +1790,10 @@ export class MonolitoV2Runtime {
   async queryConfig(action?: string, field?: string, value?: string) {
     return await this.runConfig(action ? [action, field, value].filter(Boolean) as string[] : [])
   }
+}
+
+function clipForWorklog(value: string, maxChars = 180) {
+  const trimmed = value.trim()
+  if (trimmed.length <= maxChars) return trimmed
+  return `${trimmed.slice(0, maxChars).trimEnd()}...`
 }
