@@ -59,6 +59,7 @@ export type ComposerState = {
   channelMenuState: MenuState
   websearchMenuState: MenuState
   masterMenuState: MasterMenuState
+  masterMenuEphemeral: boolean
 }
 
 export type HeaderState = {

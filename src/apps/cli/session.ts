@@ -407,7 +407,7 @@ async function ensureCliSession(client: DaemonClient, sessionId?: string) {
 
 export async function openInteractiveSession(client: DaemonClient, sessionId?: string) {
   const rootDir = process.cwd()
-  const composer: ComposerState = { input: "", cursor: 0, busy: false, thinkingFrame: 0, thinkingVisible: false, suggestions: [], toolThinkingFrame: 0, toolThinkingText: "", menuState: null, channelMenuState: null, websearchMenuState: null, masterMenuState: null }
+  const composer: ComposerState = { input: "", cursor: 0, busy: false, thinkingFrame: 0, thinkingVisible: false, suggestions: [], toolThinkingFrame: 0, toolThinkingText: "", menuState: null, channelMenuState: null, websearchMenuState: null, masterMenuState: null, masterMenuEphemeral: false }
   const history = createPromptHistory(rootDir)
   const completer = createInteractiveCompleter(rootDir)
   const formatter = new InteractiveTranscriptFormatter()
@@ -490,6 +490,7 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     if (event.type === "tool.finish" && event.ok && isMenuSchemaEnvelope(event.output)) {
       const { result, state } = openMasterDashboard(event.output)
       composer.masterMenuState = state
+      composer.masterMenuEphemeral = true
       transcript = appendTranscriptBlocks(transcript, [
         { type: "event", label: "config", tone: result.tone, text: result.output },
       ])
@@ -501,6 +502,10 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     const blocks = formatter.render(event)
     if (event.type === "message.received" && event.role === "assistant") {
       composer.thinkingVisible = false
+      if (composer.masterMenuEphemeral) {
+        composer.masterMenuState = null
+        composer.masterMenuEphemeral = false
+      }
     }
     transcript = appendTranscriptBlocks(transcript, blocks)
     if (pinnedToBottom) transcript.scrollOffset = 0
@@ -796,6 +801,7 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       ])
       const { result, state } = await processMasterMenuInput(line, composer.masterMenuState)
       composer.masterMenuState = state
+      if (!state) composer.masterMenuEphemeral = false
       transcript = appendTranscriptBlocks(transcript, [
         { type: "event", label: "config", tone: result.tone, text: result.output },
       ])
@@ -911,6 +917,7 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       const envelope = buildMasterDashboard()
       const { result, state } = openMasterDashboard(envelope)
       composer.masterMenuState = state
+      composer.masterMenuEphemeral = false
       transcript = appendTranscriptBlocks(transcript, [
         { type: "event", label: "config", tone: result.tone, text: result.output },
       ])

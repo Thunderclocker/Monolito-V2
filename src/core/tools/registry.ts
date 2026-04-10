@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, w
 import { dirname, join, relative, resolve } from "node:path"
 import { ensureDirs, getPaths } from "../ipc/protocol.ts"
 import { type StdioMcpClient, getDefaultMcpServers } from "../mcp/client.ts"
-import { readChannelsConfig } from "../channels/config.ts"
+import { normalizeChannelsConfig, readChannelsConfig } from "../channels/config.ts"
 import { fileMemory, recallMemory, listWings, listRooms, listProfiles, createProfile, readBootWing, writeBootWing, ensureBootWings, readConfigWing, writeConfigWing, appendActionLog } from "../session/store.ts"
 import { type AgentOrchestrator } from "../runtime/orchestrator.ts"
 import { BOOT_WING_ORDER, isBootWingName } from "../bootstrap/bootWings.ts"
@@ -1756,7 +1756,10 @@ const tools: ToolDefinition[] = [
       }
       const value = input.value
       if (value === undefined) throw new Error("value is required when action='write'")
-      const result = writeConfigWing(context.rootDir, wing, value as never)
+      const normalizedValue = wing === "CONF_CHANNELS"
+        ? normalizeChannelsConfig(value)
+        : value
+      const result = writeConfigWing(context.rootDir, wing, normalizedValue as never)
       if (wing === "CONF_SYSTEM" || wing === "CONF_MODELS") {
         loadAndApplyModelSettings(process.env)
       }
