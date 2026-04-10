@@ -1,3 +1,5 @@
+import type { MasterMenuState } from "./uiManager.ts"
+
 export type CompletionMatch = [string[], string]
 
 export type CliSessionError = Error & {
@@ -56,6 +58,7 @@ export type ComposerState = {
   menuState: MenuState
   channelMenuState: MenuState
   websearchMenuState: MenuState
+  masterMenuState: MasterMenuState
 }
 
 export type HeaderState = {
