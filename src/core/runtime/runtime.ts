@@ -694,27 +694,32 @@ export class MonolitoV2Runtime {
       throw createSessionBusyError(sessionId)
     }
     this.activeSessions.add(sessionId)
-    loadAndApplyModelSettings(process.env)
-    appendMessage(this.rootDir, sessionId, "user", text)
-    appendWorklog(this.rootDir, sessionId, {
-      type: "session",
-      summary: `Turn started (${text.trim().startsWith("/") ? "slash-command" : "user-message"})`,
-    })
-    logAgentTrace(this.rootDir, sessionId, "turn.started", {
-      profileId,
-      details: {
-        inputKind: text.trim().startsWith("/") ? "slash-command" : "user-message",
-        chars: text.length,
-      },
-    })
-    this.emit({ type: "message.received", sessionId, role: "user", text })
-    await this.transitionState(sessionId, "running")
-    
-    // Determine profileId from session
-    const session = this.getSession(sessionId)
-    const profileId = (session as any)?.profileId ?? "default"
+    try {
+      loadAndApplyModelSettings(process.env)
 
-    await this.runTurn(sessionId, text, profileId)
+      const session = this.getSession(sessionId)
+      const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
+
+      appendMessage(this.rootDir, sessionId, "user", text)
+      appendWorklog(this.rootDir, sessionId, {
+        type: "session",
+        summary: `Turn started (${text.trim().startsWith("/") ? "slash-command" : "user-message"})`,
+      })
+      logAgentTrace(this.rootDir, sessionId, "turn.started", {
+        profileId,
+        details: {
+          inputKind: text.trim().startsWith("/") ? "slash-command" : "user-message",
+          chars: text.length,
+        },
+      })
+      this.emit({ type: "message.received", sessionId, role: "user", text })
+      await this.transitionState(sessionId, "running")
+
+      await this.runTurn(sessionId, text, profileId)
+    } catch (error) {
+      this.activeSessions.delete(sessionId)
+      throw error
+    }
   }
 
   async runTurn(sessionId: string, lastUserText: string, profileId = "default") {
