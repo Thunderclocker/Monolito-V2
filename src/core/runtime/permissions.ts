@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
-import { homedir } from "node:os"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
+import { MONOLITO_ROOT } from "../system/root.ts"
 
 const execFileAsync = promisify(execFile)
 
@@ -121,6 +121,7 @@ const EDIT_TOOLS = new Set([
   "Write",
   "Edit",
   "BootWrite",
+  "tool_manage_config",
   "WorkspaceMemoryFiling",
   "TodoWrite",
   "ProfileCreate",
@@ -145,15 +146,13 @@ const EDIT_TOOLS = new Set([
 ])
 
 function getPermissionsPath(rootDir?: string) {
-  const local = rootDir ? join(rootDir, ".monolito-v2", "permissions.json") : join(process.cwd(), ".monolito-v2", "permissions.json")
-  if (existsSync(local)) return local
-  return join(homedir(), ".monolito-v2", "permissions.json")
+  void rootDir
+  return join(MONOLITO_ROOT, "permissions.json")
 }
 
 function getHooksPath(rootDir?: string) {
-  const local = rootDir ? join(rootDir, ".monolito-v2", "hooks.json") : join(process.cwd(), ".monolito-v2", "hooks.json")
-  if (existsSync(local)) return local
-  return join(homedir(), ".monolito-v2", "hooks.json")
+  void rootDir
+  return join(MONOLITO_ROOT, "hooks.json")
 }
 
 export function ensurePermissionFiles(rootDir?: string) {

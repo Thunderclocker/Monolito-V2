@@ -76,19 +76,23 @@ export class MonolitoV2Daemon {
     this.server?.close()
     stopChannels()
     const paths = getPaths(this.rootDir)
+    const owner = this.readOwnerClaim(paths.ownerFile)
+    const ownsSharedState = owner?.pid === process.pid
     if (this.ownershipMonitor) {
       clearInterval(this.ownershipMonitor)
       this.ownershipMonitor = null
     }
-    try {
-      if (existsSync(paths.socketPath)) unlinkSync(paths.socketPath)
-    } catch {}
-    try {
-      if (existsSync(paths.lockFile)) unlinkSync(paths.lockFile)
-    } catch {}
-    try {
-      if (existsSync(paths.pidFile)) unlinkSync(paths.pidFile)
-    } catch {}
+    if (ownsSharedState) {
+      try {
+        if (existsSync(paths.socketPath)) unlinkSync(paths.socketPath)
+      } catch {}
+      try {
+        if (existsSync(paths.lockFile)) unlinkSync(paths.lockFile)
+      } catch {}
+      try {
+        if (existsSync(paths.pidFile)) unlinkSync(paths.pidFile)
+      } catch {}
+    }
     try {
       if (this.ownerFd !== null) {
         closeSync(this.ownerFd)
@@ -96,7 +100,6 @@ export class MonolitoV2Daemon {
       }
     } catch {}
     try {
-      const owner = this.readOwnerClaim(paths.ownerFile)
       if (owner?.pid === process.pid && existsSync(paths.ownerFile)) unlinkSync(paths.ownerFile)
     } catch {}
   }

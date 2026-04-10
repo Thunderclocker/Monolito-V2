@@ -1,15 +1,16 @@
 import { execFile } from "node:child_process"
 import { existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import { getPaths, type AgentEvent, type SessionRecord } from "../ipc/protocol.ts"
 import { StdioMcpClient, getDefaultMcpServers } from "../mcp/client.ts"
 import {
+  appendActionLog,
   appendEvent,
   appendMessage,
   appendWorklog,
   compactSession,
+  ensureConfigWings,
   ensureBootWings,
   ensureSession,
   getSession,
@@ -22,6 +23,7 @@ import {
   updateSessionProfile,
   listProfiles,
   createProfile,
+  getDb,
 } from "../session/store.ts"
 import { getTool, listTools } from "../tools/registry.ts"
 import { getEffectiveModelConfig, runAssistantTurn } from "./modelAdapter.ts"
@@ -64,6 +66,7 @@ import {
   removeManagedSttContainer,
   stopManagedSttContainer,
 } from "../stt/managed.ts"
+import { MONOLITO_ROOT } from "../system/root.ts"
 
 type EventListener = (event: AgentEvent) => void
 
@@ -83,7 +86,7 @@ const execFileAsync = promisify(execFile)
 const SEARXNG_CONTAINER = "monolito-searxng"
 const SEARXNG_PORT = 8888
 const SEARXNG_URL = `http://127.0.0.1:${SEARXNG_PORT}`
-const SEARXNG_SETTINGS_DIR = join(homedir(), ".monolito-v2", "searxng")
+const SEARXNG_SETTINGS_DIR = join(MONOLITO_ROOT, "searxng")
 const SEARXNG_SETTINGS_FILE = join(SEARXNG_SETTINGS_DIR, "settings.yml")
 
 type SearxngContainerInfo = {
@@ -584,6 +587,8 @@ export class MonolitoV2Runtime {
   constructor(rootDir: string) {
     this.rootDir = rootDir
     this.orchestrator = new AgentOrchestrator(this)
+    getDb(this.rootDir)
+    ensureConfigWings(this.rootDir)
     loadAndApplyModelSettings(process.env)
   }
 
@@ -595,6 +600,7 @@ export class MonolitoV2Runtime {
   ensureSession(sessionId?: string, title?: string, profileId = "default") {
     const existing = sessionId ? getSession(this.rootDir, sessionId) : null
     const session = ensureSession(this.rootDir, sessionId, title)
+    ensureConfigWings(this.rootDir)
     ensureBootWings(this.rootDir, profileId)
     
     // Ensure the profile exists in DB
@@ -692,7 +698,7 @@ export class MonolitoV2Runtime {
           const resetProfileId = (resetSession as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
           const resetWorkspaceContext = getWorkspaceContext(this.rootDir, resetProfileId, { isMainSession: true })
           const startupPrompt = resetWorkspaceContext.bootstrapPending
-            ? "A brand-new workspace bootstrap is pending. Start the first-run ritual now using the injected BOOT_BOOTSTRAP, BOOT_IDENTITY, BOOT_USER, BOOT_SOUL, and BOOT_AGENTS context. Greet briefly, then ask exactly one short onboarding question. Do not dump a checklist or mention internal storage unless the user asks."
+            ? "El bootstrap del workspace sigue pendiente. Inicia ahora el ritual de primer arranque usando el contexto inyectado de BOOT_BOOTSTRAP, BOOT_IDENTITY, BOOT_USER, BOOT_SOUL y BOOT_AGENTS. Deja que el modelo orqueste la conversacion segun lo ya sabido. Responde en el idioma del usuario; si aun no hay una preferencia clara, comienza en espanol neutro y adapta el idioma enseguida si el usuario marca otro. Saluda brevemente y haz exactamente una sola pregunta corta por turno. No recites una checklist ni menciones almacenamiento interno salvo que el usuario lo pida."
             : "A new session was started via /new. Run your Session Startup sequence using the injected BOOT context already present in this turn before responding. Then greet the user in your configured persona. Keep it to 1-3 sentences. Do not mention internal steps, tools, or reasoning."
           this.activeSessions.delete(sessionId)
           return await this.processMessage(sessionId, startupPrompt)
@@ -1077,6 +1083,10 @@ export class MonolitoV2Runtime {
       appendWorklog(this.rootDir, sessionId, {
         type: "tool",
         summary: `Tool ${tool.name} finished successfully`,
+      })
+      appendActionLog(this.rootDir, "Herramienta ejecutada", {
+        tool: tool.name,
+        sessionId,
       })
       this.emit({ type: "tool.finish", sessionId, toolUseId, tool: tool.name, ok: true, output })
       return output

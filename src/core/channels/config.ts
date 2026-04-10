@@ -1,8 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs"
-import { join } from "node:path"
-import { homedir } from "node:os"
-
-const CHANNELS_FILE = join(homedir(), ".monolito-v2", "channels.json")
+import { appendActionLog, readConfigWing, writeConfigWing } from "../session/store.ts"
 
 export type TelegramConfig = {
   token: string
@@ -44,15 +40,13 @@ export type ChannelsConfig = {
 }
 
 export function readChannelsConfig(): ChannelsConfig {
-  try {
-    const raw = readFileSync(CHANNELS_FILE, "utf-8")
-    return JSON.parse(raw) as ChannelsConfig
-  } catch {
-    return {}
-  }
+  return readConfigWing(process.cwd(), "CONF_CHANNELS")
 }
 
 export function writeChannelsConfig(config: ChannelsConfig) {
-  mkdirSync(join(homedir(), ".monolito-v2"), { recursive: true })
-  writeFileSync(CHANNELS_FILE, JSON.stringify(config, null, 2))
+  writeConfigWing(process.cwd(), "CONF_CHANNELS", config)
+  appendActionLog(process.cwd(), "Configuracion de canales actualizada", {
+    wing: "CONF_CHANNELS",
+    telegramEnabled: config.telegram?.enabled ?? false,
+  })
 }

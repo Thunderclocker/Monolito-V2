@@ -18,10 +18,18 @@ import {
   type BootWingEntry,
   type BootWingName,
 } from "../bootstrap/bootWings.ts"
+import {
+  CONFIG_WING_ORDER,
+  DEFAULT_CONFIG_WING_VALUES,
+  type ConfigWingName,
+  type ConfigWingValueMap,
+} from "../config/configWings.ts"
 
 let dbInstance: Database.Database | null = null
 let dbPathCache: string | null = null
 const BOOTSTRAP_SOURCE_ROOM = "__bootstrap__"
+const CONFIG_SOURCE_ROOM = "__config__"
+const ACTION_LOG_ROOM = "agent-actions"
 
 export function getDb(rootDir: string): Database.Database {
   const path = join(getPaths(rootDir).stateDir, "memory.sqlite")
@@ -128,19 +136,6 @@ export function getDb(rootDir: string): Database.Database {
   return db
 }
 
-function bootWingProfileWhereClause(profileId?: string | null) {
-  if (profileId) {
-    return {
-      clause: "(profile_id = ? OR profile_id IS NULL)",
-      params: [profileId],
-    }
-  }
-  return {
-    clause: "profile_id IS NULL",
-    params: [] as string[],
-  }
-}
-
 export function ensureBootWings(rootDir: string, profileId = "default") {
   const db = getDb(rootDir)
   const now = new Date().toISOString()
@@ -153,19 +148,142 @@ export function ensureBootWings(rootDir: string, profileId = "default") {
     INSERT INTO memory_drawers (id, profile_id, wing, room, memory_key, content, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `)
+  const latestStmt = db.prepare(`
+    SELECT id, content
+    FROM memory_drawers
+    WHERE wing = ? AND profile_id = ?
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  `)
+  const deleteStmt = db.prepare(`DELETE FROM memory_drawers WHERE id = ?`)
+  const deleteVecStmt = db.prepare(`DELETE FROM vec_drawers WHERE id = ?`)
+
+  const legacyBootBootstrapTemplate = "# BOOT_BOOTSTRAP - First Run Ritual\n\nHello. You just came online in a brand new workspace.\n\n## Goal\nStart a short, natural onboarding conversation and learn:\n- Who are you?\n- What should the user call you?\n- What kind of agent are you?\n- What tone or vibe should you have?\n- Who is the user?\n- How should you address them?\n- Any optional notes like timezone, pronouns, or preferences?\n\n## Style\n- Do not interrogate.\n- Ask one short question at a time.\n- Offer 3-5 suggestions when the user is unsure.\n- Keep the exchange warm, concise, and practical.\n\n## Persist what you learn\nOnce details are confirmed, update:\n- BOOT_IDENTITY with your name, creature, vibe, and emoji.\n- BOOT_USER with the user's profile and preferred address.\n- BOOT_SOUL with any durable behavior preferences that came out of onboarding.\n\n## Completion\nWhen onboarding is finished, replace this content with a one-line completion note such as:\nBootstrap completed.\n"
 
   db.exec("BEGIN TRANSACTION")
   try {
     for (const wing of BOOT_WING_ORDER) {
       const existing = countStmt.get(wing, profileId) as { count: number }
-      if (existing.count > 0) continue
-      insertStmt.run(randomUUID(), profileId, wing, BOOTSTRAP_SOURCE_ROOM, wing, DEFAULT_BOOT_WING_CONTENT[wing], now)
+      if (existing.count === 0) {
+        insertStmt.run(randomUUID(), profileId, wing, BOOTSTRAP_SOURCE_ROOM, wing, DEFAULT_BOOT_WING_CONTENT[wing], now)
+        continue
+      }
+      if (wing === "BOOT_BOOTSTRAP") {
+        const latest = latestStmt.get(wing, profileId) as { id: string; content: string } | undefined
+        if (latest && latest.content === legacyBootBootstrapTemplate) {
+          deleteVecStmt.run(latest.id)
+          deleteStmt.run(latest.id)
+          insertStmt.run(randomUUID(), profileId, wing, BOOTSTRAP_SOURCE_ROOM, wing, DEFAULT_BOOT_WING_CONTENT[wing], now)
+        }
+      }
     }
     db.exec("COMMIT")
   } catch (error) {
     db.exec("ROLLBACK")
     throw error
   }
+}
+
+export function ensureConfigWings(rootDir: string) {
+  const db = getDb(rootDir)
+  const now = new Date().toISOString()
+  const countStmt = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM memory_drawers
+    WHERE wing = ? AND profile_id IS NULL
+  `)
+  const insertStmt = db.prepare(`
+    INSERT INTO memory_drawers (id, profile_id, wing, room, memory_key, content, created_at)
+    VALUES (?, NULL, ?, ?, ?, ?, ?)
+  `)
+
+  db.exec("BEGIN TRANSACTION")
+  try {
+    for (const wing of CONFIG_WING_ORDER) {
+      const existing = countStmt.get(wing) as { count: number }
+      if (existing.count > 0) continue
+      insertStmt.run(randomUUID(), wing, CONFIG_SOURCE_ROOM, wing, JSON.stringify(DEFAULT_CONFIG_WING_VALUES[wing], null, 2), now)
+    }
+    db.exec("COMMIT")
+  } catch (error) {
+    db.exec("ROLLBACK")
+    throw error
+  }
+}
+
+export function readConfigWing<T extends ConfigWingName>(rootDir: string, wing: T): ConfigWingValueMap[T] {
+  ensureConfigWings(rootDir)
+  const db = getDb(rootDir)
+  const row = db.prepare(`
+    SELECT content
+    FROM memory_drawers
+    WHERE wing = ? AND profile_id IS NULL
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  `).get(wing) as { content: string } | undefined
+  if (!row?.content) return DEFAULT_CONFIG_WING_VALUES[wing]
+  try {
+    return JSON.parse(row.content) as ConfigWingValueMap[T]
+  } catch {
+    return DEFAULT_CONFIG_WING_VALUES[wing]
+  }
+}
+
+export function writeConfigWing<T extends ConfigWingName>(rootDir: string, wing: T, value: ConfigWingValueMap[T]) {
+  ensureConfigWings(rootDir)
+  const db = getDb(rootDir)
+  const now = new Date().toISOString()
+  const content = JSON.stringify(value, null, 2)
+  const rows = db.prepare(`
+    SELECT id, content
+    FROM memory_drawers
+    WHERE wing = ? AND profile_id IS NULL
+    ORDER BY created_at DESC, id DESC
+  `).all(wing) as { id: string; content: string }[]
+  if ((rows[0]?.content ?? "") === content) {
+    return { changed: false, bytes: Buffer.byteLength(content) }
+  }
+
+  db.exec("BEGIN TRANSACTION")
+  try {
+    if (rows.length > 0) {
+      db.prepare(`
+        UPDATE memory_drawers
+        SET content = ?, created_at = ?, room = ?, memory_key = ?
+        WHERE id = ?
+      `).run(content, now, CONFIG_SOURCE_ROOM, wing, rows[0]!.id)
+      const deleteMemory = db.prepare(`DELETE FROM memory_drawers WHERE id = ?`)
+      const deleteVec = db.prepare(`DELETE FROM vec_drawers WHERE id = ?`)
+      for (const row of rows.slice(1)) {
+        deleteVec.run(row.id)
+        deleteMemory.run(row.id)
+      }
+    } else {
+      db.prepare(`
+        INSERT INTO memory_drawers (id, profile_id, wing, room, memory_key, content, created_at)
+        VALUES (?, NULL, ?, ?, ?, ?, ?)
+      `).run(randomUUID(), wing, CONFIG_SOURCE_ROOM, wing, content, now)
+    }
+    db.exec("COMMIT")
+  } catch (error) {
+    db.exec("ROLLBACK")
+    throw error
+  }
+  return { changed: true, bytes: Buffer.byteLength(content) }
+}
+
+export function appendActionLog(rootDir: string, action: string, details?: Record<string, unknown>) {
+  const db = getDb(rootDir)
+  const now = new Date().toISOString()
+  const payload = {
+    action,
+    details: details ?? {},
+    at: now,
+  }
+  db.prepare(`
+    INSERT INTO memory_drawers (id, profile_id, wing, room, memory_key, content, created_at)
+    VALUES (?, NULL, 'LOG_ACTIONS', ?, ?, ?, ?)
+  `).run(randomUUID(), ACTION_LOG_ROOM, "action", JSON.stringify(payload), now)
 }
 
 export function readBootWing(rootDir: string, wing: BootWingName, profileId = "default"): string | null {
@@ -561,6 +679,9 @@ export async function fileMemory(rootDir: string, wing: string, room: string, co
   if (rawWing.toUpperCase().startsWith("BOOT_")) {
     throw new Error("BOOT_* wings are reserved for deterministic bootstrap state. Use BootWrite instead.")
   }
+  if (rawWing.toUpperCase().startsWith("CONF_")) {
+    throw new Error("CONF_* wings are reserved for technical configuration state. Use ConfigWrite/tool_manage_config instead.")
+  }
   const normalizedWing = rawWing.length === 0 ? "PRIVATE" : rawWing.toUpperCase() === "SHARED" ? "SHARED" : rawWing
   const normalizedRoom = room.trim() || "general"
   const normalizedKey = key?.trim() || null
@@ -587,7 +708,10 @@ export async function fileMemory(rootDir: string, wing: string, room: string, co
 export async function recallMemory(rootDir: string, wing?: string, room?: string, query?: string, profileId?: string, key?: string) {
   const db = getDb(rootDir)
   const params: any[] = []
-  const conditions: string[] = [`m.wing NOT LIKE 'BOOT\\_%' ESCAPE '\\'`]
+  const conditions: string[] = [
+    `m.wing NOT LIKE 'BOOT\\_%' ESCAPE '\\'`,
+    `m.wing NOT LIKE 'CONF\\_%' ESCAPE '\\'`,
+  ]
   
   if (wing) {
     const normalizedWing = wing.trim().toUpperCase() === "SHARED" ? "SHARED" : wing.trim()
@@ -649,7 +773,7 @@ export function createProfile(rootDir: string, id: string, name: string, descrip
 
 export function listWings(rootDir: string, profileId?: string): string[] {
   const db = getDb(rootDir)
-  let sql = `SELECT DISTINCT wing FROM memory_drawers WHERE wing NOT LIKE 'BOOT\\_%' ESCAPE '\\'`
+  let sql = `SELECT DISTINCT wing FROM memory_drawers WHERE wing NOT LIKE 'BOOT\\_%' ESCAPE '\\' AND wing NOT LIKE 'CONF\\_%' ESCAPE '\\'`
   if (profileId) {
     sql += ` AND (profile_id = ? OR profile_id IS NULL)`
   } else {
@@ -663,6 +787,7 @@ export function listWings(rootDir: string, profileId?: string): string[] {
 export function listRooms(rootDir: string, wing: string, profileId?: string): string[] {
   const db = getDb(rootDir)
   if (wing.trim().toUpperCase().startsWith("BOOT_")) return []
+  if (wing.trim().toUpperCase().startsWith("CONF_")) return []
   let sql = `SELECT DISTINCT room FROM memory_drawers WHERE wing = ?`
   if (profileId) {
     sql += ` AND (profile_id = ? OR profile_id IS NULL)`

@@ -746,7 +746,7 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
       "RULES:",
       "1. To read or modify injected bootstrap state, use the dedicated tools: `BootRead(wing=\"...\")` and `BootWrite(wing=\"...\", content=\"...\")`.",
       "2. Do not use semantic memory recall for bootstrap state. BOOT wings are deterministic startup context.",
-      "3. The project root is for the user's code; operational state lives under `.monolito-v2/`.",
+      "3. The project root is for the user's code; Monolito operational state lives under a fixed MONOLITO_ROOT at `~/.monolito-v2/`.",
       `4. Main session bootstrap mode: ${bootstrap.isMainSession ? "yes" : "no"}${bootstrap.isMainSession ? " (BOOT_MEMORY may be loaded)" : " (BOOT_MEMORY is intentionally not auto-loaded)"}.`,
     )
     if (bootstrap.bootstrapPending) {
@@ -754,6 +754,8 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
         "",
         "BOOTSTRAP STATUS: pending.",
         "- Prioritize the onboarding ritual before normal long-form assistance.",
+        "- Let the model conduct the onboarding naturally instead of reciting a fixed script.",
+        "- Use the user's language for onboarding. If no language preference is clear yet, begin in neutral Spanish and adapt as soon as the user signals another language.",
         "- Ask exactly one short question at a time.",
         "- Do not ask for everything in one message.",
         "- When facts are confirmed, persist them with BootWrite to BOOT_IDENTITY, BOOT_USER, and BOOT_SOUL as needed.",
@@ -882,7 +884,7 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
     "",
     "When a tool is needed, emit a native tool_use block. When no tool is needed, answer normally.",
     "Rules:",
-    "- When the user asks to configure the system, change settings, view current configuration, or manage models/channels/websearch/audio: invoke the show_master_dashboard tool. Do NOT read config files manually.",
+    "- When the user asks to configure the system, change settings, view current configuration, or manage models/channels/websearch/audio: invoke the show_master_dashboard tool or tool_manage_config as appropriate. Do NOT read config files manually.",
     "- Every Bash tool call must include input.command as a non-empty shell command string.",
     "- For long-running shell commands, set Bash input.run_in_background=true instead of blocking the turn.",
     "- Never output a shell command as the final response when the user asked you to inspect or change the local system. Use a Bash tool call instead.",
