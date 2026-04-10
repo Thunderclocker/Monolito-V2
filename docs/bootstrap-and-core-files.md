@@ -1,49 +1,39 @@
-# Bootstrap And Core Files
+# Bootstrap and BOOT Wings
 
-Monolito uses an OpenClaw-style workspace bootstrap. Core files are injected into the model prompt so the assistant starts with durable workspace context without needing to re-open those files with tools.
+Monolito now uses a deterministic SQLite bootstrap contract. Instead of relying on physical workspace files like `SOUL.md` or `USER.md`, startup context is injected from canonical `BOOT_*` wings stored in `memory_drawers`.
 
-## Core files
+## Boot Wings
 
-Each profile workspace is initialized with files such as:
+- `BOOT_AGENTS`
+- `BOOT_SOUL`
+- `BOOT_TOOLS`
+- `BOOT_IDENTITY`
+- `BOOT_USER`
+- `BOOT_BOOTSTRAP`
+- `BOOT_MEMORY`
 
-- `SOUL.md`
-- `AGENTS.md`
-- `IDENTITY.md`
-- `USER.md`
-- `TOOLS.md`
-- `HEARTBEAT.md`
-- `BOOTSTRAP.md`
-- `MEMORY.md`
+These wings are loaded structurally, not semantically. Bootstrap never depends on `sqlite-vec` or similarity search.
 
-These files live under:
+## Startup behavior
 
-`.monolito-v2/profiles/<profile-id>/workspace/`
+At session startup, Monolito reads the current profile's BOOT wings from SQLite in a fixed order. The same content is injected every time for the same stored state.
 
-## First run ritual
+If `BOOT_BOOTSTRAP` is still unresolved, Monolito enters onboarding mode instead of normal long-form assistance.
 
-If `BOOTSTRAP.md` is still unresolved, Monolito enters onboarding mode instead of normal long-form assistance.
+## Onboarding
 
-The expected behavior is:
+The onboarding ritual should:
 
-- greet briefly
-- ask one short onboarding question at a time
-- learn agent identity and user profile
-- persist confirmed details into the appropriate core files
-- clear or finalize `BOOTSTRAP.md` when onboarding is complete
+- ask one short question at a time
+- persist confirmed details into the appropriate BOOT wings
+- replace `BOOT_BOOTSTRAP` with a completion note when onboarding is complete
 
-## Injection behavior
+## Main session memory
 
-Monolito auto-injects core workspace files into the prompt as bootstrap context.
-
-Important details:
-
-- main sessions can auto-load `MEMORY.md`
-- background agent sessions are isolated more tightly
+- main sessions can auto-load `BOOT_MEMORY`
+- sub-agents do not auto-load `BOOT_MEMORY` unless explicitly given it
 - bootstrap content is capped so it does not explode the prompt
-- the agent is told to treat injected files as already-loaded context, not files it must re-read with tools
 
-## Session startup
+## Legacy files
 
-Starting a fresh session with `/new` resets the session state and triggers a startup sequence so the agent re-reads its core persona and greets again.
-
-If bootstrap is still pending, the startup flow prioritizes onboarding instead.
+Legacy files such as `SOUL.md`, `USER.md`, `MEMORY.md`, `AGENTS.md`, and `TOOLS.md` are no longer part of the runtime contract. If they still exist in the workspace, they have no functional effect on bootstrap or memory persistence.

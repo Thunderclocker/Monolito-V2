@@ -8,8 +8,8 @@ Further documentation lives in [`docs/`](./docs/README.md).
 
 - Daemon + CLI client with resumable local sessions
 - SQLite-backed session storage, worklog, events, and semantic memory retrieval
-- Profile-based workspaces with injected core files such as `SOUL.md`, `AGENTS.md`, `USER.md`, `TOOLS.md`, and `MEMORY.md`
-- First-run bootstrap ritual that asks for agent identity and user profile, then persists the result into core files
+- Profile-based workspaces with deterministic BOOT wings in SQLite such as `BOOT_SOUL`, `BOOT_AGENTS`, `BOOT_USER`, `BOOT_TOOLS`, and `BOOT_MEMORY`
+- First-run bootstrap ritual that asks for agent identity and user profile, then persists the result into BOOT wings
 - Multi-agent orchestration with worker spawning, follow-up messaging, and stop controls
 - Tool harness for shell execution, web fetches, workspace file access, memory filing/recall, MCP calls, Telegram send, and task tracking
 - OpenAI-compatible text-to-speech generation into local audio files, with Telegram audio/voice delivery tools
@@ -32,8 +32,8 @@ Further documentation lives in [`docs/`](./docs/README.md).
 ### Background Memory Agent
 
 - Monolito runs a background `Memory Agent` that reviews recent conversation and proposes memory updates without interrupting the main reply flow.
-- It can write to `USER.md` for stable personal preferences, `MEMORY.md` for durable relational context, and the SQLite Memory Palace for useful but less canonical context.
-- The agent is intentionally stricter for `USER.md` and `MEMORY.md` than for Memory Palace entries.
+- It can write to `BOOT_USER` for stable personal preferences, `BOOT_MEMORY` for durable relational context, and the SQLite Memory Palace for useful but less canonical context.
+- The agent is intentionally stricter for `BOOT_USER` and `BOOT_MEMORY` than for Memory Palace entries.
 - It is triggered after normal turns, before `/compact`, and before session resets such as `/new`.
 - Actions and failures are logged to `.monolito-v2/logs/memory-agent.log`.
 - Memory Agent updates are also summarized into the session worklog when something is applied.
@@ -172,7 +172,7 @@ monolito
 ```
 
 The CLI starts the daemon automatically when it is not already running.
-On a brand-new workspace, Monolito also starts a first-run onboarding ritual and asks for identity/user details one question at a time. When that bootstrap is completed, it clears `BOOTSTRAP.md` so the ritual does not repeat.
+On a brand-new workspace, Monolito also starts a first-run onboarding ritual and asks for identity/user details one question at a time. When that bootstrap is completed, it replaces `BOOT_BOOTSTRAP` with a completion note so the ritual does not repeat.
 
 ## Quick checks
 

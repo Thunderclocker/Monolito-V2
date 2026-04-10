@@ -10,6 +10,7 @@ import {
   appendMessage,
   appendWorklog,
   compactSession,
+  ensureBootWings,
   ensureSession,
   getSession,
   getSessionStats,
@@ -594,6 +595,7 @@ export class MonolitoV2Runtime {
   ensureSession(sessionId?: string, title?: string, profileId = "default") {
     const existing = sessionId ? getSession(this.rootDir, sessionId) : null
     const session = ensureSession(this.rootDir, sessionId, title)
+    ensureBootWings(this.rootDir, profileId)
     
     // Ensure the profile exists in DB
     const profiles = listProfiles(this.rootDir)
@@ -690,8 +692,8 @@ export class MonolitoV2Runtime {
           const resetProfileId = (resetSession as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
           const resetWorkspaceContext = getWorkspaceContext(this.rootDir, resetProfileId, { isMainSession: true })
           const startupPrompt = resetWorkspaceContext.bootstrapPending
-            ? "A brand-new workspace bootstrap is pending. Start the first-run ritual now using the injected BOOTSTRAP, IDENTITY, USER, SOUL, and AGENTS context. Greet briefly, then ask exactly one short onboarding question. Do not dump a checklist or mention internal files unless the user asks."
-            : "A new session was started via /new. Run your Session Startup sequence — read your required core files (SOUL.md, IDENTITY.md, USER.md, AGENTS.md, TOOLS.md, MEMORY.md) before responding. Then greet the user in your configured persona. Keep it to 1-3 sentences. Do not mention internal steps, files, tools, or reasoning."
+            ? "A brand-new workspace bootstrap is pending. Start the first-run ritual now using the injected BOOT_BOOTSTRAP, BOOT_IDENTITY, BOOT_USER, BOOT_SOUL, and BOOT_AGENTS context. Greet briefly, then ask exactly one short onboarding question. Do not dump a checklist or mention internal storage unless the user asks."
+            : "A new session was started via /new. Run your Session Startup sequence using the injected BOOT context already present in this turn before responding. Then greet the user in your configured persona. Keep it to 1-3 sentences. Do not mention internal steps, tools, or reasoning."
           this.activeSessions.delete(sessionId)
           return await this.processMessage(sessionId, startupPrompt)
         }

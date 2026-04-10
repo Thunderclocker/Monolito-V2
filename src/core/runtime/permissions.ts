@@ -100,7 +100,7 @@ const READ_ONLY_TOOLS = new Set([
   "Grep",
   "ListMcpResourcesTool",
   "ReadMcpResourceTool",
-  "WorkspaceRead",
+  "BootRead",
   "WorkspaceMemoryRecall",
   "AgentList",
   "TodoList",
@@ -120,7 +120,7 @@ const READ_ONLY_TOOLS = new Set([
 const EDIT_TOOLS = new Set([
   "Write",
   "Edit",
-  "WorkspaceWrite",
+  "BootWrite",
   "WorkspaceMemoryFiling",
   "TodoWrite",
   "ProfileCreate",

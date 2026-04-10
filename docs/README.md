@@ -6,7 +6,7 @@ This folder expands the high-level feature summary from the main `README`.
 
 - Start with [`tts.md`](./tts.md) if you need managed speech generation, Telegram audio replies, or TTS container lifecycle details.
 - [`memory-agent.md`](./memory-agent.md): background memory review, routing rules, contradictions, and logging.
-- [`bootstrap-and-core-files.md`](./bootstrap-and-core-files.md): first-run ritual, injected core files, and startup behavior.
+- [`bootstrap-and-core-files.md`](./bootstrap-and-core-files.md): first-run ritual, injected BOOT wings, and startup behavior.
 - [`multi-agent.md`](./multi-agent.md): delegated worker/researcher/verifier agents and profile-scoped sub-sessions.
 - [`tool-harness.md`](./tool-harness.md): tool execution model, permission gating, and major tool groups.
 - [`channels-and-telegram.md`](./channels-and-telegram.md): Telegram session mapping, channel config, and reply flow.

@@ -162,9 +162,9 @@ function isBootstrapSessionCandidate(session: SessionRecord) {
 
 function getBootstrapStartupPrompt(isFreshSession: boolean) {
   if (isFreshSession) {
-    return "A brand-new workspace bootstrap is pending. Start the first-run ritual now. Read the injected BOOTSTRAP, IDENTITY, USER, SOUL, and AGENTS context already present in this turn. Greet briefly, then ask exactly one short onboarding question focused on identity or user profile. Do not dump a checklist. Do not mention internal files unless the user asks."
+    return "A brand-new workspace bootstrap is pending. Start the first-run ritual now. Use the injected BOOT_BOOTSTRAP, BOOT_IDENTITY, BOOT_USER, BOOT_SOUL, and BOOT_AGENTS context already present in this turn. Greet briefly, then ask exactly one short onboarding question focused on identity or user profile. Do not dump a checklist. Do not mention internal storage unless the user asks."
   }
-  return "The workspace bootstrap is still pending. Resume the onboarding ritual from the injected BOOTSTRAP, IDENTITY, USER, SOUL, and AGENTS context. Ask exactly one short next question, based on what is already known. Keep it natural and concise. Do not mention internal files unless the user asks."
+  return "The workspace bootstrap is still pending. Resume the onboarding ritual from the injected BOOT_BOOTSTRAP, BOOT_IDENTITY, BOOT_USER, BOOT_SOUL, and BOOT_AGENTS context. Ask exactly one short next question, based on what is already known. Keep it natural and concise. Do not mention internal storage unless the user asks."
 }
 
 async function stashLocalChangesForUpdate(rootDir: string) {
@@ -954,7 +954,7 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     composer.input = ""
     composer.cursor = 0
     if (line === "/new") {
-      // Create a fresh session — agent reloads core files and starts from scratch
+      // Create a fresh session — agent reloads deterministic BOOT context and starts from scratch
       transcript = { blocks: [], scrollOffset: 0 }
       needsClear = true
       try {
@@ -972,12 +972,12 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
         redraw()
         const startedBootstrap = await maybeStartBootstrap(newSession, { isFreshSession: true })
         if (!startedBootstrap) {
-          // Send a startup prompt so the agent re-reads core files and greets
+          // Send a startup prompt so the agent reuses injected BOOT context and greets
           composer.busy = true
           composer.thinkingVisible = true
           startThinkingAnimation()
           redraw()
-          const SESSION_RESET_PROMPT = "A new session was started via /new. Run your Session Startup sequence — read your required core files (SOUL.md, IDENTITY.md, USER.md, AGENTS.md, TOOLS.md, MEMORY.md) before responding. Then greet the user in your configured persona. Keep it to 1-3 sentences. Do not mention internal steps, files, tools, or reasoning."
+          const SESSION_RESET_PROMPT = "A new session was started via /new. Run your Session Startup sequence using the injected BOOT context already present in this turn before responding. Then greet the user in your configured persona. Keep it to 1-3 sentences. Do not mention internal steps, tools, or reasoning."
           const completion = waitForTurnCompletion(client, activeSessionId)
           await client.sendMessage(activeSessionId, SESSION_RESET_PROMPT)
           await completion

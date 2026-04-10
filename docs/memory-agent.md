@@ -18,9 +18,9 @@ The `Memory Agent` runs in the background at these moments:
 
 ## Memory destinations
 
-### `USER.md`
+### `BOOT_USER`
 
-Use `USER.md` for stable facts about the person:
+Use `BOOT_USER` for stable facts about the person:
 
 - communication preferences
 - preferred language
@@ -31,9 +31,9 @@ Use `USER.md` for stable facts about the person:
 
 This is the strictest destination.
 
-### `MEMORY.md`
+### `BOOT_MEMORY`
 
-Use `MEMORY.md` for durable relational context:
+Use `BOOT_MEMORY` for durable relational context:
 
 - repeated long-term goals
 - important ongoing life context
@@ -51,20 +51,20 @@ Use Memory Palace for useful but less canonical context:
 - current situations
 - medium-term intentions
 - contextual facts that may help later
-- tentative personal signals that are worth recalling, but not important enough for `USER.md` or `MEMORY.md`
+- tentative personal signals that are worth recalling, but not important enough for `BOOT_USER` or `BOOT_MEMORY`
 
 This is the cheapest place to remember something. It should accept useful context even when it is not fully stable.
 
 ## Routing guidelines
 
-- Highly stable and identity-level: `USER.md`
-- Durable and important across many future conversations: `MEMORY.md`
-- Useful later, but not stable or central enough for the core files: Memory Palace
+- Highly stable and identity-level: `BOOT_USER`
+- Durable and important across many future conversations: `BOOT_MEMORY`
+- Useful later, but not stable or central enough for deterministic BOOT memory: Memory Palace
 - Trivial or low-value context: do not save it
 
 ## Contradictions
 
-If new information clearly updates or contradicts an existing line in `USER.md` or `MEMORY.md`, the agent should prefer a replace-style update instead of accumulating both versions.
+If new information clearly updates or contradicts an existing line in `BOOT_USER` or `BOOT_MEMORY`, the agent should prefer a replace-style update instead of accumulating both versions.
 
 If the contradiction is weak or uncertain, the safer fallback is Memory Palace or no write.
 

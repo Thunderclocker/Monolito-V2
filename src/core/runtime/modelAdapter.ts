@@ -4,7 +4,6 @@ import { join } from "node:path"
 import type { SessionRecord } from "../ipc/protocol.ts"
 import { ensureDirs } from "../ipc/protocol.ts"
 import { type ToolContext, isToolConcurrencySafe, listModelTools, listTools, validateToolInput } from "../tools/registry.ts"
-import { getPaths } from "../ipc/protocol.ts"
 import { type ToolCallDirective, parseDirective } from "./directiveParser.ts"
 import { readModelSettings, refreshModelAuth } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider } from "./modelRegistry.ts"
@@ -14,7 +13,8 @@ import { type CostState, type TurnUsage, createCostState, recordApiCall } from "
 import { getDateContext, getGitContext } from "../context/gitContext.ts"
 import { createLogger } from "../logging/logger.ts"
 import { COORDINATOR_SYSTEM_PROMPT } from "./coordinatorPrompt.ts"
-import type { WorkspaceBootstrapContext, WorkspaceBootstrapEntry } from "../context/workspaceContext.ts"
+import type { WorkspaceBootstrapContext } from "../context/workspaceContext.ts"
+import { BOOT_WING_DESCRIPTION, type BootWingEntry } from "../bootstrap/bootWings.ts"
 
 const logger = createLogger("modelAdapter")
 
@@ -706,26 +706,8 @@ export type ContextExtras = {
   webSearchProvider?: WebSearchProvider
 }
 
-function describeBootstrapFile(file: WorkspaceBootstrapEntry) {
-  switch (file.name) {
-    case "SOUL.md":
-      return "Your operating philosophy and personality. Follow this first unless higher-priority instructions override it."
-    case "IDENTITY.md":
-      return "Your identity record. Use it to stay consistent about who you are."
-    case "USER.md":
-      return "The user profile. Use it to adapt to the human you are helping."
-    case "AGENTS.md":
-      return "Workspace operating rules and startup behavior. Treat it as the local contract for how to work here."
-    case "TOOLS.md":
-      return "Local tool conventions and operational notes."
-    case "HEARTBEAT.md":
-      return "Heartbeat checklist. Only act on it when the current message is a heartbeat-style poll."
-    case "BOOTSTRAP.md":
-      return "First-run bootstrap instructions. If this file is still unresolved, complete the ritual, persist the result, and clear or finalize the file."
-    case "MEMORY.md":
-    case "memory.md":
-      return "Curated long-term memory for the main session. Use it as durable context, not as a trigger for extra probing."
-  }
+function describeBootWing(entry: BootWingEntry) {
+  return BOOT_WING_DESCRIPTION[entry.wing]
 }
 
 function buildToolPrompt(session: SessionRecord, rootDir: string, context?: ToolContext, contextExtras?: ContextExtras) {
@@ -747,36 +729,25 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
   ]
 
   // Workspace Context (OpenClaw style)
-  if (contextExtras?.workspaceContext && contextExtras.workspaceContext.files.length > 0) {
+  if (contextExtras?.workspaceContext && contextExtras.workspaceContext.entries.length > 0) {
     const bootstrap = contextExtras.workspaceContext
-    const hasSoul = bootstrap.files.some(f => f.name.toLowerCase() === "soul.md")
-    const profileId = context?.profileId || "default"
-    const paths = getPaths(rootDir, profileId)
+    const hasSoul = bootstrap.entries.some(entry => entry.wing === "BOOT_SOUL")
     
     sections.push(
       "",
-      "# WORKSPACE BOOTSTRAP (OpenClaw-style Core Files)",
-      "The following workspace files are injected into this prompt on every run.",
-      "Treat them as stable bootstrap context, not as files you need to go read again with tools.",
+      "# WORKSPACE BOOTSTRAP (Deterministic BOOT Wings)",
+      "The following BOOT wings are injected into this prompt on every run from SQLite.",
+      "Treat them as stable bootstrap context, not as data you need to go re-read semantically.",
       "",
-      "⚠️ CORE FILE MAPPING (IMPORTANT):",
-      `- Profile Workspace: \`${paths.workspaceDir}\``,
-      `- Path to SOUL: \`${join(paths.workspaceDir, "SOUL.md")}\``,
-      `- Path to IDENTITY: \`${join(paths.workspaceDir, "IDENTITY.md")}\``,
-      `- Path to AGENTS: \`${join(paths.workspaceDir, "AGENTS.md")}\``,
-      `- Path to USER: \`${join(paths.workspaceDir, "USER.md")}\``,
-      `- Path to TOOLS: \`${join(paths.workspaceDir, "TOOLS.md")}\``,
-      `- Path to HEARTBEAT: \`${join(paths.workspaceDir, "HEARTBEAT.md")}\``,
-      `- Path to BOOTSTRAP: \`${join(paths.workspaceDir, "BOOTSTRAP.md")}\``,
-      `- Path to MEMORY: \`${join(paths.workspaceDir, "MEMORY.md")}\``,
-      `- Shared Memory (SQLite): \`${paths.stateDir}/memory.sqlite\``,
-      `- Shared Scratchpad: \`${paths.scratchpadDir}/\``,
+      "⚠️ BOOT CONTEXT CONTRACT (IMPORTANT):",
+      "- The startup contract lives in SQLite under deterministic BOOT_* wings.",
+      "- Legacy workspace .md files are not part of the runtime contract.",
       "",
       "RULES:",
-      "1. To read or modify your injected core files, use the dedicated tools: `WorkspaceRead(file=\"...\")` and `WorkspaceWrite(file=\"...\", content=\"...\")`.",
-      "2. DO NOT use general tools (Read, Glob, Bash, Edit) to find or modify these files. They reside in protected operational directories.",
-      "3. The project root is for the USER'S code; your data is kept in `.monolito-v2/`.",
-      `4. Main session bootstrap mode: ${bootstrap.isMainSession ? "yes" : "no"}${bootstrap.isMainSession ? " (MEMORY.md may be loaded)" : " (MEMORY.md is intentionally not auto-loaded)"}.`,
+      "1. To read or modify injected bootstrap state, use the dedicated tools: `BootRead(wing=\"...\")` and `BootWrite(wing=\"...\", content=\"...\")`.",
+      "2. Do not use semantic memory recall for bootstrap state. BOOT wings are deterministic startup context.",
+      "3. The project root is for the user's code; operational state lives under `.monolito-v2/`.",
+      `4. Main session bootstrap mode: ${bootstrap.isMainSession ? "yes" : "no"}${bootstrap.isMainSession ? " (BOOT_MEMORY may be loaded)" : " (BOOT_MEMORY is intentionally not auto-loaded)"}.`,
     )
     if (bootstrap.bootstrapPending) {
       sections.push(
@@ -785,18 +756,18 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
         "- Prioritize the onboarding ritual before normal long-form assistance.",
         "- Ask exactly one short question at a time.",
         "- Do not ask for everything in one message.",
-        "- When facts are confirmed, persist them with WorkspaceWrite to IDENTITY, USER, and SOUL as needed.",
-        "- When the ritual is done, clear BOOTSTRAP.md or replace it with 'Bootstrap completed.' so it does not run again.",
+        "- When facts are confirmed, persist them with BootWrite to BOOT_IDENTITY, BOOT_USER, and BOOT_SOUL as needed.",
+        "- When the ritual is done, replace BOOT_BOOTSTRAP with 'Bootstrap completed.' so it does not run again.",
       )
     }
     if (hasSoul) {
-      sections.push("", "If SOUL.md is present, embody its persona and tone. Avoid stiff, generic replies; follow its guidance unless higher-priority instructions override it.")
+      sections.push("", "If BOOT_SOUL is present, embody its persona and tone. Avoid stiff, generic replies; follow its guidance unless higher-priority instructions override it.")
     }
-    for (const file of bootstrap.files) {
-      const note = describeBootstrapFile(file)
-      sections.push("", `### File: ${file.name}`, note, "", file.content)
-      if (file.truncated) {
-        sections.push("", `[${file.name} was truncated for prompt budget]`)
+    for (const entry of bootstrap.entries) {
+      const note = describeBootWing(entry)
+      sections.push("", `### Wing: ${entry.wing}`, note, "", entry.content)
+      if (entry.truncated) {
+        sections.push("", `[${entry.wing} was truncated for prompt budget]`)
       }
     }
   }
@@ -1156,7 +1127,7 @@ async function callModelApi(
   if (config.provider === "ollama" || config.provider === "openai_compatible") {
     return callOpenAiCompatibleApi(config.provider, messages, system, abortSignal, includeTools)
   }
-  return callAnthropicLikeApi(rootDir, messages, system, abortSignal, retryPolicy, includeTools)
+  return callAnthropicLikeApi(rootDir, messages, system, retryPolicy, includeTools, abortSignal)
 }
 
 let fastModeCooldownUntil = 0
@@ -1378,9 +1349,9 @@ async function callAnthropicLikeApi(
   rootDir: string,
   messages: AnthropicMessage[],
   system: string,
-  abortSignal?: AbortSignal,
   retryPolicy: RetryPolicy,
   includeTools: boolean,
+  abortSignal?: AbortSignal,
 ) {
   let { baseUrl, apiKey, model, provider } = getEffectiveModelConfig()
   if (!baseUrl) throw new Error("Model adapter is missing ANTHROPIC_BASE_URL")
