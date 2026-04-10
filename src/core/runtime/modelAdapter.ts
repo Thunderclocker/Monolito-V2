@@ -911,6 +911,7 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
     "",
     "When a tool is needed, emit a native tool_use block. When no tool is needed, answer normally.",
     "Rules:",
+    "- When the user asks to configure the system, change settings, view current configuration, or manage models/channels/websearch/audio: invoke the show_master_dashboard tool. Do NOT read config files manually.",
     "- Every Bash tool call must include input.command as a non-empty shell command string.",
     "- For long-running shell commands, set Bash input.run_in_background=true instead of blocking the turn.",
     "- Never output a shell command as the final response when the user asked you to inspect or change the local system. Use a Bash tool call instead.",

@@ -1726,7 +1726,7 @@ const tools: ToolDefinition[] = [
     name: "show_master_dashboard",
     aliases: ["master_config", "config_hub"],
     description:
-      "Opens the Master Configuration Hub — an interactive menu for managing all system settings: models, channels, web search, audio/voice, and system configuration. Use this when the user wants to configure the system or change settings.",
+      "Opens the Master Configuration Hub — an interactive menu for managing all system settings: models, channels, web search, audio/voice, and system configuration. ALWAYS use this tool (instead of reading config files manually) when the user wants to view or change settings, configure the system, or asks about current configuration. The tool returns a visual interactive menu to the CLI.",
     inputSchema: emptyInputSchema,
     concurrencySafe: true,
     async run() {
