@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process"
+import { execFileSync, spawn } from "node:child_process"
 import { appendFileSync, closeSync, existsSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
 import { createServer, type Server, type Socket } from "node:net"
 import {
@@ -27,6 +27,7 @@ export class MonolitoV2Daemon {
   private server: Server | null = null
   private restartInFlight = false
   private ownerFd: number | null = null
+  private ownershipMonitor: NodeJS.Timeout | null = null
 
   constructor(rootDir: string) {
     this.rootDir = rootDir
@@ -64,6 +65,8 @@ export class MonolitoV2Daemon {
       })
       this.writeDaemonLog(`monolitod-v2 listening on tcp ${paths.tcpHost}:${paths.tcpPort}`)
     }
+    await this.terminateDuplicateDaemons()
+    this.startOwnershipMonitor()
     startChannels(this.runtime, { onRestartRequested: () => this.scheduleSelfRestart() })
     return this.server
   }
@@ -73,6 +76,10 @@ export class MonolitoV2Daemon {
     this.server?.close()
     stopChannels()
     const paths = getPaths(this.rootDir)
+    if (this.ownershipMonitor) {
+      clearInterval(this.ownershipMonitor)
+      this.ownershipMonitor = null
+    }
     try {
       if (existsSync(paths.socketPath)) unlinkSync(paths.socketPath)
     } catch {}
@@ -89,7 +96,8 @@ export class MonolitoV2Daemon {
       }
     } catch {}
     try {
-      if (existsSync(paths.ownerFile)) unlinkSync(paths.ownerFile)
+      const owner = this.readOwnerClaim(paths.ownerFile)
+      if (owner?.pid === process.pid && existsSync(paths.ownerFile)) unlinkSync(paths.ownerFile)
     } catch {}
   }
 
@@ -139,6 +147,74 @@ export class MonolitoV2Daemon {
     } catch {
       return false
     }
+  }
+
+  private listDuplicateDaemonPids() {
+    try {
+      const output = execFileSync("ps", ["-eo", "pid=,args="], {
+        encoding: "utf8",
+        timeout: 5_000,
+      })
+      const marker = `${this.rootDir}/src/apps/daemon.ts --foreground`
+      return output
+        .split("\n")
+        .map(line => line.trim())
+        .filter(Boolean)
+        .map(line => {
+          const match = line.match(/^(\d+)\s+(.*)$/)
+          if (!match) return null
+          return { pid: Number.parseInt(match[1] ?? "", 10), args: match[2] ?? "" }
+        })
+        .filter((entry): entry is { pid: number; args: string } => Boolean(entry))
+        .filter(entry => entry.pid !== process.pid && entry.args.includes(marker))
+        .map(entry => entry.pid)
+    } catch {
+      return []
+    }
+  }
+
+  private async terminateDuplicateDaemons() {
+    const duplicates = this.listDuplicateDaemonPids()
+    if (duplicates.length === 0) return
+
+    this.writeDaemonLog(`found duplicate daemons for workspace: ${duplicates.join(", ")}`)
+    for (const pid of duplicates) {
+      try {
+        process.kill(pid, "SIGTERM")
+      } catch {}
+    }
+
+    const deadline = Date.now() + 5_000
+    while (Date.now() < deadline) {
+      const remaining = duplicates.filter(pid => this.isProcessRunning(pid))
+      if (remaining.length === 0) {
+        this.writeDaemonLog("duplicate daemons terminated cleanly")
+        return
+      }
+      await new Promise(resolve => setTimeout(resolve, 200))
+    }
+
+    const survivors = duplicates.filter(pid => this.isProcessRunning(pid))
+    for (const pid of survivors) {
+      try {
+        process.kill(pid, "SIGKILL")
+      } catch {}
+    }
+    if (survivors.length > 0) {
+      this.writeDaemonLog(`duplicate daemons required SIGKILL: ${survivors.join(", ")}`)
+    }
+  }
+
+  private startOwnershipMonitor() {
+    if (this.ownershipMonitor) return
+    this.ownershipMonitor = setInterval(() => {
+      const owner = this.readOwnerClaim(getPaths(this.rootDir).ownerFile)
+      if (owner?.pid === process.pid) return
+      this.writeDaemonLog(`ownership lost; shutting down pid ${process.pid}`)
+      this.stop()
+      setTimeout(() => process.exit(0), 50)
+    }, 5_000)
+    this.ownershipMonitor.unref()
   }
 
   private scheduleSelfRestart() {
