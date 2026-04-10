@@ -124,6 +124,8 @@ const RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000
 const PERSISTENT_MAX_BACKOFF_MS = 5 * 60 * 1000
 const PERSISTENT_RESET_WINDOW_MS = 6 * 60 * 60 * 1000
 const PERSISTENT_HEARTBEAT_MS = 30_000
+const INTERACTIVE_MODEL_REQUEST_TIMEOUT_MS = 75_000
+const BACKGROUND_MODEL_REQUEST_TIMEOUT_MS = 45_000
 
 function normalizeBaseUrl(value: string) {
   return value.trim().replace(/\/+$/, "")
@@ -1259,6 +1261,29 @@ function createStreamFallbackError(message: string): StreamFallbackError {
   return error
 }
 
+function createRequestTimeoutSignal(timeoutMs: number, parentSignal?: AbortSignal) {
+  const controller = new AbortController()
+  let timedOut = false
+  const timeout = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+  const abortFromParent = () => controller.abort()
+  parentSignal?.addEventListener("abort", abortFromParent)
+  return {
+    signal: controller.signal,
+    didTimeout: () => timedOut,
+    cleanup: () => {
+      clearTimeout(timeout)
+      parentSignal?.removeEventListener("abort", abortFromParent)
+    },
+  }
+}
+
+function selectModelRequestTimeoutMs(background: boolean) {
+  return background ? BACKGROUND_MODEL_REQUEST_TIMEOUT_MS : INTERACTIVE_MODEL_REQUEST_TIMEOUT_MS
+}
+
 async function readStreamingAnthropicResponse(response: Response, abortSignal?: AbortSignal) {
   const reader = response.body?.getReader()
   if (!reader) throw createStreamFallbackError("Streaming response body unavailable")
@@ -1369,51 +1394,125 @@ async function callAnthropicLikeApi(
   const persistent = isUnattendedRetryEnabled(retryPolicy)
   const maxAttempts = persistent ? Number.POSITIVE_INFINITY : 6
   const heartbeat = persistent ? () => touchHeartbeatFile(rootDir) : null
+  const requestTimeoutMs = selectModelRequestTimeoutMs(retryPolicy.background)
 
   const requestOnce = async (stream: boolean) => {
-    const response = await fetch(`${baseUrl}/v1/messages`, {
-      method: "POST",
-      signal: abortSignal,
-      headers: {
-        "content-type": "application/json",
-        "anthropic-version": "2023-06-01",
-        authorization: `Bearer ${apiKey}`,
-        "x-api-key": apiKey,
-        ...(disableKeepAlive ? { connection: "close" } : {}),
-      },
-      body: JSON.stringify({
-        model: requestModel,
-        system,
-        max_tokens: maxTokens,
-        tools: includeTools ? listModelTools() : undefined,
-        messages: requestMessages,
-        ...(stream ? { stream: true } : {}),
-      }),
+    const timed = createRequestTimeoutSignal(requestTimeoutMs, abortSignal)
+    const startedAt = Date.now()
+    logger.info("model request started", {
+      provider,
+      model: requestModel,
+      stream,
+      background: retryPolicy.background,
+      unattended: retryPolicy.unattended,
+      timeoutMs: requestTimeoutMs,
+      messageCount: requestMessages.length,
     })
+    let response: Response
+    try {
+      response = await fetch(`${baseUrl}/v1/messages`, {
+        method: "POST",
+        signal: timed.signal,
+        headers: {
+          "content-type": "application/json",
+          "anthropic-version": "2023-06-01",
+          authorization: `Bearer ${apiKey}`,
+          "x-api-key": apiKey,
+          ...(disableKeepAlive ? { connection: "close" } : {}),
+        },
+        body: JSON.stringify({
+          model: requestModel,
+          system,
+          max_tokens: maxTokens,
+          tools: includeTools ? listModelTools() : undefined,
+          messages: requestMessages,
+          ...(stream ? { stream: true } : {}),
+        }),
+      })
+    } catch (error) {
+      timed.cleanup()
+      if (timed.didTimeout()) {
+        logger.warn("model request timed out", {
+          provider,
+          model: requestModel,
+          stream,
+          timeoutMs: requestTimeoutMs,
+          durationMs: Date.now() - startedAt,
+        })
+        throw new Error(`Model request timed out after ${requestTimeoutMs}ms`)
+      }
+      logger.warn("model request failed before response", {
+        provider,
+        model: requestModel,
+        stream,
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      throw error
+    }
 
     if (!response.ok) {
+      timed.cleanup()
       const body = await response.text().catch(() => "")
+      logger.warn("model request returned http error", {
+        provider,
+        model: requestModel,
+        stream,
+        status: response.status,
+        durationMs: Date.now() - startedAt,
+      })
       throw createModelHttpError(response.status, response.statusText, body, response.headers)
     }
 
     if (!stream) {
-      return (await response.json()) as AnthropicResponse
+      try {
+        const parsed = (await response.json()) as AnthropicResponse
+        logger.info("model request completed", {
+          provider,
+          model: requestModel,
+          stream,
+          durationMs: Date.now() - startedAt,
+        })
+        return parsed
+      } finally {
+        timed.cleanup()
+      }
     }
 
     const contentType = response.headers.get("content-type")?.toLowerCase() ?? ""
     if (!contentType.includes("text/event-stream")) {
       logger.warn(`Streaming disabled for incompatible content-type: ${contentType || "unknown"}`)
+      timed.cleanup()
       return await requestOnce(false)
     }
 
     try {
-      return await readStreamingAnthropicResponse(response, abortSignal)
+      const parsed = await readStreamingAnthropicResponse(response, timed.signal)
+      logger.info("model request completed", {
+        provider,
+        model: requestModel,
+        stream,
+        durationMs: Date.now() - startedAt,
+      })
+      return parsed
     } catch (error) {
+      if (timed.didTimeout()) {
+        logger.warn("streaming model request timed out", {
+          provider,
+          model: requestModel,
+          timeoutMs: requestTimeoutMs,
+          durationMs: Date.now() - startedAt,
+        })
+        throw new Error(`Model request timed out after ${requestTimeoutMs}ms`)
+      }
       if (!(error instanceof Error && error.name === "AbortError")) {
         logger.warn(`Stream failed, falling back to non-streaming request: ${error instanceof Error ? error.message : String(error)}`)
+        timed.cleanup()
         return await requestOnce(false)
       }
       throw error
+    } finally {
+      timed.cleanup()
     }
   }
 
@@ -1502,6 +1601,13 @@ async function callAnthropicLikeApi(
         const httpError = error as ModelHttpError
         return {
           content: [{ type: "text", text: `Model request failed: HTTP ${httpError.status} ${httpError.statusText}${httpError.body ? ` ${httpError.body.slice(0, 200)}` : ""}` }],
+          stop_reason: "end_turn",
+        }
+      }
+
+      if (error instanceof Error && /timed out after \d+ms/i.test(error.message)) {
+        return {
+          content: [{ type: "text", text: `Model request failed: ${error.message}` }],
           stop_reason: "end_turn",
         }
       }
@@ -1681,30 +1787,83 @@ async function callOpenAiCompatibleApi(
   }))
   
   const url = `${baseUrl}/v1/chat/completions`
-
-  const response = await fetch(url, {
-    method: "POST",
-    signal: abortSignal,
-    headers: {
-      "content-type": "application/json",
-      ...(provider === "ollama" ? {} : { authorization: `Bearer ${apiKey}` }),
-    },
-    body: JSON.stringify({
-      model,
-      messages: openAiMessages,
-      tools: includeTools && openAiTools.length > 0 ? openAiTools : undefined,
-      stream: false,
-    }),
+  const requestTimeoutMs = selectModelRequestTimeoutMs(false)
+  const timed = createRequestTimeoutSignal(requestTimeoutMs, abortSignal)
+  const startedAt = Date.now()
+  logger.info("model request started", {
+    provider,
+    model,
+    stream: false,
+    background: false,
+    unattended: false,
+    timeoutMs: requestTimeoutMs,
+    messageCount: openAiMessages.length,
   })
 
+  let response: Response
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      signal: timed.signal,
+      headers: {
+        "content-type": "application/json",
+        ...(provider === "ollama" ? {} : { authorization: `Bearer ${apiKey}` }),
+      },
+      body: JSON.stringify({
+        model,
+        messages: openAiMessages,
+        tools: includeTools && openAiTools.length > 0 ? openAiTools : undefined,
+        stream: false,
+      }),
+    })
+  } catch (error) {
+    timed.cleanup()
+    if (timed.didTimeout()) {
+      logger.warn("model request timed out", {
+        provider,
+        model,
+        stream: false,
+        timeoutMs: requestTimeoutMs,
+        durationMs: Date.now() - startedAt,
+      })
+      throw new Error(`Model request timed out after ${requestTimeoutMs}ms`)
+    }
+    logger.warn("model request failed before response", {
+      provider,
+      model,
+      stream: false,
+      durationMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    throw error
+  }
+
   if (!response.ok) {
+    timed.cleanup()
     const body = await response.text().catch(() => "")
     const suffix = body ? ` ${body.slice(0, 300)}` : ""
+    logger.warn("model request returned http error", {
+      provider,
+      model,
+      stream: false,
+      status: response.status,
+      durationMs: Date.now() - startedAt,
+    })
     throw new Error(`${provider} request failed: HTTP ${response.status} ${response.statusText}${suffix}`)
   }
 
-  const data = (await response.json()) as OllamaChatResponse
-  return openAiCompatibleResponseToAnthropic(data)
+  try {
+    const data = (await response.json()) as OllamaChatResponse
+    logger.info("model request completed", {
+      provider,
+      model,
+      stream: false,
+      durationMs: Date.now() - startedAt,
+    })
+    return openAiCompatibleResponseToAnthropic(data)
+  } finally {
+    timed.cleanup()
+  }
 }
 
 export function getEffectiveModelConfig() {
