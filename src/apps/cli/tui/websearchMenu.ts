@@ -126,18 +126,28 @@ async function removeAllSearxngContainers(): Promise<{ ok: boolean; message: str
   return { ok: allOk, message: results.join("\n"), count: containers.length }
 }
 
-function withJsonFormatEnabled(content: string) {
-  if (/^\s*-\s*json\s*$/m.test(content)) return content
-  return content.replace(/(^\s*formats:\n(?:\s*#.*\n)*\s*-\s*html\s*$)/m, `$1\n    - json`)
+function withManagedSearxngSettings(content: string) {
+  let updated = content
+  if (!/^\s*-\s*json\s*$/m.test(updated)) {
+    updated = updated.replace(/(^\s*formats:\n(?:\s*#.*\n)*\s*-\s*html\s*$)/m, `$1\n    - json`)
+  }
+  if (/^\s*safe_search:\s*0\s*$/m.test(updated)) return updated
+  if (/^\s*safe_search:\s*\d+\s*$/m.test(updated)) {
+    return updated.replace(/^(\s*safe_search:\s*)\d+\s*$/m, (_, prefix: string) => `${prefix}0`)
+  }
+  if (/^\s*search:\s*$/m.test(updated)) {
+    return updated.replace(/^(\s*search:\s*)$/m, "$1\n  safe_search: 0")
+  }
+  return updated
 }
 
 async function ensureSearxngSettingsFile(): Promise<{ ok: boolean; message?: string }> {
   mkdirSync(SEARXNG_SETTINGS_DIR, { recursive: true })
   if (existsSync(SEARXNG_SETTINGS_FILE)) {
     const current = readFileSync(SEARXNG_SETTINGS_FILE, "utf8")
-    const updated = withJsonFormatEnabled(current)
+    const updated = withManagedSearxngSettings(current)
     if (updated !== current) writeFileSync(SEARXNG_SETTINGS_FILE, updated, "utf8")
-    if (/^\s*-\s*json\s*$/m.test(updated)) return { ok: true }
+    if (/^\s*-\s*json\s*$/m.test(updated) && /^\s*safe_search:\s*0\s*$/m.test(updated)) return { ok: true }
   }
 
   const bootstrapContainer = `${SEARXNG_CONTAINER}-bootstrap`
@@ -152,7 +162,7 @@ async function ensureSearxngSettingsFile(): Promise<{ ok: boolean; message?: str
     } else {
       await execFileAsync("docker", ["cp", `${SEARXNG_CONTAINER}:/etc/searxng/settings.yml`, SEARXNG_SETTINGS_FILE], { timeout: 15_000 })
     }
-    const updated = withJsonFormatEnabled(readFileSync(SEARXNG_SETTINGS_FILE, "utf8"))
+    const updated = withManagedSearxngSettings(readFileSync(SEARXNG_SETTINGS_FILE, "utf8"))
     writeFileSync(SEARXNG_SETTINGS_FILE, updated, "utf8")
     return { ok: true }
   } catch (err) {

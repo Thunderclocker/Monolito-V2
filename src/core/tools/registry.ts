@@ -1602,18 +1602,28 @@ const tools: ToolDefinition[] = [
         return false
       }
 
-      function withJsonFormatEnabled(content: string) {
-        if (/^\s*-\s*json\s*$/m.test(content)) return content
-        return content.replace(/(^\s*formats:\n(?:\s*#.*\n)*\s*-\s*html\s*$)/m, `$1\n    - json`)
+      function withManagedSearxngSettings(content: string) {
+        let updated = content
+        if (!/^\s*-\s*json\s*$/m.test(updated)) {
+          updated = updated.replace(/(^\s*formats:\n(?:\s*#.*\n)*\s*-\s*html\s*$)/m, `$1\n    - json`)
+        }
+        if (/^\s*safe_search:\s*0\s*$/m.test(updated)) return updated
+        if (/^\s*safe_search:\s*\d+\s*$/m.test(updated)) {
+          return updated.replace(/^(\s*safe_search:\s*)\d+\s*$/m, (_, prefix: string) => `${prefix}0`)
+        }
+        if (/^\s*search:\s*$/m.test(updated)) {
+          return updated.replace(/^(\s*search:\s*)$/m, "$1\n  safe_search: 0")
+        }
+        return updated
       }
 
       async function ensureSearxngSettingsFile(): Promise<{ ok: boolean; error?: string }> {
         mkdirSync(SETTINGS_DIR, { recursive: true })
         if (existsSync(SETTINGS_FILE)) {
           const current = readFileSync(SETTINGS_FILE, "utf8")
-          const updated = withJsonFormatEnabled(current)
+          const updated = withManagedSearxngSettings(current)
           if (updated !== current) writeFileSync(SETTINGS_FILE, updated, "utf8")
-          if (/^\s*-\s*json\s*$/m.test(updated)) return { ok: true }
+          if (/^\s*-\s*json\s*$/m.test(updated) && /^\s*safe_search:\s*0\s*$/m.test(updated)) return { ok: true }
         }
 
         const bootstrapContainer = `${CONTAINER_NAME}-bootstrap`
@@ -1629,7 +1639,7 @@ const tools: ToolDefinition[] = [
             await new Promise(resolve => setTimeout(resolve, 3000))
             await execFileAsync("docker", ["cp", `${bootstrapContainer}:/etc/searxng/settings.yml`, SETTINGS_FILE], { timeout: 15_000 })
           }
-          const updated = withJsonFormatEnabled(readFileSync(SETTINGS_FILE, "utf8"))
+          const updated = withManagedSearxngSettings(readFileSync(SETTINGS_FILE, "utf8"))
           writeFileSync(SETTINGS_FILE, updated, "utf8")
           return { ok: true }
         } catch (error) {
