@@ -112,6 +112,9 @@ const READ_ONLY_TOOLS = new Set([
   "TtsServiceList",
   "SttServiceStatus",
   "SttServiceList",
+  "show_master_dashboard",
+  "master_config",
+  "config_hub",
 ])
 
 const EDIT_TOOLS = new Set([
