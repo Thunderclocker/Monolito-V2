@@ -89,6 +89,7 @@ const SEARXNG_PORT = 8888
 const SEARXNG_URL = `http://127.0.0.1:${SEARXNG_PORT}`
 const SEARXNG_SETTINGS_DIR = join(MONOLITO_ROOT, "searxng")
 const SEARXNG_SETTINGS_FILE = join(SEARXNG_SETTINGS_DIR, "settings.yml")
+const TELEGRAM_TYPING_MAX_MS = 15_000
 
 type SearxngContainerInfo = {
   id: string
@@ -566,9 +567,13 @@ function startTelegramTypingIndicator(sessionId: string): TelegramTypingIndicato
   const interval = setInterval(() => {
     void sendTelegramTypingAction(token, chatId)
   }, 4_000)
+  const expiry = setTimeout(() => {
+    clearInterval(interval)
+  }, TELEGRAM_TYPING_MAX_MS)
   return {
     stop() {
       clearInterval(interval)
+      clearTimeout(expiry)
     },
   }
 }
