@@ -115,6 +115,7 @@ export function getPaths(rootDir: string, profileId: string = "default") {
   const pidFile = join(runDir, "monolitod-v2.pid")
   const daemonLog = join(logsDir, "monolitod-v2.log")
   const lockFile = join(runDir, "daemon-lock.json")
+  const ownerFile = join(runDir, "daemon-owner.json")
   const envFile = join(baseDir, ".env")
   const scratchpadDir = join(baseDir, "scratchpad")
 
@@ -132,6 +133,7 @@ export function getPaths(rootDir: string, profileId: string = "default") {
     pidFile,
     daemonLog,
     lockFile,
+    ownerFile,
     envFile,
     scratchpadDir,
     profileId,
