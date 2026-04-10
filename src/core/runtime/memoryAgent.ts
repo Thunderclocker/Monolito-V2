@@ -31,6 +31,7 @@ const MAX_RECENT_MESSAGES = 10
 const MAX_ITEMS_PER_REVIEW = 2
 const MIN_CONFIDENCE_FOR_CORE = 0.74
 const MIN_CONFIDENCE_FOR_MEMPALACE = 0.3
+const MEMORY_AGENT_TIMEOUT_MS = 20_000
 
 function logMemoryAgent(
   rootDir: string,
@@ -58,6 +59,16 @@ function clip(value: string, maxChars: number) {
   return `${trimmed.slice(0, maxChars).trimEnd()}...`
 }
 
+function parseJsonCandidate(candidate: string) {
+  try {
+    return JSON.parse(candidate) as MemoryReviewResult
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error
+    const sanitized = candidate.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "")
+    return JSON.parse(sanitized) as MemoryReviewResult
+  }
+}
+
 function extractJsonObject(raw: string) {
   const trimmed = raw.trim()
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)
@@ -67,7 +78,17 @@ function extractJsonObject(raw: string) {
   if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
     throw new Error("Memory agent did not return JSON")
   }
-  return JSON.parse(candidate.slice(firstBrace, lastBrace + 1)) as MemoryReviewResult
+  return parseJsonCandidate(candidate.slice(firstBrace, lastBrace + 1))
+}
+
+async function runBackgroundTextTaskWithTimeout(rootDir: string, system: string, userPrompt: string) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), MEMORY_AGENT_TIMEOUT_MS)
+  try {
+    return await runBackgroundTextTask(rootDir, system, userPrompt, { abortSignal: controller.signal })
+  } finally {
+    clearTimeout(timeout)
+  }
 }
 
 function formatRecentConversation(session: SessionRecord) {
@@ -225,20 +246,25 @@ export async function runMemoryAgentReview(
 
   let text = ""
   try {
-    const result = await runBackgroundTextTask(
+    const result = await runBackgroundTextTaskWithTimeout(
       rootDir,
       buildSystemPrompt(trigger),
       buildUserPrompt(session, rootDir, profileId),
     )
     text = result.text
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
     logMemoryAgent(rootDir, "review.error", {
       sessionId: session.id,
       trigger,
       stage: "model_call",
-      error: error instanceof Error ? error.message : String(error),
+      error: message,
     })
-    throw error
+    appendWorklog(rootDir, session.id, {
+      type: "note",
+      summary: `Memory agent skipped after model failure (${trigger}): ${clip(message, 160)}`,
+    })
+    return
   }
 
   logMemoryAgent(rootDir, "review.model_response", {
@@ -252,13 +278,18 @@ export async function runMemoryAgentReview(
   try {
     parsed = extractJsonObject(text)
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
     logMemoryAgent(rootDir, "review.error", {
       sessionId: session.id,
       trigger,
       stage: "json_parse",
-      error: error instanceof Error ? error.message : String(error),
+      error: message,
     })
-    throw error
+    appendWorklog(rootDir, session.id, {
+      type: "note",
+      summary: `Memory agent skipped after invalid JSON (${trigger}): ${clip(message, 160)}`,
+    })
+    return
   }
   const proposals = Array.isArray(parsed.items) ? parsed.items.slice(0, MAX_ITEMS_PER_REVIEW) : []
   if (proposals.length === 0) {
@@ -296,17 +327,27 @@ export async function runMemoryAgentReview(
       }
       const wing = proposal.wing?.trim() || "PERSONAL"
       const room = proposal.room?.trim() || "signals"
-      await fileMemory(rootDir, wing, room, proposal.content.trim(), profileId)
-      appliedSummaries.push(`MemPalace updated (${wing}/${room})`)
-      logMemoryAgent(rootDir, "proposal.applied", {
-        sessionId: session.id,
-        trigger,
-        destination: "MEMPALACE",
-        wing,
-        room,
-        confidence,
-        content: clip(proposal.content, 120),
-      })
+      try {
+        await fileMemory(rootDir, wing, room, proposal.content.trim(), profileId)
+        appliedSummaries.push(`MemPalace updated (${wing}/${room})`)
+        logMemoryAgent(rootDir, "proposal.applied", {
+          sessionId: session.id,
+          trigger,
+          destination: "MEMPALACE",
+          wing,
+          room,
+          confidence,
+          content: clip(proposal.content, 120),
+        })
+      } catch (error) {
+        logMemoryAgent(rootDir, "proposal.skip", {
+          sessionId: session.id,
+          trigger,
+          reason: "mempalace_write_failed",
+          destination: proposal.destination,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
       continue
     }
     if (confidence < MIN_CONFIDENCE_FOR_CORE) {
@@ -320,7 +361,19 @@ export async function runMemoryAgentReview(
       })
       continue
     }
-    const updated = persistCoreMemory(rootDir, profileId, proposal.destination, proposal)
+    let updated = false
+    try {
+      updated = persistCoreMemory(rootDir, profileId, proposal.destination, proposal)
+    } catch (error) {
+      logMemoryAgent(rootDir, "proposal.skip", {
+        sessionId: session.id,
+        trigger,
+        reason: "boot_write_failed",
+        destination: proposal.destination,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      continue
+    }
     if (updated) {
       appliedSummaries.push(proposal.destination === "USER" ? "BOOT_USER updated" : "BOOT_MEMORY updated")
       logMemoryAgent(rootDir, "proposal.applied", {
