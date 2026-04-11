@@ -181,8 +181,9 @@ export class DaemonClient {
     const pending = this.pending.get(response.id)
     if (!pending) return
     this.pending.delete(response.id)
-    if (response.ok) pending.resolve(response.data)
-    else {
+    if (response.ok) {
+      pending.resolve(response.data)
+    } else if (response.ok === false) {
       const error = new Error(response.error) as RemoteError
       if (response.error.includes("ya está ocupada")) {
         error.code = "SESSION_BUSY"

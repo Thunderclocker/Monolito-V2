@@ -58,7 +58,7 @@ function handle(request: RpcRequest) {
           content: [
             {
               type: "text",
-              text: String(request.params?.arguments?.text ?? ""),
+              text: String((request.params?.arguments as Record<string, unknown> | undefined)?.text ?? ""),
             },
           ],
         },

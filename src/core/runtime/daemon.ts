@@ -4,6 +4,7 @@ import { createServer, type Server, type Socket } from "node:net"
 import {
   type DaemonLock,
   type Request,
+  type Response,
   decodeLines,
   encodeEnvelope,
   ensureDirs,
@@ -307,7 +308,7 @@ export class MonolitoV2Daemon {
       buffer = decoded.rest
       for (const envelope of decoded.messages) {
         if (envelope.kind !== "request") continue
-        const response = await this.handleRequest(socket, envelope.payload)
+        const response: Response = await this.handleRequest(socket, envelope.payload)
         this.safeWrite(socket, encodeEnvelope({ kind: "response", payload: response }))
       }
     })
@@ -325,23 +326,23 @@ export class MonolitoV2Daemon {
     })
   }
 
-  private async handleRequest(socket: Socket, request: Request) {
+  private async handleRequest(socket: Socket, request: Request): Promise<Response> {
     try {
       switch (request.type) {
         case "ping":
-          return { id: request.id, ok: true, data: { pid: process.pid } }
+          return { id: request.id, ok: true as const, data: { pid: process.pid } }
         case "session.ensure":
-          return { id: request.id, ok: true, data: this.runtime.ensureSession(request.sessionId, request.title) }
+          return { id: request.id, ok: true as const, data: this.runtime.ensureSession(request.sessionId, request.title) }
         case "session.startup":
           await this.runtime.processSessionStartup(request.sessionId, request.prompt)
           if (this.runtime.consumeRestartRequest()) {
             this.scheduleSelfRestart()
           }
-          return { id: request.id, ok: true, data: { accepted: true } }
+          return { id: request.id, ok: true as const, data: { accepted: true } }
         case "session.list":
-          return { id: request.id, ok: true, data: this.runtime.listSessions() }
+          return { id: request.id, ok: true as const, data: this.runtime.listSessions() }
         case "session.get":
-          return { id: request.id, ok: true, data: this.runtime.getSession(request.sessionId) }
+          return { id: request.id, ok: true as const, data: this.runtime.getSession(request.sessionId) }
         case "session.subscribe": {
           const sid = request.sessionId
           const list = this.subscribers.get(sid) ?? new Set<Socket>()
@@ -359,19 +360,19 @@ export class MonolitoV2Daemon {
             socketSubs.set(sid, unsubscribe)
             this.socketSubscriptions.set(socket, socketSubs)
           }
-          return { id: request.id, ok: true, data: { subscribed: sid } }
+          return { id: request.id, ok: true as const, data: { subscribed: sid } }
         }
         case "logs.tail":
-          return { id: request.id, ok: true, data: this.runtime.tailEvents(request.sessionId, request.lines) }
+          return { id: request.id, ok: true as const, data: this.runtime.tailEvents(request.sessionId, request.lines) }
         case "message.send":
           await this.runtime.processMessage(request.sessionId, request.text)
           if (this.runtime.consumeRestartRequest()) {
             this.scheduleSelfRestart()
           }
-          return { id: request.id, ok: true, data: { accepted: true } }
+          return { id: request.id, ok: true as const, data: { accepted: true } }
         case "session.abort":
           this.runtime.abortSession(request.sessionId)
-          return { id: request.id, ok: true, data: { aborted: true } }
+          return { id: request.id, ok: true as const, data: { aborted: true } }
         case "daemon.stop": {
           this.stop()
           const response = { id: request.id, ok: true as const, data: { stopped: true } }
@@ -380,28 +381,28 @@ export class MonolitoV2Daemon {
           return response
         }
         case "query.cost":
-          return { id: request.id, ok: true, data: this.runtime.queryCost() }
+          return { id: request.id, ok: true as const, data: this.runtime.queryCost() }
         case "query.stats": {
           const sid = (request as { sessionId?: string }).sessionId ?? ""
-          return { id: request.id, ok: true, data: this.runtime.queryStats(sid) }
+          return { id: request.id, ok: true as const, data: this.runtime.queryStats(sid) }
         }
         case "query.compact": {
           const sid = (request as { sessionId?: string }).sessionId ?? ""
           const max = (request as { maxMessages?: number }).maxMessages
-          return { id: request.id, ok: true, data: this.runtime.queryCompact(sid, max) }
+          return { id: request.id, ok: true as const, data: this.runtime.queryCompact(sid, max) }
         }
         case "query.doctor":
-          return { id: request.id, ok: true, data: this.runtime.queryDoctor() }
+          return { id: request.id, ok: true as const, data: this.runtime.queryDoctor() }
         case "query.model":
-          return { id: request.id, ok: true, data: this.runtime.queryModelInfo() }
+          return { id: request.id, ok: true as const, data: this.runtime.queryModelInfo() }
         case "query.config": {
           const req = request as Record<string, string | undefined>
           const data = await this.runtime.queryConfig(req.action, req.field, req.value)
-          return { id: request.id, ok: true, data }
+          return { id: request.id, ok: true as const, data }
         }
       }
     } catch (error) {
-      return { id: request.id, ok: false, error: error instanceof Error ? error.message : String(error) }
+      return { id: request.id, ok: false as const, error: error instanceof Error ? error.message : String(error) }
     }
   }
 }

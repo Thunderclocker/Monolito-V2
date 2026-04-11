@@ -13,7 +13,7 @@ function padRight(s: string, n: number) {
 }
 
 function padLeft(s: string, n: number) {
-  return s.length >= n ? s : " ".repeat(n - s.length.length) + s
+  return s.length >= n ? s : " ".repeat(n - s.length) + s
 }
 
 export function formatSessionsTable(rows: Array<{ id: string; state: string; title: string }>): FormattedBlock {
