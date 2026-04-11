@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, utimesSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { SessionRecord } from "../ipc/protocol.ts"
 import { ensureDirs } from "../ipc/protocol.ts"
-import { type ToolContext, isToolConcurrencySafe, listModelTools, listTools, validateToolInput } from "../tools/registry.ts"
+import { type ToolContext, isToolConcurrencySafe, listModelTools, validateToolInput } from "../tools/registry.ts"
 import { type ToolCallDirective, parseDirective } from "./directiveParser.ts"
 import { readModelSettings, refreshModelAuth } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider } from "./modelRegistry.ts"
@@ -850,14 +850,22 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
     sections.push("", contextExtras.gitContext)
   }
 
+  // Self-knowledge: tell the model how to introspect its own config
+  sections.push(
+    "",
+    "# SELF-KNOWLEDGE",
+    "- When asked what model you are running, what provider, or anything about your own config: call tool_manage_config(action='read', wing='CONF_MODELS'). Do NOT guess or invent.",
+    "- BOOT wings (BOOT_SOUL, BOOT_USER, etc.) = your persona and memory. Read: BootRead(wing='...'). Write: BootWrite(wing='...', content='...').",
+    "- CONFIG wings (CONF_MODELS, CONF_CHANNELS, CONF_SYSTEM, CONF_WEBSEARCH) = technical settings. Read/write: tool_manage_config(action='read'|'write', wing='...').",
+    "- Memory Palace = long-term contextual memory. File: WorkspaceMemoryFiling. Recall: WorkspaceMemoryRecall.",
+  )
+
   sections.push(
     "",
     `Workspace root: ${rootDir}`,
-    `Recent worklog: ${session.worklog.length > 0 ? JSON.stringify(session.worklog.slice(-20)) : "[]"}`,
-    "Available tools:",
-    ...listTools().map(tool => `- ${tool.name}: ${tool.description}`),
+    `Recent worklog: ${session.worklog.length > 0 ? JSON.stringify(session.worklog.slice(-5)) : "[]"}`,
     "",
-    "When a tool is needed, emit a native tool_use block. When no tool is needed, answer normally.",
+    "When a tool is needed, emit a native tool_use block or a JSON directive. When no tool is needed, answer normally.",
     "Rules:",
     "- When the user asks to configure the system, change settings, view current configuration, or manage models/channels/websearch/audio: invoke the show_master_dashboard tool or tool_manage_config as appropriate. Do NOT read config files manually.",
     "- Every Bash tool call must include input.command as a non-empty shell command string.",
