@@ -46,14 +46,21 @@ type HttpErrorOptions = {
 }
 
 export class HttpError extends MonolitoError {
+  readonly statusCode?: number
+  readonly responseBody?: string
+  readonly headers?: Headers | null
+
   constructor(
     message: string,
-    public readonly statusCode?: number,
-    public readonly responseBody?: string,
-    public readonly headers?: Headers | null,
+    statusCode?: number,
+    responseBody?: string,
+    headers?: Headers | null,
   ) {
     super(message)
     this.name = "HttpError"
+    this.statusCode = statusCode
+    this.responseBody = responseBody
+    this.headers = headers
   }
 }
 
@@ -88,16 +95,27 @@ export class ContextOverflowError extends HttpError {
 }
 
 export class ToolExecutionError extends MonolitoError {
+  readonly command?: string
+  readonly exitCode?: number | null
+  readonly stdout: string
+  readonly stderr: string
+  readonly output?: unknown
+
   constructor(
     message: string,
-    public readonly command?: string,
-    public readonly exitCode?: number | null,
-    public readonly stdout = "",
-    public readonly stderr = "",
-    public readonly output?: unknown,
+    command?: string,
+    exitCode?: number | null,
+    stdout = "",
+    stderr = "",
+    output?: unknown,
   ) {
     super(message)
     this.name = "ToolExecutionError"
+    this.command = command
+    this.exitCode = exitCode
+    this.stdout = stdout
+    this.stderr = stderr
+    this.output = output
   }
 }
 
@@ -109,43 +127,65 @@ export class ProviderOverloadedError extends HttpError {
 }
 
 export class ShellError extends MonolitoError {
+  readonly stdout: string
+  readonly stderr: string
+  readonly exitCode: number
+  readonly interrupted: boolean
+
   constructor(
-    public readonly stdout: string,
-    public readonly stderr: string,
-    public readonly exitCode: number,
-    public readonly interrupted: boolean,
+    stdout: string,
+    stderr: string,
+    exitCode: number,
+    interrupted: boolean,
   ) {
     super("Shell command failed")
     this.name = "ShellError"
+    this.stdout = stdout
+    this.stderr = stderr
+    this.exitCode = exitCode
+    this.interrupted = interrupted
   }
 }
 
 export class ConfigParseError extends MonolitoError {
+  readonly filePath: string
+  readonly defaultConfig: unknown
+
   constructor(
     message: string,
-    public readonly filePath: string,
-    public readonly defaultConfig: unknown,
+    filePath: string,
+    defaultConfig: unknown,
   ) {
     super(message)
     this.name = "ConfigParseError"
+    this.filePath = filePath
+    this.defaultConfig = defaultConfig
   }
 }
 
 export class ApiError extends MonolitoError {
+  readonly statusCode?: number
+  readonly responseBody?: string
+
   constructor(
     message: string,
-    public readonly statusCode?: number,
-    public readonly responseBody?: string,
+    statusCode?: number,
+    responseBody?: string,
   ) {
     super(message)
     this.name = "ApiError"
+    this.statusCode = statusCode
+    this.responseBody = responseBody
   }
 }
 
 export class TimeoutError extends MonolitoError {
-  constructor(message: string, public readonly timeoutMs: number) {
+  readonly timeoutMs: number
+
+  constructor(message: string, timeoutMs: number) {
     super(message)
     this.name = "TimeoutError"
+    this.timeoutMs = timeoutMs
   }
 }
 
