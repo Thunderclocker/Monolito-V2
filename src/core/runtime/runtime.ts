@@ -90,6 +90,14 @@ const SEARXNG_URL = `http://127.0.0.1:${SEARXNG_PORT}`
 const SEARXNG_SETTINGS_DIR = join(MONOLITO_ROOT, "searxng")
 const SEARXNG_SETTINGS_FILE = join(SEARXNG_SETTINGS_DIR, "settings.yml")
 const TELEGRAM_TYPING_MAX_MS = 15_000
+const TURN_HARD_TIMEOUT_MS = 95_000
+
+class TurnTimeoutError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "TurnTimeoutError"
+  }
+}
 
 type SearxngContainerInfo = {
   id: string
@@ -732,6 +740,13 @@ export class MonolitoV2Runtime {
     const abortController = new AbortController()
     const telegramTyping = startTelegramTypingIndicator(sessionId)
     this.abortControllers.set(sessionId, abortController)
+    const turnTimeout = setTimeout(() => {
+      appendWorklog(this.rootDir, sessionId, {
+        type: "note",
+        summary: `Hard turn timeout reached after ${TURN_HARD_TIMEOUT_MS}ms; aborting active work`,
+      })
+      abortController.abort(new TurnTimeoutError(`Turn exceeded hard timeout of ${TURN_HARD_TIMEOUT_MS}ms`))
+    }, TURN_HARD_TIMEOUT_MS)
     
     try {
       if (lastUserText.startsWith("/")) {
@@ -841,7 +856,13 @@ export class MonolitoV2Runtime {
             profileId,
             orchestrator: this.orchestrator,
           },
-          { contextExtras: { gitContext, dateContext, workspaceContext, adultMode: this.adultModeSessions.has(sessionId), webSearchProvider: webSearchConfig.provider }, costState: this.costState, abortSignal: abortController.signal },
+          {
+            contextExtras: { gitContext, dateContext, workspaceContext, adultMode: this.adultModeSessions.has(sessionId), webSearchProvider: webSearchConfig.provider },
+            costState: this.costState,
+            abortSignal: abortController.signal,
+            turnStartedAt,
+            maxTurnDurationMs: TURN_HARD_TIMEOUT_MS - 5_000,
+          },
         )
         if (turn.usage) {
           recordApiCall(
@@ -870,6 +891,8 @@ export class MonolitoV2Runtime {
             inputTokens: turn.usage?.inputTokens ?? 0,
             outputTokens: turn.usage?.outputTokens ?? 0,
             totalTokens: turn.usage?.totalTokens ?? 0,
+            iterations: turn.meta?.iterationCount ?? 0,
+            stopReason: turn.meta?.stopReason ?? "completed",
           },
         })
         this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
@@ -897,6 +920,36 @@ export class MonolitoV2Runtime {
         return turn
       }
     } catch (error) {
+      const timeoutReason = abortController.signal.reason
+      if (timeoutReason instanceof TurnTimeoutError) {
+        const message = `No pude terminar este turno dentro del límite duro de ${Math.floor(TURN_HARD_TIMEOUT_MS / 1000)}s. Reintentá con un pedido más acotado o dividilo en pasos.`
+        appendWorklog(this.rootDir, sessionId, {
+          type: "session",
+          summary: `Turn failed: ${clipForWorklog(message)}`,
+        })
+        logAgentTrace(this.rootDir, sessionId, "turn.failed", {
+          profileId,
+          details: {
+            durationMs: Date.now() - turnStartedAt,
+            error: message,
+          },
+        })
+        this.emit({ type: "error", sessionId, error: message })
+        appendMessage(this.rootDir, sessionId, "assistant", message)
+        this.emit({ type: "message.received", sessionId, role: "assistant", text: message })
+        await this.transitionState(sessionId, "error")
+        return {
+          finalText: message,
+          steps: [{ type: "final", message }],
+          error: message,
+          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+          meta: {
+            iterationCount: 0,
+            durationMs: Date.now() - turnStartedAt,
+            stopReason: "max_duration",
+          },
+        }
+      }
       if (error instanceof Error && error.name === "AbortError") {
         appendWorklog(this.rootDir, sessionId, {
           type: "session",
@@ -933,6 +986,7 @@ export class MonolitoV2Runtime {
         usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
       }
     } finally {
+      clearTimeout(turnTimeout)
       telegramTyping?.stop()
       this.activeSessions.delete(sessionId)
       this.abortControllers.delete(sessionId)
