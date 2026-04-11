@@ -24,6 +24,11 @@ const MAX_RECONNECT_ATTEMPTS = 5
 const INITIAL_BACKOFF_MS = 1000
 const MAX_BACKOFF_MS = 30000
 
+function isTelegramConflictError(error: Error): boolean {
+  const message = error.message.toLowerCase()
+  return message.includes("409") && message.includes("conflict")
+}
+
 export interface TelegramUpdate {
   update_id: number
   message?: TelegramMessage
@@ -207,7 +212,7 @@ export function createTelegramPoller(
         return MAX_BACKOFF_MS
       }
 
-      if (err.message.includes('409 Conflict')) {
+      if (isTelegramConflictError(err)) {
         // Another process is polling - wait longer
         logger.debug(`[Telegram] 409 Conflict - another process is polling`)
         reconnectAttempts++

@@ -36,6 +36,22 @@ function shouldLog(level: LogLevel): boolean {
   return LEVEL_ORDER[level] >= LEVEL_ORDER[minLevel]
 }
 
+function normalizeLogData(data: unknown): Record<string, unknown> | undefined {
+  if (data === undefined) return undefined
+  if (data instanceof Error) {
+    return {
+      errorName: data.name,
+      errorMessage: data.message,
+      ...(data.stack ? { errorStack: data.stack } : {}),
+      ...Object.fromEntries(Object.entries(data)),
+    }
+  }
+  if (typeof data === "object" && data !== null && !Array.isArray(data)) {
+    return data as Record<string, unknown>
+  }
+  return { value: data }
+}
+
 function formatEntry(entry: LogEntry): string {
   const parts = [entry.timestamp, `[${entry.level.toUpperCase()}]`, `[${entry.category}]`, entry.message]
   if (entry.durationMs !== undefined) parts.push(`(${entry.durationMs}ms)`)
@@ -90,48 +106,49 @@ export function clearRecentErrors() {
   inMemoryErrors.length = 0
 }
 
-export function log(level: LogLevel, category: string, message: string, data?: Record<string, unknown>, durationMs?: number) {
+export function log(level: LogLevel, category: string, message: string, data?: unknown, durationMs?: number) {
   emit({
     timestamp: new Date().toISOString(),
     level,
     category,
     message,
-    data,
+    data: normalizeLogData(data),
     durationMs,
   })
 }
 
-export function logDebug(category: string, message: string, data?: Record<string, unknown>) {
+export function logDebug(category: string, message: string, data?: unknown) {
   log("debug", category, message, data)
 }
 
-export function logInfo(category: string, message: string, data?: Record<string, unknown>) {
+export function logInfo(category: string, message: string, data?: unknown) {
   log("info", category, message, data)
 }
 
-export function logWarn(category: string, message: string, data?: Record<string, unknown>) {
+export function logWarn(category: string, message: string, data?: unknown) {
   log("warn", category, message, data)
 }
 
-export function logError(category: string, message: string, data?: Record<string, unknown>) {
+export function logError(category: string, message: string, data?: unknown) {
   log("error", category, message, data)
 }
 
 /** Log with timing: returns a function that logs the elapsed time when called. */
-export function logTimed(level: LogLevel, category: string, message: string, data?: Record<string, unknown>) {
+export function logTimed(level: LogLevel, category: string, message: string, data?: unknown) {
   const start = Date.now()
   return (extraData?: Record<string, unknown>) => {
-    log(level, category, message, { ...data, ...extraData }, Date.now() - start)
+    const base = normalizeLogData(data) ?? {}
+    log(level, category, message, { ...base, ...extraData }, Date.now() - start)
   }
 }
 
 /** Create a scoped logger for a specific category. */
 export function createLogger(category: string) {
   return {
-    debug: (message: string, data?: Record<string, unknown>) => logDebug(category, message, data),
-    info: (message: string, data?: Record<string, unknown>) => logInfo(category, message, data),
-    warn: (message: string, data?: Record<string, unknown>) => logWarn(category, message, data),
-    error: (message: string, data?: Record<string, unknown>) => logError(category, message, data),
-    timed: (level: LogLevel, message: string, data?: Record<string, unknown>) => logTimed(level, category, message, data),
+    debug: (message: string, data?: unknown) => logDebug(category, message, data),
+    info: (message: string, data?: unknown) => logInfo(category, message, data),
+    warn: (message: string, data?: unknown) => logWarn(category, message, data),
+    error: (message: string, data?: unknown) => logError(category, message, data),
+    timed: (level: LogLevel, message: string, data?: unknown) => logTimed(level, category, message, data),
   }
 }
