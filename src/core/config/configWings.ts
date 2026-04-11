@@ -2,7 +2,7 @@ import type { ChannelsConfig } from "../channels/config.ts"
 import type { ModelSettings } from "../runtime/modelConfig.ts"
 import type { ModelRegistry } from "../runtime/modelRegistry.ts"
 import type { WebSearchConfig } from "../websearch/config.ts"
-import { MODEL_PROTOCOL } from "../runtime/modelConfig.ts"
+import { MODEL_PROTOCOL } from "../runtime/modelConstants.ts"
 
 export const CONFIG_WING_ORDER = [
   "CONF_MODELS",

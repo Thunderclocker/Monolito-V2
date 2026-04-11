@@ -332,6 +332,12 @@ export class MonolitoV2Daemon {
           return { id: request.id, ok: true, data: { pid: process.pid } }
         case "session.ensure":
           return { id: request.id, ok: true, data: this.runtime.ensureSession(request.sessionId, request.title) }
+        case "session.startup":
+          await this.runtime.processSessionStartup(request.sessionId, request.prompt)
+          if (this.runtime.consumeRestartRequest()) {
+            this.scheduleSelfRestart()
+          }
+          return { id: request.id, ok: true, data: { accepted: true } }
         case "session.list":
           return { id: request.id, ok: true, data: this.runtime.listSessions() }
         case "session.get":

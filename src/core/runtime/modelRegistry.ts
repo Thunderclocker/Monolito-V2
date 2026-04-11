@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import { readModelSettings, maskApiKey } from "./modelConfig.ts"
 import { appendActionLog, readConfigWing, writeConfigWing } from "../session/store.ts"
 import { MONOLITO_ROOT } from "../system/root.ts"
+import { coerceConfigRecord } from "../config/wingValue.ts"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -68,9 +69,9 @@ function createEmptyRegistry(): ModelRegistry {
 }
 
 export function readRegistry(): ModelRegistry {
-  const raw = readConfigWing(process.cwd(), "CONF_MODELS") as Partial<ModelRegistry>
+  const raw = coerceConfigRecord(readConfigWing(process.cwd(), "CONF_MODELS")) as Partial<ModelRegistry> | null
   try {
-    if (!Array.isArray(raw.profiles)) return createEmptyRegistry()
+    if (!raw || !Array.isArray(raw.profiles)) return createEmptyRegistry()
     return {
       version: 1,
       profiles: raw.profiles.map(normalizeProfile).filter(Boolean) as ModelProfile[],

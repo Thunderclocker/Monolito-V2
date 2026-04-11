@@ -104,6 +104,10 @@ export class DaemonClient {
     return await this.request("session.ensure", { sessionId, title })
   }
 
+  async startupSession(sessionId: string, prompt: string) {
+    return await this.request("session.startup", { sessionId, prompt })
+  }
+
   async listSessions() {
     return await this.request("session.list", {})
   }
@@ -199,6 +203,7 @@ export class DaemonClient {
 type ResponseRequestType =
   | "ping"
   | "session.ensure"
+  | "session.startup"
   | "session.list"
   | "session.get"
   | "session.subscribe"

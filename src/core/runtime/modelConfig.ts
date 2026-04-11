@@ -1,9 +1,10 @@
 import { getActiveProfile, type ModelProfile } from "./modelRegistry.ts"
 import { createDefaultSystemConfig } from "../config/configWings.ts"
+import { coerceConfigRecord } from "../config/wingValue.ts"
 import { readConfigWing, writeConfigWing, appendActionLog } from "../session/store.ts"
 import { MONOLITO_ROOT } from "../system/root.ts"
+import { MODEL_PROTOCOL } from "./modelConstants.ts"
 
-export const MODEL_PROTOCOL = "anthropic_compatible"
 export const SYSTEM_AUTH_TOKEN_ENV = "MONOLITO_V2_SYSTEM_ANTHROPIC_AUTH_TOKEN"
 export const SYSTEM_BASE_URL_ENV = "MONOLITO_V2_SYSTEM_ANTHROPIC_BASE_URL"
 export const SYSTEM_MODEL_ENV = "MONOLITO_V2_SYSTEM_ANTHROPIC_MODEL"
@@ -88,16 +89,16 @@ export function createDefaultSettings(options: ReadSettingsOptions = {}): ModelS
 
 export function readModelSettings(options: ReadSettingsOptions = {}): ModelSettings {
   const defaults = createDefaultSettings(options)
-  const raw = readConfigWing(process.cwd(), "CONF_SYSTEM") as Partial<ModelSettings>
+  const raw = coerceConfigRecord(readConfigWing(process.cwd(), "CONF_SYSTEM")) as Partial<ModelSettings> | null
   return {
     modelConfig: {
-      protocol: normalizeString(raw.modelConfig?.protocol) || defaults.modelConfig.protocol,
+      protocol: normalizeString(raw?.modelConfig?.protocol) || defaults.modelConfig.protocol,
     },
     env: {
-      ANTHROPIC_BASE_URL: normalizeString(raw.env?.ANTHROPIC_BASE_URL) || defaults.env.ANTHROPIC_BASE_URL,
-      ANTHROPIC_AUTH_TOKEN: normalizeString(raw.env?.ANTHROPIC_AUTH_TOKEN) || defaults.env.ANTHROPIC_AUTH_TOKEN,
-      ANTHROPIC_MODEL: normalizeString(raw.env?.ANTHROPIC_MODEL) || defaults.env.ANTHROPIC_MODEL,
-      API_TIMEOUT_MS: normalizeString(raw.env?.API_TIMEOUT_MS) || defaults.env.API_TIMEOUT_MS,
+      ANTHROPIC_BASE_URL: normalizeString(raw?.env?.ANTHROPIC_BASE_URL) || defaults.env.ANTHROPIC_BASE_URL,
+      ANTHROPIC_AUTH_TOKEN: normalizeString(raw?.env?.ANTHROPIC_AUTH_TOKEN) || defaults.env.ANTHROPIC_AUTH_TOKEN,
+      ANTHROPIC_MODEL: normalizeString(raw?.env?.ANTHROPIC_MODEL) || defaults.env.ANTHROPIC_MODEL,
+      API_TIMEOUT_MS: normalizeString(raw?.env?.API_TIMEOUT_MS) || defaults.env.API_TIMEOUT_MS,
     },
   }
 }
