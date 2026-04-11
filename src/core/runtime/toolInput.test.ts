@@ -23,6 +23,20 @@ test("normalizeToolInputPayload unwraps nested stringified JSON object", () => {
   )
 })
 
+test("normalizeToolInputPayload unwraps concatenated empty object prefix", () => {
+  assert.deepEqual(
+    normalizeToolInputPayload({ _raw: "{}{\"action\": \"read\", \"wing\": \"CONF_MODELS\"}" }),
+    { action: "read", wing: "CONF_MODELS" },
+  )
+})
+
+test("normalizeToolInputPayload unwraps concatenated empty objects", () => {
+  assert.deepEqual(
+    normalizeToolInputPayload({ _raw: "{}{}" }),
+    {},
+  )
+})
+
 test("normalizeToolInputPayload leaves non-object payloads unchanged", () => {
   assert.deepEqual(
     normalizeToolInputPayload({ _raw: "\"read\"" }),

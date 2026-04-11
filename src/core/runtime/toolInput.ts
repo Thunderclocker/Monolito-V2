@@ -10,6 +10,10 @@ function tryParseJsonObject(raw: string): Record<string, unknown> | null {
   const candidates = [trimmed]
   const objectSlice = trimmed.match(/\{[\s\S]*\}/)?.[0]
   if (objectSlice && objectSlice !== trimmed) candidates.push(objectSlice)
+  const balancedObjects = extractBalancedJsonObjects(trimmed)
+  for (const candidate of balancedObjects) {
+    if (!candidates.includes(candidate)) candidates.push(candidate)
+  }
 
   for (const candidate of candidates) {
     let current: unknown = candidate
@@ -28,6 +32,47 @@ function tryParseJsonObject(raw: string): Record<string, unknown> | null {
   }
 
   return null
+}
+
+function extractBalancedJsonObjects(raw: string) {
+  const matches: string[] = []
+  let depth = 0
+  let inString = false
+  let escaped = false
+  let start = -1
+
+  for (let index = 0; index < raw.length; index += 1) {
+    const char = raw[index]!
+    if (inString) {
+      if (escaped) {
+        escaped = false
+      } else if (char === "\\") {
+        escaped = true
+      } else if (char === "\"") {
+        inString = false
+      }
+      continue
+    }
+    if (char === "\"") {
+      inString = true
+      continue
+    }
+    if (char === "{") {
+      if (depth === 0) start = index
+      depth += 1
+      continue
+    }
+    if (char === "}") {
+      if (depth === 0) continue
+      depth -= 1
+      if (depth === 0 && start >= 0) {
+        matches.push(raw.slice(start, index + 1))
+        start = -1
+      }
+    }
+  }
+
+  return matches.reverse()
 }
 
 export function normalizeToolInputPayload(input: unknown): unknown {
