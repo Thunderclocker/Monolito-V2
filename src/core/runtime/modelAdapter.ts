@@ -94,6 +94,8 @@ type TurnLoopState = {
   rejectedFinals: Map<string, number>
   toolEvidence: ToolExecutionRecord[]
   retryPolicy: RetryPolicy
+  iterationCount: number
+  turnStartedAt: number
 }
 
 type ToolExecutionRecord = {
@@ -119,6 +121,8 @@ const PROTECTED_TAIL_MESSAGES = 12
 const MAX_HISTORY_MESSAGES_BEFORE_COMPACT = 28
 const SNIP_TEXT_LIMIT = 900
 const MAX_COMPACT_SUMMARY_BLOCKS = 8
+const MAX_TURN_ITERATIONS = 12
+const MAX_TURN_DURATION_MS = 90_000
 const SHORT_RETRY_THRESHOLD_MS = 20_000
 const RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000
 const PERSISTENT_MAX_BACKOFF_MS = 5 * 60 * 1000
@@ -138,6 +142,15 @@ function compactWhitespace(value: string) {
 function isTaskNotification(text: string) {
   const normalized = text.trim()
   return normalized.startsWith("<task-notification>") && normalized.endsWith("</task-notification>")
+}
+
+function isNonCommittalOperationalReply(text: string) {
+  const normalized = compactWhitespace(text).toLowerCase()
+  if (!normalized) return false
+  return [
+    /^(voy a|ya lo|ahora lo|deja(?:me)?|déjame|primero voy a|perm[ií]time|un momento)/,
+    /\b(revisar|investigar|verificar|mirar|check|inspect|investigate|review|look into)\b/,
+  ].every(pattern => pattern.test(normalized))
 }
 
 function shouldSkipMessage(text: string) {
@@ -1974,6 +1987,30 @@ async function* runAssistantTurnState(
   if (state.abortSignal?.aborted) {
     return yield* finishTurn(state, "Stopped", undefined, "Stopped")
   }
+  state.iterationCount += 1
+  const elapsedMs = Date.now() - state.turnStartedAt
+  if (state.iterationCount > MAX_TURN_ITERATIONS) {
+    logger.warn("assistant turn stopped after max iterations", {
+      iterations: state.iterationCount,
+      durationMs: elapsedMs,
+      lastUserMessage: state.lastUserMessage.slice(0, 200),
+    })
+    const finalText = hasUsefulToolEvidence(state.toolEvidence)
+      ? buildPartialFinalFromToolEvidence("se alcanzó el máximo de iteraciones del turno", state.toolEvidence)
+      : "No pude cerrar esta tarea dentro del presupuesto del turno. Necesito reintentarla de forma más acotada o con una instrucción más específica."
+    return yield* finishTurn(state, finalText, undefined, finalText, true)
+  }
+  if (elapsedMs > MAX_TURN_DURATION_MS) {
+    logger.warn("assistant turn stopped after max duration", {
+      iterations: state.iterationCount,
+      durationMs: elapsedMs,
+      lastUserMessage: state.lastUserMessage.slice(0, 200),
+    })
+    const finalText = hasUsefulToolEvidence(state.toolEvidence)
+      ? buildPartialFinalFromToolEvidence("se alcanzó la duración máxima del turno", state.toolEvidence)
+      : "No pude terminar esta tarea dentro del tiempo máximo del turno. Reintentá con un pedido más acotado o dejame retomarlo en un turno nuevo."
+    return yield* finishTurn(state, finalText, undefined, finalText, true)
+  }
 
   const response = await callModelApi(
     state.rootDir,
@@ -2048,6 +2085,15 @@ async function* runAssistantTurnState(
     }
 
     const finalText = extracted.text
+    if (isOperationalRequest(state.lastUserMessage) && !hasToolStep(state.steps) && isNonCommittalOperationalReply(finalText)) {
+      return yield* rejectFinalAndContinue(
+        state,
+        finalText,
+        "No prometas investigar sin ejecutar una herramienta o dar una respuesta concreta. Si hace falta revisar algo, emití una tool call ahora.",
+        "No puedo aceptar una respuesta operativa vacía sin evidencia de herramientas.",
+        response,
+      )
+    }
     if (asksUserToRunCommand(finalText)) {
       return yield* rejectFinalAndContinue(
         state,
@@ -2086,6 +2132,15 @@ async function* runAssistantTurnState(
   }
 
   if (directive.mode === "final") {
+    if (isOperationalRequest(state.lastUserMessage) && !hasToolStep(state.steps) && isNonCommittalOperationalReply(directive.message)) {
+      return yield* rejectFinalAndContinue(
+        state,
+        JSON.stringify(directive),
+        "No prometas investigar sin ejecutar una herramienta o dar una respuesta concreta. Si hace falta revisar algo, emití una tool call ahora.",
+        "No puedo aceptar una respuesta operativa vacía sin evidencia de herramientas.",
+        response,
+      )
+    }
     if (asksUserToRunCommand(directive.message)) {
       return yield* rejectFinalAndContinue(
         state,
@@ -2216,6 +2271,8 @@ export async function* runAssistantTurnStream(
       background: session.id.startsWith("agent-"),
       unattended: session.id.startsWith("agent-") || session.id.startsWith("telegram-"),
     },
+    iterationCount: 0,
+    turnStartedAt: Date.now(),
   })
 }
 
