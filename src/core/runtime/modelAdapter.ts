@@ -259,6 +259,25 @@ function extractAssistantText(response: AnthropicResponse) {
   }
 }
 
+function normalizeNativeToolInput(input: unknown) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input
+  const record = input as Record<string, unknown>
+  const keys = Object.keys(record)
+  if (keys.length !== 1 || keys[0] !== "_raw" || typeof record._raw !== "string") return input
+
+  const raw = record._raw.trim()
+  if (!raw) return {}
+
+  try {
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>
+    }
+  } catch {}
+
+  return input
+}
+
 function extractNativeToolUses(response: AnthropicResponse): InternalToolUse[] {
   return (response.content ?? [])
     .filter(block =>
@@ -272,7 +291,7 @@ function extractNativeToolUses(response: AnthropicResponse): InternalToolUse[] {
     .map(block => ({
       id: block.id as string,
       tool: block.name as string,
-      input: block.input as Record<string, unknown>,
+      input: normalizeNativeToolInput(block.input) as Record<string, unknown>,
     }))
 }
 
@@ -319,7 +338,7 @@ function toAssistantNativeContent(response: AnthropicResponse): AnthropicContent
           type: "tool_use" as const,
           id: block.id,
           name: block.name,
-          input: block.input as Record<string, unknown>,
+          input: normalizeNativeToolInput(block.input) as Record<string, unknown>,
         }]
       }
       return []
