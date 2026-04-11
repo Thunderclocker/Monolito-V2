@@ -44,6 +44,7 @@ import { readChannelsConfig, writeChannelsConfig } from "../channels/config.ts"
 import { readWebSearchConfig, writeWebSearchConfig, type WebSearchProvider } from "../websearch/config.ts"
 import { getDateContext, getGitContext } from "../context/gitContext.ts"
 import { getWorkspaceContext } from "../context/workspaceContext.ts"
+import { normalizeToolInputPayload } from "./toolInput.ts"
 import { AgentOrchestrator } from "./orchestrator.ts"
 import { renderToolFinish, renderToolStart, renderToolStartText } from "../renderer/toolRenderer.ts"
 import { checkToolPermission, runPostToolHooks } from "./permissions.ts"
@@ -1199,7 +1200,8 @@ export class MonolitoV2Runtime {
   ) {
     const tool = getTool(toolName)
     if (!tool) throw new Error(`Unknown tool: ${toolName}`)
-    const permission = await checkToolPermission(tool.name, input, {
+    const normalizedInput = normalizeToolInputPayload(input) as Record<string, unknown>
+    const permission = await checkToolPermission(tool.name, normalizedInput, {
       rootDir: this.rootDir,
       sessionId,
       profileId: profileId ?? context.profileId,
@@ -1221,13 +1223,13 @@ export class MonolitoV2Runtime {
     logAgentTrace(this.rootDir, sessionId, "tool.started", {
       profileId: profileId ?? context.profileId,
       toolName: tool.name,
-      details: { toolUseId, input },
+      details: { toolUseId, input: normalizedInput },
     })
-    this.emit({ type: "tool.start", sessionId, toolUseId, tool: tool.name, input })
+    this.emit({ type: "tool.start", sessionId, toolUseId, tool: tool.name, input: normalizedInput })
     const toolStartedAt = Date.now()
     try {
-      const output = await tool.run(input, { ...context, profileId: profileId ?? context.profileId })
-      await runPostToolHooks(tool.name, input, {
+      const output = await tool.run(normalizedInput, { ...context, profileId: profileId ?? context.profileId })
+      await runPostToolHooks(tool.name, normalizedInput, {
         rootDir: this.rootDir,
         sessionId,
         profileId: profileId ?? context.profileId,

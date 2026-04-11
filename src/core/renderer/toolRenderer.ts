@@ -1,5 +1,6 @@
 import { homedir } from "node:os"
 import type { AgentEvent, SessionSummary } from "../ipc/protocol.ts"
+import { normalizeToolInputPayload } from "../runtime/toolInput.ts"
 
 const ANSI = {
   reset: "\u001b[0m",
@@ -248,7 +249,7 @@ function summarizeGenericRecord(value: Record<string, unknown> | null) {
 }
 
 export function summarizeInput(tool: string, input: unknown) {
-  const value = record(input)
+  const value = record(normalizeToolInputPayload(input))
   if (!value) return truncate(stringify(input), 140)
 
   switch (tool) {
