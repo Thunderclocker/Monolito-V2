@@ -60,6 +60,26 @@ type AnthropicResponse = {
   }
 }
 
+type ResponseTextBlock = Extract<NonNullable<AnthropicResponse["content"]>[number], { type: "text" }>
+type ResponseThinkingBlock = Extract<NonNullable<AnthropicResponse["content"]>[number], { type: "thinking" }>
+type ResponseToolUseBlock = Extract<NonNullable<AnthropicResponse["content"]>[number], { type: "tool_use" }>
+
+function isAssistantRole(role: string): role is AnthropicMessage["role"] {
+  return role === "user" || role === "assistant"
+}
+
+function isResponseTextBlock(block: NonNullable<AnthropicResponse["content"]>[number]): block is ResponseTextBlock {
+  return block.type === "text"
+}
+
+function isResponseThinkingBlock(block: NonNullable<AnthropicResponse["content"]>[number]): block is ResponseThinkingBlock {
+  return block.type === "thinking"
+}
+
+function isResponseToolUseBlock(block: NonNullable<AnthropicResponse["content"]>[number]): block is ResponseToolUseBlock {
+  return block.type === "tool_use"
+}
+
 export type AssistantTurnStep =
   | { type: "tool"; id?: string; tool: string; input: Record<string, unknown> }
   | { type: "final"; message: string }
@@ -236,7 +256,7 @@ function shouldSkipMessage(text: string) {
 
 function sessionToAnthropicMessages(session: SessionRecord): AnthropicMessage[] {
   return session.messages
-    .filter(message => message.role === "user" || message.role === "assistant")
+    .filter((message): message is SessionRecord["messages"][number] & { role: AnthropicMessage["role"] } => isAssistantRole(message.role))
     .filter(message => !shouldSkipMessage(message.text))
     .map(message => ({
       role: message.role,
@@ -306,13 +326,13 @@ function compactHistoryMessages(messages: AnthropicMessage[]) {
 
 function extractAssistantText(response: AnthropicResponse) {
   const text = (response.content ?? [])
-    .filter(block => block.type === "text" && typeof block.text === "string")
+    .filter((block): block is ResponseTextBlock => isResponseTextBlock(block) && typeof block.text === "string")
     .map(block => block.text ?? "")
     .join("\n")
     .trim()
 
   const thinking = (response.content ?? [])
-    .filter((block): block is { type: "thinking"; thinking?: string } => block.type === "thinking")
+    .filter((block): block is ResponseThinkingBlock => isResponseThinkingBlock(block))
     .map(block => block.thinking ?? "")
     .join("\n")
     .trim()
@@ -327,8 +347,8 @@ function extractAssistantText(response: AnthropicResponse) {
 
 function extractNativeToolUses(response: AnthropicResponse): InternalToolUse[] {
   return (response.content ?? [])
-    .filter(block =>
-      block.type === "tool_use" &&
+    .filter((block): block is ResponseToolUseBlock =>
+      isResponseToolUseBlock(block) &&
       typeof block.id === "string" &&
       typeof block.name === "string" &&
       block.input &&
@@ -369,12 +389,12 @@ function countToolSteps(steps: AssistantTurnStep[]) {
 
 function toAssistantNativeContent(response: AnthropicResponse): AnthropicContentBlock[] {
   return (response.content ?? [])
-    .flatMap(block => {
-      if (block.type === "text" && typeof block.text === "string" && block.text.trim().length > 0) {
-        return [{ type: "text" as const, text: block.text }]
+    .flatMap<AnthropicContentBlock>(block => {
+      if (isResponseTextBlock(block) && typeof block.text === "string" && block.text.trim().length > 0) {
+        return [{ type: "text", text: block.text }]
       }
       if (
-        block.type === "tool_use" &&
+        isResponseToolUseBlock(block) &&
         typeof block.id === "string" &&
         typeof block.name === "string" &&
         block.input &&
@@ -382,13 +402,13 @@ function toAssistantNativeContent(response: AnthropicResponse): AnthropicContent
         !Array.isArray(block.input)
       ) {
         return [{
-          type: "tool_use" as const,
+          type: "tool_use",
           id: block.id,
           name: block.name,
           input: normalizeToolInputPayload(block.input) as Record<string, unknown>,
         }]
       }
-      return []
+      return [] as AnthropicContentBlock[]
     })
 }
 

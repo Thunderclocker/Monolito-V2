@@ -220,8 +220,6 @@ export class AgentOrchestrator {
       this.notifyParent(task)
       
     } catch (error) {
-      if (task.status === "killed") return // Already handled
-
       task.status = "failed"
       const errorMsg = error instanceof Error ? error.message : String(error)
       task.error = errorMsg
