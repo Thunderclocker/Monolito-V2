@@ -29,12 +29,82 @@ export class SessionBusyError extends MonolitoError {
   }
 }
 
+export function getRetryAfterMsFromHeaders(headers?: Headers | null): number | null {
+  const retryAfter = headers?.get("retry-after")
+  if (!retryAfter) return null
+  const seconds = Number.parseInt(retryAfter, 10)
+  if (Number.isFinite(seconds)) return seconds * 1000
+  const dateMs = Date.parse(retryAfter)
+  if (Number.isFinite(dateMs)) return Math.max(0, dateMs - Date.now())
+  return null
+}
+
+type HttpErrorOptions = {
+  statusCode?: number
+  responseBody?: string
+  headers?: Headers | null
+}
+
+export class HttpError extends MonolitoError {
+  constructor(
+    message: string,
+    public readonly statusCode?: number,
+    public readonly responseBody?: string,
+    public readonly headers?: Headers | null,
+  ) {
+    super(message)
+    this.name = "HttpError"
+  }
+}
+
+export class RateLimitError extends HttpError {
+  readonly retryAfterMs: number | null
+
+  constructor(message: string, options: HttpErrorOptions = {}) {
+    super(message, options.statusCode ?? 429, options.responseBody, options.headers)
+    this.name = "RateLimitError"
+    this.retryAfterMs = getRetryAfterMsFromHeaders(options.headers)
+  }
+}
+
+type ContextOverflowOptions = HttpErrorOptions & {
+  maxTokens?: number
+  inputTokens?: number
+  overflowAmount?: number
+}
+
+export class ContextOverflowError extends HttpError {
+  readonly maxTokens?: number
+  readonly inputTokens?: number
+  readonly overflowAmount?: number
+
+  constructor(message: string, options: ContextOverflowOptions = {}) {
+    super(message, options.statusCode ?? 400, options.responseBody, options.headers)
+    this.name = "ContextOverflowError"
+    this.maxTokens = options.maxTokens
+    this.inputTokens = options.inputTokens
+    this.overflowAmount = options.overflowAmount
+  }
+}
+
 export class ToolExecutionError extends MonolitoError {
-  readonly output: unknown
-  constructor(message: string, output?: unknown) {
+  constructor(
+    message: string,
+    public readonly command?: string,
+    public readonly exitCode?: number | null,
+    public readonly stdout = "",
+    public readonly stderr = "",
+    public readonly output?: unknown,
+  ) {
     super(message)
     this.name = "ToolExecutionError"
-    this.output = output ?? null
+  }
+}
+
+export class ProviderOverloadedError extends HttpError {
+  constructor(message: string, options: HttpErrorOptions = {}) {
+    super(message, options.statusCode, options.responseBody, options.headers)
+    this.name = "ProviderOverloadedError"
   }
 }
 
@@ -138,6 +208,10 @@ export type HttpErrorKind = "auth" | "timeout" | "network" | "http" | "other"
 
 export function classifyHttpError(error: unknown): { kind: HttpErrorKind; status?: number; message: string } {
   const message = errorMessage(error)
+  if (error instanceof HttpError) {
+    if (error.statusCode === 401 || error.statusCode === 403) return { kind: "auth", status: error.statusCode, message }
+    return { kind: "http", status: error.statusCode, message }
+  }
   if (error instanceof ApiError) {
     if (error.statusCode === 401 || error.statusCode === 403) return { kind: "auth", status: error.statusCode, message }
     return { kind: "http", status: error.statusCode, message }
