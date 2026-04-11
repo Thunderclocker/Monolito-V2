@@ -1283,6 +1283,40 @@ async function readStreamingAnthropicResponse(response: Response, abortSignal?: 
   let stopReason: string | null = null
   let sawData = false
   let lastChunkAt = Date.now()
+  const streamedBlocks = new Map<number, {
+    type: string
+    id?: string
+    name?: string
+    text?: string
+    thinking?: string
+    inputJson?: string
+  }>()
+
+  const flushStreamedBlock = (index: number) => {
+    const block = streamedBlocks.get(index)
+    if (!block) return
+    streamedBlocks.delete(index)
+
+    if (block.type === "text" && block.text) {
+      content?.push({ type: "text", text: block.text })
+      return
+    }
+    if (block.type === "thinking" && block.thinking) {
+      content?.push({ type: "thinking", thinking: block.thinking })
+      return
+    }
+    if (block.type === "tool_use" && block.id && block.name) {
+      let parsedInput: unknown = {}
+      if (block.inputJson?.trim()) {
+        try {
+          parsedInput = JSON.parse(block.inputJson)
+        } catch {
+          parsedInput = { _raw: block.inputJson }
+        }
+      }
+      content?.push({ type: "tool_use", id: block.id, name: block.name, input: parsedInput })
+    }
+  }
 
   while (true) {
     const idleTimer = setTimeout(() => {
@@ -1319,6 +1353,49 @@ async function readStreamingAnthropicResponse(response: Response, abortSignal?: 
                 content?.push({ type: "text", text: parsed.delta.text })
               } else if (parsed.delta?.type === "thinking_delta" && typeof parsed.delta.thinking === "string") {
                 content?.push({ type: "thinking", thinking: parsed.delta.thinking })
+              } else if (parsed.type === "content_block_start" && typeof parsed.index === "number" && parsed.content_block && typeof parsed.content_block === "object") {
+                const block = parsed.content_block as Record<string, unknown>
+                const type = typeof block.type === "string" ? block.type : ""
+                if (type === "text") {
+                  streamedBlocks.set(parsed.index, {
+                    type,
+                    text: typeof block.text === "string" ? block.text : "",
+                  })
+                } else if (type === "thinking") {
+                  streamedBlocks.set(parsed.index, {
+                    type,
+                    thinking: typeof block.thinking === "string" ? block.thinking : "",
+                  })
+                } else if (type === "tool_use") {
+                  let initialInputJson = ""
+                  const input = block.input
+                  if (input && typeof input === "object" && !Array.isArray(input)) {
+                    initialInputJson = JSON.stringify(input)
+                  }
+                  streamedBlocks.set(parsed.index, {
+                    type,
+                    id: typeof block.id === "string" ? block.id : undefined,
+                    name: typeof block.name === "string" ? block.name : undefined,
+                    inputJson: initialInputJson,
+                  })
+                }
+              } else if (parsed.type === "content_block_delta" && typeof parsed.index === "number" && parsed.delta && typeof parsed.delta === "object") {
+                const current = streamedBlocks.get(parsed.index)
+                const delta = parsed.delta as Record<string, unknown>
+                if (current) {
+                  if (delta.type === "text_delta" && typeof delta.text === "string") {
+                    current.text = (current.text ?? "") + delta.text
+                  } else if (delta.type === "thinking_delta" && typeof delta.thinking === "string") {
+                    current.thinking = (current.thinking ?? "") + delta.thinking
+                  } else if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
+                    current.inputJson = (current.inputJson ?? "") + delta.partial_json
+                  }
+                }
+              } else if (parsed.type === "content_block_stop" && typeof parsed.index === "number") {
+                flushStreamedBlock(parsed.index)
+              } else if (parsed.type === "message_delta") {
+                if (parsed.delta?.stop_reason) stopReason = parsed.delta.stop_reason as string
+                if (parsed.usage) usage = parsed.usage
               } else if (parsed.type === "message_start" && Array.isArray(parsed.message?.content)) {
                 for (const block of parsed.message.content) content?.push(block)
               }
@@ -1337,6 +1414,10 @@ async function readStreamingAnthropicResponse(response: Response, abortSignal?: 
       clearTimeout(idleTimer)
       throw error
     }
+  }
+
+  for (const index of [...streamedBlocks.keys()].sort((a, b) => a - b)) {
+    flushStreamedBlock(index)
   }
 
   if (!sawData) throw createStreamFallbackError("Streaming response produced no events")
