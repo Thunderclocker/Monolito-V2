@@ -59,13 +59,30 @@ function clip(value: string, maxChars: number) {
   return `${trimmed.slice(0, maxChars).trimEnd()}...`
 }
 
+function sanitizeJsonString(candidate: string) {
+  // Remove control characters that break JSON parsing
+  let sanitized = candidate.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "")
+  // Fix unescaped newlines/tabs inside JSON string values:
+  // Walk through and escape literal newlines that appear between quotes
+  sanitized = sanitized.replace(/"(?:[^"\\]|\\.)*"/g, match =>
+    match.replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t"),
+  )
+  return sanitized
+}
+
 function parseJsonCandidate(candidate: string) {
   try {
     return JSON.parse(candidate) as MemoryReviewResult
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error
-    const sanitized = candidate.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "")
-    return JSON.parse(sanitized) as MemoryReviewResult
+    const sanitized = sanitizeJsonString(candidate)
+    try {
+      return JSON.parse(sanitized) as MemoryReviewResult
+    } catch {
+      // Last resort: try to fix common issues like trailing commas
+      const noTrailingCommas = sanitized.replace(/,\s*([}\]])/g, "$1")
+      return JSON.parse(noTrailingCommas) as MemoryReviewResult
+    }
   }
 }
 
@@ -73,6 +90,22 @@ function extractJsonObject(raw: string) {
   const trimmed = raw.trim()
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)
   const candidate = fenced?.[1]?.trim() ?? trimmed
+
+  // Handle bare arrays like [] or [{...}] — wrap as {items: [...]}
+  const firstChar = candidate.trimStart()[0]
+  if (firstChar === "[") {
+    const firstBracket = candidate.indexOf("[")
+    const lastBracket = candidate.lastIndexOf("]")
+    if (firstBracket !== -1 && lastBracket > firstBracket) {
+      try {
+        const arr = JSON.parse(sanitizeJsonString(candidate.slice(firstBracket, lastBracket + 1)))
+        return { items: Array.isArray(arr) ? arr : [] } as MemoryReviewResult
+      } catch {
+        // fall through to object parsing
+      }
+    }
+  }
+
   const firstBrace = candidate.indexOf("{")
   const lastBrace = candidate.lastIndexOf("}")
   if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
@@ -167,38 +200,23 @@ function shouldSkipSession(session: SessionRecord) {
 function buildSystemPrompt(trigger: MemoryTrigger) {
   return [
     "You are Monolito's background Memory Agent.",
-    "You review conversations and decide whether to save useful long-term or medium-term user memory.",
-    "Return strict JSON only. Do not use tools. Do not add markdown.",
-    "Prefer saving nothing over saving weak or temporary information.",
+    "Review conversations and decide whether to save useful long-term memory.",
     "",
-    "Memory destinations:",
-    '- USER: stable profile information about the person, such as preferences, communication style, language, boundaries, habits, and how they want to be treated.',
-    '- MEMORY: durable relational context between assistant and person, repeated goals, ongoing important life context, and long-lived interaction patterns.',
-    "- MEMPALACE: useful personal context that may matter in future conversations but is not stable or central enough for USER or MEMORY.",
+    "CRITICAL JSON RULES:",
+    "- Return ONLY a single-line JSON object. No markdown, no code fences, no explanation.",
+    "- All string values must be on ONE line. Never put literal newlines inside a JSON string.",
+    "- If nothing to save, return exactly: {\"items\":[]}",
     "",
-    "Think in terms of stability and future usefulness:",
-    "- Highly stable and identity-level -> USER.",
-    "- Durable and important across many future conversations -> MEMORY.",
-    "- Useful context, plans, worries, current situations, intentions, or medium-term life details that may help later but are not canonical -> MEMPALACE.",
-    "- Trivial, purely fleeting, or not useful later -> save nothing.",
+    "Destinations: USER (stable profile), MEMORY (durable context), MEMPALACE (useful but less stable).",
+    "Prefer saving nothing over saving weak info. Max " + MAX_ITEMS_PER_REVIEW + " items.",
+    "Write memory in the same language as the user. Keep content short and atomic.",
+    "Confidence: 0 to 1. To update existing memory, use action='replace' with old_text.",
+    `Trigger: ${trigger}.`,
     "",
-    "Contradictions:",
-    "- If new information clearly updates or contradicts existing BOOT_USER or BOOT_MEMORY, use action='replace' and set old_text.",
-    "- If the information is useful but not certain enough to replace core memory, prefer MEMPALACE.",
+    'Schema: {"items":[{"destination":"USER|MEMORY|MEMPALACE","action":"append|replace","content":"...","confidence":0.0}]}',
     "",
-    "Rules:",
-    `- Max ${MAX_ITEMS_PER_REVIEW} items.`,
-    "- Do not require perfect permanence for MEMPALACE. It exists for context that is useful later even if it is not fully stable.",
-    "- For MEMPALACE, prefer literal notes that stay close to what the person actually said. Avoid interpretive summaries when a simple factual note will do.",
-    "- Write the memory in the same language used by the person in the conversation. Do not switch languages or mix English words into Spanish unless the user did so first.",
-    "- Avoid advice, speculation, or invented future needs. Save the remembered fact itself, not what the assistant thinks might help.",
-    "- Save only context that is likely to improve future conversations.",
-    "- Never save one-off trivia with no future value.",
-    "- Keep each content short, atomic, and standalone.",
-    "- Confidence must be between 0 and 1.",
-    `- This run was triggered by: ${trigger}.`,
-    "",
-    'Output schema: {"items":[{"destination":"USER|MEMORY|MEMPALACE","action":"append|replace","content":"...","old_text":"optional","confidence":0.0,"wing":"optional","room":"optional","reason":"optional"}]}',
+    'Example good output: {"items":[{"destination":"MEMORY","action":"append","content":"El usuario prefiere respuestas cortas.","confidence":0.85}]}',
+    'Example empty: {"items":[]}',
   ].join("\n")
 }
 
@@ -206,20 +224,10 @@ function buildUserPrompt(session: SessionRecord, rootDir: string, profileId: str
   const userCore = clip(readCoreWing(rootDir, profileId, "USER"), 6000)
   const memoryCore = clip(readCoreWing(rootDir, profileId, "MEMORY"), 6000)
   return [
-    "Current BOOT_USER:",
-    userCore || "(empty)",
-    "",
-    "Current BOOT_MEMORY:",
-    memoryCore || "(empty)",
-    "",
-    "Recent conversation:",
-    formatRecentConversation(session),
-    "",
-    "Decide if something should be saved for future conversations.",
-    "For MEMPALACE, prefer concise factual wording that stays close to the user's wording.",
-    "Keep the memory in the same language as the user's message.",
-    "Do not add suggestions, advice, or speculative follow-ups to the stored content.",
-    "Return JSON only.",
+    "BOOT_USER:", userCore || "(empty)",
+    "", "BOOT_MEMORY:", memoryCore || "(empty)",
+    "", "Conversation:", formatRecentConversation(session),
+    "", "Return JSON only. No markdown. No newlines inside strings.",
   ].join("\n")
 }
 
