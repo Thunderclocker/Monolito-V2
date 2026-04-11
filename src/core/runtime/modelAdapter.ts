@@ -426,6 +426,14 @@ function getDangerousCommandReason(command: string, userRequest: string) {
   return null
 }
 
+function getCommandConflictReason(command: string) {
+  const normalized = command.toLowerCase()
+  if (/api\.telegram\.org\/bot[^/\s]+\/getupdates\b/.test(normalized)) {
+    return "Refusing direct Telegram getUpdates polling from Bash because it conflicts with the active Telegram poller. Inspect logs/config/processes instead, or use safe endpoints like getMe/getWebhookInfo."
+  }
+  return null
+}
+
 function validateHarnessToolUse(use: InternalToolUse, userRequest: string, attemptedCommands: Map<string, number>) {
   const validationError = validateToolInput(use.tool, use.input)
   if (validationError) return validationError
@@ -440,7 +448,7 @@ function validateHarnessToolUse(use: InternalToolUse, userRequest: string, attem
     return `Repeated Bash command rejected after ${previousCount + 1} attempts; choose a different probe or explain the blocker.`
   }
 
-  return getDangerousCommandReason(normalized, userRequest)
+  return getDangerousCommandReason(normalized, userRequest) ?? getCommandConflictReason(normalized)
 }
 
 function recordAttemptedCommands(uses: InternalToolUse[], attemptedCommands: Map<string, number>) {
@@ -806,6 +814,7 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
       "- Use TelegramSendPhoto or TelegramSendDocument when the user asks for an actual file/image delivery into Telegram.",
       "- Use TelegramGetFile or TelegramDownloadFile when an incoming Telegram message includes attachment file_id metadata.",
       "- When the user asks you to send a Telegram message, use TelegramSend with the appropriate chat_id and text.",
+      "- Never call Telegram Bot API getUpdates from Bash when Telegram polling is enabled; that can conflict with the active poller. For diagnosis, inspect logs/config/processes and only use safe endpoints like getMe or getWebhookInfo.",
       `- Default chat_id for the user: ${allowedChats[0] ?? "(unknown — ask the user)"}`,
     )
   }
