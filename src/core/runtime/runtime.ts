@@ -28,7 +28,6 @@ import {
 import { getTool, listTools } from "../tools/registry.ts"
 import { getEffectiveModelConfig, runAssistantTurn } from "./modelAdapter.ts"
 import {
-  MODEL_PROTOCOL,
   applyModelSettingsToEnv,
   draftToSettings,
   loadAndApplyModelSettings,
@@ -39,6 +38,7 @@ import {
   settingsToDraft,
   validateModelDraft,
 } from "./modelConfig.ts"
+import { MODEL_PROTOCOL } from "./modelConstants.ts"
 import { createCostState, recordApiCall, recordToolCall, formatCostSummary } from "../cost/tracker.ts"
 import { readChannelsConfig, writeChannelsConfig } from "../channels/config.ts"
 import { readWebSearchConfig, writeWebSearchConfig, type WebSearchProvider } from "../websearch/config.ts"
@@ -736,6 +736,35 @@ export class MonolitoV2Runtime {
     }
   }
 
+  async processSessionStartup(sessionId: string, prompt: string) {
+    const session = getSession(this.rootDir, sessionId)
+    if (!session) throw new Error(`Session ${sessionId} not found`)
+    if (this.activeSessions.has(sessionId)) {
+      throw new Error(`Session ${sessionId} ya está ocupada`)
+    }
+
+    const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
+    const turnStartedAt = new Date().toISOString()
+    this.activeSessions.add(sessionId)
+    try {
+      appendWorklog(this.rootDir, sessionId, {
+        type: "session",
+        summary: "Turn started (session-startup)",
+      })
+      logAgentTrace(this.rootDir, sessionId, "turn.started", {
+        profileId,
+        details: {
+          inputKind: "session-startup",
+          chars: prompt.length,
+        },
+      })
+      await this.transitionState(sessionId, "running")
+      await this.runStartupTurn(sessionId, prompt, profileId, turnStartedAt)
+    } finally {
+      this.activeSessions.delete(sessionId)
+    }
+  }
+
   async runTurn(sessionId: string, lastUserText: string, profileId = "default") {
     const turnStartedAt = Date.now()
     const abortController = new AbortController()
@@ -761,7 +790,8 @@ export class MonolitoV2Runtime {
             ? "El bootstrap del workspace sigue pendiente. Inicia ahora el ritual de primer arranque usando el contexto inyectado de BOOT_BOOTSTRAP, BOOT_IDENTITY, BOOT_USER, BOOT_SOUL y BOOT_AGENTS. Deja que el modelo orqueste la conversacion segun lo ya sabido. Responde en el idioma del usuario; si aun no hay una preferencia clara, comienza en espanol neutro y adapta el idioma enseguida si el usuario marca otro. Saluda brevemente y haz exactamente una sola pregunta corta por turno. No recites una checklist ni menciones almacenamiento interno salvo que el usuario lo pida."
             : "A new session was started via /new. Run your Session Startup sequence using the injected BOOT context already present in this turn before responding. Then greet the user in your configured persona. Keep it to 1-3 sentences. Do not mention internal steps, tools, or reasoning."
           this.activeSessions.delete(sessionId)
-          return await this.processMessage(sessionId, startupPrompt)
+          await this.processSessionStartup(sessionId, startupPrompt)
+          return { finalText: "", usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } }
         }
         appendMessage(this.rootDir, sessionId, "assistant", reply)
         appendWorklog(this.rootDir, sessionId, {
@@ -990,6 +1020,123 @@ export class MonolitoV2Runtime {
       clearTimeout(turnTimeout)
       telegramTyping?.stop()
       this.activeSessions.delete(sessionId)
+      this.abortControllers.delete(sessionId)
+    }
+  }
+
+  private async runStartupTurn(sessionId: string, prompt: string, profileId = "default", turnStartedAtIso?: string) {
+    const turnStartedAt = turnStartedAtIso ? Date.parse(turnStartedAtIso) : Date.now()
+    const abortController = new AbortController()
+    this.abortControllers.set(sessionId, abortController)
+    const turnTimeout = setTimeout(() => {
+      appendWorklog(this.rootDir, sessionId, {
+        type: "note",
+        summary: `Hard turn timeout reached after ${TURN_HARD_TIMEOUT_MS}ms; aborting active work`,
+      })
+      abortController.abort(new TurnTimeoutError(`Turn exceeded hard timeout of ${TURN_HARD_TIMEOUT_MS}ms`))
+    }, TURN_HARD_TIMEOUT_MS)
+
+    try {
+      const session = getSession(this.rootDir, sessionId)
+      if (!session) throw new Error(`Session ${sessionId} not found`)
+      const syntheticSession: SessionRecord = {
+        ...session,
+        messages: [
+          ...session.messages,
+          { at: new Date().toISOString(), role: "user", text: prompt },
+        ],
+      }
+      const isMainSession = !session.id.startsWith("agent-") && !session.id.startsWith("telegram-")
+      const [gitContext, dateContext, workspaceContext] = await Promise.all([
+        getGitContext(this.rootDir),
+        Promise.resolve(getDateContext()),
+        Promise.resolve(getWorkspaceContext(this.rootDir, profileId, { isMainSession })),
+      ])
+      const webSearchConfig = readWebSearchConfig()
+      const apiStartedAt = Date.now()
+      const turn = await runAssistantTurn(
+        syntheticSession,
+        this.rootDir,
+        async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, sessionId, orchestrator: this.orchestrator }, toolUseId, profileId),
+        {
+          rootDir: this.rootDir,
+          cwd: this.rootDir,
+          getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
+          profileId,
+          orchestrator: this.orchestrator,
+        },
+        {
+          contextExtras: { gitContext, dateContext, workspaceContext, adultMode: this.adultModeSessions.has(sessionId), webSearchProvider: webSearchConfig.provider },
+          costState: this.costState,
+          abortSignal: abortController.signal,
+          turnStartedAt,
+          maxTurnDurationMs: TURN_HARD_TIMEOUT_MS - 5_000,
+        },
+      )
+      if (turn.usage) {
+        recordApiCall(
+          this.costState,
+          getEffectiveModelConfig().model,
+          {
+            inputTokens: turn.usage.inputTokens,
+            outputTokens: turn.usage.outputTokens,
+          },
+          Date.now() - apiStartedAt,
+        )
+      }
+      const userFacingText = sanitizeExternalAssistantText(sessionId, turn.finalText, prompt)
+      appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
+      appendWorklog(this.rootDir, sessionId, {
+        type: "session",
+        summary: turn.error ? `Turn completed with model error: ${clipForWorklog(turn.error)}` : "Turn completed",
+      })
+      logAgentTrace(this.rootDir, sessionId, "turn.completed", {
+        profileId,
+        details: {
+          mode: "session-startup",
+          durationMs: Date.now() - turnStartedAt,
+          replyChars: userFacingText.length,
+          hadError: Boolean(turn.error),
+          inputTokens: turn.usage?.inputTokens ?? 0,
+          outputTokens: turn.usage?.outputTokens ?? 0,
+          totalTokens: turn.usage?.totalTokens ?? 0,
+          iterations: turn.meta?.iterationCount ?? 0,
+          stopReason: turn.meta?.stopReason ?? "completed",
+        },
+      })
+      this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
+      this.emit({
+        type: "turn.completed",
+        sessionId,
+        role: "assistant",
+        durationMs: Date.now() - turnStartedAt,
+        usage: turn.usage,
+      })
+      await this.transitionState(sessionId, turn.error ? "error" : "idle")
+      return turn
+    } catch (error) {
+      const timeoutReason = abortController.signal.reason
+      const message = timeoutReason instanceof TurnTimeoutError
+        ? `No pude terminar este arranque dentro del límite duro de ${Math.floor(TURN_HARD_TIMEOUT_MS / 1000)}s.`
+        : error instanceof Error ? error.message : String(error)
+      appendWorklog(this.rootDir, sessionId, {
+        type: "session",
+        summary: `Turn failed: ${clipForWorklog(message)}`,
+      })
+      logAgentTrace(this.rootDir, sessionId, "turn.failed", {
+        profileId,
+        details: {
+          durationMs: Date.now() - turnStartedAt,
+          error: message,
+        },
+      })
+      this.emit({ type: "error", sessionId, error: message })
+      appendMessage(this.rootDir, sessionId, "assistant", message)
+      this.emit({ type: "message.received", sessionId, role: "assistant", text: message })
+      await this.transitionState(sessionId, "error")
+      throw error
+    } finally {
+      clearTimeout(turnTimeout)
       this.abortControllers.delete(sessionId)
     }
   }

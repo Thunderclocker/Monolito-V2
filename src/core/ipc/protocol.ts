@@ -52,6 +52,7 @@ export type SessionRecord = SessionSummary & {
 export type Request =
   | { id: string; type: "ping" }
   | { id: string; type: "session.ensure"; sessionId?: string; title?: string }
+  | { id: string; type: "session.startup"; sessionId: string; prompt: string }
   | { id: string; type: "session.list" }
   | { id: string; type: "session.get"; sessionId: string }
   | { id: string; type: "session.subscribe"; sessionId: string }

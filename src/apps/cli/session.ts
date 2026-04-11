@@ -616,7 +616,7 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     redraw()
     try {
       const completion = waitForTurnCompletion(client, session.id)
-      await client.sendMessage(session.id, getBootstrapStartupPrompt(options?.isFreshSession ?? true))
+      await client.startupSession(session.id, getBootstrapStartupPrompt(options?.isFreshSession ?? true))
       await completion
       return true
     } finally {
@@ -1025,9 +1025,8 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
           composer.thinkingVisible = true
           startThinkingAnimation()
           redraw()
-          const SESSION_RESET_PROMPT = "A new session was started via /new. Run your Session Startup sequence using the injected BOOT context already present in this turn before responding. Then greet the user in your configured persona. Keep it to 1-3 sentences. Do not mention internal steps, tools, or reasoning."
           const completion = waitForTurnCompletion(client, activeSessionId)
-          await client.sendMessage(activeSessionId, SESSION_RESET_PROMPT)
+          await client.startupSession(activeSessionId, "A new session was started via /new. Run your Session Startup sequence using the injected BOOT context already present in this turn before responding. Then greet the user in your configured persona. Keep it to 1-3 sentences. Do not mention internal steps, tools, or reasoning.")
           await completion
         }
       } catch {

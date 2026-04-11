@@ -10,6 +10,7 @@ import { fileMemory, recallMemory, listWings, listRooms, listProfiles, createPro
 import { type AgentOrchestrator } from "../runtime/orchestrator.ts"
 import { BOOT_WING_ORDER, isBootWingName } from "../bootstrap/bootWings.ts"
 import { CONFIG_WING_ORDER, type ConfigWingName } from "../config/configWings.ts"
+import { coerceConfigRecord } from "../config/wingValue.ts"
 import { loadAndApplyModelSettings } from "../runtime/modelConfig.ts"
 import { MONOLITO_ROOT } from "../system/root.ts"
 import {
@@ -119,6 +120,16 @@ function optionalNumber(input: Record<string, unknown>, key: string) {
 function optionalBoolean(input: Record<string, unknown>, key: string) {
   const value = input[key]
   return typeof value === "boolean" ? value : undefined
+}
+
+function normalizeConfigWingValue(wing: ConfigWingName, value: unknown) {
+  if (wing === "CONF_CHANNELS") {
+    return normalizeChannelsConfig(value)
+  }
+  if (wing === "CONF_MODELS" || wing === "CONF_SYSTEM" || wing === "CONF_WEBSEARCH") {
+    return coerceConfigRecord(value) ?? value
+  }
+  return value
 }
 
 function inferExtensionFromFormat(format: string) {
@@ -1756,9 +1767,7 @@ const tools: ToolDefinition[] = [
       }
       const value = input.value
       if (value === undefined) throw new Error("value is required when action='write'")
-      const normalizedValue = wing === "CONF_CHANNELS"
-        ? normalizeChannelsConfig(value)
-        : value
+      const normalizedValue = normalizeConfigWingValue(wing, value)
       const result = writeConfigWing(context.rootDir, wing, normalizedValue as never)
       if (wing === "CONF_SYSTEM" || wing === "CONF_MODELS") {
         loadAndApplyModelSettings(process.env)
