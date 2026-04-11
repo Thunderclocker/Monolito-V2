@@ -26,7 +26,7 @@ import {
   getDb,
 } from "../session/store.ts"
 import { getTool, listTools } from "../tools/registry.ts"
-import { getEffectiveModelConfig, runAssistantTurn } from "./modelAdapter.ts"
+import { getEffectiveModelConfig, runAssistantTurn, runBackgroundTextTask } from "./modelAdapter.ts"
 import {
   applyModelSettingsToEnv,
   draftToSettings,
@@ -69,15 +69,12 @@ import {
   stopManagedSttContainer,
 } from "../stt/managed.ts"
 import { MONOLITO_ROOT } from "../system/root.ts"
+import { ToolExecutionError } from "../errors.ts"
 
 type EventListener = (event: AgentEvent) => void
 
 type SessionBusyError = Error & {
   code: "SESSION_BUSY"
-}
-
-type ToolExecutionError = Error & {
-  output?: unknown
 }
 
 type TelegramTypingIndicator = {
@@ -92,6 +89,7 @@ const SEARXNG_SETTINGS_DIR = join(MONOLITO_ROOT, "searxng")
 const SEARXNG_SETTINGS_FILE = join(SEARXNG_SETTINGS_DIR, "settings.yml")
 const TELEGRAM_TYPING_MAX_MS = 15_000
 const TURN_HARD_TIMEOUT_MS = 95_000
+const COMMAND_REPAIR_MAX_ATTEMPTS = 3
 
 class TurnTimeoutError extends Error {
   constructor(message: string) {
@@ -111,12 +109,6 @@ type SearxngContainerInfo = {
 function createSessionBusyError(sessionId: string): SessionBusyError {
   const error = new Error(`Session ${sessionId} is already busy with another running turn.`) as SessionBusyError
   error.code = "SESSION_BUSY"
-  return error
-}
-
-function createToolExecutionError(message: string, output: unknown): ToolExecutionError {
-  const error = new Error(message) as ToolExecutionError
-  error.output = output
   return error
 }
 
@@ -393,6 +385,55 @@ function getToolFailureMessage(toolName: string, output: unknown) {
     return `Command reported a permission/error condition: ${truncateFailureDetail(stderr)}`
   }
   return null
+}
+
+function getBashExecutionDetails(output: unknown) {
+  const value = asRecord(output)
+  if (!value) return null
+  return {
+    command: typeof value.command === "string" ? value.command : "",
+    exitCode: typeof value.exitCode === "number" ? value.exitCode : null,
+    stdout: typeof value.stdout === "string" ? value.stdout : "",
+    stderr: typeof value.stderr === "string" ? value.stderr : "",
+  }
+}
+
+function buildToolExecutionError(toolName: string, output: unknown) {
+  const failure = getToolFailureMessage(toolName, output)
+  if (!failure) return null
+  const details = getBashExecutionDetails(output)
+  return new ToolExecutionError(
+    failure,
+    details?.command,
+    details?.exitCode,
+    details?.stdout ?? "",
+    details?.stderr ?? "",
+    output,
+  )
+}
+
+function extractRepairedCommand(text: string) {
+  const trimmed = text.trim()
+  const fenced = trimmed.match(/^```(?:bash|sh|shell)?\s*\n([\s\S]*?)\n```$/i)
+  const candidate = (fenced?.[1] ?? trimmed).trim()
+  if (!candidate) return ""
+  const lines = candidate
+    .split("\n")
+    .map(line => line.trim())
+    .filter(Boolean)
+  if (lines.length === 0) return ""
+  return lines[0] ?? ""
+}
+
+function buildCommandRepairSystemPrompt(command: string, exitCode: number | null | undefined, stderr: string) {
+  return [
+    "You are the internal CommandRepairLoop for Monolito V2.",
+    `The command \`${command || "(missing command)"}\` failed with exit code ${exitCode ?? "unknown"}.`,
+    stderr.trim() ? `stderr:\n${stderr.trim().slice(0, 2000)}` : "stderr:\n(no stderr)",
+    "Analyze the failure and output exactly one corrected shell command.",
+    "Use only a shell command. Do not apologize. Do not explain. Do not use markdown unless the command must be in a fenced block.",
+    "Do not ask the user for help. Prefer the smallest safe correction that preserves the original intent.",
+  ].join("\n\n")
 }
 
 function outputWithError(output: unknown, message: string) {
@@ -1374,15 +1415,89 @@ export class MonolitoV2Runtime {
     })
     this.emit({ type: "tool.start", sessionId, toolUseId, tool: tool.name, input: normalizedInput })
     const toolStartedAt = Date.now()
+
+    const tryRepairBashFailure = async (error: ToolExecutionError) => {
+      if (tool.name !== "Bash") throw error
+      if (!error.command || error.exitCode === 0) throw error
+
+      let currentError = error
+      let repairedCommand = error.command
+      const bashTool = tool
+      const attemptedCommands = new Set<string>([error.command])
+
+      for (let attempt = 1; attempt <= COMMAND_REPAIR_MAX_ATTEMPTS; attempt++) {
+        appendWorklog(this.rootDir, sessionId, {
+          type: "tool",
+          summary: `CommandRepairLoop attempt ${attempt}/${COMMAND_REPAIR_MAX_ATTEMPTS} for Bash`,
+        })
+
+        const repair = await runBackgroundTextTask(
+          this.rootDir,
+          buildCommandRepairSystemPrompt(
+            repairedCommand,
+            currentError.exitCode,
+            currentError.stderr,
+          ),
+          `Return only the corrected command for: ${repairedCommand}`,
+        )
+
+        const candidate = extractRepairedCommand(repair.text)
+        if (!candidate) break
+        if (attemptedCommands.has(candidate)) break
+        attemptedCommands.add(candidate)
+        repairedCommand = candidate
+
+        const repairedInput = { ...normalizedInput, command: candidate }
+        const repairedPermission = await checkToolPermission(tool.name, repairedInput, {
+          rootDir: this.rootDir,
+          sessionId,
+          profileId: profileId ?? context.profileId,
+        })
+        if (repairedPermission.behavior !== "allow") {
+          appendWorklog(this.rootDir, sessionId, {
+            type: "tool",
+            summary: `CommandRepairLoop blocked repaired Bash command: ${repairedPermission.message ?? "Permission denied."}`,
+          })
+          break
+        }
+
+        const repairedOutput = await bashTool.run(
+          repairedInput,
+          { ...context, profileId: profileId ?? context.profileId },
+        )
+
+        await runPostToolHooks(tool.name, repairedInput, {
+          rootDir: this.rootDir,
+          sessionId,
+          profileId: profileId ?? context.profileId,
+        }, repairedOutput)
+
+        const repairedError = buildToolExecutionError(tool.name, repairedOutput)
+        if (!repairedError) {
+          appendWorklog(this.rootDir, sessionId, {
+            type: "tool",
+            summary: `CommandRepairLoop fixed Bash on attempt ${attempt}`,
+          })
+          return repairedOutput
+        }
+
+        currentError = repairedError
+      }
+
+      throw currentError
+    }
+
     try {
-      const output = await tool.run(normalizedInput, { ...context, profileId: profileId ?? context.profileId })
+      let output = await tool.run(normalizedInput, { ...context, profileId: profileId ?? context.profileId })
       await runPostToolHooks(tool.name, normalizedInput, {
         rootDir: this.rootDir,
         sessionId,
         profileId: profileId ?? context.profileId,
       }, output)
-      const failure = getToolFailureMessage(tool.name, output)
-      if (failure) throw createToolExecutionError(failure, output)
+      const executionError = buildToolExecutionError(tool.name, output)
+      if (executionError) {
+        output = await tryRepairBashFailure(executionError)
+      }
       recordToolCall(this.costState, Date.now() - toolStartedAt)
       appendWorklog(this.rootDir, sessionId, {
         type: "tool",
@@ -1401,7 +1516,7 @@ export class MonolitoV2Runtime {
       return output
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      const output = "output" in Object(error) ? (error as ToolExecutionError).output : undefined
+      const output = error instanceof ToolExecutionError ? error.output : undefined
       recordToolCall(this.costState, Date.now() - toolStartedAt)
       appendWorklog(this.rootDir, sessionId, {
         type: "tool",

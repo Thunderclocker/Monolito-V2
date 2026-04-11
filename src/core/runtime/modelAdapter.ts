@@ -16,6 +16,7 @@ import { COORDINATOR_SYSTEM_PROMPT } from "./coordinatorPrompt.ts"
 import type { WorkspaceBootstrapContext } from "../context/workspaceContext.ts"
 import { BOOT_WING_DESCRIPTION, type BootWingEntry } from "../bootstrap/bootWings.ts"
 import { normalizeToolInputPayload } from "./toolInput.ts"
+import { ContextOverflowError, ProviderOverloadedError, RateLimitError } from "../errors.ts"
 
 const logger = createLogger("modelAdapter")
 
@@ -111,6 +112,70 @@ type ToolExecutionRecord = {
   input: Record<string, unknown>
   output: unknown
   error?: string
+}
+
+type RecoveryInterceptorState<M = unknown> = {
+  provider: ModelProvider
+  rootDir: string
+  requestMessages: M[]
+  maxTokens: number
+  retryPolicy: RetryPolicy
+  abortSignal?: AbortSignal
+}
+
+type RecoveryInterceptorHandlers<T, M = unknown> = {
+  execute: (state: RecoveryInterceptorState<M>, attempt: number) => Promise<T>
+  onContextOverflow?: (state: RecoveryInterceptorState<M>, error: ContextOverflowError, attempt: number) => Promise<RecoveryInterceptorState<M>> | RecoveryInterceptorState<M>
+  onRateLimit?: (state: RecoveryInterceptorState<M>, error: RateLimitError, attempt: number) => Promise<void> | void
+  onProviderOverloaded?: (state: RecoveryInterceptorState<M>, error: ProviderOverloadedError, attempt: number) => Promise<void> | void
+  maxAttempts?: number
+}
+
+async function withRecoveryInterceptor<T, M = unknown>(
+  initialState: RecoveryInterceptorState<M>,
+  handlers: RecoveryInterceptorHandlers<T, M>,
+): Promise<T> {
+  let state = initialState
+  const persistent = isUnattendedRetryEnabled(initialState.retryPolicy)
+  const heartbeat = persistent ? () => touchHeartbeatFile(initialState.rootDir) : null
+  const maxAttempts = handlers.maxAttempts ?? (persistent ? Number.POSITIVE_INFINITY : 6)
+  let attempt = 0
+
+  while (attempt < maxAttempts) {
+    if (fastModeCooldownUntil > Date.now()) {
+      await sleepWithHeartbeat(Math.min(fastModeCooldownUntil - Date.now(), 5_000), state.abortSignal, heartbeat)
+    }
+
+    try {
+      return await handlers.execute(state, attempt)
+    } catch (error) {
+      if (error instanceof ContextOverflowError && handlers.onContextOverflow) {
+        attempt += 1
+        state = await handlers.onContextOverflow(state, error, attempt)
+        continue
+      }
+      if (error instanceof RateLimitError) {
+        attempt += 1
+        await handlers.onRateLimit?.(state, error, attempt)
+        const delayMs = error.retryAfterMs ?? computeBackoffMs(attempt - 1, null, persistent ? PERSISTENT_MAX_BACKOFF_MS : 32_000)
+        if (fastModeCooldownUntil !== Number.POSITIVE_INFINITY) {
+          fastModeCooldownUntil = Math.max(fastModeCooldownUntil, Date.now() + delayMs)
+        }
+        await sleepWithHeartbeat(delayMs, state.abortSignal, heartbeat)
+        continue
+      }
+      if (error instanceof ProviderOverloadedError) {
+        attempt += 1
+        await handlers.onProviderOverloaded?.(state, error, attempt)
+        const delayMs = computeBackoffMs(attempt - 1, null, persistent ? PERSISTENT_MAX_BACKOFF_MS : 32_000)
+        await sleepWithHeartbeat(delayMs, state.abortSignal, heartbeat)
+        continue
+      }
+      throw error
+    }
+  }
+
+  throw new Error(`Recovery interceptor exhausted after ${Number.isFinite(maxAttempts) ? maxAttempts : "many"} attempts for ${initialState.provider}`)
 }
 
 type InternalToolUse = {
@@ -1120,7 +1185,7 @@ async function callModelApi(
 ) {
   const config = getEffectiveModelConfig()
   if (config.provider === "ollama" || config.provider === "openai_compatible") {
-    return callOpenAiCompatibleApi(config.provider, messages, system, abortSignal, includeTools)
+    return callOpenAiCompatibleApi(rootDir, config.provider, messages, system, retryPolicy, abortSignal, includeTools)
   }
   return callAnthropicLikeApi(rootDir, messages, system, retryPolicy, includeTools, abortSignal)
 }
@@ -1138,25 +1203,8 @@ type ContextOverflowInfo = {
   input?: number
 }
 
-type ModelHttpError = Error & {
-  status: number
-  statusText: string
-  body: string
-  headers: Headers
-}
-
 type StreamFallbackError = Error & {
   kind: "stream_fallback"
-}
-
-function getRetryAfterMs(headers: Headers) {
-  const retryAfter = headers.get("retry-after")
-  if (!retryAfter) return null
-  const seconds = Number.parseInt(retryAfter, 10)
-  if (Number.isFinite(seconds)) return seconds * 1000
-  const dateMs = Date.parse(retryAfter)
-  if (Number.isFinite(dateMs)) return Math.max(0, dateMs - Date.now())
-  return null
 }
 
 function sleepWithAbort(ms: number, signal?: AbortSignal) {
@@ -1201,7 +1249,7 @@ async function sleepWithHeartbeat(ms: number, signal: AbortSignal | undefined, h
 function computeBackoffMs(attempt: number, retryAfterMs?: number | null, maxMs = 32_000) {
   if (retryAfterMs && retryAfterMs > 0) return retryAfterMs
   const base = Math.min(500 * 2 ** attempt, maxMs)
-  return Math.round(base + Math.random() * (base * 0.25))
+  return Math.round(base)
 }
 
 function isRetriableNetworkError(error: unknown) {
@@ -1229,28 +1277,57 @@ function computeAdjustedMaxTokens(overflow: ContextOverflowInfo, fallbackFloor =
   return Math.max(fallbackFloor, limit - input - 1_000)
 }
 
-function hasOverageDisabled(headers: Headers) {
+function hasOverageDisabled(headers?: Headers | null) {
+  if (!headers) return false
   return headers.get("overage-disabled") !== null || headers.get("x-overage-disabled") !== null
-}
-
-function buildRateLimitMessage(provider: string, retryAfterMs?: number | null) {
-  const retryHint = retryAfterMs && retryAfterMs > 0
-    ? ` Retry after about ${Math.ceil(retryAfterMs / 1000)}s.`
-    : ""
-  return `Model request failed: ${provider} rate limited the request (HTTP 429).${retryHint}`
 }
 
 function isUnattendedRetryEnabled(policy: RetryPolicy) {
   return policy.unattended || /^(1|true|yes)$/i.test(process.env.MONOLITO_V2_UNATTENDED_RETRY ?? "")
 }
 
-function createModelHttpError(status: number, statusText: string, body: string, headers: Headers): ModelHttpError {
-  const error = new Error(`Model request failed: HTTP ${status} ${statusText}${body ? ` ${body.slice(0, 300)}` : ""}`) as ModelHttpError
-  error.status = status
-  error.statusText = statusText
-  error.body = body
-  error.headers = headers
-  return error
+function buildModelHttpErrorMessage(provider: ModelProvider, status: number, statusText: string, body: string) {
+  return `${provider} request failed: HTTP ${status} ${statusText}${body ? ` ${body.slice(0, 300)}` : ""}`
+}
+
+function throwSemanticModelError(
+  provider: ModelProvider,
+  status: number,
+  statusText: string,
+  body: string,
+  headers: Headers,
+  maxTokens: number,
+): never {
+  const message = buildModelHttpErrorMessage(provider, status, statusText, body)
+  if (status === 429) {
+    throw new RateLimitError(message, {
+      statusCode: status,
+      responseBody: body,
+      headers,
+    })
+  }
+  if (status === 400 && /context|token|too long|maximum context/i.test(body)) {
+    const overflow = parseContextOverflow(body)
+    const inputTokens = overflow.input ?? overflow.actual
+    const maxAllowedTokens = overflow.limit ?? maxTokens
+    const overflowAmount = inputTokens && maxAllowedTokens ? Math.max(0, inputTokens - maxAllowedTokens) : undefined
+    throw new ContextOverflowError(message, {
+      statusCode: status,
+      responseBody: body,
+      headers,
+      maxTokens: maxAllowedTokens,
+      inputTokens,
+      overflowAmount,
+    })
+  }
+  if (status === 503 || status === 529) {
+    throw new ProviderOverloadedError(message, {
+      statusCode: status,
+      responseBody: body,
+      headers,
+    })
+  }
+  throw new Error(message)
 }
 
 function createStreamFallbackError(message: string): StreamFallbackError {
@@ -1463,19 +1540,13 @@ async function callAnthropicLikeApi(
   if (!baseUrl) throw new Error("Model adapter is missing ANTHROPIC_BASE_URL")
   if (!apiKey) throw new Error("Model adapter is missing ANTHROPIC_AUTH_TOKEN")
   if (!model) throw new Error("Model adapter is missing ANTHROPIC_MODEL")
-  let requestMessages = messages
   let requestModel = model
-  let contextCompactionRetried = false
-  let maxTokens = 4096
-  let consecutive529Errors = 0
   let disableKeepAlive = false
-  let persistentStartedAt = Date.now()
-  const persistent = isUnattendedRetryEnabled(retryPolicy)
-  const maxAttempts = persistent ? Number.POSITIVE_INFINITY : 6
-  const heartbeat = persistent ? () => touchHeartbeatFile(rootDir) : null
   const requestTimeoutMs = selectModelRequestTimeoutMs(retryPolicy.background)
+  let authRefreshTried = false
+  let overloadCount = 0
 
-  const requestOnce = async (stream: boolean) => {
+  const requestOnce = async (requestMessages: AnthropicMessage[], maxTokens: number, stream: boolean) => {
     const timed = createRequestTimeoutSignal(requestTimeoutMs, abortSignal)
     const startedAt = Date.now()
     logger.info("model request started", {
@@ -1540,7 +1611,14 @@ async function callAnthropicLikeApi(
         status: response.status,
         durationMs: Date.now() - startedAt,
       })
-      throw createModelHttpError(response.status, response.statusText, body, response.headers)
+      if ((response.status === 401 || response.status === 403) && !authRefreshTried) {
+        authRefreshTried = true
+        refreshModelAuth(process.env)
+        ;({ baseUrl, apiKey, model, provider } = getEffectiveModelConfig())
+        requestModel = model
+        return await requestOnce(requestMessages, maxTokens, stream)
+      }
+      throwSemanticModelError(provider, response.status, response.statusText, body, response.headers, maxTokens)
     }
 
     if (!stream) {
@@ -1562,7 +1640,7 @@ async function callAnthropicLikeApi(
     if (!contentType.includes("text/event-stream")) {
       logger.warn(`Streaming disabled for incompatible content-type: ${contentType || "unknown"}`)
       timed.cleanup()
-      return await requestOnce(false)
+      return await requestOnce(requestMessages, maxTokens, false)
     }
 
     try {
@@ -1587,7 +1665,7 @@ async function callAnthropicLikeApi(
       if (!(error instanceof Error && error.name === "AbortError")) {
         logger.warn(`Stream failed, falling back to non-streaming request: ${error instanceof Error ? error.message : String(error)}`)
         timed.cleanup()
-        return await requestOnce(false)
+        return await requestOnce(requestMessages, maxTokens, false)
       }
       throw error
     } finally {
@@ -1596,125 +1674,65 @@ async function callAnthropicLikeApi(
   }
 
   const shouldUseStreaming = provider === "anthropic_compatible"
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    if (persistent && Date.now() - persistentStartedAt > PERSISTENT_RESET_WINDOW_MS) {
-      persistentStartedAt = Date.now()
-      consecutive529Errors = 0
-    }
-    if (fastModeCooldownUntil > Date.now()) {
-      await sleepWithHeartbeat(Math.min(fastModeCooldownUntil - Date.now(), 5_000), abortSignal, heartbeat)
-    }
-    try {
-      const parsed = await requestOnce(shouldUseStreaming)
-      consecutive529Errors = 0
-      return parsed
-    } catch (error) {
-      if ((error as Partial<ModelHttpError>)?.status === 401 || (error as Partial<ModelHttpError>)?.status === 403) {
-        if (attempt < 1) {
-          refreshModelAuth(process.env)
-          ;({ baseUrl, apiKey, model, provider } = getEffectiveModelConfig())
-          requestModel = model
-          continue
+  try {
+    return await withRecoveryInterceptor<AnthropicResponse, AnthropicMessage>({
+      provider,
+      rootDir,
+      requestMessages: messages,
+      maxTokens: 4096,
+      retryPolicy,
+      abortSignal,
+    }, {
+      execute: async (state) => await requestOnce(state.requestMessages, state.maxTokens, shouldUseStreaming),
+      onContextOverflow: (state, error) => {
+        const overflow = {
+          limit: error.maxTokens,
+          input: error.inputTokens,
+          actual: error.inputTokens,
         }
-      }
-
-      if ((error as Partial<ModelHttpError>)?.status === 400 && !contextCompactionRetried) {
-        const body = (error as ModelHttpError).body ?? ""
-        if (/context|token|too long|maximum context/i.test(body)) {
-          const overflow = parseContextOverflow(body)
-          maxTokens = computeAdjustedMaxTokens(overflow)
-          requestMessages = maybeAggressivelyCompactMessages(requestMessages)
-          contextCompactionRetried = true
-          continue
+        return {
+          ...state,
+          requestMessages: maybeAggressivelyCompactMessages(state.requestMessages),
+          maxTokens: computeAdjustedMaxTokens(overflow, Math.min(state.maxTokens, 3_000)),
         }
-      }
-
-      if ((error as Partial<ModelHttpError>)?.status === 429) {
-        const headers = (error as ModelHttpError).headers
-        const retryAfterMs = getRetryAfterMs(headers)
-        if (!persistent && !retryPolicy.background) {
-          logger.warn("interactive model request rate-limited; failing fast", {
-            provider,
-            model: requestModel,
-            retryAfterMs: retryAfterMs ?? undefined,
-          })
-          return {
-            content: [{ type: "text", text: buildRateLimitMessage(provider, retryAfterMs) }],
-            stop_reason: "end_turn",
-          }
-        }
-        if (hasOverageDisabled(headers)) {
+      },
+      onRateLimit: (_state, error) => {
+        if (hasOverageDisabled(error.headers)) {
           fastModeCooldownUntil = Number.POSITIVE_INFINITY
-        } else if (retryAfterMs !== null && retryAfterMs < SHORT_RETRY_THRESHOLD_MS) {
-          await sleepWithHeartbeat(retryAfterMs, abortSignal, heartbeat)
-          continue
+          return
         }
-        fastModeCooldownUntil = Date.now() + Math.max(retryAfterMs ?? RATE_LIMIT_COOLDOWN_MS, RATE_LIMIT_COOLDOWN_MS)
-        if (persistent || attempt < 5) {
-          await sleepWithHeartbeat(computeBackoffMs(attempt, retryAfterMs, persistent ? PERSISTENT_MAX_BACKOFF_MS : 32_000), abortSignal, heartbeat)
-          continue
-        }
-      }
-
-      if ((error as Partial<ModelHttpError>)?.status === 529) {
-        consecutive529Errors++
-        if (retryPolicy.background && !persistent && consecutive529Errors >= 3) {
-          return {
-            content: [{ type: "text", text: `Background request aborted after ${consecutive529Errors} consecutive 529 overload errors.` }],
-            stop_reason: "end_turn",
-          }
-        }
+        fastModeCooldownUntil = Date.now() + Math.max(error.retryAfterMs ?? RATE_LIMIT_COOLDOWN_MS, RATE_LIMIT_COOLDOWN_MS)
+      },
+      onProviderOverloaded: (_state, _error, attempt) => {
+        overloadCount += 1
         const fallbackModel = process.env.MONOLITO_V2_FALLBACK_MODEL?.trim()
-        if (consecutive529Errors >= 3 && fallbackModel && fallbackModel !== requestModel) {
+        if (overloadCount >= 3 && fallbackModel && fallbackModel !== requestModel) {
           requestModel = fallbackModel
         }
-        if (persistent || attempt < 5) {
-          await sleepWithHeartbeat(computeBackoffMs(attempt, null, persistent ? PERSISTENT_MAX_BACKOFF_MS : 32_000), abortSignal, heartbeat)
-          continue
-        }
-      }
-
-      if (isRetriableNetworkError(error)) {
-        if (!persistent && attempt >= 5) {
-          return {
-            content: [{ type: "text", text: `Network/model error after retries: ${error instanceof Error ? error.message : String(error)}` }],
-            stop_reason: "end_turn",
-          }
-        }
-        disableKeepAlive = true
-        await sleepWithHeartbeat(computeBackoffMs(attempt, null, persistent ? PERSISTENT_MAX_BACKOFF_MS : 32_000), abortSignal, heartbeat)
-        continue
-      }
-
-      if ((error as Partial<ModelHttpError>)?.status) {
-        const httpError = error as ModelHttpError
-        return {
-          content: [{ type: "text", text: `Model request failed: HTTP ${httpError.status} ${httpError.statusText}${httpError.body ? ` ${httpError.body.slice(0, 200)}` : ""}` }],
-          stop_reason: "end_turn",
-        }
-      }
-
-      if (error instanceof Error && /timed out after \d+ms/i.test(error.message)) {
-        return {
-          content: [{ type: "text", text: `Model request failed: ${error.message}` }],
-          stop_reason: "end_turn",
-        }
-      }
-
-      if (error instanceof Error && error.name === "AbortError") {
-        throw error
-      }
-
+        disableKeepAlive = attempt > 0
+      },
+      maxAttempts: isUnattendedRetryEnabled(retryPolicy) ? undefined : 6,
+    })
+  } catch (error) {
+    if (isRetriableNetworkError(error)) {
       return {
-        content: [{ type: "text", text: `Model request failed: ${error instanceof Error ? error.message : String(error)}` }],
+        content: [{ type: "text", text: `Network/model error after retries: ${error instanceof Error ? error.message : String(error)}` }],
         stop_reason: "end_turn",
       }
     }
-  }
-  return {
-    content: [{ type: "text", text: "Model request failed after retries" }],
-    stop_reason: "end_turn",
+    if (error instanceof Error && /timed out after \d+ms/i.test(error.message)) {
+      return {
+        content: [{ type: "text", text: `Model request failed: ${error.message}` }],
+        stop_reason: "end_turn",
+      }
+    }
+    if (error instanceof Error && error.name === "AbortError") {
+      throw error
+    }
+    return {
+      content: [{ type: "text", text: `Model request failed: ${error instanceof Error ? error.message : String(error)}` }],
+      stop_reason: "end_turn",
+    }
   }
 }
 
@@ -1854,9 +1872,11 @@ function openAiCompatibleResponseToAnthropic(response: OllamaChatResponse): Anth
 }
 
 async function callOpenAiCompatibleApi(
+  rootDir: string,
   provider: "ollama" | "openai_compatible",
   messages: AnthropicMessage[],
   system: string,
+  retryPolicy: RetryPolicy,
   abortSignal?: AbortSignal,
   includeTools = true,
 ): Promise<AnthropicResponse> {
@@ -1864,8 +1884,6 @@ async function callOpenAiCompatibleApi(
   if (!baseUrl) throw new Error(`Model adapter is missing base URL for ${provider}`)
   if (!model) throw new Error(`Model adapter is missing model name for ${provider}`)
   if (provider !== "ollama" && !apiKey) throw new Error(`Model adapter is missing API key for ${provider}`)
-
-  const openAiMessages = anthropicToOpenAiMessages(messages, system)
 
   const openAiTools = listModelTools().map(t => ({
     type: "function",
@@ -1877,82 +1895,114 @@ async function callOpenAiCompatibleApi(
   }))
   
   const url = `${baseUrl}/v1/chat/completions`
-  const requestTimeoutMs = selectModelRequestTimeoutMs(false)
-  const timed = createRequestTimeoutSignal(requestTimeoutMs, abortSignal)
-  const startedAt = Date.now()
-  logger.info("model request started", {
-    provider,
-    model,
-    stream: false,
-    background: false,
-    unattended: false,
-    timeoutMs: requestTimeoutMs,
-    messageCount: openAiMessages.length,
-  })
-
-  let response: Response
   try {
-    response = await fetch(url, {
-      method: "POST",
-      signal: timed.signal,
-      headers: {
-        "content-type": "application/json",
-        ...(provider === "ollama" ? {} : { authorization: `Bearer ${apiKey}` }),
+    return await withRecoveryInterceptor<AnthropicResponse, AnthropicMessage>({
+      provider,
+      rootDir,
+      requestMessages: messages,
+      maxTokens: 4096,
+      retryPolicy,
+      abortSignal,
+    }, {
+      execute: async (state) => {
+        const openAiMessages = anthropicToOpenAiMessages(state.requestMessages, system)
+        const requestTimeoutMs = selectModelRequestTimeoutMs(retryPolicy.background)
+        const timed = createRequestTimeoutSignal(requestTimeoutMs, abortSignal)
+        const startedAt = Date.now()
+        logger.info("model request started", {
+          provider,
+          model,
+          stream: false,
+          background: retryPolicy.background,
+          unattended: retryPolicy.unattended,
+          timeoutMs: requestTimeoutMs,
+          messageCount: openAiMessages.length,
+        })
+
+        let response: Response
+        try {
+          response = await fetch(url, {
+            method: "POST",
+            signal: timed.signal,
+            headers: {
+              "content-type": "application/json",
+              ...(provider === "ollama" ? {} : { authorization: `Bearer ${apiKey}` }),
+            },
+            body: JSON.stringify({
+              model,
+              messages: openAiMessages,
+              tools: includeTools && openAiTools.length > 0 ? openAiTools : undefined,
+              stream: false,
+            }),
+          })
+        } catch (error) {
+          timed.cleanup()
+          if (timed.didTimeout()) {
+            logger.warn("model request timed out", {
+              provider,
+              model,
+              stream: false,
+              timeoutMs: requestTimeoutMs,
+              durationMs: Date.now() - startedAt,
+            })
+            throw new Error(`Model request timed out after ${requestTimeoutMs}ms`)
+          }
+          logger.warn("model request failed before response", {
+            provider,
+            model,
+            stream: false,
+            durationMs: Date.now() - startedAt,
+            error: error instanceof Error ? error.message : String(error),
+          })
+          throw error
+        }
+
+        if (!response.ok) {
+          timed.cleanup()
+          const body = await response.text().catch(() => "")
+          logger.warn("model request returned http error", {
+            provider,
+            model,
+            stream: false,
+            status: response.status,
+            durationMs: Date.now() - startedAt,
+          })
+          throwSemanticModelError(provider, response.status, response.statusText, body, response.headers, state.maxTokens)
+        }
+
+        try {
+          const data = (await response.json()) as OllamaChatResponse
+          logger.info("model request completed", {
+            provider,
+            model,
+            stream: false,
+            durationMs: Date.now() - startedAt,
+          })
+          return openAiCompatibleResponseToAnthropic(data)
+        } finally {
+          timed.cleanup()
+        }
       },
-      body: JSON.stringify({
-        model,
-        messages: openAiMessages,
-        tools: includeTools && openAiTools.length > 0 ? openAiTools : undefined,
-        stream: false,
-      }),
+      onContextOverflow: (state, error) => {
+        const overflow = {
+          limit: error.maxTokens,
+          input: error.inputTokens,
+          actual: error.inputTokens,
+        }
+        return {
+          ...state,
+          requestMessages: maybeAggressivelyCompactMessages(state.requestMessages),
+          maxTokens: computeAdjustedMaxTokens(overflow, Math.min(state.maxTokens, 3_000)),
+        }
+      },
+      maxAttempts: isUnattendedRetryEnabled(retryPolicy) ? undefined : 6,
     })
   } catch (error) {
-    timed.cleanup()
-    if (timed.didTimeout()) {
-      logger.warn("model request timed out", {
-        provider,
-        model,
-        stream: false,
-        timeoutMs: requestTimeoutMs,
-        durationMs: Date.now() - startedAt,
-      })
-      throw new Error(`Model request timed out after ${requestTimeoutMs}ms`)
+    if (error instanceof Error && error.name === "AbortError") throw error
+    return {
+      content: [{ type: "text", text: `Model request failed: ${error instanceof Error ? error.message : String(error)}` }],
+      stop_reason: "end_turn",
     }
-    logger.warn("model request failed before response", {
-      provider,
-      model,
-      stream: false,
-      durationMs: Date.now() - startedAt,
-      error: error instanceof Error ? error.message : String(error),
-    })
-    throw error
-  }
-
-  if (!response.ok) {
-    timed.cleanup()
-    const body = await response.text().catch(() => "")
-    const suffix = body ? ` ${body.slice(0, 300)}` : ""
-    logger.warn("model request returned http error", {
-      provider,
-      model,
-      stream: false,
-      status: response.status,
-      durationMs: Date.now() - startedAt,
-    })
-    throw new Error(`${provider} request failed: HTTP ${response.status} ${response.statusText}${suffix}`)
-  }
-
-  try {
-    const data = (await response.json()) as OllamaChatResponse
-    logger.info("model request completed", {
-      provider,
-      model,
-      stream: false,
-      durationMs: Date.now() - startedAt,
-    })
-    return openAiCompatibleResponseToAnthropic(data)
-  } finally {
-    timed.cleanup()
   }
 }
 
