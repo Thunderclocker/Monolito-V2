@@ -71,6 +71,11 @@ export type AssistantTurnResult = {
     outputTokens?: number
     totalTokens?: number
   }
+  meta?: {
+    iterationCount: number
+    durationMs: number
+    stopReason?: "completed" | "max_iterations" | "max_duration" | "aborted"
+  }
 }
 
 type AssistantTurnEvent =
@@ -96,6 +101,7 @@ type TurnLoopState = {
   retryPolicy: RetryPolicy
   iterationCount: number
   turnStartedAt: number
+  maxTurnDurationMs: number
 }
 
 type ToolExecutionRecord = {
@@ -273,14 +279,21 @@ function extractNativeToolUses(response: AnthropicResponse): InternalToolUse[] {
 function createAssistantTurnResult(
   finalText: string,
   steps: AssistantTurnStep[],
+  state: Pick<TurnLoopState, "iterationCount" | "turnStartedAt">,
   response?: AnthropicResponse,
   error?: string,
+  stopReason?: AssistantTurnResult["meta"]["stopReason"],
 ): AssistantTurnResult {
   return {
     finalText,
     steps,
     usage: response ? extractUsage(response) : undefined,
     error,
+    meta: {
+      iterationCount: state.iterationCount,
+      durationMs: Date.now() - state.turnStartedAt,
+      stopReason: stopReason ?? (error === "Stopped" ? "aborted" : "completed"),
+    },
   }
 }
 
@@ -1924,9 +1937,10 @@ async function* finishTurn(
   response?: AnthropicResponse,
   error?: string,
   emitRecoverableError = false,
+  stopReason?: AssistantTurnResult["meta"]["stopReason"],
 ): AsyncGenerator<AssistantTurnEvent, AssistantTurnResult> {
   state.steps.push({ type: "final", message: finalText })
-  const result = createAssistantTurnResult(finalText, state.steps, response, error)
+  const result = createAssistantTurnResult(finalText, state.steps, state, response, error, stopReason)
   if (emitRecoverableError && error) {
     yield { type: "recoverable_error", error }
   }
@@ -1985,10 +1999,16 @@ async function* runAssistantTurnState(
   state: TurnLoopState,
 ): AsyncGenerator<AssistantTurnEvent, AssistantTurnResult> {
   if (state.abortSignal?.aborted) {
-    return yield* finishTurn(state, "Stopped", undefined, "Stopped")
+    return yield* finishTurn(state, "Stopped", undefined, "Stopped", false, "aborted")
   }
   state.iterationCount += 1
   const elapsedMs = Date.now() - state.turnStartedAt
+  logger.info("assistant turn iteration", {
+    iteration: state.iterationCount,
+    durationMs: elapsedMs,
+    toolSteps: countToolSteps(state.steps),
+    evidenceCount: state.toolEvidence.length,
+  })
   if (state.iterationCount > MAX_TURN_ITERATIONS) {
     logger.warn("assistant turn stopped after max iterations", {
       iterations: state.iterationCount,
@@ -1998,9 +2018,9 @@ async function* runAssistantTurnState(
     const finalText = hasUsefulToolEvidence(state.toolEvidence)
       ? buildPartialFinalFromToolEvidence("se alcanzó el máximo de iteraciones del turno", state.toolEvidence)
       : "No pude cerrar esta tarea dentro del presupuesto del turno. Necesito reintentarla de forma más acotada o con una instrucción más específica."
-    return yield* finishTurn(state, finalText, undefined, finalText, true)
+    return yield* finishTurn(state, finalText, undefined, finalText, true, "max_iterations")
   }
-  if (elapsedMs > MAX_TURN_DURATION_MS) {
+  if (elapsedMs > state.maxTurnDurationMs) {
     logger.warn("assistant turn stopped after max duration", {
       iterations: state.iterationCount,
       durationMs: elapsedMs,
@@ -2009,7 +2029,7 @@ async function* runAssistantTurnState(
     const finalText = hasUsefulToolEvidence(state.toolEvidence)
       ? buildPartialFinalFromToolEvidence("se alcanzó la duración máxima del turno", state.toolEvidence)
       : "No pude terminar esta tarea dentro del tiempo máximo del turno. Reintentá con un pedido más acotado o dejame retomarlo en un turno nuevo."
-    return yield* finishTurn(state, finalText, undefined, finalText, true)
+    return yield* finishTurn(state, finalText, undefined, finalText, true, "max_duration")
   }
 
   const response = await callModelApi(
@@ -2239,7 +2259,7 @@ export async function* runAssistantTurnStream(
   rootDir: string,
   executeTool: (tool: string, input: Record<string, unknown>, context: ToolContext, toolUseId?: string) => Promise<unknown>,
   context: ToolContext,
-  options?: { contextExtras?: ContextExtras; costState?: CostState; abortSignal?: AbortSignal },
+  options?: { contextExtras?: ContextExtras; costState?: CostState; abortSignal?: AbortSignal; turnStartedAt?: number; maxTurnDurationMs?: number },
 ): AsyncGenerator<AssistantTurnEvent, AssistantTurnResult> {
   const baseMessages = compactHistoryMessages(sessionToAnthropicMessages(session))
   if (baseMessages.length === 0) {
@@ -2272,7 +2292,8 @@ export async function* runAssistantTurnStream(
       unattended: session.id.startsWith("agent-") || session.id.startsWith("telegram-"),
     },
     iterationCount: 0,
-    turnStartedAt: Date.now(),
+    turnStartedAt: options?.turnStartedAt ?? Date.now(),
+    maxTurnDurationMs: options?.maxTurnDurationMs ?? MAX_TURN_DURATION_MS,
   })
 }
 
@@ -2281,7 +2302,7 @@ export async function runAssistantTurn(
   rootDir: string,
   executeTool: (tool: string, input: Record<string, unknown>, context: ToolContext, toolUseId?: string) => Promise<unknown>,
   context: ToolContext,
-  options?: { contextExtras?: ContextExtras; costState?: CostState; abortSignal?: AbortSignal },
+  options?: { contextExtras?: ContextExtras; costState?: CostState; abortSignal?: AbortSignal; turnStartedAt?: number; maxTurnDurationMs?: number },
 ): Promise<AssistantTurnResult> {
   const stream = runAssistantTurnStream(session, rootDir, executeTool, context, options)
   let finalResult: AssistantTurnResult | null = null
