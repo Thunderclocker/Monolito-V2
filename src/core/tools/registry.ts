@@ -1466,6 +1466,42 @@ const tools: ToolDefinition[] = [
     },
   },
   {
+    name: "delegate_background_task",
+    description: "Delegate a heavy task to a background worker and return immediately with a job_id.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_instruction: { type: "string", description: "Detailed instructions for the background worker." },
+        description: { type: "string", description: "Short label for this task." },
+        profileId: { type: "string", description: "Optional profile to run the worker under." },
+      },
+      required: ["task_instruction"],
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    async run(input, context) {
+      const task = requireString(input, "task_instruction")
+      const description = optionalString(input, "description")
+      const profileId = optionalString(input, "profileId") ?? context.profileId ?? "default"
+
+      if (!context.orchestrator) throw new Error("Agent Orchestrator not available.")
+      const parentSessionId = (context as any).sessionId
+      if (!parentSessionId) throw new Error("Parent Session ID not found.")
+
+      const spawned = await context.orchestrator.spawnBackgroundTask(parentSessionId, profileId, task, description)
+      return {
+        ok: spawned.status !== "failed" && spawned.status !== "killed",
+        job_id: spawned.agentId,
+        status: spawned.status,
+        result: spawned.result ?? "",
+        error: spawned.error,
+        message: spawned.status === "spawned"
+          ? "Background worker started. You will be notified when it completes."
+          : "Background worker finished immediately.",
+      }
+    },
+  },
+  {
     name: "AgentSendMessage",
     description: "Send a follow-up message to an existing sub-agent to continue its work, correct its path, or give new instructions.",
     inputSchema: {

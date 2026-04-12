@@ -50,6 +50,7 @@ import { renderToolFinish, renderToolStart, renderToolStartText } from "../rende
 import { checkToolPermission, runPostToolHooks } from "./permissions.ts"
 import { runMemoryAgentReview } from "./memoryAgent.ts"
 import { logAgentTrace } from "./agentTrace.ts"
+import type { DelegationTask } from "./orchestrator.ts"
 import {
   deployManagedTtsContainer,
   getManagedTtsBaseUrl,
@@ -687,6 +688,135 @@ export class MonolitoV2Runtime {
     this.toolStallState.set(sessionId, { key, count: nextCount })
     if (nextCount >= 2) {
       this.stallAlerts.set(sessionId, STALL_ALERT_MESSAGE)
+    }
+  }
+
+  async handleBackgroundDelegationResult(task: DelegationTask, error?: string) {
+    const sessionId = task.parentSessionId
+    const session = getSession(this.rootDir, sessionId)
+    if (!session) return
+    const profileId = task.profileId || "default"
+    const summary = task.status === "completed"
+      ? (task.result ?? "")
+      : `Background task ${task.status}${error ? `: ${error}` : ""}`
+    const systemPayload = [
+      "<background-task-result>",
+      `<agent-id>${task.id}</agent-id>`,
+      `<status>${task.status}</status>`,
+      summary ? `<summary>${summary}</summary>` : "",
+      "</background-task-result>",
+    ].filter(Boolean).join("\n")
+
+    appendMessage(this.rootDir, sessionId, "system", systemPayload)
+    appendWorklog(this.rootDir, sessionId, {
+      type: "note",
+      summary: `Background task ${task.status}: ${task.description}`,
+    })
+
+    void this.runProactiveBackgroundTurn(sessionId, profileId, summary || systemPayload, 0)
+  }
+
+  private async runProactiveBackgroundTurn(sessionId: string, profileId: string, backgroundResult: string, attempt: number) {
+    if (this.activeSessions.has(sessionId)) {
+      if (attempt < 1) {
+        setTimeout(() => {
+          void this.runProactiveBackgroundTurn(sessionId, profileId, backgroundResult, attempt + 1)
+        }, 2_000)
+      }
+      return
+    }
+
+    this.activeSessions.add(sessionId)
+    const turnStartedAt = Date.now()
+    try {
+      loadAndApplyModelSettings(process.env)
+      await this.transitionState(sessionId, "running")
+
+      const session = getSession(this.rootDir, sessionId)
+      if (!session) return
+
+      const isMainSession = !session.id.startsWith("agent-") && !session.id.startsWith("telegram-")
+      const [gitContext, dateContext, workspaceContext] = await Promise.all([
+        getGitContext(this.rootDir),
+        Promise.resolve(getDateContext()),
+        Promise.resolve(getWorkspaceContext(this.rootDir, profileId, { isMainSession })),
+      ])
+      const webSearchConfig = readWebSearchConfig()
+
+      const turn = await runAssistantTurn(
+        session,
+        this.rootDir,
+        async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, sessionId, orchestrator: this.orchestrator }, toolUseId, profileId),
+        {
+          rootDir: this.rootDir,
+          cwd: this.rootDir,
+          getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
+          profileId,
+          orchestrator: this.orchestrator,
+        },
+        {
+          contextExtras: {
+            gitContext,
+            dateContext,
+            workspaceContext,
+            adultMode: this.adultModeSessions.has(sessionId),
+            webSearchProvider: webSearchConfig.provider,
+            backgroundResult,
+          },
+          costState: this.costState,
+          turnStartedAt,
+          maxTurnDurationMs: TURN_HARD_TIMEOUT_MS - 5_000,
+        },
+      )
+
+      if (turn.usage) {
+        recordApiCall(
+          this.costState,
+          getEffectiveModelConfig().model,
+          {
+            inputTokens: turn.usage.inputTokens,
+            outputTokens: turn.usage.outputTokens,
+          },
+          Date.now() - turnStartedAt,
+        )
+      }
+
+      const userFacingText = sanitizeExternalAssistantText(sessionId, turn.finalText)
+      appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
+      appendWorklog(this.rootDir, sessionId, {
+        type: "session",
+        summary: turn.error ? `Background turn completed with model error: ${clipForWorklog(turn.error)}` : "Background turn completed",
+      })
+      logAgentTrace(this.rootDir, sessionId, "turn.completed", {
+        profileId,
+        details: {
+          mode: "background-delegation",
+          durationMs: Date.now() - turnStartedAt,
+          replyChars: userFacingText.length,
+          hadError: Boolean(turn.error),
+          inputTokens: turn.usage?.inputTokens ?? 0,
+          outputTokens: turn.usage?.outputTokens ?? 0,
+          totalTokens: turn.usage?.totalTokens ?? 0,
+          iterations: turn.meta?.iterationCount ?? 0,
+          stopReason: turn.meta?.stopReason ?? "completed",
+        },
+      })
+      this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
+
+      const telegramChatId = getTelegramChatId(sessionId)
+      if (telegramChatId && userFacingText) {
+        try {
+          const config = readChannelsConfig()
+          if (config.telegram?.enabled && config.telegram.token) {
+            await sendTelegramMessage(config.telegram.token, telegramChatId, userFacingText)
+          }
+        } catch (e) {
+          console.error("Failed to send background reply to telegram", e)
+        }
+      }
+    } finally {
+      await this.transitionState(sessionId, "idle")
+      this.activeSessions.delete(sessionId)
     }
   }
 

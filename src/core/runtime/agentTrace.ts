@@ -18,6 +18,7 @@ export type AgentTraceEvent =
   | "agent.task.completed"
   | "agent.task.failed"
   | "agent.notification.sent"
+  | "agent.background.completed"
 
 export type AgentTraceRecord = {
   at: string
