@@ -25,7 +25,7 @@ import {
   createProfile,
   getDb,
 } from "../session/store.ts"
-import { getTool, listTools } from "../tools/registry.ts"
+import { getTool, listTools, type ToolContext } from "../tools/registry.ts"
 import { getEffectiveModelConfig, runAssistantTurn, runBackgroundTextTask } from "./modelAdapter.ts"
 import {
   applyModelSettingsToEnv,
@@ -49,7 +49,7 @@ import { AgentOrchestrator } from "./orchestrator.ts"
 import { renderToolFinish, renderToolStart, renderToolStartText } from "../renderer/toolRenderer.ts"
 import { checkToolPermission, runPostToolHooks } from "./permissions.ts"
 import { runMemoryAgentReview } from "./memoryAgent.ts"
-import { logAgentTrace } from "./agentTrace.ts"
+import type { Logger } from "../logging/logger.ts"
 import type { DelegationTask } from "./orchestrator.ts"
 import {
   deployManagedTtsContainer,
@@ -787,19 +787,12 @@ export class MonolitoV2Runtime {
         type: "session",
         summary: turn.error ? `Background turn completed with model error: ${clipForWorklog(turn.error)}` : "Background turn completed",
       })
-      logAgentTrace(this.rootDir, sessionId, "turn.completed", {
-        profileId,
-        details: {
-          mode: "background-delegation",
-          durationMs: Date.now() - turnStartedAt,
-          replyChars: userFacingText.length,
-          hadError: Boolean(turn.error),
-          inputTokens: turn.usage?.inputTokens ?? 0,
-          outputTokens: turn.usage?.outputTokens ?? 0,
-          totalTokens: turn.usage?.totalTokens ?? 0,
-          iterations: turn.meta?.iterationCount ?? 0,
-          stopReason: turn.meta?.stopReason ?? "completed",
-        },
+      this.emit({
+        type: "turn.completed",
+        sessionId,
+        role: "assistant",
+        durationMs: Date.now() - turnStartedAt,
+        usage: turn.usage,
       })
       this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
 
@@ -866,10 +859,6 @@ export class MonolitoV2Runtime {
           type: "session",
           summary: `Session resumed (${this.describeResumeReason(existing)})`,
         })
-        logAgentTrace(this.rootDir, session.id, "session.resumed", {
-          profileId,
-          details: { reason: this.describeResumeReason(existing) },
-        })
         this.emit({ type: "session.resumed", sessionId: session.id })
       }
     } else {
@@ -923,13 +912,6 @@ export class MonolitoV2Runtime {
         type: "session",
         summary: `Turn started (${text.trim().startsWith("/") ? "slash-command" : "user-message"})`,
       })
-      logAgentTrace(this.rootDir, sessionId, "turn.started", {
-        profileId,
-        details: {
-          inputKind: text.trim().startsWith("/") ? "slash-command" : "user-message",
-          chars: text.length,
-        },
-      })
       this.emit({ type: "message.received", sessionId, role: "user", text })
       await this.transitionState(sessionId, "running")
 
@@ -940,7 +922,7 @@ export class MonolitoV2Runtime {
     }
   }
 
-  async processSessionStartup(sessionId: string, prompt: string) {
+  async processSessionStartup(sessionId: string, prompt: string, options?: { logger?: Logger }) {
     const session = getSession(this.rootDir, sessionId)
     if (!session) throw new Error(`Session ${sessionId} not found`)
     if (this.activeSessions.has(sessionId)) {
@@ -955,22 +937,16 @@ export class MonolitoV2Runtime {
         type: "session",
         summary: "Turn started (session-startup)",
       })
-      logAgentTrace(this.rootDir, sessionId, "turn.started", {
-        profileId,
-        details: {
-          inputKind: "session-startup",
-          chars: prompt.length,
-        },
-      })
       await this.transitionState(sessionId, "running")
-      await this.runStartupTurn(sessionId, prompt, profileId, turnStartedAt)
+      await this.runStartupTurn(sessionId, prompt, profileId, turnStartedAt, { logger: options?.logger })
     } finally {
       this.activeSessions.delete(sessionId)
     }
   }
 
-  async runTurn(sessionId: string, lastUserText: string, profileId = "default") {
+  async runTurn(sessionId: string, lastUserText: string, profileId = "default", options?: { logger?: Logger }) {
     const turnStartedAt = Date.now()
+    const instanceLogger = options?.logger
     const abortController = new AbortController()
     const telegramTyping = startTelegramTypingIndicator(sessionId)
     this.abortControllers.set(sessionId, abortController)
@@ -994,21 +970,13 @@ export class MonolitoV2Runtime {
             ? "El bootstrap del workspace sigue pendiente. Inicia ahora el ritual de primer arranque usando el contexto inyectado de BOOT_BOOTSTRAP, BOOT_IDENTITY, BOOT_USER, BOOT_SOUL y BOOT_AGENTS. Deja que el modelo orqueste la conversacion segun lo ya sabido. Responde en el idioma del usuario; si aun no hay una preferencia clara, comienza en espanol neutro y adapta el idioma enseguida si el usuario marca otro. Saluda brevemente y haz exactamente una sola pregunta corta por turno. No recites una checklist ni menciones almacenamiento interno salvo que el usuario lo pida."
             : "A new session was started via /new. Run your Session Startup sequence using the injected BOOT context already present in this turn before responding. Then greet the user in your configured persona. Keep it to 1-3 sentences. Do not mention internal steps, tools, or reasoning."
           this.activeSessions.delete(sessionId)
-          await this.processSessionStartup(sessionId, startupPrompt)
+          await this.processSessionStartup(sessionId, startupPrompt, { logger: instanceLogger })
           return { finalText: "", usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } }
         }
         appendMessage(this.rootDir, sessionId, "assistant", reply)
         appendWorklog(this.rootDir, sessionId, {
           type: "session",
           summary: "Turn completed (slash-command)",
-        })
-        logAgentTrace(this.rootDir, sessionId, "turn.completed", {
-          profileId,
-          details: {
-            mode: "slash-command",
-            durationMs: Date.now() - turnStartedAt,
-            replyChars: reply.length,
-          },
         })
         this.emit({ type: "message.received", sessionId, role: "assistant", text: reply })
         this.emit({
@@ -1045,6 +1013,7 @@ export class MonolitoV2Runtime {
                 profileId,
                 sessionId,
                 orchestrator: this.orchestrator,
+                logger: instanceLogger,
               }
               const downloaded = await this.executeTool(sessionId, "TelegramDownloadFile", { file_id: fileId }, toolContext, undefined, profileId) as { local_path?: string }
               if (downloaded.local_path) {
@@ -1090,6 +1059,7 @@ export class MonolitoV2Runtime {
             getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
             profileId,
             orchestrator: this.orchestrator,
+            logger: instanceLogger,
           },
           {
             contextExtras: {
@@ -1123,20 +1093,6 @@ export class MonolitoV2Runtime {
           type: "session",
           summary: turn.error ? `Turn completed with model error: ${clipForWorklog(turn.error)}` : "Turn completed",
         })
-        logAgentTrace(this.rootDir, sessionId, "turn.completed", {
-          profileId,
-          details: {
-            mode: "assistant-turn",
-            durationMs: Date.now() - turnStartedAt,
-            replyChars: userFacingText.length,
-            hadError: Boolean(turn.error),
-            inputTokens: turn.usage?.inputTokens ?? 0,
-            outputTokens: turn.usage?.outputTokens ?? 0,
-            totalTokens: turn.usage?.totalTokens ?? 0,
-            iterations: turn.meta?.iterationCount ?? 0,
-            stopReason: turn.meta?.stopReason ?? "completed",
-          },
-        })
         this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
         this.emit({
           type: "turn.completed",
@@ -1169,13 +1125,6 @@ export class MonolitoV2Runtime {
           type: "session",
           summary: `Turn failed: ${clipForWorklog(message)}`,
         })
-        logAgentTrace(this.rootDir, sessionId, "turn.failed", {
-          profileId,
-          details: {
-            durationMs: Date.now() - turnStartedAt,
-            error: message,
-          },
-        })
         this.emit({ type: "error", sessionId, error: message })
         appendMessage(this.rootDir, sessionId, "assistant", message)
         this.emit({ type: "message.received", sessionId, role: "assistant", text: message })
@@ -1197,10 +1146,6 @@ export class MonolitoV2Runtime {
           type: "session",
           summary: "Turn aborted by operator",
         })
-        logAgentTrace(this.rootDir, sessionId, "turn.aborted", {
-          profileId,
-          details: { durationMs: Date.now() - turnStartedAt },
-        })
         this.emit({ type: "error", sessionId, error: "Stopped" })
         await this.transitionState(sessionId, "idle")
         throw error
@@ -1209,13 +1154,6 @@ export class MonolitoV2Runtime {
       appendWorklog(this.rootDir, sessionId, {
         type: "session",
         summary: `Turn failed: ${clipForWorklog(message)}`,
-      })
-      logAgentTrace(this.rootDir, sessionId, "turn.failed", {
-        profileId,
-        details: {
-          durationMs: Date.now() - turnStartedAt,
-          error: message,
-        },
       })
       this.emit({ type: "error", sessionId, error: message })
       appendMessage(this.rootDir, sessionId, "assistant", message)
@@ -1235,7 +1173,7 @@ export class MonolitoV2Runtime {
     }
   }
 
-  private async runStartupTurn(sessionId: string, prompt: string, profileId = "default", turnStartedAtIso?: string) {
+  private async runStartupTurn(sessionId: string, prompt: string, profileId = "default", turnStartedAtIso?: string, options?: { logger?: Logger }) {
     const turnStartedAt = turnStartedAtIso ? Date.parse(turnStartedAtIso) : Date.now()
     const abortController = new AbortController()
     this.abortControllers.set(sessionId, abortController)
@@ -1275,6 +1213,7 @@ export class MonolitoV2Runtime {
           getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
           profileId,
           orchestrator: this.orchestrator,
+          logger: options?.logger,
         },
         {
           contextExtras: {
@@ -1308,20 +1247,6 @@ export class MonolitoV2Runtime {
         type: "session",
         summary: turn.error ? `Turn completed with model error: ${clipForWorklog(turn.error)}` : "Turn completed",
       })
-      logAgentTrace(this.rootDir, sessionId, "turn.completed", {
-        profileId,
-        details: {
-          mode: "session-startup",
-          durationMs: Date.now() - turnStartedAt,
-          replyChars: userFacingText.length,
-          hadError: Boolean(turn.error),
-          inputTokens: turn.usage?.inputTokens ?? 0,
-          outputTokens: turn.usage?.outputTokens ?? 0,
-          totalTokens: turn.usage?.totalTokens ?? 0,
-          iterations: turn.meta?.iterationCount ?? 0,
-          stopReason: turn.meta?.stopReason ?? "completed",
-        },
-      })
       this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
       this.emit({
         type: "turn.completed",
@@ -1340,13 +1265,6 @@ export class MonolitoV2Runtime {
       appendWorklog(this.rootDir, sessionId, {
         type: "session",
         summary: `Turn failed: ${clipForWorklog(message)}`,
-      })
-      logAgentTrace(this.rootDir, sessionId, "turn.failed", {
-        profileId,
-        details: {
-          durationMs: Date.now() - turnStartedAt,
-          error: message,
-        },
       })
       this.emit({ type: "error", sessionId, error: message })
       appendMessage(this.rootDir, sessionId, "assistant", message)
@@ -1552,14 +1470,7 @@ export class MonolitoV2Runtime {
     sessionId: string,
     toolName: string,
     input: Record<string, unknown>,
-    context: {
-      rootDir: string
-      cwd: string
-      getMcpClient?: (serverName: string) => Promise<StdioMcpClient>
-      profileId?: string
-      sessionId?: string
-      orchestrator?: AgentOrchestrator
-    },
+    context: ToolContext,
     toolUseId?: string,
     profileId?: string,
   ) {
@@ -1577,20 +1488,10 @@ export class MonolitoV2Runtime {
         type: "tool",
         summary: `Tool ${tool.name} blocked: ${message}`,
       })
-      logAgentTrace(this.rootDir, sessionId, "tool.failed", {
-        profileId: profileId ?? context.profileId,
-        toolName: tool.name,
-        details: { blocked: true, error: message },
-      })
       this.emit({ type: "error", sessionId, error: message })
       this.recordToolFailureStall(sessionId, tool.name, message)
       throw new Error(message)
     }
-    logAgentTrace(this.rootDir, sessionId, "tool.started", {
-      profileId: profileId ?? context.profileId,
-      toolName: tool.name,
-      details: { toolUseId, input: normalizedInput },
-    })
     this.emit({ type: "tool.start", sessionId, toolUseId, tool: tool.name, input: normalizedInput })
     const toolStartedAt = Date.now()
 
@@ -1617,6 +1518,7 @@ export class MonolitoV2Runtime {
             currentError.stderr,
           ),
           `Return only the corrected command for: ${repairedCommand}`,
+          { logger: context.logger },
         )
 
         const candidate = extractRepairedCommand(repair.text)
@@ -1685,11 +1587,6 @@ export class MonolitoV2Runtime {
         tool: tool.name,
         sessionId,
       })
-      logAgentTrace(this.rootDir, sessionId, "tool.completed", {
-        profileId: profileId ?? context.profileId,
-        toolName: tool.name,
-        details: { toolUseId, durationMs: Date.now() - toolStartedAt },
-      })
       this.emit({ type: "tool.finish", sessionId, toolUseId, tool: tool.name, ok: true, output })
       return output
     } catch (error) {
@@ -1700,11 +1597,6 @@ export class MonolitoV2Runtime {
       appendWorklog(this.rootDir, sessionId, {
         type: "tool",
         summary: `Tool ${tool.name} failed: ${message}`,
-      })
-      logAgentTrace(this.rootDir, sessionId, "tool.failed", {
-        profileId: profileId ?? context.profileId,
-        toolName: tool.name,
-        details: { toolUseId, durationMs: Date.now() - toolStartedAt, error: message },
       })
       this.emit({ type: "tool.finish", sessionId, toolUseId, tool: tool.name, ok: false, output: outputWithError(output, message) })
       throw error

@@ -3,7 +3,7 @@ import { type MonolitoV2Runtime } from "./runtime.ts"
 import { ensureDirs } from "../ipc/protocol.ts"
 import { appendMessage, createProfile, createSession, listProfiles } from "../session/store.ts"
 import { readChannelsConfig } from "../channels/config.ts"
-import { logAgentTrace } from "./agentTrace.ts"
+import { createInstanceLogger, type Logger } from "../logging/logger.ts"
 
 const TELEGRAM_MESSAGE_LIMIT = 4096
 
@@ -45,6 +45,7 @@ export type DelegationTask = {
     duration_ms: number
   }
   error?: string
+  logger?: Logger
 }
 
 export type SpawnAgentResult = {
@@ -130,21 +131,11 @@ export class AgentOrchestrator {
       mode: options.mode,
       description: options.description || "Untitled task",
       task: options.task,
-      status: "pending"
+      status: "pending",
+      logger: createInstanceLogger(subSessionId, options.type),
     }
 
     this.activeTasks.set(delegationTask.id, delegationTask)
-    logAgentTrace(rootDir, subSessionId, "agent.spawned", {
-      profileId: options.profileId,
-      parentSessionId: options.parentSessionId,
-      agentId: delegationTask.id,
-      details: {
-        type: delegationTask.type,
-        mode: delegationTask.mode,
-        description: delegationTask.description,
-        taskChars: delegationTask.task.length,
-      },
-    })
 
     // Execute in background
     const runPromise = this.executeTurn(delegationTask, options.task).catch(err => {
@@ -179,15 +170,6 @@ export class AgentOrchestrator {
       throw new Error(`Agent ${agentId} was stopped and cannot receive more messages.`)
     }
     
-    logAgentTrace(this.runtime.rootDir, task.subSessionId, "agent.message.sent", {
-      profileId: task.profileId,
-      parentSessionId: task.parentSessionId,
-      agentId,
-      details: {
-        chars: message.length,
-        statusBeforeSend: task.status,
-      },
-    })
     // Continue in background
     this.executeTurn(task, message).catch(err => {
       console.error(`Continuing agent ${agentId} failed:`, err)
@@ -200,14 +182,6 @@ export class AgentOrchestrator {
     
     this.runtime.abortSession(task.subSessionId)
     task.status = "killed"
-    logAgentTrace(this.runtime.rootDir, task.subSessionId, "agent.stopped", {
-      profileId: task.profileId,
-      parentSessionId: task.parentSessionId,
-      agentId,
-      details: {
-        description: task.description,
-      },
-    })
     this.notifyParent(task, "Agent was stopped by coordinator.")
   }
 
@@ -215,23 +189,12 @@ export class AgentOrchestrator {
     const turnStartedAt = Date.now()
     task.status = "running"
     const { runtime } = this
-    logAgentTrace(runtime.rootDir, task.subSessionId, "agent.task.started", {
-      profileId: task.profileId,
-      parentSessionId: task.parentSessionId,
-      agentId: task.id,
-      details: {
-        type: task.type,
-        description: task.description,
-        chars: text.length,
-      },
-    })
-    
     try {
       // 1. Send the task as the starting message in the sub-session
       appendMessage(runtime.rootDir, task.subSessionId, "user", text)
       
       // 2. Run the turn
-      const turn: any = await runtime.runTurn(task.subSessionId, text, task.profileId)
+      const turn: any = await runtime.runTurn(task.subSessionId, text, task.profileId, { logger: task.logger })
       
       task.status = "completed"
       task.result = turn.finalText
@@ -241,18 +204,6 @@ export class AgentOrchestrator {
         tool_uses: 0, // We could count these in runtime if needed
         duration_ms: Date.now() - turnStartedAt
       }
-      logAgentTrace(runtime.rootDir, task.subSessionId, "agent.task.completed", {
-        profileId: task.profileId,
-        parentSessionId: task.parentSessionId,
-        agentId: task.id,
-        details: {
-          description: task.description,
-          durationMs: task.usage.duration_ms,
-          totalTokens: task.usage.total_tokens,
-          resultChars: task.result?.length ?? 0,
-        },
-      })
-
       // 3. Notify parent session with XML
       this.notifyParent(task)
       
@@ -260,33 +211,12 @@ export class AgentOrchestrator {
       task.status = "failed"
       const errorMsg = error instanceof Error ? error.message : String(error)
       task.error = errorMsg
-      logAgentTrace(runtime.rootDir, task.subSessionId, "agent.task.failed", {
-        profileId: task.profileId,
-        parentSessionId: task.parentSessionId,
-        agentId: task.id,
-        details: {
-          description: task.description,
-          durationMs: Date.now() - turnStartedAt,
-          error: errorMsg,
-        },
-      })
       this.notifyParent(task, errorMsg)
     }
   }
 
   private notifyParent(task: DelegationTask, error?: string) {
     if (task.mode === "background") {
-      logAgentTrace(this.runtime.rootDir, task.parentSessionId, "agent.background.completed", {
-        profileId: task.profileId,
-        parentSessionId: task.parentSessionId,
-        agentId: task.id,
-        details: {
-          subSessionId: task.subSessionId,
-          status: task.status,
-          hasResult: Boolean(task.result),
-          error,
-        },
-      })
       this.runtime.emit({
         type: "agent.background.completed",
         sessionId: task.parentSessionId,
@@ -314,17 +244,6 @@ ${usageXml}
 </task-notification>`
 
     appendMessage(this.runtime.rootDir, task.parentSessionId, "user", notification)
-    logAgentTrace(this.runtime.rootDir, task.parentSessionId, "agent.notification.sent", {
-      profileId: task.profileId,
-      parentSessionId: task.parentSessionId,
-      agentId: task.id,
-      details: {
-        subSessionId: task.subSessionId,
-        status: task.status,
-        hasResult: Boolean(task.result),
-        error,
-      },
-    })
     this.runtime.emit({
       type: "message.received",
       sessionId: task.parentSessionId,

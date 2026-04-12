@@ -11,14 +11,18 @@ import { readChannelsConfig } from "../channels/config.ts"
 import type { WebSearchProvider } from "../websearch/config.ts"
 import { type CostState, type TurnUsage, createCostState, recordApiCall } from "../cost/tracker.ts"
 import { getDateContext, getGitContext } from "../context/gitContext.ts"
-import { createLogger } from "../logging/logger.ts"
+import { createLogger, type Logger } from "../logging/logger.ts"
 import { COORDINATOR_SYSTEM_PROMPT } from "./coordinatorPrompt.ts"
 import type { WorkspaceBootstrapContext } from "../context/workspaceContext.ts"
 import { BOOT_WING_DESCRIPTION, type BootWingEntry } from "../bootstrap/bootWings.ts"
 import { normalizeToolInputPayload } from "./toolInput.ts"
 import { ContextOverflowError, ProviderOverloadedError, RateLimitError } from "../errors.ts"
 
-const logger = createLogger("modelAdapter")
+const defaultLogger = createLogger("modelAdapter")
+
+function getLogger(context?: ToolContext): Logger {
+  return context?.logger ?? defaultLogger
+}
 
 type AnthropicMessage = {
   role: "user" | "assistant"
@@ -110,6 +114,7 @@ type TurnLoopState = {
   rootDir: string
   executeTool: (tool: string, input: Record<string, unknown>, context: ToolContext, toolUseId?: string) => Promise<unknown>
   context: ToolContext
+  logger: Logger
   abortSignal?: AbortSignal
   baseMessages: AnthropicMessage[]
   system: string
@@ -1215,15 +1220,16 @@ async function callModelApi(
   rootDir: string,
   messages: AnthropicMessage[],
   system: string,
+  logger: Logger,
   abortSignal?: AbortSignal,
   retryPolicy: RetryPolicy = { unattended: false, background: false },
   includeTools = true,
 ) {
   const config = getEffectiveModelConfig()
   if (config.provider === "ollama" || config.provider === "openai_compatible") {
-    return callOpenAiCompatibleApi(rootDir, config.provider, messages, system, retryPolicy, abortSignal, includeTools)
+    return callOpenAiCompatibleApi(rootDir, config.provider, messages, system, retryPolicy, logger, abortSignal, includeTools)
   }
-  return callAnthropicLikeApi(rootDir, messages, system, retryPolicy, includeTools, abortSignal)
+  return callAnthropicLikeApi(rootDir, messages, system, retryPolicy, includeTools, logger, abortSignal)
 }
 
 let fastModeCooldownUntil = 0
@@ -1395,7 +1401,7 @@ function selectModelRequestTimeoutMs(background: boolean) {
   return background ? BACKGROUND_MODEL_REQUEST_TIMEOUT_MS : INTERACTIVE_MODEL_REQUEST_TIMEOUT_MS
 }
 
-async function readStreamingAnthropicResponse(response: Response, abortSignal?: AbortSignal) {
+async function readStreamingAnthropicResponse(response: Response, logger: Logger, abortSignal?: AbortSignal) {
   const reader = response.body?.getReader()
   if (!reader) throw createStreamFallbackError("Streaming response body unavailable")
 
@@ -1570,6 +1576,7 @@ async function callAnthropicLikeApi(
   system: string,
   retryPolicy: RetryPolicy,
   includeTools: boolean,
+  logger: Logger,
   abortSignal?: AbortSignal,
 ) {
   let { baseUrl, apiKey, model, provider } = getEffectiveModelConfig()
@@ -1680,7 +1687,7 @@ async function callAnthropicLikeApi(
     }
 
     try {
-      const parsed = await readStreamingAnthropicResponse(response, timed.signal)
+      const parsed = await readStreamingAnthropicResponse(response, logger, timed.signal)
       logger.info("model request completed", {
         provider,
         model: requestModel,
@@ -1913,6 +1920,7 @@ async function callOpenAiCompatibleApi(
   messages: AnthropicMessage[],
   system: string,
   retryPolicy: RetryPolicy,
+  logger: Logger,
   abortSignal?: AbortSignal,
   includeTools = true,
 ): Promise<AnthropicResponse> {
@@ -2137,14 +2145,14 @@ async function* runAssistantTurnState(
   }
   state.iterationCount += 1
   const elapsedMs = Date.now() - state.turnStartedAt
-  logger.info("assistant turn iteration", {
+  state.logger.info("assistant turn iteration", {
     iteration: state.iterationCount,
     durationMs: elapsedMs,
     toolSteps: countToolSteps(state.steps),
     evidenceCount: state.toolEvidence.length,
   })
   if (state.iterationCount > MAX_TURN_ITERATIONS) {
-    logger.warn("assistant turn stopped after max iterations", {
+    state.logger.warn("assistant turn stopped after max iterations", {
       iterations: state.iterationCount,
       durationMs: elapsedMs,
       lastUserMessage: state.lastUserMessage.slice(0, 200),
@@ -2155,7 +2163,7 @@ async function* runAssistantTurnState(
     return yield* finishTurn(state, finalText, undefined, finalText, true, "max_iterations")
   }
   if (elapsedMs > state.maxTurnDurationMs) {
-    logger.warn("assistant turn stopped after max duration", {
+    state.logger.warn("assistant turn stopped after max duration", {
       iterations: state.iterationCount,
       durationMs: elapsedMs,
       lastUserMessage: state.lastUserMessage.slice(0, 200),
@@ -2170,6 +2178,7 @@ async function* runAssistantTurnState(
     state.rootDir,
     [...state.baseMessages, ...state.toolMessages],
     state.system,
+    state.logger,
     state.abortSignal,
     state.retryPolicy,
   )
@@ -2413,6 +2422,7 @@ export async function* runAssistantTurnStream(
     rootDir,
     executeTool,
     context,
+    logger: getLogger(context),
     abortSignal: options?.abortSignal,
     baseMessages,
     system,
@@ -2464,12 +2474,13 @@ export async function runBackgroundTextTask(
   rootDir: string,
   system: string,
   userPrompt: string,
-  options?: { abortSignal?: AbortSignal },
+  options?: { abortSignal?: AbortSignal; logger?: Logger },
 ) {
   const response = await callModelApi(
     rootDir,
     [{ role: "user", content: userPrompt }],
     system,
+    options?.logger ?? defaultLogger,
     options?.abortSignal,
     { unattended: true, background: true },
     false,
