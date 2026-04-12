@@ -34,6 +34,7 @@ export type DelegationTask = {
   subSessionId: string
   profileId: string
   type: "worker" | "researcher" | "verifier"
+  mode: "interactive" | "background"
   description: string
   task: string
   status: "pending" | "running" | "completed" | "failed" | "killed"
@@ -74,43 +75,79 @@ export class AgentOrchestrator {
     description?: string, 
     type: DelegationTask["type"] = "worker"
   ): Promise<SpawnAgentResult> {
+    return await this.spawnTask({
+      parentSessionId,
+      profileId,
+      task,
+      description,
+      type,
+      mode: "interactive",
+    })
+  }
+
+  async spawnBackgroundTask(
+    parentSessionId: string,
+    profileId: string,
+    task: string,
+    description?: string,
+  ): Promise<SpawnAgentResult> {
+    return await this.spawnTask({
+      parentSessionId,
+      profileId,
+      task,
+      description,
+      type: "worker",
+      mode: "background",
+    })
+  }
+
+  private async spawnTask(options: {
+    parentSessionId: string
+    profileId: string
+    task: string
+    description?: string
+    type: DelegationTask["type"]
+    mode: DelegationTask["mode"]
+  }): Promise<SpawnAgentResult> {
     const rootDir = this.runtime.rootDir
-    const subSessionId = `agent-${profileId}-${randomUUID().slice(0, 8)}`
+    const subSessionId = `agent-${options.profileId}-${randomUUID().slice(0, 8)}`
 
     const profiles = listProfiles(rootDir)
-    if (!profiles.find(profile => profile.id === profileId)) {
-      createProfile(rootDir, profileId, profileId, `Auto-generated profile for ${profileId}`)
+    if (!profiles.find(profile => profile.id === options.profileId)) {
+      createProfile(rootDir, options.profileId, options.profileId, `Auto-generated profile for ${options.profileId}`)
     }
-    ensureDirs(rootDir, profileId)
+    ensureDirs(rootDir, options.profileId)
     
     // Create the session for the sub-agent
-    createSession(rootDir, description || `Task: ${task.slice(0, 30)}...`, subSessionId, profileId)
+    createSession(rootDir, options.description || `Task: ${options.task.slice(0, 30)}...`, subSessionId, options.profileId)
     
     const delegationTask: DelegationTask = {
       id: subSessionId, // Use subSessionId as the taskId for simplicity and SendMessage correlation
-      parentSessionId,
+      parentSessionId: options.parentSessionId,
       subSessionId,
-      profileId,
-      type,
-      description: description || "Untitled task",
-      task,
+      profileId: options.profileId,
+      type: options.type,
+      mode: options.mode,
+      description: options.description || "Untitled task",
+      task: options.task,
       status: "pending"
     }
 
     this.activeTasks.set(delegationTask.id, delegationTask)
     logAgentTrace(rootDir, subSessionId, "agent.spawned", {
-      profileId,
-      parentSessionId,
+      profileId: options.profileId,
+      parentSessionId: options.parentSessionId,
       agentId: delegationTask.id,
       details: {
-        type,
+        type: delegationTask.type,
+        mode: delegationTask.mode,
         description: delegationTask.description,
-        taskChars: task.length,
+        taskChars: delegationTask.task.length,
       },
     })
 
     // Execute in background
-    const runPromise = this.executeTurn(delegationTask, task).catch(err => {
+    const runPromise = this.executeTurn(delegationTask, options.task).catch(err => {
       console.error(`Delegation task ${delegationTask.id} failed:`, err)
     })
     const settled = await Promise.race([
@@ -238,6 +275,30 @@ export class AgentOrchestrator {
   }
 
   private notifyParent(task: DelegationTask, error?: string) {
+    if (task.mode === "background") {
+      logAgentTrace(this.runtime.rootDir, task.parentSessionId, "agent.background.completed", {
+        profileId: task.profileId,
+        parentSessionId: task.parentSessionId,
+        agentId: task.id,
+        details: {
+          subSessionId: task.subSessionId,
+          status: task.status,
+          hasResult: Boolean(task.result),
+          error,
+        },
+      })
+      this.runtime.emit({
+        type: "agent.background.completed",
+        sessionId: task.parentSessionId,
+        agentId: task.id,
+        status: task.status === "completed" ? "completed" : task.status === "killed" ? "killed" : "failed",
+        result: task.result,
+        error,
+      })
+      void this.runtime.handleBackgroundDelegationResult(task, error)
+      return
+    }
+
     const usageXml = task.usage ? `
 <usage>
   <total_tokens>${task.usage.total_tokens}</total_tokens>

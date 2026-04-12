@@ -126,6 +126,7 @@ const EDIT_TOOLS = new Set([
   "TodoWrite",
   "ProfileCreate",
   "AgentSpawn",
+  "delegate_background_task",
   "AgentSendMessage",
   "AgentStop",
   "Bash",

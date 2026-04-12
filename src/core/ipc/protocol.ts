@@ -24,6 +24,7 @@ export type AgentEvent =
   | { type: "error"; sessionId: string; error: string }
   | { type: "mcp.connected"; sessionId: string; server: string }
   | { type: "mcp.called"; sessionId: string; server: string; tool: string }
+  | { type: "agent.background.completed"; sessionId: string; agentId: string; status: "completed" | "failed" | "killed"; result?: string; error?: string }
 
 export type SessionSummary = {
   id: string
