@@ -826,6 +826,7 @@ export type ContextExtras = {
   workspaceContext?: WorkspaceBootstrapContext
   adultMode?: boolean
   webSearchProvider?: WebSearchProvider
+  stallAlert?: string | null
 }
 
 function describeBootWing(entry: BootWingEntry) {
@@ -936,6 +937,10 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
       "For image requests: use ImageSearch tool first (SearxNG backend). Then download with Bash curl -o /tmp/img.jpg, then TelegramSendPhoto with the local file.",
       "Never use WebFetch or scrape sites directly for images — only ImageSearch works.",
     )
+  }
+
+  if (contextExtras?.stallAlert) {
+    sections.push("", contextExtras.stallAlert)
   }
 
   if (contextExtras?.dateContext) {

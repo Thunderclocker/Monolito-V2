@@ -90,6 +90,7 @@ const SEARXNG_SETTINGS_FILE = join(SEARXNG_SETTINGS_DIR, "settings.yml")
 const TELEGRAM_TYPING_MAX_MS = 15_000
 const TURN_HARD_TIMEOUT_MS = 95_000
 const COMMAND_REPAIR_MAX_ATTEMPTS = 3
+const STALL_ALERT_MESSAGE = "SYSTEM ALERT: STALL DETECTED. You have hit the exact same tool execution error twice. Evaluate your remaining viable strategies. If you have a logically distinct path, execute it now. If you have EXHAUSTED ALL viable paths, you MUST format your response to yield control back to the user, summarizing what you tried and why it failed."
 
 class TurnTimeoutError extends Error {
   constructor(message: string) {
@@ -414,15 +415,29 @@ function buildToolExecutionError(toolName: string, output: unknown) {
 
 function extractRepairedCommand(text: string) {
   const trimmed = text.trim()
-  const fenced = trimmed.match(/^```(?:bash|sh|shell)?\s*\n([\s\S]*?)\n```$/i)
-  const candidate = (fenced?.[1] ?? trimmed).trim()
+  if (!trimmed) return ""
+
+  const fencedMatch = trimmed.match(/```(?:bash|sh|shell)?\s*\n([\s\S]*?)```/i)
+  let candidate = (fencedMatch?.[1] ?? trimmed).trim()
   if (!candidate) return ""
+
+  candidate = candidate.replace(/^\s*`{1,3}/, "").replace(/`{1,3}\s*$/, "").trim()
+  if (!candidate) return ""
+
   const lines = candidate
     .split("\n")
     .map(line => line.trim())
     .filter(Boolean)
-  if (lines.length === 0) return ""
-  return lines[0] ?? ""
+
+  const isCommandLike = (line: string) => {
+    const cleaned = line.replace(/^[-*+\d.]+\s+/, "")
+    if (/^```/.test(cleaned)) return false
+    if (/^(explanation|reason|because|note|notes|analysis|output|command:)/i.test(cleaned)) return false
+    return /^(sudo\s+)?[a-zA-Z0-9_.-]+(\s+|$)/.test(cleaned)
+  }
+
+  const commandLine = lines.find(isCommandLike)
+  return commandLine?.replace(/^[-*+\d.]+\s+/, "") ?? ""
 }
 
 function buildCommandRepairSystemPrompt(command: string, exitCode: number | null | undefined, stderr: string) {
@@ -638,6 +653,8 @@ export class MonolitoV2Runtime {
   private costState = createCostState()
   private adultModeSessions = new Set<string>()
   private restartRequested = false
+  private toolStallState = new Map<string, { key: string; count: number }>()
+  private stallAlerts = new Map<string, string>()
   readonly orchestrator: AgentOrchestrator
 
   private describeResumeReason(session: SessionRecord) {
@@ -661,6 +678,22 @@ export class MonolitoV2Runtime {
     getDb(this.rootDir)
     ensureConfigWings(this.rootDir)
     loadAndApplyModelSettings(process.env)
+  }
+
+  private recordToolFailureStall(sessionId: string, toolName: string, message: string) {
+    const key = `${toolName}::${message}`
+    const current = this.toolStallState.get(sessionId)
+    const nextCount = current?.key === key ? current.count + 1 : 1
+    this.toolStallState.set(sessionId, { key, count: nextCount })
+    if (nextCount >= 2) {
+      this.stallAlerts.set(sessionId, STALL_ALERT_MESSAGE)
+    }
+  }
+
+  private consumeStallAlert(sessionId: string) {
+    const alert = this.stallAlerts.get(sessionId)
+    if (alert) this.stallAlerts.delete(sessionId)
+    return alert
   }
 
   onEvent(callback: EventListener) {
@@ -929,7 +962,14 @@ export class MonolitoV2Runtime {
             orchestrator: this.orchestrator,
           },
           {
-            contextExtras: { gitContext, dateContext, workspaceContext, adultMode: this.adultModeSessions.has(sessionId), webSearchProvider: webSearchConfig.provider },
+            contextExtras: {
+              gitContext,
+              dateContext,
+              workspaceContext,
+              adultMode: this.adultModeSessions.has(sessionId),
+              webSearchProvider: webSearchConfig.provider,
+              stallAlert: this.consumeStallAlert(sessionId),
+            },
             costState: this.costState,
             abortSignal: abortController.signal,
             turnStartedAt,
@@ -1107,7 +1147,14 @@ export class MonolitoV2Runtime {
           orchestrator: this.orchestrator,
         },
         {
-          contextExtras: { gitContext, dateContext, workspaceContext, adultMode: this.adultModeSessions.has(sessionId), webSearchProvider: webSearchConfig.provider },
+          contextExtras: {
+            gitContext,
+            dateContext,
+            workspaceContext,
+            adultMode: this.adultModeSessions.has(sessionId),
+            webSearchProvider: webSearchConfig.provider,
+            stallAlert: this.consumeStallAlert(sessionId),
+          },
           costState: this.costState,
           abortSignal: abortController.signal,
           turnStartedAt,
@@ -1406,6 +1453,7 @@ export class MonolitoV2Runtime {
         details: { blocked: true, error: message },
       })
       this.emit({ type: "error", sessionId, error: message })
+      this.recordToolFailureStall(sessionId, tool.name, message)
       throw new Error(message)
     }
     logAgentTrace(this.rootDir, sessionId, "tool.started", {
@@ -1517,6 +1565,7 @@ export class MonolitoV2Runtime {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       const output = error instanceof ToolExecutionError ? error.output : undefined
+      this.recordToolFailureStall(sessionId, tool.name, message)
       recordToolCall(this.costState, Date.now() - toolStartedAt)
       appendWorklog(this.rootDir, sessionId, {
         type: "tool",
