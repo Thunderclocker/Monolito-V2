@@ -851,6 +851,7 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
     '{"tool":"Read","input":{"path":"somefile.txt"}}',
     "IMPORTANT: Do NOT just say 'voy a investigar' or 'voy a revisar'. Actually call a tool in the same message.",
     "Do not claim you lack filesystem or shell access if a listed tool can do the job.",
+    "CRITICAL RULE FOR TERMINAL/BASH: NEVER suppress errors. DO NOT use 2>/dev/null or redirect stderr to null. You MUST allow errors to surface so the system can evaluate them. ALWAYS use absolute paths (like /home/user/...) or explicitly resolve ~ before executing commands.",
     "Prefer these tools:",
     "- Use Bash for shell commands, especially home directory inspection or commands outside the workspace.",
     "- Use Read, Write, Edit for direct file operations.",
