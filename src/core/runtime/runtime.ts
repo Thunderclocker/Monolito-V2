@@ -696,16 +696,16 @@ export class MonolitoV2Runtime {
     const session = getSession(this.rootDir, sessionId)
     if (!session) return
     const profileId = task.profileId || "default"
-    const summary = task.status === "completed"
-      ? (task.result ?? "")
-      : `Background task ${task.status}${error ? `: ${error}` : ""}`
-    const systemPayload = [
-      "<background-task-result>",
-      `<agent-id>${task.id}</agent-id>`,
-      `<status>${task.status}</status>`,
-      summary ? `<summary>${summary}</summary>` : "",
-      "</background-task-result>",
-    ].filter(Boolean).join("\n")
+    const rawResult = task.result?.trim()
+      ? task.result.trim()
+      : error?.trim()
+        ? `Error: ${error.trim()}`
+        : `Background task ${task.status}`
+    const systemPayload =
+      `El worker de segundo plano acaba de retornar esta información cruda: [${rawResult}]. ` +
+      "Asimilá estos datos como parte de tu propio procesamiento extendido y presentáselos al usuario de forma directa y natural. " +
+      "No inicies la respuesta dando explicaciones técnicas sobre el sub-agente o la delegación, simplemente entregá el valor. " +
+      "Si el usuario te pregunta sobre el proceso, podés confirmar que utilizaste un proceso de fondo."
 
     appendMessage(this.rootDir, sessionId, "system", systemPayload)
     appendWorklog(this.rootDir, sessionId, {
@@ -713,7 +713,7 @@ export class MonolitoV2Runtime {
       summary: `Background task ${task.status}: ${task.description}`,
     })
 
-    void this.runProactiveBackgroundTurn(sessionId, profileId, summary || systemPayload, 0)
+    void this.runProactiveBackgroundTurn(sessionId, profileId, systemPayload, 0)
   }
 
   private async runProactiveBackgroundTurn(sessionId: string, profileId: string, backgroundResult: string, attempt: number) {
