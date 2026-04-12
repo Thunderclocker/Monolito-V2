@@ -1,10 +1,8 @@
-import { appendFileSync, mkdirSync } from "node:fs"
-import { join } from "node:path"
 import type { SessionRecord } from "../ipc/protocol.ts"
-import { getPaths } from "../ipc/protocol.ts"
 import { appendWorklog, fileMemory, readBootWing, writeBootWing } from "../session/store.ts"
 import { runBackgroundTextTask } from "./modelAdapter.ts"
 import type { BootWingName } from "../bootstrap/bootWings.ts"
+import { createLogger } from "../logging/logger.ts"
 
 type MemoryTrigger = "post-turn" | "pre-compact" | "session-end"
 
@@ -32,21 +30,14 @@ const MAX_ITEMS_PER_REVIEW = 2
 const MIN_CONFIDENCE_FOR_CORE = 0.74
 const MIN_CONFIDENCE_FOR_MEMPALACE = 0.3
 const MEMORY_AGENT_TIMEOUT_MS = 20_000
+const logger = createLogger("memory-agent")
 
 function logMemoryAgent(
-  rootDir: string,
+  _rootDir: string,
   message: string,
   data?: Record<string, unknown>,
 ) {
-  const paths = getPaths(rootDir)
-  mkdirSync(paths.logsDir, { recursive: true })
-  const timestamp = new Date().toISOString()
-  const suffix = data
-    ? ` ${Object.entries(data)
-        .map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`)
-        .join(" ")}`
-    : ""
-  appendFileSync(join(paths.logsDir, "memory-agent.log"), `${timestamp} ${message}${suffix}\n`)
+  logger.info(message, data)
 }
 
 function normalizeWhitespace(value: string) {

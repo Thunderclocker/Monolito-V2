@@ -8,6 +8,7 @@ export function ensureMonolitoRoot() {
   mkdirSync(MONOLITO_ROOT, { recursive: true })
   mkdirSync(join(MONOLITO_ROOT, "memory"), { recursive: true })
   mkdirSync(join(MONOLITO_ROOT, "logs"), { recursive: true })
+  mkdirSync(join(MONOLITO_ROOT, "logs", "instances"), { recursive: true })
   mkdirSync(join(MONOLITO_ROOT, "run"), { recursive: true })
   mkdirSync(join(MONOLITO_ROOT, "profiles"), { recursive: true })
   mkdirSync(join(MONOLITO_ROOT, "scratchpad"), { recursive: true })

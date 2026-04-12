@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { promisify } from "node:util"
-import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import { createWriteStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { dirname, join, relative, resolve, sep } from "node:path"
 import { ensureDirs, getPaths } from "../ipc/protocol.ts"
 import { MONOLITO_ROOT } from "../system/root.ts"
@@ -9,6 +9,7 @@ import { type StdioMcpClient, getDefaultMcpServers } from "../mcp/client.ts"
 import { normalizeChannelsConfig, readChannelsConfig } from "../channels/config.ts"
 import { fileMemory, recallMemory, listWings, listRooms, listProfiles, createProfile, readBootWing, writeBootWing, ensureBootWings, readConfigWing, writeConfigWing, appendActionLog } from "../session/store.ts"
 import { type AgentOrchestrator } from "../runtime/orchestrator.ts"
+import { type Logger } from "../logging/logger.ts"
 import { BOOT_WING_ORDER, isBootWingName } from "../bootstrap/bootWings.ts"
 import { CONFIG_WING_ORDER, type ConfigWingName } from "../config/configWings.ts"
 import { coerceConfigRecord } from "../config/wingValue.ts"
@@ -47,6 +48,8 @@ export type ToolContext = {
   profileId?: string
   getMcpClient?: (serverName: string) => Promise<StdioMcpClient>
   orchestrator?: AgentOrchestrator
+  logger?: Logger
+  sessionId?: string
 }
 
 export type ToolInputSchema = {
@@ -530,10 +533,11 @@ const tools: ToolDefinition[] = [
       const timeout = optionalNumber(input, "timeout") ?? DEFAULT_BASH_TIMEOUT_MS
       const runInBackground = optionalBoolean(input, "run_in_background") ?? false
       const shell = process.env.SHELL || "/bin/zsh"
+      const instanceLogPath = context.logger?.logPath
       if (runInBackground) {
         const taskId = randomUUID()
         const paths = ensureDirs(context.rootDir)
-        const outputPath = join(paths.logsDir, `background-${taskId}.log`)
+        const outputPath = instanceLogPath ?? join(paths.logsDir, `background-${taskId}.log`)
         const stdout = openSync(outputPath, "a")
         const stderr = openSync(outputPath, "a")
         const child = spawn(shell, ["-lc", command], {
@@ -549,6 +553,42 @@ const tools: ToolDefinition[] = [
           pid: child.pid,
           outputPath,
           command,
+        }
+      }
+      if (instanceLogPath) {
+        const stdoutChunks: Buffer[] = []
+        const stderrChunks: Buffer[] = []
+        const outputStream = createWriteStream(instanceLogPath, { flags: "a" })
+        const child = spawn(shell, ["-lc", command], {
+          cwd: context.cwd,
+          stdio: ["ignore", "pipe", "pipe"],
+          env: process.env,
+        })
+        const timeoutId = setTimeout(() => {
+          child.kill("SIGKILL")
+        }, timeout)
+        child.stdout?.on("data", chunk => {
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))
+          stdoutChunks.push(buffer)
+          outputStream.write(buffer)
+        })
+        child.stderr?.on("data", chunk => {
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))
+          stderrChunks.push(buffer)
+          outputStream.write(buffer)
+        })
+        const exitCode = await new Promise<number | null>(resolve => {
+          child.on("close", code => resolve(code === null ? null : code))
+        })
+        clearTimeout(timeoutId)
+        outputStream.end()
+        return {
+          command,
+          cwd: context.cwd,
+          stdout: Buffer.concat(stdoutChunks).toString(),
+          stderr: Buffer.concat(stderrChunks).toString(),
+          interrupted: exitCode === null,
+          exitCode,
         }
       }
       try {

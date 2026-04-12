@@ -3,8 +3,9 @@
  * Categories, timestamps, in-memory error buffer, and file sinks.
  */
 
-import { appendFileSync, mkdirSync } from "node:fs"
-import { dirname } from "node:path"
+import { appendFileSync, createWriteStream, mkdirSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { MONOLITO_ROOT } from "../system/root.ts"
 
 export type LogLevel = "debug" | "info" | "warn" | "error"
 
@@ -18,6 +19,16 @@ export type LogEntry = {
 }
 
 type LogSink = (entry: LogEntry) => void
+
+export type Logger = {
+  debug: (message: string, data?: unknown) => void
+  info: (message: string, data?: unknown) => void
+  warn: (message: string, data?: unknown) => void
+  error: (message: string, data?: unknown) => void
+  timed: (level: LogLevel, message: string, data?: unknown) => (extraData?: Record<string, unknown>) => void
+  writeRaw?: (text: string) => void
+  logPath?: string
+}
 
 const MAX_IN_MEMORY_ERRORS = 100
 
@@ -150,5 +161,45 @@ export function createLogger(category: string) {
     warn: (message: string, data?: unknown) => logWarn(category, message, data),
     error: (message: string, data?: unknown) => logError(category, message, data),
     timed: (level: LogLevel, message: string, data?: unknown) => logTimed(level, category, message, data),
+  } satisfies Logger
+}
+
+export function createInstanceLogger(agentId: string, role: string): Logger {
+  const logPath = join(MONOLITO_ROOT, "logs", "instances", `${role}-${agentId}.log`)
+  mkdirSync(dirname(logPath), { recursive: true })
+  const stream = createWriteStream(logPath, { flags: "a" })
+  const writeLine = (line: string) => {
+    stream.write(line.endsWith("\n") ? line : `${line}\n`)
+  }
+  const emitInstance = (entry: LogEntry) => writeLine(formatEntry(entry))
+
+  const logInstance = (level: LogLevel, category: string, message: string, data?: unknown, durationMs?: number) => {
+    emitInstance({
+      timestamp: new Date().toISOString(),
+      level,
+      category,
+      message,
+      data: normalizeLogData(data),
+      durationMs,
+    })
+  }
+
+  return {
+    debug: (message: string, data?: unknown) => logInstance("debug", role, message, data),
+    info: (message: string, data?: unknown) => logInstance("info", role, message, data),
+    warn: (message: string, data?: unknown) => logInstance("warn", role, message, data),
+    error: (message: string, data?: unknown) => logInstance("error", role, message, data),
+    timed: (level: LogLevel, message: string, data?: unknown) => {
+      const start = Date.now()
+      return (extraData?: Record<string, unknown>) => {
+        const base = normalizeLogData(data) ?? {}
+        logInstance(level, role, message, { ...base, ...extraData }, Date.now() - start)
+      }
+    },
+    writeRaw: (text: string) => {
+      if (!text) return
+      stream.write(text)
+    },
+    logPath,
   }
 }
