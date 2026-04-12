@@ -2,8 +2,9 @@ import { execFile, spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { promisify } from "node:util"
 import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
-import { dirname, join, relative, resolve } from "node:path"
+import { dirname, join, relative, resolve, sep } from "node:path"
 import { ensureDirs, getPaths } from "../ipc/protocol.ts"
+import { MONOLITO_ROOT } from "../system/root.ts"
 import { type StdioMcpClient, getDefaultMcpServers } from "../mcp/client.ts"
 import { normalizeChannelsConfig, readChannelsConfig } from "../channels/config.ts"
 import { fileMemory, recallMemory, listWings, listRooms, listProfiles, createProfile, readBootWing, writeBootWing, ensureBootWings, readConfigWing, writeConfigWing, appendActionLog } from "../session/store.ts"
@@ -12,7 +13,6 @@ import { BOOT_WING_ORDER, isBootWingName } from "../bootstrap/bootWings.ts"
 import { CONFIG_WING_ORDER, type ConfigWingName } from "../config/configWings.ts"
 import { coerceConfigRecord } from "../config/wingValue.ts"
 import { loadAndApplyModelSettings } from "../runtime/modelConfig.ts"
-import { MONOLITO_ROOT } from "../system/root.ts"
 import {
   deployManagedTtsContainer,
   getManagedTtsBaseUrl,
@@ -81,9 +81,10 @@ const optionalPathInputSchema: ToolInputSchema = {
 }
 
 function resolveWorkspacePath(rootDir: string, cwd: string, target = ".") {
-  const resolvedRoot = resolve(rootDir)
+  const allowedRoots = [resolve(rootDir), resolve(MONOLITO_ROOT)]
   const absolute = resolve(cwd, target)
-  if (absolute !== resolvedRoot && !absolute.startsWith(`${resolvedRoot}/`)) {
+  const allowed = allowedRoots.some(root => absolute === root || absolute.startsWith(`${root}${sep}`))
+  if (!allowed) {
     throw new Error(`Path escapes workspace: ${target}`)
   }
   return absolute
