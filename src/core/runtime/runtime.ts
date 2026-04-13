@@ -88,7 +88,7 @@ const SEARXNG_PORT = 8888
 const SEARXNG_URL = `http://127.0.0.1:${SEARXNG_PORT}`
 const SEARXNG_SETTINGS_DIR = join(MONOLITO_ROOT, "searxng")
 const SEARXNG_SETTINGS_FILE = join(SEARXNG_SETTINGS_DIR, "settings.yml")
-const TELEGRAM_TYPING_MAX_MS = 15_000
+const TELEGRAM_TYPING_REFRESH_MS = 4_000
 const TURN_HARD_TIMEOUT_MS = 95_000
 const COMMAND_REPAIR_MAX_ATTEMPTS = 3
 const STALL_ALERT_MESSAGE = "SYSTEM ALERT: STALL DETECTED. You have hit the exact same tool execution error twice. Evaluate your remaining viable strategies. If you have a logically distinct path, execute it now. If you have EXHAUSTED ALL viable paths, you MUST format your response to yield control back to the user, summarizing what you tried and why it failed."
@@ -434,11 +434,16 @@ function extractRepairedCommand(text: string) {
     const cleaned = line.replace(/^[-*+\d.]+\s+/, "")
     if (/^```/.test(cleaned)) return false
     if (/^(explanation|reason|because|note|notes|analysis|output|command:)/i.test(cleaned)) return false
+    if (/^(model request failed|tool_call_error|cannot |can't |error:|failed:|timeout|timed out\b)/i.test(cleaned)) return false
     return /^(sudo\s+)?[a-zA-Z0-9_.-]+(\s+|$)/.test(cleaned)
   }
 
   const commandLine = lines.find(isCommandLike)
-  return commandLine?.replace(/^[-*+\d.]+\s+/, "") ?? ""
+  const normalized = commandLine?.replace(/^[-*+\d.]+\s+/, "").trim() ?? ""
+  if (/^(model request failed|tool_call_error|cannot |can't |error:|failed:|timeout|timed out\b)/i.test(normalized)) {
+    return ""
+  }
+  return normalized
 }
 
 function buildCommandRepairSystemPrompt(command: string, exitCode: number | null | undefined, stderr: string) {
@@ -632,14 +637,11 @@ function startTelegramTypingIndicator(sessionId: string): TelegramTypingIndicato
   void sendTelegramTypingAction(token, chatId)
   const interval = setInterval(() => {
     void sendTelegramTypingAction(token, chatId)
-  }, 4_000)
-  const expiry = setTimeout(() => {
-    clearInterval(interval)
-  }, TELEGRAM_TYPING_MAX_MS)
+  }, TELEGRAM_TYPING_REFRESH_MS)
+  interval.unref?.()
   return {
     stop() {
       clearInterval(interval)
-      clearTimeout(expiry)
     },
   }
 }
