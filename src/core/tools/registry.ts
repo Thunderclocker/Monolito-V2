@@ -6,7 +6,7 @@ import { dirname, join, relative, resolve, sep } from "node:path"
 import { ensureDirs, getPaths } from "../ipc/protocol.ts"
 import { MONOLITO_ROOT } from "../system/root.ts"
 import { type StdioMcpClient, getDefaultMcpServers } from "../mcp/client.ts"
-import { normalizeChannelsConfig, readChannelsConfig } from "../channels/config.ts"
+import { normalizeChannelsConfigForWrite, readChannelsConfig } from "../channels/config.ts"
 import { fileMemory, recallMemory, listWings, listRooms, listProfiles, createProfile, readBootWing, writeBootWing, ensureBootWings, readConfigWing, writeConfigWing, appendActionLog } from "../session/store.ts"
 import { type AgentOrchestrator } from "../runtime/orchestrator.ts"
 import { type Logger } from "../logging/logger.ts"
@@ -128,7 +128,7 @@ function optionalBoolean(input: Record<string, unknown>, key: string) {
 
 function normalizeConfigWingValue(wing: ConfigWingName, value: unknown) {
   if (wing === "CONF_CHANNELS") {
-    return normalizeChannelsConfig(value)
+    return normalizeChannelsConfigForWrite(value)
   }
   if (wing === "CONF_MODELS" || wing === "CONF_SYSTEM" || wing === "CONF_WEBSEARCH") {
     return coerceConfigRecord(value) ?? value

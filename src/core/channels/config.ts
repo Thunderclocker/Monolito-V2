@@ -49,6 +49,48 @@ type LooseChannelsConfig = ChannelsConfig & {
   telegram?: LooseTelegramConfig
 }
 
+const CHANNELS_TOP_LEVEL_KEYS = new Set(["telegram", "tts", "stt"])
+const TELEGRAM_KEYS = new Set(["token", "enabled", "allowedChats"])
+
+function hasOwn(object: Record<string, unknown>, key: string) {
+  return Object.prototype.hasOwnProperty.call(object, key)
+}
+
+function assertValidChannelsConfigForWrite(config: unknown) {
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error("CONF_CHANNELS must be an object.")
+  }
+
+  const record = config as Record<string, unknown>
+  const unknownTopLevelKeys = Object.keys(record).filter(key => !CHANNELS_TOP_LEVEL_KEYS.has(key))
+  if (unknownTopLevelKeys.length > 0) {
+    throw new Error(`CONF_CHANNELS contains unsupported top-level keys: ${unknownTopLevelKeys.join(", ")}`)
+  }
+  if (hasOwn(record, "enabled")) {
+    throw new Error("CONF_CHANNELS must not use root 'enabled'. Use 'telegram.enabled' instead.")
+  }
+
+  if (record.telegram !== undefined) {
+    if (!record.telegram || typeof record.telegram !== "object" || Array.isArray(record.telegram)) {
+      throw new Error("CONF_CHANNELS.telegram must be an object.")
+    }
+    const telegram = record.telegram as Record<string, unknown>
+    if (hasOwn(telegram, "bot_token")) {
+      throw new Error("CONF_CHANNELS.telegram must not use 'bot_token'. Use 'token' instead.")
+    }
+    if (hasOwn(telegram, "authorized_chat_ids")) {
+      throw new Error("CONF_CHANNELS.telegram must not use 'authorized_chat_ids'. Use 'allowedChats' instead.")
+    }
+    if (hasOwn(telegram, "session_name")) {
+      throw new Error("CONF_CHANNELS.telegram must not use 'session_name'. It is not part of the config schema.")
+    }
+    const unknownTelegramKeys = Object.keys(telegram).filter(key => !TELEGRAM_KEYS.has(key))
+    if (unknownTelegramKeys.length > 0) {
+      throw new Error(`CONF_CHANNELS.telegram contains unsupported keys: ${unknownTelegramKeys.join(", ")}`)
+    }
+  }
+}
+
 function toIntegerArray(value: unknown) {
   if (!Array.isArray(value)) return []
   return value
@@ -84,6 +126,11 @@ export function normalizeChannelsConfig(config: unknown): ChannelsConfig {
     normalized.stt = { ...loose.stt }
   }
   return normalized
+}
+
+export function normalizeChannelsConfigForWrite(config: unknown): ChannelsConfig {
+  assertValidChannelsConfigForWrite(config)
+  return normalizeChannelsConfig(config)
 }
 
 export function readChannelsConfig(): ChannelsConfig {
