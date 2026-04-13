@@ -1518,7 +1518,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "delegate_background_task",
-    description: "Delegate a heavy task to a background worker and return immediately with a job_id.",
+    description: "Use this tool autonomously and proactively for high cognitive load tasks (multiple web searches, deep reading, long analysis, multi-step research) to avoid blocking the chat. You do not need to specify an output file: when the worker finishes, its raw result is injected directly into your volatile memory as a system message and the runtime will force a new inference turn so you can synthesize and respond to the user. Return a short natural acknowledgement to the user immediately (e.g. 'Ahí me pongo, dame un rato') after calling this tool. IMPORTANT: Only the primary coordinator may call this tool. Sub-agents running as background workers must NEVER call delegate_background_task — they must execute their task directly and return results.",
     inputSchema: {
       type: "object",
       properties: {
