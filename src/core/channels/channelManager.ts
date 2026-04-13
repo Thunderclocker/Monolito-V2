@@ -119,10 +119,10 @@ function buildWebSearchMenuText() {
   const config = readWebSearchConfig()
   return [
     "Web Search",
-    `Modo activo: ${config.provider}`,
+    `Active mode: ${config.provider}`,
     "",
-    "Elegí el método de búsqueda web.",
-    "Si elegís SearxNG, se despliega/inicia automáticamente si hace falta.",
+    "Choose the web search method.",
+    "If you choose SearxNG, it is deployed/started automatically when needed.",
   ].join("\n")
 }
 
@@ -154,7 +154,7 @@ function buildChannelsMenuText() {
     `Token: ${telegram.token ? "configured" : "missing"}`,
     `Allowed chats: ${telegram.allowedChats.length > 0 ? telegram.allowedChats.join(", ") : "(all chats allowed)"}`,
     "",
-    "Usá los botones o elegí una opción que espere tu próximo mensaje.",
+    "Use the buttons or pick an option that waits for your next message.",
   ].join("\n")
 }
 
@@ -297,12 +297,12 @@ async function handleWebSearchCallback(token: string, callback: TelegramCallback
     if (provider === "default" || provider === "searxng") {
       writeWebSearchConfig({ provider })
       await editTelegramMenu(
-        token,
-        chatId,
-        messageId,
-        `${buildWebSearchMenuText()}\n\nModo cambiado a: ${provider}${provider === "searxng" ? "\n\nActivando SearxNG..." : ""}`,
-        buildWebSearchMenuButtons(),
-      )
+      token,
+      chatId,
+      messageId,
+      `${buildWebSearchMenuText()}\n\nMode changed to: ${provider}${provider === "searxng" ? "\n\nStarting SearxNG..." : ""}`,
+      buildWebSearchMenuButtons(),
+    )
       if (provider === "searxng") {
         return "/websearch searxng"
       }
@@ -316,7 +316,7 @@ async function handleWebSearchCallback(token: string, callback: TelegramCallback
       token,
       chatId,
       messageId,
-      `${buildWebSearchMenuText()}\n\nMandá tu próximo mensaje con la query a probar en SearxNG.`,
+      `${buildWebSearchMenuText()}\n\nSend your next message with the query to test in SearxNG.`,
       buildWebSearchMenuButtons(),
     )
     return true
@@ -354,7 +354,7 @@ async function handleChannelsCallback(token: string, callback: TelegramCallbackQ
       token,
       chatId,
       messageId,
-      `${buildChannelsMenuText()}\n\nTelegram ${config.telegram.enabled ? "habilitado" : "deshabilitado"}.`,
+      `${buildChannelsMenuText()}\n\nTelegram ${config.telegram.enabled ? "enabled" : "disabled"}.`,
       buildChannelsMenuButtons(),
     )
     return "RESTART"
@@ -367,7 +367,7 @@ async function handleChannelsCallback(token: string, callback: TelegramCallbackQ
       token,
       chatId,
       messageId,
-      `${buildChannelsMenuText()}\n\nLista de chats autorizados limpiada.`,
+      `${buildChannelsMenuText()}\n\nAllowed chat list cleared.`,
       buildChannelsMenuButtons(),
     )
     return "RESTART"
@@ -379,7 +379,7 @@ async function handleChannelsCallback(token: string, callback: TelegramCallbackQ
       token,
       chatId,
       messageId,
-      `${buildChannelsMenuText()}\n\nMandá tu próximo mensaje con el token de Telegram.`,
+      `${buildChannelsMenuText()}\n\nSend your next message with the Telegram token.`,
       buildChannelsMenuButtons(),
     )
     return true
@@ -391,7 +391,7 @@ async function handleChannelsCallback(token: string, callback: TelegramCallbackQ
       token,
       chatId,
       messageId,
-      `${buildChannelsMenuText()}\n\nMandá tu próximo mensaje con los chat IDs separados por coma.`,
+      `${buildChannelsMenuText()}\n\nSend your next message with the chat IDs separated by commas.`,
       buildChannelsMenuButtons(),
     )
     return true
@@ -405,7 +405,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
   process.stderr.write(`[ChannelManager] startChannels called. Telegram enabled: ${!!config.telegram?.enabled}\n`)
 
   if (config.telegram?.enabled && config.telegram.token) {
-    logger.info("Iniciando integración de Telegram...")
+    logger.info("Starting Telegram integration...")
     void registerTelegramCommands(config.telegram.token)
       .then(() => {
         logger.info("Comandos de Telegram registrados")
@@ -423,7 +423,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
           const chatId = callbackMessage?.chat.id ?? callback.from.id
           if (config.telegram?.allowedChats && config.telegram.allowedChats.length > 0) {
             if (!config.telegram.allowedChats.includes(chatId)) {
-              logger.warn(`Callback de Telegram bloqueado (chat no autorizado): ${chatId}`)
+              logger.warn(`Telegram callback blocked (unauthorized chat): ${chatId}`)
               return
             }
           }
@@ -450,7 +450,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
             }
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
-            logger.error(`Error procesando callback de Telegram en chat ${chatId}: ${message}`)
+          logger.error(`Error handling Telegram callback in chat ${chatId}: ${message}`)
           }
           return
         }
@@ -458,16 +458,16 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
         const msg = update.message || update.channel_post
         if (!msg) return
         if (msg.from?.is_bot) {
-          logger.debug(`Ignorando mensaje del propio bot o de otro bot en Telegram chat ${msg.chat.id}`)
+          logger.debug(`Ignoring message from this bot or another bot in Telegram chat ${msg.chat.id}`)
           return
         }
         
         const chatId = msg.chat.id
         
-        // Autorización
+        // Authorization
         if (config.telegram?.allowedChats && config.telegram.allowedChats.length > 0) {
           if (!config.telegram.allowedChats.includes(chatId)) {
-            logger.warn(`Mensaje de Telegram bloqueado (chat no autorizado): ${chatId}`)
+            logger.warn(`Telegram message blocked (unauthorized chat): ${chatId}`)
             return
           }
         }
@@ -482,14 +482,14 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
             if (pending.kind === "channels-token") {
               const token = (msg.text ?? msg.caption ?? "").trim()
               if (!token) {
-                await sendTelegramMenu(config.telegram.token, chatId, "Token vacío. Probá /channels de nuevo.", buildChannelsMenuButtons())
+                await sendTelegramMenu(config.telegram.token, chatId, "Empty token. Try /channels again.", buildChannelsMenuButtons())
                 return
               }
               const nextConfig = readChannelsConfig()
               const telegram = nextConfig.telegram ?? { token: "", enabled: false, allowedChats: [] }
               nextConfig.telegram = { ...telegram, token, enabled: true }
               writeChannelsConfig(nextConfig)
-              await sendTelegramMenu(config.telegram.token, chatId, "Token guardado correctamente.", buildChannelsMenuButtons())
+              await sendTelegramMenu(config.telegram.token, chatId, "Token saved.", buildChannelsMenuButtons())
               options?.onRestartRequested?.()
               return
             }
@@ -497,21 +497,21 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
               const raw = (msg.text ?? msg.caption ?? "").trim()
               const { ids, invalid } = parseAllowedChats(raw)
               if (invalid.length > 0) {
-                await sendTelegramMenu(config.telegram.token, chatId, `IDs inválidos: ${invalid.join(", ")}`, buildChannelsMenuButtons())
+                await sendTelegramMenu(config.telegram.token, chatId, `Invalid IDs: ${invalid.join(", ")}`, buildChannelsMenuButtons())
                 return
               }
               const nextConfig = readChannelsConfig()
               const telegram = nextConfig.telegram ?? { token: "", enabled: false, allowedChats: [] }
               nextConfig.telegram = { ...telegram, allowedChats: ids }
               writeChannelsConfig(nextConfig)
-              await sendTelegramMenu(config.telegram.token, chatId, `Chats autorizados guardados: ${ids.join(", ")}`, buildChannelsMenuButtons())
+              await sendTelegramMenu(config.telegram.token, chatId, `Allowed chats saved: ${ids.join(", ")}`, buildChannelsMenuButtons())
               options?.onRestartRequested?.()
               return
             }
             if (pending.kind === "websearch-test") {
               const query = (msg.text ?? msg.caption ?? "").trim()
               if (!query) {
-                await sendTelegramMenu(config.telegram.token, chatId, "Query vacía. Probá /websearch de nuevo.", buildWebSearchMenuButtons())
+                await sendTelegramMenu(config.telegram.token, chatId, "Empty query. Try /websearch again.", buildWebSearchMenuButtons())
                 return
               }
               const sessionId = `telegram-${chatId}`
@@ -521,7 +521,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
             }
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
-            logger.error(`Error procesando input pendiente de Telegram en chat ${chatId}: ${message}`)
+            logger.error(`Error handling pending Telegram input in chat ${chatId}: ${message}`)
             return
           }
         }
@@ -546,14 +546,14 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
           }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
-          logger.warn(`STT falló para Telegram chat ${chatId}: ${message}`)
+          logger.warn(`STT failed for Telegram chat ${chatId}: ${message}`)
         }
 
         if (shouldShortCircuitAudioFailure(msg, transcript)) {
           await sendTelegramText(
             config.telegram.token,
             chatId,
-            "No pude transcribir ese audio automaticamente en este momento. Reenviamelo mas tarde o mandame el texto.",
+            "I could not transcribe that audio automatically right now. Send it again later or send the text.",
           ).catch(() => {})
           return
         }
@@ -561,21 +561,21 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
         const inboundText = buildTelegramInboundText(msg, transcript)
         if (!inboundText) return
         
-        logger.debug(`Recibido mensaje de Telegram [${chatId}]`)
-        
-        // Asegurar que la sesión exista antes de enviar el mensaje
+        logger.debug(`Received Telegram message [${chatId}]`)
+
+        // Ensure the session exists before sending the message
         try {
           runtime.ensureSession(sessionId, `Telegram ${chatId}`)
           await runtime.processMessage(sessionId, inboundText)
         } catch (error) {
           const err = error as Error & { code?: string }
           const detail = err.code ? ` code=${err.code}` : ""
-          logger.error(`Error procesando mensaje de Telegram en sesión ${sessionId}${detail}: ${err.message}`)
+          logger.error(`Error handling Telegram message in session ${sessionId}${detail}: ${err.message}`)
           if (err.stack) logger.debug(`Stack: ${err.stack}`)
         }
       },
       onError: (error) => {
-        logger.error("Error en poller de Telegram", error)
+        logger.error("Telegram poller error", error)
       }
     })
     
@@ -585,7 +585,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
 
 export function stopChannels() {
   if (activePoller) {
-    logger.info("Deteniendo integración de Telegram...")
+    logger.info("Stopping Telegram integration...")
     activePoller.stop()
     activePoller = null
   }

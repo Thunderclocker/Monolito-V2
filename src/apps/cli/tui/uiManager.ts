@@ -47,12 +47,12 @@ export function renderMenuDefinition(menu: MenuDefinition): string {
   lines.push("-".repeat(menu.title.length))
   if (menu.subtitle) lines.push(menu.subtitle)
   lines.push("")
-  lines.push("Opciones:")
+  lines.push("Options:")
   for (const opt of menu.options) {
     lines.push(`  ${opt.key}. ${opt.label}`)
   }
   lines.push("")
-  lines.push("Ingresa el numero:")
+  lines.push("Enter number:")
   return lines.join("\n")
 }
 
@@ -88,7 +88,7 @@ export async function processMasterMenuInput(
 ): Promise<{ result: UIMenuResult; state: MasterMenuState }> {
   if (!state) {
     return {
-      result: { output: "Menu cerrado.", tone: "neutral", finished: true },
+      result: { output: "Menu closed.", tone: "neutral", finished: true },
       state: null,
     }
   }
@@ -99,7 +99,7 @@ export async function processMasterMenuInput(
   // Global exit commands (only at dashboard level)
   if (!state.activeDomain && ["salir", "exit", "q"].includes(normalized)) {
     return {
-      result: { output: "Panel de configuracion cerrado.", tone: "neutral", finished: true },
+      result: { output: "Configuration panel closed.", tone: "neutral", finished: true },
       state: null,
     }
   }
@@ -114,14 +114,14 @@ export async function processMasterMenuInput(
   if (!option) {
     const menu = renderMenuDefinition(state.dashboardSchema)
     return {
-      result: { output: `Opcion "${trimmed}" no valida.\n\n${menu}`, tone: "error", finished: false },
+      result: { output: `Invalid option "${trimmed}".\n\n${menu}`, tone: "error", finished: false },
       state,
     }
   }
 
   if (option.action.type === "exit") {
     return {
-      result: { output: "Panel de configuracion cerrado.", tone: "neutral", finished: true },
+      result: { output: "Configuration panel closed.", tone: "neutral", finished: true },
       state: null,
     }
   }
@@ -131,7 +131,7 @@ export async function processMasterMenuInput(
   }
 
   return {
-    result: { output: "Accion no implementada.", tone: "error", finished: false },
+    result: { output: "Action not implemented.", tone: "error", finished: false },
     state,
   }
 }
@@ -167,18 +167,18 @@ async function enterSubDomain(
       }
     }
     case "audio": {
-      const envelope = buildMasterDashboard("Audio y Voz: Proximamente. Usa /tts y /stt por ahora.")
+      const envelope = buildMasterDashboard("Audio: coming soon. Use /tts and /stt for now.")
       const dash = renderMenuDefinition(envelope.menu)
       return {
-        result: { output: `Audio y Voz: Proximamente. Usa /tts y /stt por ahora.\n\n${dash}`, tone: "info", finished: false },
+        result: { output: `Audio: coming soon. Use /tts and /stt for now.\n\n${dash}`, tone: "info", finished: false },
         state: { ...state!, activeDomain: null, dashboardSchema: envelope.menu },
       }
     }
     case "system": {
-      const envelope = buildMasterDashboard("Sistema: Proximamente.")
+      const envelope = buildMasterDashboard("System: coming soon.")
       const dash = renderMenuDefinition(envelope.menu)
       return {
-        result: { output: `Sistema: Proximamente.\n\n${dash}`, tone: "info", finished: false },
+        result: { output: `System: coming soon.\n\n${dash}`, tone: "info", finished: false },
         state: { ...state!, activeDomain: null, dashboardSchema: envelope.menu },
       }
     }
@@ -194,7 +194,7 @@ async function processSubDomainInput(
   state: MasterMenuState,
 ): Promise<{ result: UIMenuResult; state: MasterMenuState }> {
   if (!state?.activeDomain) {
-    return { result: { output: "Error interno.", tone: "error", finished: false }, state: state! }
+    return { result: { output: "Internal error.", tone: "error", finished: false }, state: state! }
   }
 
   switch (state.activeDomain) {
