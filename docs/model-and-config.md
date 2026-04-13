@@ -2,21 +2,22 @@
 
 Monolito separates “current effective settings” from the model profile registry.
 
-## Settings files
+## Config wings
 
-- `~/.monolito-v2/settings.json`: active model settings used by the runtime.
-- `~/.monolito-v2/models.json`: saved model profiles for the interactive model menu.
-- `~/.monolito-v2/channels.json`: channel configuration.
-- `~/.monolito-v2/websearch.json`: persisted web search mode selection.
-- `~/.monolito-v2/searxng/settings.yml`: managed SearxNG configuration used when `searxng` mode is enabled.
+Runtime configuration is stored in SQLite Memory Palace `CONF_*` wings:
 
-Monolito also supports fallback migration from legacy v1 settings under:
+- `CONF_SYSTEM`: effective system/model settings
+- `CONF_MODELS`: saved model profiles for the interactive model menu
+- `CONF_CHANNELS`: channel, TTS, and STT configuration
+- `CONF_WEBSEARCH`: persisted web search mode selection
 
-- `~/.monolito/settings.json`
+Managed SearxNG still uses:
+
+- `~/.monolito-v2/searxng/settings.yml`
 
 ## Configuration scope
 
-The persisted files in this section are runtime-level configuration files. They are not stored per session.
+These config wings are runtime-level settings. They are not stored per session.
 
 Session-specific runtime state such as chat history, adult mode, and conversation flow is tracked separately in session storage.
 
@@ -39,9 +40,9 @@ These can be viewed or changed with:
 
 ## Runtime TTS settings
 
-Text-to-speech settings are stored alongside channel settings in:
+Text-to-speech settings are stored in:
 
-- `~/.monolito-v2/channels.json`
+- `CONF_CHANNELS`
 
 Supported `/config set` fields for TTS are:
 
@@ -79,7 +80,7 @@ When the managed service is deployed, Monolito also removes conflicting legacy O
 
 Speech-to-text settings are also stored in:
 
-- `~/.monolito-v2/channels.json`
+- `CONF_CHANNELS`
 
 Supported `/config set` fields for STT are:
 

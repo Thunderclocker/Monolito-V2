@@ -18,7 +18,7 @@ Monolito currently supports two web search modes:
 
 The active mode is stored in:
 
-`~/.monolito-v2/websearch.json`
+`CONF_WEBSEARCH`
 
 Web search mode is a runtime-level setting, not a per-session setting.
 
@@ -78,11 +78,11 @@ For Telegram, `/websearch` is handled as a menu entry point rather than a text-o
 
 Button actions are translated internally into runtime operations, but the user-facing flow stays menu-based.
 
-## Persisted files
+## Persisted storage
 
-Web search functionality uses these persistent files:
+Web search functionality uses:
 
-- `~/.monolito-v2/websearch.json`
+- `CONF_WEBSEARCH`
 - `~/.monolito-v2/searxng/settings.yml`
 
 Operational logs for the running daemon still go to:

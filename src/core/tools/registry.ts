@@ -1860,8 +1860,8 @@ const tools: ToolDefinition[] = [
         bytes: result.bytes,
         effect: wing === "CONF_SYSTEM" || wing === "CONF_MODELS"
           ? "model_config_reloaded"
-          : wing === "CONF_WEBSEARCH"
-            ? "websearch_config_applied"
+          : wing === "CONF_WEBSEARCH" || wing === "CONF_CHANNELS"
+            ? "daemon_restart_required"
             : "stored",
       }
     },

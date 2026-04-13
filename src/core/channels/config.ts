@@ -43,8 +43,6 @@ type LooseTelegramConfig = {
   token?: unknown
   enabled?: unknown
   allowedChats?: unknown
-  bot_token?: unknown
-  authorized_chat_ids?: unknown
 }
 
 type LooseChannelsConfig = ChannelsConfig & {
@@ -61,14 +59,8 @@ function toIntegerArray(value: unknown) {
 function normalizeTelegramConfig(value: unknown): TelegramConfig | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
   const telegram = value as LooseTelegramConfig
-  const token = typeof telegram.token === "string"
-    ? telegram.token
-    : typeof telegram.bot_token === "string"
-      ? telegram.bot_token
-      : ""
-  const allowedChats = telegram.allowedChats !== undefined
-    ? toIntegerArray(telegram.allowedChats)
-    : toIntegerArray(telegram.authorized_chat_ids)
+  const token = typeof telegram.token === "string" ? telegram.token : ""
+  const allowedChats = toIntegerArray(telegram.allowedChats)
   const enabled = typeof telegram.enabled === "boolean"
     ? telegram.enabled
     : token.trim().length > 0

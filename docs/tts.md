@@ -43,7 +43,7 @@ Legacy containers such as `tts-edge` are treated as conflicts and are removed by
 
 TTS settings live in:
 
-- `~/.monolito-v2/channels.json`
+- `CONF_CHANNELS`
 
 Relevant config fields:
 
