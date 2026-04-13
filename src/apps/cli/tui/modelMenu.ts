@@ -19,6 +19,7 @@ import {
   getProviderDefaults,
   getAvailableProviders,
   discoverOllamaModels,
+  discoverProviderModels,
   addOllamaDiscoveredModels,
   redactProfile,
 } from "../../../core/runtime/modelRegistry.ts"
@@ -124,9 +125,11 @@ export async function processMenuInput(input: string, state: MenuState): Promise
     case "add-provider":
       return handleAddProvider(trimmed, state)
     case "add-baseurl":
-      return handleAddBaseUrl(trimmed, state)
+      return await handleAddBaseUrl(trimmed, state)
     case "add-apikey":
       return handleAddApiKey(trimmed, state)
+    case "add-model-pick":
+      return handleAddModelPick(trimmed, state)
     case "add-model":
       return handleAddModel(trimmed, state)
     case "add-name":
@@ -303,7 +306,7 @@ function handleAddProvider(input: string, state: MenuState): MenuResult {
   }
 }
 
-function handleAddBaseUrl(input: string, state: MenuState): MenuResult {
+async function handleAddBaseUrl(input: string, state: MenuState): Promise<MenuResult> {
   const provider = state!.draft.provider as ModelProvider
   const defaults = getProviderDefaults(provider)
   const baseUrl = input || defaults.baseUrl
@@ -317,15 +320,34 @@ function handleAddBaseUrl(input: string, state: MenuState): MenuResult {
   }
 
   if (provider === "ollama") {
-    // Ollama doesn't need API key — skip to model
-    const lines = [
-      `Provider: ${provider}`,
-      `Base URL: ${baseUrl}`,
-      "",
-      "Model name (e.g. llama3, mistral, codellama):",
-    ]
+    const availableModels = await discoverProviderModels(provider, { baseUrl, apiKey: "" })
+    if (availableModels.length > 0) {
+      const lines = [
+        `Provider: ${provider}`,
+        `Base URL: ${baseUrl}`,
+        "API Key: (not required)",
+        "",
+        "Available models:",
+        ...availableModels.map((model, index) => `  ${index + 1}. ${model}`),
+        "",
+        "Enter model number, or type 'manual' to enter one yourself:",
+      ]
+      return {
+        output: lines.join("\n"),
+        nextState: { ...state!, step: "add-model-pick", draft: { ...state!.draft, baseUrl, apiKey: "" }, availableModels },
+        tone: "info",
+      }
+    }
+
     return {
-      output: lines.join("\n"),
+      output: [
+        `Provider: ${provider}`,
+        `Base URL: ${baseUrl}`,
+        "API Key: (not required)",
+        "",
+        "Could not list models automatically for this Ollama endpoint.",
+        "Enter model name manually:",
+      ].join("\n"),
       nextState: { ...state!, step: "add-model", draft: { ...state!.draft, baseUrl, apiKey: "" } },
       tone: "info",
     }
@@ -344,12 +366,83 @@ function handleAddBaseUrl(input: string, state: MenuState): MenuResult {
   }
 }
 
-function handleAddApiKey(input: string, state: MenuState): MenuResult {
+async function handleAddApiKey(input: string, state: MenuState): Promise<MenuResult> {
   const apiKey = input.trim()
+  const provider = state!.draft.provider as ModelProvider
+  const baseUrl = state!.draft.baseUrl ?? ""
   const storedKey = readModelSettings().env.ANTHROPIC_AUTH_TOKEN.trim()
-  if (!apiKey && !storedKey) {
+  const effectiveApiKey = apiKey || storedKey
+  const needsApiKey = getProviderDefaults(provider).needsApiKey
+
+  if (needsApiKey && !effectiveApiKey) {
     return {
       output: "API Key is required. Enter API Key:",
+      nextState: state,
+      tone: "error",
+    }
+  }
+
+  const availableModels = await discoverProviderModels(provider, {
+    baseUrl,
+    apiKey: effectiveApiKey,
+  })
+
+  const nextState: MenuState = {
+    ...state!,
+    step: availableModels.length > 0 ? "add-model-pick" : "add-model",
+    draft: { ...state!.draft, apiKey: effectiveApiKey },
+    availableModels,
+  }
+
+  if (availableModels.length > 0) {
+    const lines = [
+      `Provider: ${provider}`,
+      `Base URL: ${baseUrl}`,
+      `API Key: ${effectiveApiKey ? "***" + effectiveApiKey.slice(-4) : "(not required)"}`,
+      "",
+      "Available models:",
+      ...availableModels.map((model, index) => `  ${index + 1}. ${model}`),
+      "",
+      "Enter model number, or type 'manual' to enter one yourself:",
+    ]
+    return {
+      output: lines.join("\n"),
+      nextState,
+      tone: "info",
+    }
+  }
+
+  const lines = [
+    `Provider: ${provider}`,
+    `Base URL: ${baseUrl}`,
+    `API Key: ${effectiveApiKey ? "***" + effectiveApiKey.slice(-4) : "(not required)"}`,
+    "",
+    "Could not list models automatically for this endpoint.",
+    "Enter model name manually:",
+  ]
+  return {
+    output: lines.join("\n"),
+    nextState,
+    tone: "info",
+  }
+}
+
+function handleAddModelPick(input: string, state: MenuState): MenuResult {
+  const normalized = input.trim().toLowerCase()
+  if (normalized === "manual" || normalized === "m") {
+    return {
+      output: "Enter model name manually:",
+      nextState: { ...state!, step: "add-model" },
+      tone: "info",
+    }
+  }
+
+  const models = state?.availableModels ?? []
+  const index = Number.parseInt(input, 10) - 1
+  const model = models[index]
+  if (!model) {
+    return {
+      output: `Invalid option "${input}".\n\nEnter model number, or type 'manual':`,
       nextState: state,
       tone: "error",
     }
@@ -358,13 +451,14 @@ function handleAddApiKey(input: string, state: MenuState): MenuResult {
   const lines = [
     `Provider: ${state!.draft.provider}`,
     `Base URL: ${state!.draft.baseUrl}`,
-    `API Key: ${apiKey ? "***" + apiKey.slice(-4) : "(from saved config)"}`,
+    `Model:    ${model}`,
     "",
-    "Model name (e.g. MiniMax-M2.7, claude-3-5-sonnet):",
+    `Profile name [${model}]:`,
+    "(press Enter to use model name)",
   ]
   return {
     output: lines.join("\n"),
-    nextState: { ...state!, step: "add-model", draft: { ...state!.draft, apiKey: apiKey || storedKey } },
+    nextState: { ...state!, step: "add-name", draft: { ...state!.draft, model } },
     tone: "info",
   }
 }

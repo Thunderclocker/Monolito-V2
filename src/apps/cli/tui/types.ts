@@ -12,8 +12,9 @@ export type MenuStep =
   | "add-provider"   // Step 1: choose provider
   | "add-baseurl"    // Step 2: set base URL
   | "add-apikey"     // Step 3: set API key
-  | "add-model"      // Step 4: set model name
-  | "add-name"       // Step 5: set friendly name
+  | "add-model-pick" // Step 4: choose a discovered model or switch to manual input
+  | "add-model"      // Step 5: set model name manually
+  | "add-name"       // Step 6: set friendly name
   | "edit-pick"      // Pick profile to edit
   | "edit-field"     // Pick field to edit
   | "edit-value"     // Enter new value for field
@@ -42,8 +43,8 @@ export type MenuState = {
   targetId?: string
   /** Field being edited */
   editField?: string
-  /** Ollama discovered models for selection */
-  ollamaModels?: string[]
+  /** Discovered models available for selection */
+  availableModels?: string[]
 } | null
 
 export type ComposerState = {

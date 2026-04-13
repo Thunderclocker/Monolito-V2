@@ -253,6 +253,62 @@ export async function discoverOllamaModels(baseUrl?: string): Promise<string[]> 
   }
 }
 
+function uniqueSortedModels(items: string[]) {
+  return [...new Set(items.map(item => item.trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b))
+}
+
+export async function discoverProviderModels(
+  provider: ModelProvider,
+  options?: { baseUrl?: string; apiKey?: string },
+): Promise<string[]> {
+  const baseUrl = options?.baseUrl?.trim().replace(/\/+$/, "") || getProviderDefaults(provider).baseUrl
+  const apiKey = options?.apiKey?.trim() || ""
+
+  if (provider === "ollama") {
+    return await discoverOllamaModels(baseUrl)
+  }
+
+  if (provider === "minimax") {
+    return []
+  }
+
+  if (!baseUrl || !apiKey) {
+    return []
+  }
+
+  try {
+    const headers: Record<string, string> = {}
+    if (provider === "openai_compatible") {
+      headers.Authorization = `Bearer ${apiKey}`
+    } else if (provider === "anthropic_compatible") {
+      headers["x-api-key"] = apiKey
+      headers["anthropic-version"] = "2023-06-01"
+    }
+
+    const response = await fetch(`${baseUrl}/v1/models`, {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(7000),
+    })
+    if (!response.ok) return []
+
+    const data = await response.json() as {
+      data?: Array<{ id?: string }>
+      models?: Array<{ id?: string; name?: string }>
+    }
+
+    if (Array.isArray(data.data)) {
+      return uniqueSortedModels(data.data.map(item => item.id ?? ""))
+    }
+    if (Array.isArray(data.models)) {
+      return uniqueSortedModels(data.models.map(item => item.id ?? item.name ?? ""))
+    }
+    return []
+  } catch {
+    return []
+  }
+}
+
 export async function addOllamaDiscoveredModels(baseUrl?: string): Promise<ModelProfile[]> {
   const url = (baseUrl?.trim() || "http://localhost:11434").replace(/\/+$/, "")
   const models = await discoverOllamaModels(url)
