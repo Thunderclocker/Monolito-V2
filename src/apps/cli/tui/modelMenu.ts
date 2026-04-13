@@ -436,19 +436,19 @@ function handleEditPick(input: string, state: MenuState): MenuResult {
     }
   }
   const lines = [
-    `Editando: ${profile.name}`,
+    `Editing: ${profile.name}`,
     "",
     renderProfileDetail(profile),
     "",
-    "¿Qué campo querés editar?",
-    "  1. Nombre",
+    "Select field:",
+    "  1. Name",
     "  2. Provider",
     "  3. Base URL",
     "  4. API Key",
     "  5. Model",
-    "  0. Volver",
+    "  0. Back",
     "",
-    "Ingresá el número:",
+    "Enter number:",
   ]
   return {
     output: lines.join("\n"),
@@ -469,14 +469,14 @@ function handleEditField(input: string, state: MenuState): MenuResult {
   const field = fieldMap[input]
   if (!field) {
     return {
-      output: `Opción "${input}" no válida.\n\nIngresá el número del campo:`,
+      output: `Invalid option "${input}".\n\nEnter field number:`,
       nextState: state,
       tone: "error",
     }
   }
 
   const labelMap: Record<string, string> = {
-    name: "Nombre",
+    name: "Name",
     provider: "Provider (openai_compatible, anthropic_compatible, ollama, minimax)",
     baseUrl: "Base URL",
     apiKey: "API Key",
@@ -484,7 +484,7 @@ function handleEditField(input: string, state: MenuState): MenuResult {
   }
 
   return {
-    output: `Ingresá el nuevo valor para ${labelMap[field]}:`,
+    output: `Enter new ${labelMap[field]}:`,
     nextState: { ...state!, step: "edit-value", editField: field },
     tone: "info",
   }
