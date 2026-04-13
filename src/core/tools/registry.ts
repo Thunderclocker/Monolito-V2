@@ -136,6 +136,17 @@ function normalizeConfigWingValue(wing: ConfigWingName, value: unknown) {
   return value
 }
 
+function parseJsonStringValue(value: unknown) {
+  if (typeof value !== "string") return value
+  const trimmed = value.trim()
+  if (!trimmed) return value
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return value
+  }
+}
+
 function inferExtensionFromFormat(format: string) {
   if (format === "opus") return "ogg"
   return format
@@ -1842,7 +1853,7 @@ const tools: ToolDefinition[] = [
       if (action === "read") {
         return { wing, value: readConfigWing(context.rootDir, wing) }
       }
-      const value = input.value
+      const value = parseJsonStringValue(input.value)
       if (value === undefined) throw new Error("value is required when action='write'")
       const normalizedValue = normalizeConfigWingValue(wing, value)
       const result = writeConfigWing(context.rootDir, wing, normalizedValue as never)
