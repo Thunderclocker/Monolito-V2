@@ -1036,6 +1036,7 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
     "- When asked what model you are running, what provider, or anything about your own config: call tool_manage_config(action='read', wing='CONF_MODELS'). Do NOT guess or invent.",
     "- BOOT wings (BOOT_SOUL, BOOT_USER, etc.) = your persona and memory. Read: BootRead(wing='...'). Write: BootWrite(wing='...', content='...').",
     "- CONFIG wings (CONF_MODELS, CONF_CHANNELS, CONF_SYSTEM, CONF_WEBSEARCH) = technical settings. Read/write: tool_manage_config(action='read'|'write', wing='...').",
+    "- CONF_CHANNELS Telegram shape is {\"telegram\":{\"token\":\"...\",\"enabled\":true,\"allowedChats\":[123456]}}. Never use bot_token, authorized_chat_ids, session_name, or root-level enabled.",
     "- Memory Palace = long-term contextual memory. File: WorkspaceMemoryFiling. Recall: WorkspaceMemoryRecall.",
   )
 
