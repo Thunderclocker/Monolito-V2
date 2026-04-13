@@ -180,8 +180,8 @@ function hasConfiguredModel() {
 function openMissingModelMenu() {
   return openModelMenu(
     [
-      "No hay modelo configurado todavía.",
-      "Abrí la configuración de modelos automáticamente para que elijas uno antes de arrancar.",
+      "No model is configured yet.",
+      "Opened the model menu automatically so you can choose one before starting.",
     ].join("\n"),
     "info",
   )

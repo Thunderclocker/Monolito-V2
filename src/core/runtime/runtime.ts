@@ -223,7 +223,7 @@ async function ensureSearxngSettingsFile(): Promise<{ ok: boolean; message?: str
     return { ok: true }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    return { ok: false, message: `No se pudo preparar settings.yml de SearxNG: ${message}` }
+    return { ok: false, message: `Could not prepare SearxNG settings.yml: ${message}` }
   } finally {
     if (createdBootstrap) {
       await execFileAsync("docker", ["rm", "-f", bootstrapContainer], { timeout: 15_000 }).catch(() => {})
@@ -244,11 +244,11 @@ async function probeSearxngJsonApi() {
 
 async function listSearxngContainers(): Promise<string> {
   const containers = await findAllSearxngContainers()
-  if (containers.length === 0) return "No se encontraron contenedores SearxNG."
+  if (containers.length === 0) return "No SearxNG containers found."
   return [
-    `Contenedores SearxNG encontrados: ${containers.length}`,
+    `SearxNG containers found: ${containers.length}`,
     ...containers.map(container =>
-      `- ${container.name || "(sin nombre)"} | ${container.id} | ${container.image} | ${container.status}${container.isOurs ? " | managed" : ""}`),
+      `- ${container.name || "(unnamed)"} | ${container.id} | ${container.image} | ${container.status}${container.isOurs ? " | managed" : ""}`),
   ].join("\n")
 }
 
@@ -257,41 +257,41 @@ async function removeSearxngContainer(idOrName: string): Promise<{ ok: boolean; 
     const containers = await findAllSearxngContainers()
     const ours = containers.find(container => container.isOurs)
     if (!ours) {
-      return { ok: true, message: "SearxNG no está desplegado." }
+      return { ok: true, message: "SearxNG is not deployed." }
     }
     idOrName = ours.id
   }
   try {
     await execFileAsync("docker", ["rm", "-f", idOrName], { timeout: 15_000 })
-    return { ok: true, message: `Contenedor ${idOrName} eliminado.` }
+    return { ok: true, message: `Container ${idOrName} removed.` }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    return { ok: false, message: `Error eliminando ${idOrName}: ${message}` }
+    return { ok: false, message: `Error removing ${idOrName}: ${message}` }
   }
 }
 
 async function stopSearxngContainer(): Promise<{ ok: boolean; message: string }> {
   const status = await getSearxngStatus()
   if (status === "not_found" || status === "docker_error") {
-    return { ok: true, message: "SearxNG no está desplegado." }
+    return { ok: true, message: "SearxNG is not deployed." }
   }
   try {
     await execFileAsync("docker", ["stop", SEARXNG_CONTAINER], { timeout: 15_000 })
-    return { ok: true, message: "SearxNG detenido." }
+    return { ok: true, message: "SearxNG stopped." }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    return { ok: false, message: `Error deteniendo SearxNG: ${message}` }
+    return { ok: false, message: `Error stopping SearxNG: ${message}` }
   }
 }
 
 async function clearAllSearxngContainers(): Promise<{ ok: boolean; message: string }> {
   const containers = await findAllSearxngContainers()
-  if (containers.length === 0) return { ok: true, message: "No se encontraron contenedores SearxNG." }
+  if (containers.length === 0) return { ok: true, message: "No SearxNG containers found." }
   const lines: string[] = []
   let allOk = true
   for (const container of containers) {
     const result = await removeSearxngContainer(container.id)
-    lines.push(`${container.name || container.id}: ${result.ok ? "eliminado" : result.message}`)
+    lines.push(`${container.name || container.id}: ${result.ok ? "removed" : result.message}`)
     if (!result.ok) allOk = false
   }
   return { ok: allOk, message: lines.join("\n") }
@@ -301,20 +301,20 @@ async function deploySearxngContainer(): Promise<{ ok: boolean; message: string 
   try {
     await execFileAsync("docker", ["info"], { timeout: 10_000 })
   } catch {
-    return { ok: false, message: "Docker no está disponible o no está corriendo." }
+    return { ok: false, message: "Docker is unavailable or not running." }
   }
 
   const status = await getSearxngStatus()
   if (status === "running") {
     try {
       const probe = await fetch(`${SEARXNG_URL}/healthz`, { signal: AbortSignal.timeout(3000) })
-      if (probe.ok && await probeSearxngJsonApi()) return { ok: true, message: `SearxNG ya está corriendo en ${SEARXNG_URL}.` }
+      if (probe.ok && await probeSearxngJsonApi()) return { ok: true, message: `SearxNG is already running at ${SEARXNG_URL}.` }
     } catch {}
   }
 
   const settings = await ensureSearxngSettingsFile()
   if (!settings.ok) {
-    return { ok: false, message: settings.message ?? "No se pudo preparar la configuración de SearxNG." }
+    return { ok: false, message: settings.message ?? "Could not prepare the SearxNG configuration." }
   }
 
   const containers = await findAllSearxngContainers()
@@ -337,18 +337,18 @@ async function deploySearxngContainer(): Promise<{ ok: boolean; message: string 
     ], { timeout: 120_000 })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    return { ok: false, message: `Error desplegando SearxNG: ${message}` }
+    return { ok: false, message: `Error deploying SearxNG: ${message}` }
   }
 
   for (let i = 0; i < 25; i++) {
     await new Promise(resolve => setTimeout(resolve, 1000))
     try {
       const probe = await fetch(`${SEARXNG_URL}/healthz`, { signal: AbortSignal.timeout(2000) })
-      if (probe.ok && await probeSearxngJsonApi()) return { ok: true, message: `SearxNG desplegado en ${SEARXNG_URL}.` }
+      if (probe.ok && await probeSearxngJsonApi()) return { ok: true, message: `SearxNG deployed at ${SEARXNG_URL}.` }
     } catch {}
   }
 
-  return { ok: false, message: "SearxNG se inició pero su API JSON no respondió dentro de 25s." }
+  return { ok: false, message: "SearxNG started but its JSON API did not respond within 25s." }
 }
 
 async function testSearxngQuery(query: string): Promise<string> {
@@ -357,14 +357,14 @@ async function testSearxngQuery(query: string): Promise<string> {
     signal: AbortSignal.timeout(10_000),
   })
   if (!response.ok) {
-    return `SearxNG respondió HTTP ${response.status}.`
+    return `SearxNG returned HTTP ${response.status}.`
   }
   const data = await response.json() as { results?: Array<{ title?: string; url?: string }> }
   const results = (data.results ?? []).slice(0, 5)
-  if (results.length === 0) return `Búsqueda "${query}": 0 resultados.`
+  if (results.length === 0) return `Search "${query}": 0 results.`
   return [
-    `Búsqueda "${query}": ${results.length} resultados.`,
-    ...results.map((result, index) => `${index + 1}. ${result.title ?? "(sin título)"}\n${result.url ?? ""}`),
+    `Search "${query}": ${results.length} results.`,
+    ...results.map((result, index) => `${index + 1}. ${result.title ?? "(untitled)"}\n${result.url ?? ""}`),
   ].join("\n")
 }
 
@@ -704,10 +704,10 @@ export class MonolitoV2Runtime {
         ? `Error: ${error.trim()}`
         : `Background task ${task.status}`
     const systemPayload =
-      `El worker de segundo plano acaba de retornar esta información cruda: [${rawResult}]. ` +
-      "Asimilá estos datos como parte de tu propio procesamiento extendido y presentáselos al usuario de forma directa y natural. " +
-      "No inicies la respuesta dando explicaciones técnicas sobre el sub-agente o la delegación, simplemente entregá el valor. " +
-      "Si el usuario te pregunta sobre el proceso, podés confirmar que utilizaste un proceso de fondo."
+      `The background worker just returned this raw information: [${rawResult}]. ` +
+      "Incorporate it into your extended processing and present it to the user directly and naturally. " +
+      "Do not begin the response with technical explanations about the sub-agent or delegation; just deliver the value. " +
+      "If the user asks about the process, you may confirm that you used a background process."
 
     appendMessage(this.rootDir, sessionId, "system", systemPayload)
     appendWorklog(this.rootDir, sessionId, {
@@ -928,7 +928,7 @@ export class MonolitoV2Runtime {
     const session = getSession(this.rootDir, sessionId)
     if (!session) throw new Error(`Session ${sessionId} not found`)
     if (this.activeSessions.has(sessionId)) {
-      throw new Error(`Session ${sessionId} ya está ocupada`)
+      throw new Error(`Session ${sessionId} is already busy`)
     }
 
     const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
@@ -1122,7 +1122,7 @@ export class MonolitoV2Runtime {
     } catch (error) {
       const timeoutReason = abortController.signal.reason
       if (timeoutReason instanceof TurnTimeoutError) {
-        const message = `No pude terminar este turno dentro del límite duro de ${Math.floor(TURN_HARD_TIMEOUT_MS / 1000)}s. Reintentá con un pedido más acotado o dividilo en pasos.`
+        const message = `I could not finish this turn within the hard limit of ${Math.floor(TURN_HARD_TIMEOUT_MS / 1000)}s. Retry with a narrower request or split it into steps.`
         appendWorklog(this.rootDir, sessionId, {
           type: "session",
           summary: `Turn failed: ${clipForWorklog(message)}`,
@@ -1262,7 +1262,7 @@ export class MonolitoV2Runtime {
     } catch (error) {
       const timeoutReason = abortController.signal.reason
       const message = timeoutReason instanceof TurnTimeoutError
-        ? `No pude terminar este arranque dentro del límite duro de ${Math.floor(TURN_HARD_TIMEOUT_MS / 1000)}s.`
+        ? `I could not finish this startup within the hard limit of ${Math.floor(TURN_HARD_TIMEOUT_MS / 1000)}s.`
         : error instanceof Error ? error.message : String(error)
       appendWorklog(this.rootDir, sessionId, {
         type: "session",
@@ -1738,14 +1738,14 @@ export class MonolitoV2Runtime {
       config.telegram = { ...telegram, enabled: true }
       writeChannelsConfig(config)
       this.restartRequested = true
-      return "Telegram habilitado. Reinicio del daemon programado automáticamente."
+      return "Telegram enabled. Daemon restart scheduled automatically."
     }
 
     if (action === "off" || action === "disable") {
       config.telegram = { ...telegram, enabled: false }
       writeChannelsConfig(config)
       this.restartRequested = true
-      return "Telegram deshabilitado. Reinicio del daemon programado automáticamente."
+      return "Telegram disabled. Daemon restart scheduled automatically."
     }
 
     if (action === "token") {
@@ -1754,25 +1754,25 @@ export class MonolitoV2Runtime {
       config.telegram = { ...telegram, token, enabled: true }
       writeChannelsConfig(config)
       this.restartRequested = true
-      return "Token de Telegram guardado. Reinicio del daemon programado automáticamente."
+      return "Telegram token saved. Daemon restart scheduled automatically."
     }
 
     if (action === "chats") {
       const raw = rest.slice(1).join(" ").trim()
       if (!raw) return "Usage: /channels chats <id,id,...>"
       const { ids, invalid } = parseAllowedChats(raw)
-      if (invalid.length > 0) return `IDs inválidos: ${invalid.join(", ")}`
+      if (invalid.length > 0) return `Invalid IDs: ${invalid.join(", ")}`
       config.telegram = { ...telegram, allowedChats: ids }
       writeChannelsConfig(config)
       this.restartRequested = true
-      return `Chats autorizados guardados: ${ids.join(", ")}. Reinicio del daemon programado automáticamente.`
+      return `Allowed chats saved: ${ids.join(", ")}. Daemon restart scheduled automatically.`
     }
 
     if (action === "clear") {
       config.telegram = { ...telegram, allowedChats: [] }
       writeChannelsConfig(config)
       this.restartRequested = true
-      return "Lista de chats autorizados limpiada. Reinicio del daemon programado automáticamente."
+      return "Allowed chat list cleared. Daemon restart scheduled automatically."
     }
 
     return "Usage: /channels [show|on|off|token <token>|chats <id,id,...>|clear]"
@@ -1799,13 +1799,13 @@ export class MonolitoV2Runtime {
       config.tts = { ...(config.tts ?? {}), managed: true, autoDeploy: true }
       writeChannelsConfig(config)
       const next = normalizeTtsConfig(config.tts)
-      return `TTS administrado habilitado. URL administrada: ${getManagedTtsBaseUrl(next)}`
+      return `Managed TTS enabled. Managed URL: ${getManagedTtsBaseUrl(next)}`
     }
 
     if (action === "off" || action === "disable") {
       config.tts = { ...(config.tts ?? {}), managed: false }
       writeChannelsConfig(config)
-      return "TTS administrado deshabilitado."
+      return "Managed TTS disabled."
     }
 
     if (action === "deploy" || action === "start") {
@@ -1856,13 +1856,13 @@ export class MonolitoV2Runtime {
       config.stt = { ...(config.stt ?? {}), managed: true, autoDeploy: true, autoTranscribe: true }
       writeChannelsConfig(config)
       const next = normalizeSttConfig(config.stt)
-      return `STT administrado habilitado. URL administrada: ${getManagedSttBaseUrl(next)}`
+      return `Managed STT enabled. Managed URL: ${getManagedSttBaseUrl(next)}`
     }
 
     if (action === "off" || action === "disable") {
       config.stt = { ...(config.stt ?? {}), autoTranscribe: false }
       writeChannelsConfig(config)
-      return "Auto-transcripción STT deshabilitada."
+      return "STT auto-transcription disabled."
     }
 
     if (action === "deploy" || action === "start") {
@@ -1901,7 +1901,7 @@ export class MonolitoV2Runtime {
         `SearxNG status: ${status}`,
         `SearxNG URL: ${SEARXNG_URL}`,
         "",
-        "Usá /websearch desde la CLI o Telegram para abrir el menú interactivo.",
+        "Use /websearch from the CLI or Telegram to open the interactive menu.",
       ].join("\n")
     }
 
