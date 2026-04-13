@@ -1372,15 +1372,30 @@ export class MonolitoV2Runtime {
           "/new — Reset session and restart agent",
         ].join("\n")
       case "/status": {
-        return JSON.stringify(
-          {
-            session: getSession(this.rootDir, sessionId),
-            model: redactSensitiveModelSettings(readModelSettings()),
-            tools: listTools().map(tool => tool.name),
-          },
-          null,
-          2,
-        )
+        const session = getSession(this.rootDir, sessionId)
+        const model = redactSensitiveModelSettings(readModelSettings())
+        const toolCount = listTools().length
+        const lines: string[] = []
+        if (session) {
+          lines.push(`Session: ${session.title} (${session.id})`)
+          lines.push(`State: ${session.state}`)
+          lines.push(`Profile: ${session.profileId}`)
+          lines.push(`Messages: ${session.messages.length}`)
+          lines.push(`Created: ${session.createdAt}`)
+          lines.push(`Updated: ${session.updatedAt}`)
+        } else {
+          lines.push(`Session: ${sessionId} (not found)`)
+        }
+        lines.push("")
+        lines.push("Model:")
+        lines.push(`  Protocol: ${model.modelConfig.protocol}`)
+        lines.push(`  Base URL: ${model.env.ANTHROPIC_BASE_URL || "(default)"}`)
+        lines.push(`  Model: ${model.env.ANTHROPIC_MODEL || "(default)"}`)
+        lines.push(`  API Key: ${model.env.ANTHROPIC_AUTH_TOKEN}`)
+        lines.push(`  Timeout: ${model.env.API_TIMEOUT_MS}ms`)
+        lines.push("")
+        lines.push(`Tools: ${toolCount} available`)
+        return lines.join("\n")
       }
       case "/sessions":
         return listSessions(this.rootDir).map(item => `${item.id} ${item.state} ${item.title}`).join("\n")
