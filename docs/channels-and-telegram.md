@@ -55,7 +55,7 @@ When TTS is configured, the runtime can also generate local speech audio and sen
 
 Channel settings are stored in:
 
-`~/.monolito-v2/channels.json`
+`CONF_CHANNELS`
 
 Telegram config includes:
 
@@ -122,8 +122,8 @@ When managed STT is enabled and auto-transcription is on, Monolito will:
 
 The current managed STT flow uses a Docker-backed Whisper webservice with `faster_whisper` as the default engine.
 
-## Related files
+## Related storage
 
-- `~/.monolito-v2/channels.json`
-- `~/.monolito-v2/websearch.json`
+- `CONF_CHANNELS`
+- `CONF_WEBSEARCH`
 - `.monolito-v2/logs/monolitod-v2.log`

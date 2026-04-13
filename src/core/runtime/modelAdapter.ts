@@ -2124,13 +2124,13 @@ export function getEffectiveModelConfig() {
       provider: activeProfile.provider,
     }
   }
-  // Fallback to env/settings
+  // Fallback to persisted system settings
   const settings = readModelSettings()
   return {
-    baseUrl: normalizeBaseUrl(process.env.ANTHROPIC_BASE_URL ?? settings.env.ANTHROPIC_BASE_URL),
-    apiKey: (process.env.ANTHROPIC_AUTH_TOKEN ?? process.env.ANTHROPIC_API_KEY ?? settings.env.ANTHROPIC_AUTH_TOKEN).trim(),
-    model: compactWhitespace(process.env.ANTHROPIC_MODEL ?? settings.env.ANTHROPIC_MODEL),
-    provider: (process.env.MONOLITO_ACTIVE_PROVIDER as ModelProvider | undefined) ?? "anthropic_compatible" as ModelProvider,
+    baseUrl: normalizeBaseUrl(settings.env.ANTHROPIC_BASE_URL),
+    apiKey: settings.env.ANTHROPIC_AUTH_TOKEN.trim(),
+    model: compactWhitespace(settings.env.ANTHROPIC_MODEL),
+    provider: "anthropic_compatible" as ModelProvider,
   }
 }
 

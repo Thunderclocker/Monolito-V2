@@ -172,8 +172,8 @@ function getBootstrapStartupPrompt(isFreshSession: boolean) {
 function hasConfiguredModel() {
   const activeProfileModel = getActiveProfile()?.model?.trim() ?? ""
   if (activeProfileModel) return true
-  const settings = readModelSettings({ env: process.env })
-  const configuredModel = settings.env.ANTHROPIC_MODEL.trim() || process.env.ANTHROPIC_MODEL?.trim() || ""
+  const settings = readModelSettings()
+  const configuredModel = settings.env.ANTHROPIC_MODEL.trim()
   return configuredModel.length > 0
 }
 

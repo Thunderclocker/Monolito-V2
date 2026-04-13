@@ -16,7 +16,7 @@ Further documentation lives in [`docs/`](./docs/README.md).
 - Slash-command interface for runtime inspection and control
 - Channel ingestion and reply flow for Telegram chats
 - Web search mode switching with a menu-driven SearxNG local backend for web and image search
-- Persisted model/profile settings, permission rules, and post-tool hooks
+- Persisted model/profile settings in SQLite `CONF_*` wings, plus permission rules and post-tool hooks
 - MCP bridge for listing tools/resources, reading resources, and calling remote MCP tools
 - Agnostic model backend selection across Anthropic-compatible endpoints, OpenAI-compatible endpoints, and local Ollama instances
 
@@ -88,7 +88,7 @@ Further documentation lives in [`docs/`](./docs/README.md).
 - Monolito also prepares a persisted `settings.yml` so the SearxNG JSON API is enabled, which is required by `ImageSearch`.
 - The menu can list detected SearxNG containers, stop the managed container, remove it, clean conflicting containers, and run a test query.
 - `ImageSearch` uses the same managed SearxNG backend as `/websearch`.
-- Web search mode is stored in `~/.monolito-v2/websearch.json`.
+- Web search mode is stored in the SQLite `CONF_WEBSEARCH` wing.
 - SearxNG settings are stored in `~/.monolito-v2/searxng/settings.yml`.
 
 ## Interactive menus
@@ -194,14 +194,10 @@ monolito -p '/stt status'
 
 ## Notes
 
-- Settings: `~/.monolito-v2/settings.json`
-- Model profiles: `~/.monolito-v2/models.json`
-- Channel config: `~/.monolito-v2/channels.json`
-- Web search config: `~/.monolito-v2/websearch.json`
+- Runtime config wings live in the SQLite Memory Palace: `CONF_SYSTEM`, `CONF_MODELS`, `CONF_CHANNELS`, `CONF_WEBSEARCH`
 - SearxNG settings: `~/.monolito-v2/searxng/settings.yml`
 - Session data: `.monolito-v2/` relative to the project root (created on first daemon start)
 - Local memory database: `.monolito-v2/memory/memory.sqlite`
 - Daemon log: `.monolito-v2/logs/monolitod-v2.log`
 - Memory Agent log: `.monolito-v2/logs/memory-agent.log`
 - Profile workspaces: `.monolito-v2/profiles/<profile-id>/workspace/`
-- Legacy v1 settings fallback: `~/.monolito/settings.json`

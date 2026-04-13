@@ -22,7 +22,7 @@ import {
   addOllamaDiscoveredModels,
   redactProfile,
 } from "../../../core/runtime/modelRegistry.ts"
-import { applyProfileToEnv } from "../../../core/runtime/modelConfig.ts"
+import { applyProfileToEnv, readModelSettings } from "../../../core/runtime/modelConfig.ts"
 import type { MenuState, MenuStep } from "./types.ts"
 
 export type MenuResult = {
@@ -346,11 +346,10 @@ function handleAddBaseUrl(input: string, state: MenuState): MenuResult {
 
 function handleAddApiKey(input: string, state: MenuState): MenuResult {
   const apiKey = input.trim()
-  // Allow empty if env has a key
-  const envKey = (process.env.ANTHROPIC_AUTH_TOKEN ?? process.env.ANTHROPIC_API_KEY ?? "").trim()
-  if (!apiKey && !envKey) {
+  const storedKey = readModelSettings().env.ANTHROPIC_AUTH_TOKEN.trim()
+  if (!apiKey && !storedKey) {
     return {
-      output: "API Key is required (none found in environment). Enter API Key:",
+      output: "API Key is required. Enter API Key:",
       nextState: state,
       tone: "error",
     }
@@ -359,13 +358,13 @@ function handleAddApiKey(input: string, state: MenuState): MenuResult {
   const lines = [
     `Provider: ${state!.draft.provider}`,
     `Base URL: ${state!.draft.baseUrl}`,
-    `API Key: ${apiKey ? "***" + apiKey.slice(-4) : "(from env)"}`,
+    `API Key: ${apiKey ? "***" + apiKey.slice(-4) : "(from saved config)"}`,
     "",
     "Model name (e.g. MiniMax-M2.7, claude-3-5-sonnet):",
   ]
   return {
     output: lines.join("\n"),
-    nextState: { ...state!, step: "add-model", draft: { ...state!.draft, apiKey: apiKey || envKey } },
+    nextState: { ...state!, step: "add-model", draft: { ...state!.draft, apiKey: apiKey || storedKey } },
     tone: "info",
   }
 }

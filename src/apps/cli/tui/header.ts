@@ -52,10 +52,10 @@ export function getHeaderState(rootDir: string, sessionId: string, connected: bo
     }
   }
 
-  // Fallback to legacy env-based settings
-  const settings = readModelSettings({ env: process.env })
-  const model = settings.env.ANTHROPIC_MODEL.trim() || process.env.ANTHROPIC_MODEL?.trim() || "(unset)"
-  const baseUrl = settings.env.ANTHROPIC_BASE_URL.trim() || process.env.ANTHROPIC_BASE_URL?.trim() || ""
+  // Fallback to effective system settings when no profile is active
+  const settings = readModelSettings()
+  const model = settings.env.ANTHROPIC_MODEL.trim() || "(unset)"
+  const baseUrl = settings.env.ANTHROPIC_BASE_URL.trim() || ""
   return {
     projectName: metadata.projectName,
     version: metadata.version,
@@ -67,4 +67,3 @@ export function getHeaderState(rootDir: string, sessionId: string, connected: bo
     connected,
   }
 }
-

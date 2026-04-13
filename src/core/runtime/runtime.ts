@@ -1576,6 +1576,10 @@ export class MonolitoV2Runtime {
         sessionId,
         profileId: profileId ?? context.profileId,
       }, output)
+      const outputRecord = asRecord(output)
+      if (tool.name === "tool_manage_config" && outputRecord?.effect === "daemon_restart_required") {
+        this.restartRequested = true
+      }
       const executionError = buildToolExecutionError(tool.name, output)
       if (executionError) {
         output = await tryRepairBashFailure(executionError)
@@ -1664,14 +1668,13 @@ export class MonolitoV2Runtime {
           apiKey: "",
           model: "",
         },
-        { env: process.env },
       )
       saveModelSettings(settings)
       applyModelSettingsToEnv(process.env, settings)
       return "Model settings reset to defaults and applied."
     }
 
-    const nextDraft = settingsToDraft(readModelSettings({ env: process.env }))
+    const nextDraft = settingsToDraft(readModelSettings())
     if (action === "set") {
       const field = (rest[1] ?? "").trim()
       const value = rest.slice(2).join(" ").trim()
@@ -1685,10 +1688,10 @@ export class MonolitoV2Runtime {
     }
 
     nextDraft.protocol = MODEL_PROTOCOL
-    const errors = validateModelDraft(nextDraft, process.env)
+    const errors = validateModelDraft(nextDraft)
     if (errors.length > 0) throw new Error(errors[0] ?? "Invalid model configuration")
 
-    const settings = draftToSettings(nextDraft, { env: process.env })
+    const settings = draftToSettings(nextDraft)
     saveModelSettings(settings)
     applyModelSettingsToEnv(process.env, settings)
     const effective = getEffectiveModelConfig()
@@ -2140,9 +2143,9 @@ export class MonolitoV2Runtime {
       } else {
         return `Unknown field: ${field}`
       }
-      const errors = validateModelDraft(draft, process.env)
+      const errors = validateModelDraft(draft)
       if (errors.length > 0) return `Invalid: ${errors[0]}`
-      const next = draftToSettings(draft, { env: process.env })
+      const next = draftToSettings(draft)
       saveModelSettings(next)
       applyModelSettingsToEnv(process.env, next)
       return `Saved ${field} = ${field === "api_key" ? maskApiKey(value) : value}`
