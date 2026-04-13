@@ -492,6 +492,16 @@ async function runGitCommand(rootDir: string, args: string[]) {
   return result.stdout.trim()
 }
 
+function makeUpdateBackupLabel(prefix: string) {
+  return `${prefix}-${new Date().toISOString().replace(/[:.]/g, "-")}`
+}
+
+async function backupCurrentHead(rootDir: string, branch: string, currentHead: string) {
+  const backupBranch = makeUpdateBackupLabel(`monolito-update-backup-${branch}`)
+  await runGitCommand(rootDir, ["branch", backupBranch, currentHead])
+  return backupBranch
+}
+
 function acquireUpdateLock(rootDir: string) {
   const paths = getPaths(rootDir)
   mkdirSync(paths.runDir, { recursive: true })
@@ -1982,10 +1992,17 @@ export class MonolitoV2Runtime {
         return "Update failed: no git remote named 'origin' is configured."
       }
 
+      const currentHead = await runGitCommand(this.rootDir, ["rev-parse", "HEAD"])
+      await runGitCommand(this.rootDir, ["fetch", "--prune", "origin", branch])
+      const remoteHead = await runGitCommand(this.rootDir, ["rev-parse", `origin/${branch}`]).catch(() => "")
+      if (!remoteHead) {
+        return `Update failed: origin/${branch} was not found after fetch.`
+      }
+
       const status = await runGitCommand(this.rootDir, ["status", "--porcelain"])
       let stashLabel = ""
       if (status.trim()) {
-        stashLabel = `monolito-update-backup-${new Date().toISOString()}`
+        stashLabel = makeUpdateBackupLabel("monolito-update-stash")
         await runGitCommand(this.rootDir, ["stash", "push", "--include-untracked", "--message", stashLabel])
         const statusAfterStash = await runGitCommand(this.rootDir, ["status", "--porcelain"])
         if (statusAfterStash.trim()) {
@@ -1993,27 +2010,21 @@ export class MonolitoV2Runtime {
         }
       }
 
-      const currentHead = await runGitCommand(this.rootDir, ["rev-parse", "HEAD"])
-      await runGitCommand(this.rootDir, ["fetch", "--prune", "origin", branch])
-      const remoteHead = await runGitCommand(this.rootDir, ["rev-parse", `origin/${branch}`]).catch(() => "")
-      if (!remoteHead) {
-        return `Update failed: origin/${branch} was not found after fetch.`
-      }
-      if (currentHead === remoteHead) {
-        return [
-          `Already up to date on ${branch}.`,
-          `Remote: ${remoteUrl}`,
-        ].join("\n")
+      let backupBranch = ""
+      if (currentHead !== remoteHead) {
+        backupBranch = await backupCurrentHead(this.rootDir, branch, currentHead)
       }
 
-      await runGitCommand(this.rootDir, ["pull", "--ff-only", "origin", branch])
+      await runGitCommand(this.rootDir, ["reset", "--hard", `origin/${branch}`])
+      await runGitCommand(this.rootDir, ["clean", "-fd"])
       const nextHead = await runGitCommand(this.rootDir, ["rev-parse", "--short", "HEAD"])
       this.restartRequested = true
       return [
-        `Updated successfully from origin/${branch}.`,
+        `Synchronized successfully with origin/${branch}.`,
         `Remote: ${remoteUrl}`,
         `Current revision: ${nextHead}`,
-        stashLabel ? `Local changes were backed up automatically to stash: ${stashLabel}` : "",
+        backupBranch ? `Previous local HEAD was backed up to branch: ${backupBranch}` : "",
+        stashLabel ? `Local uncommitted changes were backed up automatically to stash: ${stashLabel}` : "",
         "Daemon restart scheduled automatically.",
       ].filter(Boolean).join("\n")
     } catch (error) {

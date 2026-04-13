@@ -157,6 +157,16 @@ async function runGit(rootDir: string, args: string[]) {
   return result.stdout.trim()
 }
 
+function makeUpdateBackupLabel(prefix: string) {
+  return `${prefix}-${new Date().toISOString().replace(/[:.]/g, "-")}`
+}
+
+async function backupCurrentHead(rootDir: string, branch: string, currentHead: string) {
+  const backupBranch = makeUpdateBackupLabel(`monolito-update-backup-${branch}`)
+  await runGit(rootDir, ["branch", backupBranch, currentHead])
+  return backupBranch
+}
+
 function isBootstrapSessionCandidate(session: SessionRecord) {
   if (session.id.startsWith("telegram-") || session.id.startsWith("agent-")) return false
   return session.messages.length === 0
@@ -191,7 +201,7 @@ async function stashLocalChangesForUpdate(rootDir: string) {
   const status = await runGit(rootDir, ["status", "--porcelain"])
   if (!status.trim()) return null
 
-  const stashLabel = `monolito-update-backup-${new Date().toISOString()}`
+  const stashLabel = makeUpdateBackupLabel("monolito-update-stash")
   await runGit(rootDir, ["stash", "push", "--include-untracked", "--message", stashLabel])
   const statusAfterStash = await runGit(rootDir, ["status", "--porcelain"])
   if (statusAfterStash.trim()) {
@@ -709,25 +719,19 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
         if (!remoteUrl) {
           return { type: "text", tone: "error", content: "Update failed: no git remote named 'origin' is configured." }
         }
-        const stashLabel = await stashLocalChangesForUpdate(rootDir)
         const currentHead = await runGit(rootDir, ["rev-parse", "HEAD"])
         await runGit(rootDir, ["fetch", "--prune", "origin", branch])
         const remoteHead = await runGit(rootDir, ["rev-parse", `origin/${branch}`]).catch(() => "")
         if (!remoteHead) {
           return { type: "text", tone: "error", content: `Update failed: origin/${branch} was not found after fetch.` }
         }
-        if (currentHead === remoteHead) {
-          return {
-            type: "text",
-            tone: "info",
-            content: [
-              `Already up to date on ${branch}.`,
-              `Remote: ${remoteUrl}`,
-            ].join("\n"),
-          }
-        }
+        const stashLabel = await stashLocalChangesForUpdate(rootDir)
+        const backupBranch = currentHead !== remoteHead
+          ? await backupCurrentHead(rootDir, branch, currentHead)
+          : ""
 
-        await runGit(rootDir, ["pull", "--ff-only", "origin", branch])
+        await runGit(rootDir, ["reset", "--hard", `origin/${branch}`])
+        await runGit(rootDir, ["clean", "-fd"])
         await restartDaemon(client, rootDir)
         connectionHealthy = client.isConnected()
         subscribedSessionId = null
@@ -738,10 +742,11 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
           type: "text",
           tone: "success",
           content: [
-            `Updated successfully from origin/${branch}.`,
+            `Synchronized successfully with origin/${branch}.`,
             `Remote: ${remoteUrl}`,
             `Current revision: ${nextHead}`,
-            stashLabel ? `Local changes were backed up automatically to stash: ${stashLabel}` : "",
+            backupBranch ? `Previous local HEAD was backed up to branch: ${backupBranch}` : "",
+            stashLabel ? `Local uncommitted changes were backed up automatically to stash: ${stashLabel}` : "",
             "Daemon restart verified.",
             "Restarting the interactive CLI to load updated commands and menus...",
           ].filter(Boolean).join("\n"),
