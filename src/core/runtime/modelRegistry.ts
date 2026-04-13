@@ -46,7 +46,7 @@ export function getRegistryPath() {
 // ---------------------------------------------------------------------------
 
 const PROVIDER_DEFAULTS: Record<ModelProvider, { baseUrl: string; needsApiKey: boolean }> = {
-  minimax: { baseUrl: "https://api.minimax.chat", needsApiKey: true },
+  minimax: { baseUrl: "https://api.minimax.io/anthropic", needsApiKey: true },
   ollama: { baseUrl: "http://localhost:11434", needsApiKey: false },
   openai_compatible: { baseUrl: "https://api.openai.com", needsApiKey: true },
   anthropic_compatible: { baseUrl: "", needsApiKey: true },

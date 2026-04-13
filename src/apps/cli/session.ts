@@ -787,8 +787,14 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
   }
 
   const submitCurrentInput = async () => {
-    const line = composer.input.trim()
-    if (!line) return
+    const rawLine = composer.input
+    const line = rawLine.trim()
+    const allowEmptyInput =
+      Boolean(composer.masterMenuState) ||
+      Boolean(composer.menuState) ||
+      Boolean(composer.channelMenuState) ||
+      Boolean(composer.websearchMenuState)
+    if (!line && !allowEmptyInput) return
     composer.suggestions = []
     transcript.scrollOffset = 0
 
@@ -796,10 +802,12 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     if (composer.masterMenuState) {
       composer.input = ""
       composer.cursor = 0
-      transcript = appendTranscriptBlocks(transcript, [
-        { type: "message", role: "user", text: line },
-      ])
-      const { result, state } = await processMasterMenuInput(line, composer.masterMenuState)
+      if (rawLine.length > 0) {
+        transcript = appendTranscriptBlocks(transcript, [
+          { type: "message", role: "user", text: rawLine },
+        ])
+      }
+      const { result, state } = await processMasterMenuInput(rawLine, composer.masterMenuState)
       composer.masterMenuState = state
       if (!state) composer.masterMenuEphemeral = false
       transcript = appendTranscriptBlocks(transcript, [
@@ -833,11 +841,12 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     if (composer.menuState) {
       composer.input = ""
       composer.cursor = 0
-      // Show user input in transcript
-      transcript = appendTranscriptBlocks(transcript, [
-        { type: "message", role: "user", text: line },
-      ])
-      const result = await processMenuInput(line, composer.menuState)
+      if (rawLine.length > 0) {
+        transcript = appendTranscriptBlocks(transcript, [
+          { type: "message", role: "user", text: rawLine },
+        ])
+      }
+      const result = await processMenuInput(rawLine, composer.menuState)
       composer.menuState = result.nextState
       transcript = appendTranscriptBlocks(transcript, [
         { type: "event", label: result.nextState ? "model" : "model", tone: result.tone, text: result.output },
@@ -850,10 +859,12 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     if (composer.channelMenuState) {
       composer.input = ""
       composer.cursor = 0
-      transcript = appendTranscriptBlocks(transcript, [
-        { type: "message", role: "user", text: line },
-      ])
-      const result = await processChannelMenuInput(line, composer.channelMenuState)
+      if (rawLine.length > 0) {
+        transcript = appendTranscriptBlocks(transcript, [
+          { type: "message", role: "user", text: rawLine },
+        ])
+      }
+      const result = await processChannelMenuInput(rawLine, composer.channelMenuState)
       composer.channelMenuState = result.nextState
       transcript = appendTranscriptBlocks(transcript, [
         { type: "event", label: result.nextState ? "channels" : "channels", tone: result.tone, text: result.output },
@@ -885,10 +896,12 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     if (composer.websearchMenuState) {
       composer.input = ""
       composer.cursor = 0
-      transcript = appendTranscriptBlocks(transcript, [
-        { type: "message", role: "user", text: line },
-      ])
-      const result = await processWebSearchMenuInput(line, composer.websearchMenuState)
+      if (rawLine.length > 0) {
+        transcript = appendTranscriptBlocks(transcript, [
+          { type: "message", role: "user", text: rawLine },
+        ])
+      }
+      const result = await processWebSearchMenuInput(rawLine, composer.websearchMenuState)
       composer.websearchMenuState = result.nextState
       transcript = appendTranscriptBlocks(transcript, [
         { type: "event", label: "websearch", tone: result.tone, text: result.output },
