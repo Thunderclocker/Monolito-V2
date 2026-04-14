@@ -38,6 +38,7 @@ export type DelegationTask = {
   description: string
   task: string
   status: "pending" | "running" | "completed" | "failed" | "killed"
+  jobGroupId?: string
   result?: string
   usage?: {
     total_tokens: number
@@ -91,6 +92,7 @@ export class AgentOrchestrator {
     profileId: string,
     task: string,
     description?: string,
+    jobGroupId?: string,
   ): Promise<SpawnAgentResult> {
     return await this.spawnTask({
       parentSessionId,
@@ -99,6 +101,7 @@ export class AgentOrchestrator {
       description,
       type: "worker",
       mode: "background",
+      jobGroupId,
     })
   }
 
@@ -109,6 +112,7 @@ export class AgentOrchestrator {
     description?: string
     type: DelegationTask["type"]
     mode: DelegationTask["mode"]
+    jobGroupId?: string
   }): Promise<SpawnAgentResult> {
     const rootDir = this.runtime.rootDir
     const subSessionId = `agent-${options.profileId}-${randomUUID().slice(0, 8)}`
@@ -132,6 +136,7 @@ export class AgentOrchestrator {
       description: options.description || "Untitled task",
       task: options.task,
       status: "pending",
+      jobGroupId: options.jobGroupId,
       logger: createInstanceLogger(subSessionId, options.type),
     }
 

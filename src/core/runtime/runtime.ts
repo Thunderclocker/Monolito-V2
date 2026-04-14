@@ -24,6 +24,11 @@ import {
   listProfiles,
   createProfile,
   getDb,
+  createBackgroundTaskGroup,
+  incrementBackgroundTaskGroup,
+  decrementBackgroundTaskGroup,
+  sealBackgroundTaskGroup,
+  deleteBackgroundTaskGroup,
 } from "../session/store.ts"
 import { getTool, listTools, type ToolContext } from "../tools/registry.ts"
 import { getEffectiveModelConfig, runAssistantTurn, runBackgroundTextTask } from "./modelAdapter.ts"
@@ -573,6 +578,13 @@ function sanitizeTranscribedTelegramReply(text: string) {
   return "Recibi tu audio y voy a responder solo sobre su contenido."
 }
 
+function shouldSuppressEmit(text: string | null | undefined): boolean {
+  if (!text) return true
+  if (text.trim() === "") return true
+  if (text.includes("[empty response")) return true
+  return false
+}
+
 function sanitizeExternalAssistantText(sessionId: string, text: string, lastUserText?: string) {
   if (!getTelegramChatId(sessionId)) return text
   const normalized = text.trim()
@@ -668,6 +680,7 @@ export class MonolitoV2Runtime {
   private restartRequested = false
   private toolStallState = new Map<string, { key: string; count: number }>()
   private stallAlerts = new Map<string, string>()
+  private currentBatchGroups = new Map<string, string>()
   readonly orchestrator: AgentOrchestrator
 
   private describeResumeReason(session: SessionRecord) {
@@ -703,6 +716,17 @@ export class MonolitoV2Runtime {
     }
   }
 
+  acquireJobGroupForBatch(sessionId: string): string {
+    const existing = this.currentBatchGroups.get(sessionId)
+    if (existing) {
+      incrementBackgroundTaskGroup(this.rootDir, existing)
+      return existing
+    }
+    const jobGroupId = createBackgroundTaskGroup(this.rootDir, sessionId)
+    this.currentBatchGroups.set(sessionId, jobGroupId)
+    return jobGroupId
+  }
+
   async handleBackgroundDelegationResult(task: DelegationTask, error?: string) {
     const sessionId = task.parentSessionId
     const session = getSession(this.rootDir, sessionId)
@@ -724,6 +748,20 @@ export class MonolitoV2Runtime {
       type: "note",
       summary: `Background task ${task.status}: ${task.description}`,
     })
+
+    // Fan-in barrier: only the last worker of a sealed group wakes the coordinator.
+    if (task.jobGroupId) {
+      const state = decrementBackgroundTaskGroup(this.rootDir, task.jobGroupId)
+      if (!state) {
+        // Group row missing — fall through to wake-up as safe fallback.
+      } else if (state.pending > 0) {
+        return // other workers still pending
+      } else if (state.sealed === 0) {
+        return // batch not sealed yet — the sealer will fire the wake-up
+      } else {
+        deleteBackgroundTaskGroup(this.rootDir, task.jobGroupId)
+      }
+    }
 
     void this.runProactiveBackgroundTurn(sessionId, profileId, systemPayload, 0)
   }
@@ -758,7 +796,7 @@ export class MonolitoV2Runtime {
       const turn = await runAssistantTurn(
         session,
         this.rootDir,
-        async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, sessionId, orchestrator: this.orchestrator }, toolUseId, profileId),
+        async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, sessionId, orchestrator: this.orchestrator, runtime: this }, toolUseId, profileId),
         {
           rootDir: this.rootDir,
           cwd: this.rootDir,
@@ -794,29 +832,36 @@ export class MonolitoV2Runtime {
       }
 
       const userFacingText = sanitizeExternalAssistantText(sessionId, turn.finalText)
-      appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
-      appendWorklog(this.rootDir, sessionId, {
-        type: "session",
-        summary: turn.error ? `Background turn completed with model error: ${clipForWorklog(turn.error)}` : "Background turn completed",
-      })
-      this.emit({
-        type: "turn.completed",
-        sessionId,
-        role: "assistant",
-        durationMs: Date.now() - turnStartedAt,
-        usage: turn.usage,
-      })
-      this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
+      if (shouldSuppressEmit(userFacingText)) {
+        appendWorklog(this.rootDir, sessionId, {
+          type: "note",
+          summary: "Suppressed empty background assistant response",
+        })
+      } else {
+        appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
+        appendWorklog(this.rootDir, sessionId, {
+          type: "session",
+          summary: turn.error ? `Background turn completed with model error: ${clipForWorklog(turn.error)}` : "Background turn completed",
+        })
+        this.emit({
+          type: "turn.completed",
+          sessionId,
+          role: "assistant",
+          durationMs: Date.now() - turnStartedAt,
+          usage: turn.usage,
+        })
+        this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
 
-      const telegramChatId = getTelegramChatId(sessionId)
-      if (telegramChatId && userFacingText) {
-        try {
-          const config = readChannelsConfig()
-          if (config.telegram?.enabled && config.telegram.token) {
-            await sendTelegramMessage(config.telegram.token, telegramChatId, userFacingText)
+        const telegramChatId = getTelegramChatId(sessionId)
+        if (telegramChatId) {
+          try {
+            const config = readChannelsConfig()
+            if (config.telegram?.enabled && config.telegram.token) {
+              await sendTelegramMessage(config.telegram.token, telegramChatId, userFacingText)
+            }
+          } catch (e) {
+            console.error("Failed to send background reply to telegram", e)
           }
-        } catch (e) {
-          console.error("Failed to send background reply to telegram", e)
         }
       }
     } finally {
@@ -1064,7 +1109,7 @@ export class MonolitoV2Runtime {
         const turn = await runAssistantTurn(
           preparedSession,
           this.rootDir,
-          async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, sessionId, orchestrator: this.orchestrator }, toolUseId, profileId),
+          async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, sessionId, orchestrator: this.orchestrator, runtime: this }, toolUseId, profileId),
           {
             rootDir: this.rootDir,
             cwd: this.rootDir,
@@ -1099,30 +1144,50 @@ export class MonolitoV2Runtime {
             Date.now() - apiStartedAt,
           )
         }
+
+        // Seal the batch group (if any delegate_background_task calls happened this turn).
+        const batchJobGroupId = this.currentBatchGroups.get(sessionId)
+        if (batchJobGroupId) {
+          this.currentBatchGroups.delete(sessionId)
+          const sealResult = sealBackgroundTaskGroup(this.rootDir, batchJobGroupId)
+          if (sealResult && sealResult.pending === 0) {
+            // All workers already finished before the seal — fire wake-up from here.
+            deleteBackgroundTaskGroup(this.rootDir, batchJobGroupId)
+            void this.runProactiveBackgroundTurn(sessionId, profileId, "", 0)
+          }
+        }
+
         const userFacingText = sanitizeExternalAssistantText(sessionId, turn.finalText, preparedUserText)
-        appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
-        appendWorklog(this.rootDir, sessionId, {
-          type: "session",
-          summary: turn.error ? `Turn completed with model error: ${clipForWorklog(turn.error)}` : "Turn completed",
-        })
-        this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
-        this.emit({
-          type: "turn.completed",
-          sessionId,
-          role: "assistant",
-          durationMs: Date.now() - turnStartedAt,
-          usage: turn.usage,
-        })
-        
-        const telegramChatId = getTelegramChatId(sessionId)
-        if (telegramChatId && userFacingText) {
-          try {
-            const config = readChannelsConfig()
-            if (config.telegram?.enabled && config.telegram.token) {
-              await sendTelegramMessage(config.telegram.token, telegramChatId, userFacingText)
+        if (shouldSuppressEmit(userFacingText)) {
+          appendWorklog(this.rootDir, sessionId, {
+            type: "note",
+            summary: "Suppressed empty assistant response",
+          })
+        } else {
+          appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
+          appendWorklog(this.rootDir, sessionId, {
+            type: "session",
+            summary: turn.error ? `Turn completed with model error: ${clipForWorklog(turn.error)}` : "Turn completed",
+          })
+          this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
+          this.emit({
+            type: "turn.completed",
+            sessionId,
+            role: "assistant",
+            durationMs: Date.now() - turnStartedAt,
+            usage: turn.usage,
+          })
+
+          const telegramChatId = getTelegramChatId(sessionId)
+          if (telegramChatId) {
+            try {
+              const config = readChannelsConfig()
+              if (config.telegram?.enabled && config.telegram.token) {
+                await sendTelegramMessage(config.telegram.token, telegramChatId, userFacingText)
+              }
+            } catch (e) {
+              console.error("Failed to send reply back to telegram", e)
             }
-          } catch (e) {
-            console.error("Failed to send reply back to telegram", e)
           }
         }
         await this.transitionState(sessionId, turn.error ? "error" : "idle")
@@ -1218,7 +1283,7 @@ export class MonolitoV2Runtime {
       const turn = await runAssistantTurn(
         syntheticSession,
         this.rootDir,
-        async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, sessionId, orchestrator: this.orchestrator }, toolUseId, profileId),
+        async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, sessionId, orchestrator: this.orchestrator, runtime: this }, toolUseId, profileId),
         {
           rootDir: this.rootDir,
           cwd: this.rootDir,
@@ -1254,19 +1319,26 @@ export class MonolitoV2Runtime {
         )
       }
       const userFacingText = sanitizeExternalAssistantText(sessionId, turn.finalText, prompt)
-      appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
-      appendWorklog(this.rootDir, sessionId, {
-        type: "session",
-        summary: turn.error ? `Turn completed with model error: ${clipForWorklog(turn.error)}` : "Turn completed",
-      })
-      this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
-      this.emit({
-        type: "turn.completed",
-        sessionId,
-        role: "assistant",
-        durationMs: Date.now() - turnStartedAt,
-        usage: turn.usage,
-      })
+      if (shouldSuppressEmit(userFacingText)) {
+        appendWorklog(this.rootDir, sessionId, {
+          type: "note",
+          summary: "Suppressed empty startup assistant response",
+        })
+      } else {
+        appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
+        appendWorklog(this.rootDir, sessionId, {
+          type: "session",
+          summary: turn.error ? `Turn completed with model error: ${clipForWorklog(turn.error)}` : "Turn completed",
+        })
+        this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
+        this.emit({
+          type: "turn.completed",
+          sessionId,
+          role: "assistant",
+          durationMs: Date.now() - turnStartedAt,
+          usage: turn.usage,
+        })
+      }
       await this.transitionState(sessionId, turn.error ? "error" : "idle")
       return turn
     } catch (error) {
