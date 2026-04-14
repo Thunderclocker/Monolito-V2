@@ -110,8 +110,19 @@ export function getDb(rootDir: string): Database.Database {
       embedding float[384]
     );
 
+    CREATE TABLE IF NOT EXISTS background_task_groups (
+      job_group_id TEXT PRIMARY KEY,
+      parent_session_id TEXT NOT NULL,
+      pending_tasks INTEGER NOT NULL DEFAULT 0,
+      sealed INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_bg_groups_session
+      ON background_task_groups(parent_session_id);
+
     -- Insert default profile if not exists
-    INSERT OR IGNORE INTO profiles (id, name, description, created_at) 
+    INSERT OR IGNORE INTO profiles (id, name, description, created_at)
     VALUES ('default', 'Default Agent', 'El agente Monolito principal por defecto.', CURRENT_TIMESTAMP);
   `)
 
@@ -799,4 +810,64 @@ export function listRooms(rootDir: string, wing: string, profileId?: string): st
   const params = [wing]
   if (profileId) params.push(profileId)
   return (stmt.all(...params) as { room: string }[]).map(r => r.room)
+}
+
+// ---------------------------------------------------------------------------
+// Background Task Groups — Fan-out / Fan-in barrier helpers
+// ---------------------------------------------------------------------------
+
+export function createBackgroundTaskGroup(rootDir: string, parentSessionId: string): string {
+  const db = getDb(rootDir)
+  const jobGroupId = randomUUID()
+  db.prepare(`
+    INSERT INTO background_task_groups (job_group_id, parent_session_id, pending_tasks, sealed, created_at)
+    VALUES (?, ?, 1, 0, ?)
+  `).run(jobGroupId, parentSessionId, new Date().toISOString())
+  return jobGroupId
+}
+
+export function incrementBackgroundTaskGroup(rootDir: string, jobGroupId: string): void {
+  getDb(rootDir).prepare(`
+    UPDATE background_task_groups
+    SET pending_tasks = pending_tasks + 1
+    WHERE job_group_id = ? AND sealed = 0
+  `).run(jobGroupId)
+}
+
+export function decrementBackgroundTaskGroup(
+  rootDir: string,
+  jobGroupId: string,
+): { pending: number; sealed: number } | null {
+  const row = getDb(rootDir)
+    .prepare(`
+      UPDATE background_task_groups
+      SET pending_tasks = pending_tasks - 1
+      WHERE job_group_id = ?
+      RETURNING pending_tasks, sealed
+    `)
+    .get(jobGroupId) as { pending_tasks: number; sealed: number } | undefined
+  if (!row) return null
+  return { pending: row.pending_tasks, sealed: row.sealed }
+}
+
+export function sealBackgroundTaskGroup(
+  rootDir: string,
+  jobGroupId: string,
+): { pending: number } | null {
+  const row = getDb(rootDir)
+    .prepare(`
+      UPDATE background_task_groups
+      SET sealed = 1
+      WHERE job_group_id = ?
+      RETURNING pending_tasks
+    `)
+    .get(jobGroupId) as { pending_tasks: number } | undefined
+  if (!row) return null
+  return { pending: row.pending_tasks }
+}
+
+export function deleteBackgroundTaskGroup(rootDir: string, jobGroupId: string): void {
+  getDb(rootDir)
+    .prepare(`DELETE FROM background_task_groups WHERE job_group_id = ?`)
+    .run(jobGroupId)
 }

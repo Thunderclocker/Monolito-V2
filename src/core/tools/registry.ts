@@ -50,6 +50,7 @@ export type ToolContext = {
   orchestrator?: AgentOrchestrator
   logger?: Logger
   sessionId?: string
+  runtime?: { acquireJobGroupForBatch: (sessionId: string) => string }
 }
 
 export type ToolInputSchema = {
@@ -1539,7 +1540,8 @@ const tools: ToolDefinition[] = [
       const parentSessionId = (context as any).sessionId
       if (!parentSessionId) throw new Error("Parent Session ID not found.")
 
-      const spawned = await context.orchestrator.spawnBackgroundTask(parentSessionId, profileId, task, description)
+      const jobGroupId = context.runtime?.acquireJobGroupForBatch(parentSessionId)
+      const spawned = await context.orchestrator.spawnBackgroundTask(parentSessionId, profileId, task, description, jobGroupId)
       return {
         ok: spawned.status !== "failed" && spawned.status !== "killed",
         job_id: spawned.agentId,
