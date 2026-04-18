@@ -681,6 +681,7 @@ export class MonolitoV2Runtime {
   private toolStallState = new Map<string, { key: string; count: number }>()
   private stallAlerts = new Map<string, string>()
   private currentBatchGroups = new Map<string, string>()
+  private pendingBackgroundWakeups = new Map<string, { profileId: string; payloads: string[] }>()
   readonly orchestrator: AgentOrchestrator
 
   private describeResumeReason(session: SessionRecord) {
@@ -727,6 +728,31 @@ export class MonolitoV2Runtime {
     return jobGroupId
   }
 
+  private enqueueBackgroundWakeup(sessionId: string, profileId: string, payload?: string) {
+    const current = this.pendingBackgroundWakeups.get(sessionId)
+    const nextPayloads = current?.payloads ?? []
+    if (payload && payload.trim()) nextPayloads.push(payload)
+    this.pendingBackgroundWakeups.set(sessionId, {
+      profileId,
+      payloads: nextPayloads,
+    })
+  }
+
+  private consumeBackgroundWakeup(sessionId: string) {
+    const pending = this.pendingBackgroundWakeups.get(sessionId)
+    if (!pending) return null
+    this.pendingBackgroundWakeups.delete(sessionId)
+    return pending
+  }
+
+  private flushPendingBackgroundWakeup(sessionId: string) {
+    if (this.activeSessions.has(sessionId)) return
+    const pending = this.consumeBackgroundWakeup(sessionId)
+    if (!pending) return
+    const payload = pending.payloads.filter(Boolean).join("\n\n")
+    void this.runProactiveBackgroundTurn(sessionId, pending.profileId, payload, 0)
+  }
+
   async handleBackgroundDelegationResult(task: DelegationTask, error?: string) {
     const sessionId = task.parentSessionId
     const session = getSession(this.rootDir, sessionId)
@@ -763,16 +789,13 @@ export class MonolitoV2Runtime {
       }
     }
 
-    void this.runProactiveBackgroundTurn(sessionId, profileId, systemPayload, 0)
+    this.enqueueBackgroundWakeup(sessionId, profileId, systemPayload)
+    this.flushPendingBackgroundWakeup(sessionId)
   }
 
   private async runProactiveBackgroundTurn(sessionId: string, profileId: string, backgroundResult: string, attempt: number) {
     if (this.activeSessions.has(sessionId)) {
-      if (attempt < 1) {
-        setTimeout(() => {
-          void this.runProactiveBackgroundTurn(sessionId, profileId, backgroundResult, attempt + 1)
-        }, 2_000)
-      }
+      this.enqueueBackgroundWakeup(sessionId, profileId, backgroundResult)
       return
     }
 
@@ -998,6 +1021,7 @@ export class MonolitoV2Runtime {
       await this.runStartupTurn(sessionId, prompt, profileId, turnStartedAt, { logger: options?.logger })
     } finally {
       this.activeSessions.delete(sessionId)
+      this.flushPendingBackgroundWakeup(sessionId)
     }
   }
 
@@ -1153,7 +1177,8 @@ export class MonolitoV2Runtime {
           if (sealResult && sealResult.pending === 0) {
             // All workers already finished before the seal — fire wake-up from here.
             deleteBackgroundTaskGroup(this.rootDir, batchJobGroupId)
-            void this.runProactiveBackgroundTurn(sessionId, profileId, "", 0)
+            this.enqueueBackgroundWakeup(sessionId, profileId)
+            this.flushPendingBackgroundWakeup(sessionId)
           }
         }
 
@@ -1247,6 +1272,7 @@ export class MonolitoV2Runtime {
       telegramTyping?.stop()
       this.activeSessions.delete(sessionId)
       this.abortControllers.delete(sessionId)
+      this.flushPendingBackgroundWakeup(sessionId)
     }
   }
 
