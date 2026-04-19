@@ -3,6 +3,7 @@ import { type MonolitoV2Runtime } from "./runtime.ts"
 import { ensureDirs } from "../ipc/protocol.ts"
 import { appendMessage, createProfile, createSession, listProfiles } from "../session/store.ts"
 import { createInstanceLogger, type Logger } from "../logging/logger.ts"
+import { buildSubagentRetryPrompt } from "./recoveryPolicy.ts"
 
 
 export type DelegationTask = {
@@ -189,11 +190,27 @@ export class AgentOrchestrator {
     this.runningWorkerCount++
     const { runtime } = this
     try {
-      // 1. Send the task as the starting message in the sub-session
-      appendMessage(runtime.rootDir, task.subSessionId, "user", text)
+      let currentText = text
+      let turn: any
+      let attempt = 1
+      const maxAttempts = 3
+      let partialResult = ""
 
-      // 2. Run the turn
-      const turn: any = await runtime.runTurn(task.subSessionId, text, task.profileId, { logger: task.logger })
+      while (attempt <= maxAttempts) {
+        appendMessage(runtime.rootDir, task.subSessionId, "user", currentText)
+        turn = await runtime.runTurn(task.subSessionId, currentText, task.profileId, { logger: task.logger })
+        
+        if (turn.error) {
+          partialResult = turn.finalText || partialResult
+          if (attempt >= maxAttempts) {
+            throw new Error(turn.error)
+          }
+          currentText = buildSubagentRetryPrompt(task.description, attempt, turn.error, partialResult)
+          attempt++
+          continue
+        }
+        break
+      }
 
       task.status = "completed"
       task.result = turn.finalText
