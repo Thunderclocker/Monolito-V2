@@ -12,7 +12,7 @@ import type { WebSearchProvider } from "../websearch/config.ts"
 import { type CostState, type TurnUsage, createCostState, recordApiCall } from "../cost/tracker.ts"
 import { getDateContext, getGitContext } from "../context/gitContext.ts"
 import { createLogger, type Logger } from "../logging/logger.ts"
-import { COORDINATOR_SYSTEM_PROMPT } from "./coordinatorPrompt.ts"
+import { COORDINATOR_SYSTEM_PROMPT, WORKER_SYSTEM_PROMPT } from "./coordinatorPrompt.ts"
 import type { WorkspaceBootstrapContext } from "../context/workspaceContext.ts"
 import { BOOT_WING_DESCRIPTION, type BootWingEntry } from "../bootstrap/bootWings.ts"
 import { normalizeToolInputPayload } from "./toolInput.ts"
@@ -1071,6 +1071,8 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
 
   if (context?.orchestrator && !session.id.startsWith("agent-")) {
     staticSections.push("", COORDINATOR_SYSTEM_PROMPT)
+  } else if (session.id.startsWith("agent-")) {
+    staticSections.push("", WORKER_SYSTEM_PROMPT)
   }
 
   // Dynamic sections — change per-turn, excluded from the cacheable block
