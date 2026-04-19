@@ -2016,12 +2016,22 @@ export function listTools() {
   return tools
 }
 
-export function listModelTools() {
-  return tools.map(tool => ({
-    name: tool.name,
-    description: tool.description,
-    input_schema: tool.inputSchema,
-  }))
+export function listModelTools(isSubAgent = false) {
+  const hiddenFromSubAgents = new Set([
+    "AgentSpawn",
+    "AgentSendMessage",
+    "AgentStop",
+    "delegate_background_task",
+    "list_active_workers"
+  ])
+
+  return tools
+    .filter(tool => !(isSubAgent && hiddenFromSubAgents.has(tool.name)))
+    .map(tool => ({
+      name: tool.name,
+      description: tool.description,
+      input_schema: tool.inputSchema,
+    }))
 }
 
 export function getTool(name: string) {
