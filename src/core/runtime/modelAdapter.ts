@@ -2322,7 +2322,7 @@ async function* runAssistantTurnState(
     state.logger,
     state.abortSignal,
     state.retryPolicy,
-    includeTools,
+    true,
     session.id.startsWith("agent-"),
   )
   yield { type: "response", response }
