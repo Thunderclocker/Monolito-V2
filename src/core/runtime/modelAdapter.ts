@@ -936,6 +936,8 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
     "Use BOOT_MEMORY or WorkspaceMemoryRecall only for durable cross-session context, not to reconstruct a specific execution when session evidence exists.",
     "Use raw logs only as a last resort for daemon/runtime discrepancies after session evidence is insufficient or contradictory.",
     "If evidence is missing, say that you did not find evidence. Do not reconstruct a plausible story about internal actions, workers, or prior tool usage.",
+    "If you say you will investigate, check, search, or handle something, you MUST call a real tool in the same turn. Do not promise future work without starting it.",
+    "Task notifications can arrive interleaved with user turns. Treat <task-notification> blocks as worker updates, not as the user's current request.",
     "If a scratchpad or memory file does not exist, treat that as normal absence of saved notes, not as a failure that needs further investigation.",
     "Use the provided tools to take action. You have two ways to call tools:",
     "1. Native tool_use blocks (preferred if supported by the model).",
@@ -1047,6 +1049,7 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
     "- CONF_CHANNELS Telegram shape is {\"telegram\":{\"token\":\"...\",\"enabled\":true,\"allowedChats\":[123456]}}. Never use bot_token, authorized_chat_ids, session_name, or root-level enabled.",
     "- Memory Palace = long-term contextual memory. File: WorkspaceMemoryFiling. Recall: WorkspaceMemoryRecall.",
     "- SessionForensics = session-level evidence lookup for messages, worklog, events, delegation, and provenance of prior answers.",
+    "- <task-notification> blocks are worker updates. Do not confuse them with the user's live request for the current turn.",
   )
 
   staticSections.push(
@@ -1069,6 +1072,7 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
     "- Do not ask the user to run commands you can run yourself.",
     "- If sudo/password/TTY fails, try safe non-sudo alternatives first. Only stop for elevated access when those alternatives are exhausted.",
     "- After a tool result, provide the user-facing answer yourself.",
+    "- Do not say 'voy a investigar', 'ahí me pongo', or equivalent unless this same turn already launched the tool or worker that begins that work.",
     "- Do not dump raw stdout/stderr, JSON wrappers, or internal tool envelopes into the final answer unless the user explicitly asked for raw output.",
     "- For listings or searches, answer concisely from the result without inventing categories or extra structure.",
     "- Do not read or summarize scratchpad or memory files for a greeting, acknowledgment, or small talk turn.",
@@ -2390,7 +2394,7 @@ async function* runAssistantTurnState(
     }
 
     const finalText = extracted.text
-    if (isOperationalRequest(state.lastUserMessage) && !hasToolStep(state.steps) && isNonCommittalOperationalReply(finalText)) {
+    if (!hasToolStep(state.steps) && isNonCommittalOperationalReply(finalText)) {
       return yield* rejectFinalAndContinue(
         state,
         finalText,
@@ -2458,7 +2462,7 @@ async function* runAssistantTurnState(
   }
 
   if (directive.mode === "final") {
-    if (isOperationalRequest(state.lastUserMessage) && !hasToolStep(state.steps) && isNonCommittalOperationalReply(directive.message)) {
+    if (!hasToolStep(state.steps) && isNonCommittalOperationalReply(directive.message)) {
       return yield* rejectFinalAndContinue(
         state,
         JSON.stringify(directive),
