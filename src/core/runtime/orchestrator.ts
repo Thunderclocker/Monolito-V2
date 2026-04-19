@@ -2,31 +2,8 @@ import { randomUUID } from "node:crypto"
 import { type MonolitoV2Runtime } from "./runtime.ts"
 import { ensureDirs } from "../ipc/protocol.ts"
 import { appendMessage, createProfile, createSession, listProfiles } from "../session/store.ts"
-import { readChannelsConfig } from "../channels/config.ts"
 import { createInstanceLogger, type Logger } from "../logging/logger.ts"
 
-const TELEGRAM_MESSAGE_LIMIT = 4096
-
-function chunkTelegramMessage(text: string, maxLength = TELEGRAM_MESSAGE_LIMIT) {
-  const normalized = text.replace(/\r\n/g, "\n")
-  if (normalized.length <= maxLength) return [normalized]
-
-  const chunks: string[] = []
-  let remaining = normalized
-  while (remaining.length > maxLength) {
-    const candidate = remaining.slice(0, maxLength)
-    const splitAt = Math.max(
-      candidate.lastIndexOf("\n\n"),
-      candidate.lastIndexOf("\n"),
-      candidate.lastIndexOf(" "),
-    )
-    const boundary = splitAt > maxLength * 0.5 ? splitAt : maxLength
-    chunks.push(remaining.slice(0, boundary).trim())
-    remaining = remaining.slice(boundary).trimStart()
-  }
-  if (remaining.trim()) chunks.push(remaining.trim())
-  return chunks.filter(Boolean)
-}
 
 export type DelegationTask = {
   id: string
@@ -65,13 +42,13 @@ export type TaskSnapshot = {
 }
 
 const IMMEDIATE_AGENT_SETTLE_MS = 1_500
+const MAX_CONCURRENT_WORKERS = 6
+const TASK_RETENTION_MS = 5 * 60 * 1000
 
-function getTelegramChatId(sessionId: string) {
-  return sessionId.startsWith("telegram-") ? sessionId.slice("telegram-".length) : null
-}
 
 export class AgentOrchestrator {
   private activeTasks = new Map<string, DelegationTask>()
+  private runningWorkerCount = 0
   private runtime: MonolitoV2Runtime
 
   constructor(runtime: MonolitoV2Runtime) {
@@ -148,6 +125,14 @@ export class AgentOrchestrator {
       logger: createInstanceLogger(subSessionId, options.type),
     }
 
+    if (this.runningWorkerCount >= MAX_CONCURRENT_WORKERS) {
+      return {
+        agentId: "",
+        status: "failed" as const,
+        error: `Concurrency limit reached (${MAX_CONCURRENT_WORKERS} workers running). Retry when current workers finish.`,
+      }
+    }
+
     this.activeTasks.set(delegationTask.id, delegationTask)
 
     // Execute in background
@@ -201,34 +186,40 @@ export class AgentOrchestrator {
   private async executeTurn(task: DelegationTask, text: string) {
     const turnStartedAt = Date.now()
     task.status = "running"
+    this.runningWorkerCount++
     const { runtime } = this
     try {
       // 1. Send the task as the starting message in the sub-session
       appendMessage(runtime.rootDir, task.subSessionId, "user", text)
-      
+
       // 2. Run the turn
       const turn: any = await runtime.runTurn(task.subSessionId, text, task.profileId, { logger: task.logger })
-      
+
       task.status = "completed"
       task.result = turn.finalText
       task.error = undefined
       task.usage = {
         total_tokens: turn.usage?.totalTokens ?? 0,
-        tool_uses: 0, // We could count these in runtime if needed
+        tool_uses: 0,
         duration_ms: Date.now() - turnStartedAt
       }
       // 3. Notify parent session with XML
       this.notifyParent(task)
-      
+
     } catch (error) {
       task.status = "failed"
       const errorMsg = error instanceof Error ? error.message : String(error)
       task.error = errorMsg
       this.notifyParent(task, errorMsg)
+    } finally {
+      this.runningWorkerCount--
     }
   }
 
   private notifyParent(task: DelegationTask, error?: string) {
+    // Schedule removal from activeTasks after retention window
+    setTimeout(() => this.activeTasks.delete(task.id), TASK_RETENTION_MS)
+
     if (task.mode === "background") {
       this.runtime.emit({
         type: "agent.background.completed",
@@ -263,39 +254,7 @@ ${usageXml}
       role: "user",
       text: notification
     })
-    void this.deliverTelegramWorkerResult(task, error)
-  }
-
-  private async deliverTelegramWorkerResult(task: DelegationTask, error?: string) {
-    const chatId = getTelegramChatId(task.parentSessionId)
-    if (!chatId) return
-
-    const config = readChannelsConfig()
-    if (!config.telegram?.enabled || !config.telegram.token) return
-
-    const text = task.status === "completed"
-      ? (task.result?.trim() || `Agent "${task.description}" completed.`)
-      : `Agent "${task.description}" ${task.status}${error ? `: ${error}` : "."}`
-
-    appendMessage(this.runtime.rootDir, task.parentSessionId, "assistant", text)
-    this.runtime.emit({
-      type: "message.received",
-      sessionId: task.parentSessionId,
-      role: "assistant",
-      text,
-    })
-
-    try {
-      for (const chunk of chunkTelegramMessage(text)) {
-        await fetch(`https://api.telegram.org/bot${config.telegram.token}/sendMessage`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chat_id: chatId, text: chunk }),
-        })
-      }
-    } catch (sendError) {
-      console.error(`Failed to deliver worker result to telegram chat ${chatId}:`, sendError)
-    }
+    // Coordinator handles the response; no direct Telegram delivery needed here
   }
 
   listTasks() {
