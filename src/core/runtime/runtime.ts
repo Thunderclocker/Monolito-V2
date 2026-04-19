@@ -87,6 +87,8 @@ type TelegramTypingIndicator = {
   stop(): void
 }
 
+type MemoryReviewTrigger = "post-turn" | "pre-compact" | "session-end"
+
 const execFileAsync = promisify(execFile)
 const SEARXNG_CONTAINER = "monolito-searxng"
 const SEARXNG_PORT = 8888
@@ -96,6 +98,7 @@ const SEARXNG_SETTINGS_FILE = join(SEARXNG_SETTINGS_DIR, "settings.yml")
 const TELEGRAM_TYPING_REFRESH_MS = 4_000
 const TURN_HARD_TIMEOUT_MS = 95_000
 const COMMAND_REPAIR_MAX_ATTEMPTS = 3
+const MEMORY_REVIEW_POST_TURN_DEBOUNCE_MS = 45_000
 const STALL_ALERT_MESSAGE = "SYSTEM ALERT: STALL DETECTED. You have hit the exact same tool execution error twice. Evaluate your remaining viable strategies. If you have a logically distinct path, execute it now. If you have EXHAUSTED ALL viable paths, you MUST format your response to yield control back to the user, summarizing what you tried and why it failed."
 
 class TurnTimeoutError extends Error {
@@ -697,6 +700,9 @@ export class MonolitoV2Runtime {
   private stallAlerts = new Map<string, string>()
   private currentBatchGroups = new Map<string, string>()
   private pendingBackgroundWakeups = new Map<string, { profileId: string; payloads: string[] }>()
+  private memoryReviewInFlight = new Map<string, Promise<void>>()
+  private pendingMemoryReviews = new Map<string, { profileId: string; trigger: MemoryReviewTrigger; sessionSnapshot?: SessionRecord | null }>()
+  private lastMemoryReviewAt = new Map<string, number>()
   readonly orchestrator: AgentOrchestrator
 
   private describeResumeReason(session: SessionRecord) {
@@ -987,18 +993,47 @@ export class MonolitoV2Runtime {
   private scheduleMemoryReview(
     sessionId: string,
     profileId: string,
-    trigger: "post-turn" | "pre-compact" | "session-end",
+    trigger: MemoryReviewTrigger,
     sessionSnapshot?: SessionRecord | null,
   ) {
     const snapshot = sessionSnapshot ?? getSession(this.rootDir, sessionId)
     if (!snapshot || snapshot.id.startsWith("agent-")) return
-    void (async () => {
+
+    if (this.memoryReviewInFlight.has(sessionId)) {
+      const pending = this.pendingMemoryReviews.get(sessionId)
+      this.pendingMemoryReviews.set(sessionId, {
+        profileId,
+        trigger: pickMemoryReviewTrigger(pending?.trigger, trigger),
+        sessionSnapshot: snapshot,
+      })
+      return
+    }
+
+    const lastStartedAt = this.lastMemoryReviewAt.get(sessionId) ?? 0
+    if (trigger === "post-turn" && Date.now() - lastStartedAt < MEMORY_REVIEW_POST_TURN_DEBOUNCE_MS) {
+      return
+    }
+
+    const reviewTask = (async () => {
+      this.lastMemoryReviewAt.set(sessionId, Date.now())
       try {
         await runMemoryAgentReview(this.rootDir, snapshot, profileId, trigger)
       } catch (error) {
         console.error(`Memory agent failed (${trigger}) for ${sessionId}:`, error)
+      } finally {
+        this.memoryReviewInFlight.delete(sessionId)
+        const pending = this.pendingMemoryReviews.get(sessionId)
+        if (!pending) return
+        this.pendingMemoryReviews.delete(sessionId)
+        this.scheduleMemoryReview(
+          sessionId,
+          pending.profileId,
+          pending.trigger,
+          pending.sessionSnapshot,
+        )
       }
     })()
+    this.memoryReviewInFlight.set(sessionId, reviewTask)
   }
 
   tailEvents(sessionId: string, lines?: number) {
@@ -2353,4 +2388,14 @@ function clipForWorklog(value: string, maxChars = 180) {
   const trimmed = value.trim()
   if (trimmed.length <= maxChars) return trimmed
   return `${trimmed.slice(0, maxChars).trimEnd()}...`
+}
+
+function pickMemoryReviewTrigger(current: MemoryReviewTrigger | undefined, incoming: MemoryReviewTrigger): MemoryReviewTrigger {
+  const priority: Record<MemoryReviewTrigger, number> = {
+    "post-turn": 1,
+    "pre-compact": 2,
+    "session-end": 3,
+  }
+  if (!current) return incoming
+  return priority[incoming] >= priority[current] ? incoming : current
 }
