@@ -1069,7 +1069,7 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
     "- Do not read or summarize scratchpad or memory files for a greeting, acknowledgment, or small talk turn.",
   )
 
-  if (context?.orchestrator) {
+  if (context?.orchestrator && !session.id.startsWith("agent-")) {
     staticSections.push("", COORDINATOR_SYSTEM_PROMPT)
   }
 
