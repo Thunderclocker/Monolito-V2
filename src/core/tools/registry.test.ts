@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { getTool } from "./registry.ts"
-import { appendEvent, appendMessage, appendWorklog, ensureSession, readConfigWing } from "../session/store.ts"
+import { appendEvent, appendMessage, appendWorklog, ensureSession, readConfigWing, writeBootWing } from "../session/store.ts"
 
 function createRootDir() {
   return mkdtempSync(join(tmpdir(), "monolito-tools-test-"))
@@ -174,6 +174,67 @@ test("SessionForensics surfaces delegation evidence from events", async () => {
     assert.match((result as { summary: string }).summary, /evidencia operativa de delegaci/i)
     assert.ok((result as { evidence: string[] }).evidence.some(line => line.includes("delegate_background_task")))
     assert.ok((result as { evidence: string[] }).evidence.some(line => line.includes("agent.background.completed")))
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("CanonicalMemoryWrite and CanonicalMemoryRead persist stable profile facts", async () => {
+  const rootDir = createRootDir()
+  try {
+    const writer = getTool("CanonicalMemoryWrite")
+    const reader = getTool("CanonicalMemoryRead")
+    assert.ok(writer)
+    assert.ok(reader)
+
+    await writer.run({
+      slot: "assistant_name",
+      value: "Amanda",
+    }, {
+      rootDir,
+      cwd: rootDir,
+    })
+
+    await writer.run({
+      slot: "user_location",
+      value: "Santo Tome, Santa Fe, Argentina",
+    }, {
+      rootDir,
+      cwd: rootDir,
+    })
+
+    const result = await reader.run({}, {
+      rootDir,
+      cwd: rootDir,
+    })
+
+    assert.equal((result as { state: Record<string, string> }).state.assistant_name, "Amanda")
+    assert.equal((result as { state: Record<string, string> }).state.user_location, "Santo Tome, Santa Fe, Argentina")
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("CanonicalMemoryRead falls back to legacy BOOT memory when canonical slots are empty", async () => {
+  const rootDir = createRootDir()
+  try {
+    writeBootWing(rootDir, "BOOT_MEMORY", [
+      "# BOOT_MEMORY - Memoria Curada de Largo Plazo",
+      "",
+      "- Cristian vive en Santo Tome, Santa Fe, Argentina.",
+      "- Monolito V2 - identidad del asistente: se llama 'Amanda'.",
+    ].join("\n"))
+
+    const reader = getTool("CanonicalMemoryRead")
+    assert.ok(reader)
+
+    const result = await reader.run({}, {
+      rootDir,
+      cwd: rootDir,
+    })
+
+    assert.equal((result as { state: Record<string, string> }).state.assistant_name, "Amanda")
+    assert.equal((result as { state: Record<string, string> }).state.user_location, "Santo Tome, Santa Fe, Argentina")
   } finally {
     cleanupRootDir(rootDir)
   }
