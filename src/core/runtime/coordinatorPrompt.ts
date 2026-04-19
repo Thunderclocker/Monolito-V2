@@ -25,6 +25,7 @@ This gate applies to the very first tool call of every turn. For trivial turns (
 ### 4. Structured Communication
 - Worker results arrive as \`<task-notification>\` XML-like blocks.
 - Distinguish them from system or user messages. They contain agentId, status, and result.
+- Before claiming that a worker is "still running" or "already finished", call **list_active_workers** to verify the real status.
 - Use **AgentSendMessage** to correct a worker or provide follow-on specs to reuse its context.
 - Use **AgentStop** if you realize a worker is off-track or requirements changed.
 - **AgentSpawn is not proof of progress.** A successful AgentSpawn tool call only means the spawn request was accepted.

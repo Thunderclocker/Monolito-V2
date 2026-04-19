@@ -61,6 +61,8 @@ type AnthropicResponse = {
   usage?: {
     input_tokens?: number
     output_tokens?: number
+    cache_read_input_tokens?: number
+    cache_creation_input_tokens?: number
   }
 }
 
@@ -163,7 +165,7 @@ async function withRecoveryInterceptor<T, M = unknown>(
   let state = initialState
   const persistent = isUnattendedRetryEnabled(initialState.retryPolicy)
   const heartbeat = persistent ? () => touchHeartbeatFile(initialState.rootDir) : null
-  const maxAttempts = handlers.maxAttempts ?? (persistent ? Number.POSITIVE_INFINITY : 6)
+  const maxAttempts = handlers.maxAttempts ?? (persistent ? PERSISTENT_MAX_ATTEMPTS : 6)
   let attempt = 0
 
   while (attempt < maxAttempts) {
@@ -222,6 +224,10 @@ const MAX_TURN_ITERATIONS = 16
 const MAX_TURN_DURATION_MS = 120_000
 const SHORT_RETRY_THRESHOLD_MS = 20_000
 const RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000
+const RATE_LIMIT_BREAKER_OPEN_MS = 10 * 60 * 1000
+const RATE_LIMIT_BREAKER_THRESHOLD = 5
+const RATE_LIMIT_ABORT_THRESHOLD = 10
+const PERSISTENT_MAX_ATTEMPTS = 30
 const PERSISTENT_MAX_BACKOFF_MS = 5 * 60 * 1000
 const PERSISTENT_RESET_WINDOW_MS = 6 * 60 * 60 * 1000
 const PERSISTENT_HEARTBEAT_MS = 30_000
@@ -1652,6 +1658,7 @@ async function callAnthropicLikeApi(
   const requestTimeoutMs = selectModelRequestTimeoutMs(retryPolicy.background)
   let authRefreshTried = false
   let overloadCount = 0
+  let consecutiveRateLimitCount = 0
 
   const requestOnce = async (requestMessages: AnthropicMessage[], maxTokens: number, stream: boolean) => {
     const timed = createRequestTimeoutSignal(requestTimeoutMs, abortSignal)
@@ -1727,6 +1734,7 @@ async function callAnthropicLikeApi(
       }
       throwSemanticModelError(provider, response.status, response.statusText, body, response.headers, maxTokens)
     }
+    consecutiveRateLimitCount = 0
 
     if (!stream) {
       try {
@@ -1736,6 +1744,10 @@ async function callAnthropicLikeApi(
           model: requestModel,
           stream,
           durationMs: Date.now() - startedAt,
+          input_tokens: parsed.usage?.input_tokens ?? 0,
+          output_tokens: parsed.usage?.output_tokens ?? 0,
+          cache_read_input_tokens: parsed.usage?.cache_read_input_tokens ?? 0,
+          cache_creation_input_tokens: parsed.usage?.cache_creation_input_tokens ?? 0,
         })
         return parsed
       } finally {
@@ -1757,6 +1769,10 @@ async function callAnthropicLikeApi(
         model: requestModel,
         stream,
         durationMs: Date.now() - startedAt,
+        input_tokens: parsed.usage?.input_tokens ?? 0,
+        output_tokens: parsed.usage?.output_tokens ?? 0,
+        cache_read_input_tokens: parsed.usage?.cache_read_input_tokens ?? 0,
+        cache_creation_input_tokens: parsed.usage?.cache_creation_input_tokens ?? 0,
       })
       return parsed
     } catch (error) {
@@ -1804,11 +1820,19 @@ async function callAnthropicLikeApi(
         }
       },
       onRateLimit: (_state, error) => {
+        consecutiveRateLimitCount += 1
         if (hasOverageDisabled(error.headers)) {
           fastModeCooldownUntil = Number.POSITIVE_INFINITY
           return
         }
-        fastModeCooldownUntil = Date.now() + Math.max(error.retryAfterMs ?? RATE_LIMIT_COOLDOWN_MS, RATE_LIMIT_COOLDOWN_MS)
+        if (consecutiveRateLimitCount >= RATE_LIMIT_BREAKER_THRESHOLD) {
+          fastModeCooldownUntil = Date.now() + RATE_LIMIT_BREAKER_OPEN_MS
+        } else {
+          fastModeCooldownUntil = Date.now() + Math.max(error.retryAfterMs ?? RATE_LIMIT_COOLDOWN_MS, RATE_LIMIT_COOLDOWN_MS)
+        }
+        if (consecutiveRateLimitCount >= RATE_LIMIT_ABORT_THRESHOLD) {
+          throw error
+        }
       },
       onProviderOverloaded: (_state, _error, attempt) => {
         overloadCount += 1
@@ -2001,6 +2025,7 @@ async function callOpenAiCompatibleApi(
       parameters: t.input_schema,
     },
   }))
+  let consecutiveRateLimitCount = 0
   
   const url = `${baseUrl}/v1/chat/completions`
   try {
@@ -2077,6 +2102,7 @@ async function callOpenAiCompatibleApi(
           })
           throwSemanticModelError(provider, response.status, response.statusText, body, response.headers, state.maxTokens)
         }
+        consecutiveRateLimitCount = 0
 
         try {
           const data = (await response.json()) as OllamaChatResponse
@@ -2101,6 +2127,15 @@ async function callOpenAiCompatibleApi(
           ...state,
           requestMessages: maybeAggressivelyCompactMessages(state.requestMessages),
           maxTokens: computeAdjustedMaxTokens(overflow, Math.min(state.maxTokens, 3_000)),
+        }
+      },
+      onRateLimit: (_state, error) => {
+        consecutiveRateLimitCount += 1
+        if (consecutiveRateLimitCount >= RATE_LIMIT_BREAKER_THRESHOLD) {
+          fastModeCooldownUntil = Date.now() + RATE_LIMIT_BREAKER_OPEN_MS
+        }
+        if (consecutiveRateLimitCount >= RATE_LIMIT_ABORT_THRESHOLD) {
+          throw error
         }
       },
       maxAttempts: isUnattendedRetryEnabled(retryPolicy) ? undefined : 6,

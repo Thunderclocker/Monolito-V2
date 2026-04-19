@@ -56,6 +56,14 @@ export type SpawnAgentResult = {
   error?: string
 }
 
+export type TaskSnapshot = {
+  agentId: string
+  description: string
+  status: DelegationTask["status"]
+  hasResult: boolean
+  error?: string
+}
+
 const IMMEDIATE_AGENT_SETTLE_MS = 1_500
 
 function getTelegramChatId(sessionId: string) {
@@ -292,5 +300,17 @@ ${usageXml}
 
   listTasks() {
     return Array.from(this.activeTasks.values())
+  }
+
+  getTaskSnapshot(parentSessionId: string): TaskSnapshot[] {
+    return Array.from(this.activeTasks.values())
+      .filter(task => task.parentSessionId === parentSessionId)
+      .map(task => ({
+        agentId: task.id,
+        description: task.description,
+        status: task.status,
+        hasResult: Boolean(task.result?.trim()),
+        ...(task.error ? { error: task.error } : {}),
+      }))
   }
 }
