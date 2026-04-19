@@ -1866,6 +1866,91 @@ const tools: ToolDefinition[] = [
     },
   },
 
+  // --- Git Tools ---
+  {
+    name: "GitStatus",
+    description: "Get the working tree status using git status --porcelain.",
+    inputSchema: emptyInputSchema,
+    concurrencySafe: true,
+    async run(_input, context) {
+      const result = await execFileAsync("git", ["status", "--porcelain", "-b", "-u"], {
+        cwd: context.cwd,
+        env: process.env,
+      })
+      return { status: result.stdout.trim() || "(clean)" }
+    },
+  },
+  {
+    name: "GitDiff",
+    description: "Show changes in the working tree that are not yet staged.",
+    inputSchema: emptyInputSchema,
+    concurrencySafe: true,
+    async run(_input, context) {
+      const result = await execFileAsync("git", ["diff"], {
+        cwd: context.cwd,
+        env: process.env,
+      })
+      return { diff: result.stdout }
+    },
+  },
+  {
+    name: "GitDiffCached",
+    description: "Show changes that are staged for the next commit.",
+    inputSchema: emptyInputSchema,
+    concurrencySafe: true,
+    async run(_input, context) {
+      const result = await execFileAsync("git", ["diff", "--cached"], {
+        cwd: context.cwd,
+        env: process.env,
+      })
+      return { diff: result.stdout }
+    },
+  },
+  {
+    name: "GitAdd",
+    description: "Add file contents to the staging area.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+      },
+      required: ["path"],
+      additionalProperties: false,
+    },
+    concurrencySafe: false,
+    validate: input => typeof input.path === "string" && input.path.length > 0 ? null : "path must be a non-empty string",
+    async run(input, context) {
+      const path = requireString(input, "path")
+      await execFileAsync("git", ["add", path], {
+        cwd: context.cwd,
+        env: process.env,
+      })
+      return { ok: true, path }
+    },
+  },
+  {
+    name: "GitCommit",
+    description: "Record changes to the repository.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        message: { type: "string" },
+      },
+      required: ["message"],
+      additionalProperties: false,
+    },
+    concurrencySafe: false,
+    validate: input => typeof input.message === "string" && input.message.length > 0 ? null : "message must be a non-empty string",
+    async run(input, context) {
+      const message = requireString(input, "message")
+      const result = await execFileAsync("git", ["commit", "-m", message], {
+        cwd: context.cwd,
+        env: process.env,
+      })
+      return { ok: true, result: result.stdout }
+    },
+  },
+
   // ---------------------------------------------------------------------------
   // Master Configuration Hub
   // ---------------------------------------------------------------------------
