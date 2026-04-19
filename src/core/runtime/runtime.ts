@@ -786,24 +786,24 @@ export class MonolitoV2Runtime {
       : error?.trim()
         ? `Error: ${error.trim()}`
         : `Background task ${task.status}`
-    const looksLikeAck = rawResult.length < 80 && ACK_PATTERNS.some(re => re.test(rawResult))
-    const systemPayload = task.status === "completed" && looksLikeAck
-      ? [
-          `The background worker returned only an acknowledgement ([${rawResult}]), not a final result.`,
-          "Treat this as 'worker still not done' — do not present this to the user as the answer.",
-          "You may acknowledge that work is still in progress if the user asks.",
-        ].join(" ")
-      : task.status === "failed" || task.status === "killed"
-        ? [
-            `The background worker ended with status ${task.status}. Details: [${rawResult}].`,
-            "Do not present this as successful raw information.",
-            "If you answer the user, explain the status naturally and conservatively.",
-          ].join(" ")
+    const ERROR_PATTERNS = [
+      /sub-agents? cannot/i,
+      /cannot delegate/i,
+      /model\/provider failed/i,
+      /recovery interceptor exhausted/i,
+      /could not extract useful findings/i,
+    ]
+    const looksLikeError = ERROR_PATTERNS.some(re => re.test(rawResult))
+    const effectiveStatus = looksLikeError ? "failed" : task.status
+    const looksLikeAck = !looksLikeError && rawResult.length < 80 && ACK_PATTERNS.some(re => re.test(rawResult))
+    const systemPayload = effectiveStatus === "completed" && looksLikeAck
+      ? "El worker de fondo devolvió solo un ACK, no un resultado final. No lo presentes como respuesta al usuario."
+      : effectiveStatus === "failed" || effectiveStatus === "killed"
+        ? `El worker de fondo falló. Informale al usuario de forma natural y breve que la tarea no pudo completarse. No expongas detalles técnicos internos.`
         : [
-            `The background worker just returned this raw information: [${rawResult}].`,
-            "Incorporate it into your extended processing and present it to the user directly and naturally.",
-            "Do not begin the response with technical explanations about the sub-agent or delegation; just deliver the value.",
-            "If the user asks about the process, you may confirm that you used a background process.",
+            `Resultado del worker de fondo: [${rawResult}].`,
+            "Incorporalo a tu respuesta de forma natural y directa.",
+            "No menciones el proceso técnico interno salvo que el usuario lo pregunte.",
           ].join(" ")
 
     appendMessage(this.rootDir, sessionId, "system", systemPayload)

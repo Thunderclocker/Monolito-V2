@@ -1481,7 +1481,7 @@ const tools: ToolDefinition[] = [
       const parentSessionId = (context as any).sessionId
       if (!parentSessionId) throw new Error("Parent Session ID not found.")
       if (parentSessionId.startsWith("agent-")) {
-        throw new Error("Sub-agents cannot spawn other agents. Execute the task directly and return results.")
+        throw new Error("Los sub-agentes no pueden spawnear otros agentes. Ejecutá la tarea directamente y devolvé los resultados.")
       }
 
       const spawned = await context.orchestrator.spawnAgent(parentSessionId, profileId, task, description, type)
@@ -1562,7 +1562,7 @@ const tools: ToolDefinition[] = [
       const parentSessionId = (context as any).sessionId
       if (!parentSessionId) throw new Error("Parent Session ID not found.")
       if (parentSessionId.startsWith("agent-")) {
-        throw new Error("Sub-agents cannot delegate background tasks. Execute the task directly and return results.")
+        throw new Error("Los sub-agentes no pueden delegar tareas en background. Ejecutá la tarea directamente y devolvé los resultados.")
       }
       const activeWorkers = context.orchestrator
         .getTaskSnapshot(parentSessionId)
