@@ -200,12 +200,28 @@ export class AgentOrchestrator {
         appendMessage(runtime.rootDir, task.subSessionId, "user", currentText)
         turn = await runtime.runTurn(task.subSessionId, currentText, task.profileId, { logger: task.logger })
         
-        if (turn.error) {
+        let isPrematureSurrender = false
+        if (!turn.error && turn.finalText && attempt < maxAttempts) {
+          const lower = turn.finalText.toLowerCase()
+          const surrenderPhrases = ["no puedo", "i cannot", "no pude", "failed to", "me es imposible"]
+          const delegationPhrases = ["delegar", "delegate", "background_task", "sub-agent", "subagente"]
+          
+          if (surrenderPhrases.some(p => lower.includes(p)) && delegationPhrases.some(p => lower.includes(p))) {
+            isPrematureSurrender = true
+          }
+        }
+
+        if (turn.error || isPrematureSurrender) {
           partialResult = turn.finalText || partialResult
           if (attempt >= maxAttempts) {
-            throw new Error(turn.error)
+            throw new Error(turn.error || "El sub-agente se rindió sin completar la tarea.")
           }
-          currentText = buildSubagentRetryPrompt(task.description, attempt, turn.error, partialResult)
+          currentText = buildSubagentRetryPrompt(
+            task.description, 
+            attempt, 
+            turn.error || "Task execution halted prematurely. As a leaf-node background worker, you are strictly forbidden from delegar/delegating tasks. You MUST find an alternative execution path and complete the objective yourself.", 
+            partialResult
+          )
           attempt++
           continue
         }
