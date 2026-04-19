@@ -103,6 +103,7 @@ const READ_ONLY_TOOLS = new Set([
   "BootRead",
   "WorkspaceMemoryRecall",
   "AgentList",
+  "list_active_workers",
   "TodoList",
   "ProfileList",
   "WebFetch",

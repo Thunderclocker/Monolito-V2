@@ -1331,13 +1331,14 @@ async function callModelApi(
   abortSignal?: AbortSignal,
   retryPolicy: RetryPolicy = { unattended: false, background: false },
   includeTools = true,
+  isSubAgent = false,
 ) {
   const config = getEffectiveModelConfig()
   if (config.provider === "ollama" || config.provider === "openai_compatible") {
-    return callOpenAiCompatibleApi(rootDir, config.provider, messages, flattenSystemPrompt(system), retryPolicy, logger, abortSignal, includeTools)
+    return callOpenAiCompatibleApi(rootDir, config.provider, messages, flattenSystemPrompt(system), retryPolicy, logger, abortSignal, includeTools, isSubAgent)
   }
   const structured: SystemPrompt = typeof system === "string" ? { static: system, dynamic: "" } : system
-  return callAnthropicLikeApi(rootDir, messages, structured, retryPolicy, includeTools, logger, abortSignal)
+  return callAnthropicLikeApi(rootDir, messages, structured, retryPolicy, includeTools, logger, abortSignal, isSubAgent)
 }
 
 let fastModeCooldownUntil = 0
@@ -1686,6 +1687,7 @@ async function callAnthropicLikeApi(
   includeTools: boolean,
   logger: Logger,
   abortSignal?: AbortSignal,
+  isSubAgent = false,
 ) {
   let { baseUrl, apiKey, model, provider } = getEffectiveModelConfig()
   if (!baseUrl) throw new Error("Model adapter is missing ANTHROPIC_BASE_URL")
@@ -1727,7 +1729,7 @@ async function callAnthropicLikeApi(
           model: requestModel,
           system: buildCachedSystemBlocks(system),
           max_tokens: maxTokens,
-          tools: includeTools ? listModelTools() : undefined,
+          tools: includeTools ? listModelTools(isSubAgent) : undefined,
           messages: requestMessages,
           ...(stream ? { stream: true } : {}),
         }),
@@ -2050,13 +2052,14 @@ async function callOpenAiCompatibleApi(
   logger: Logger,
   abortSignal?: AbortSignal,
   includeTools = true,
+  isSubAgent = false,
 ): Promise<AnthropicResponse> {
   const { baseUrl, model, apiKey } = getEffectiveModelConfig()
   if (!baseUrl) throw new Error(`Model adapter is missing base URL for ${provider}`)
   if (!model) throw new Error(`Model adapter is missing model name for ${provider}`)
   if (provider !== "ollama" && !apiKey) throw new Error(`Model adapter is missing API key for ${provider}`)
 
-  const openAiTools = listModelTools().map(t => ({
+  const openAiTools = listModelTools(isSubAgent).map(t => ({
     type: "function",
     function: {
       name: t.name,
@@ -2319,6 +2322,8 @@ async function* runAssistantTurnState(
     state.logger,
     state.abortSignal,
     state.retryPolicy,
+    includeTools,
+    session.id.startsWith("agent-"),
   )
   yield { type: "response", response }
 
