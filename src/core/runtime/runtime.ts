@@ -622,6 +622,8 @@ const ACK_PATTERNS = [
   /^dame un (rato|minuto)/i,
   /^(ok|dale|listo|perfecto)[,.\s]*$/i,
   /^voy a (revisar|hacerlo|arrancar)/i,
+  /^(stopped|aborted|cancelled|killed)[.!]*$/i,
+  /^recovery interceptor exhausted/i,
 ]
 
 function chunkTelegramMessage(text: string, maxLength = TELEGRAM_MESSAGE_LIMIT) {

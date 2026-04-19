@@ -1477,9 +1477,12 @@ const tools: ToolDefinition[] = [
       const type = (optionalString(input, "type") as any) || "worker"
       
       if (!context.orchestrator) throw new Error("Agent Orchestrator not available.")
-      
-      const parentSessionId = (context as any).sessionId 
+
+      const parentSessionId = (context as any).sessionId
       if (!parentSessionId) throw new Error("Parent Session ID not found.")
+      if (parentSessionId.startsWith("agent-")) {
+        throw new Error("Sub-agents cannot spawn other agents. Execute the task directly and return results.")
+      }
 
       const spawned = await context.orchestrator.spawnAgent(parentSessionId, profileId, task, description, type)
       if (spawned.status === "failed") {
@@ -1558,6 +1561,9 @@ const tools: ToolDefinition[] = [
       if (!context.orchestrator) throw new Error("Agent Orchestrator not available.")
       const parentSessionId = (context as any).sessionId
       if (!parentSessionId) throw new Error("Parent Session ID not found.")
+      if (parentSessionId.startsWith("agent-")) {
+        throw new Error("Sub-agents cannot delegate background tasks. Execute the task directly and return results.")
+      }
       const activeWorkers = context.orchestrator
         .getTaskSnapshot(parentSessionId)
         .filter(worker => worker.status === "pending" || worker.status === "running")
