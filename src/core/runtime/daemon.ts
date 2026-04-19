@@ -13,6 +13,7 @@ import {
 import { MonolitoV2Runtime } from "./runtime.ts"
 import { startChannels, stopChannels } from "../channels/channelManager.ts"
 import { addLogSink, createFileSink } from "../logging/logger.ts"
+import { warmupEmbeddings } from "../session/embeddings.ts"
 
 function isIgnorableSocketError(error: unknown) {
   if (!(error instanceof Error)) return false
@@ -71,6 +72,7 @@ export class MonolitoV2Daemon {
     }
     await this.terminateDuplicateDaemons()
     this.startOwnershipMonitor()
+    void this.startEmbeddingsWarmup()
     startChannels(this.runtime, { onRestartRequested: () => this.scheduleSelfRestart() })
     return this.server
   }
@@ -280,6 +282,28 @@ export class MonolitoV2Daemon {
 
   private writeDaemonLog(line: string) {
     appendFileSync(getPaths(this.rootDir).daemonLog, `${new Date().toISOString()} ${line}\n`)
+  }
+
+  private async startEmbeddingsWarmup() {
+    this.writeDaemonLog("embeddings warmup started")
+    const timeoutMs = 30_000
+    const timeout = new Promise<{ ok: false; timeout: true }>(resolve => {
+      setTimeout(() => resolve({ ok: false, timeout: true }), timeoutMs).unref()
+    })
+    try {
+      const result = await Promise.race([warmupEmbeddings(this.rootDir), timeout])
+      if ("timeout" in result) {
+        this.writeDaemonLog(`embeddings warmup timed out after ${timeoutMs}ms; continuing in lazy mode`)
+        return
+      }
+      if (result.ok) {
+        this.writeDaemonLog(`embeddings warmup ready model=${result.model} cacheDir=${result.cacheDir ?? "(default)"}`)
+      } else {
+        this.writeDaemonLog(`embeddings warmup failed; continuing in lazy mode: ${result.error}`)
+      }
+    } catch (error) {
+      this.writeDaemonLog(`embeddings warmup failed; continuing in lazy mode: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   private safeWrite(socket: Socket, payload: string) {

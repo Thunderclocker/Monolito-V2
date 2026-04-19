@@ -17,6 +17,7 @@ import type { WorkspaceBootstrapContext } from "../context/workspaceContext.ts"
 import { BOOT_WING_DESCRIPTION, type BootWingEntry } from "../bootstrap/bootWings.ts"
 import { normalizeToolInputPayload } from "./toolInput.ts"
 import { ContextOverflowError, ProviderOverloadedError, RateLimitError } from "../errors.ts"
+import { listCanonicalMemoryEntries } from "../session/store.ts"
 
 const defaultLogger = createLogger("modelAdapter")
 
@@ -1061,6 +1062,7 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
     "For questions about what happened in a session, what you said, what the user said, whether workers/tools ran, or where a previous conclusion came from, inspect persisted evidence before answering.",
     "Use SessionForensics first for operational introspection. Treat messages/worklog/events as the primary evidence for session history.",
     "Use BOOT_MEMORY or WorkspaceMemoryRecall only for durable cross-session context, not to reconstruct a specific execution when session evidence exists.",
+    "CanonicalMemoryRead/Write are the primary tools for stable assistant identity and user profile facts such as your name, the user's preferred name, location, and timezone.",
     "Use raw logs only as a last resort for daemon/runtime discrepancies after session evidence is insufficient or contradictory.",
     "If evidence is missing, say that you did not find evidence. Do not reconstruct a plausible story about internal actions, workers, or prior tool usage.",
     "If you say you will investigate, check, search, or handle something, you MUST call a real tool in the same turn. Do not promise future work without starting it.",
@@ -1084,6 +1086,7 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
     "- Use Bash for shell commands, especially home directory inspection or commands outside the workspace.",
     "- Use Read, Write, Edit for direct file operations.",
     "- Use Glob and Grep for workspace search.",
+    "- Use CanonicalMemoryRead/Write for stable identity/profile facts before falling back to BOOT_* or broad memory recall.",
     "- Use MCP resource tools only for MCP resources.",
   ]
 
@@ -1114,6 +1117,16 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
         staticSections.push("", `[${entry.wing} was truncated for prompt budget]`)
       }
     }
+  }
+
+  const canonicalEntries = listCanonicalMemoryEntries(rootDir, context?.profileId ?? "default")
+  if (canonicalEntries.length > 0) {
+    staticSections.push(
+      "",
+      "# CANONICAL MEMORY",
+      "These stable identity/profile facts are stored in structured memory and should be preferred over stale BOOT_* fields when they conflict.",
+      ...canonicalEntries.map(entry => `- ${entry.label}: ${entry.value}`),
+    )
   }
 
   // Telegram (stable per session config)

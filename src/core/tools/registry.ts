@@ -17,6 +17,8 @@ import {
   createProfile,
   readBootWing,
   writeBootWing,
+  readCanonicalMemory,
+  writeCanonicalMemory,
   ensureBootWings,
   readConfigWing,
   writeConfigWing,
@@ -24,6 +26,7 @@ import {
   listSessions,
   tailEvents,
 } from "../session/store.ts"
+import { isEmbeddingsUnavailableError } from "../session/embeddings.ts"
 import { type AgentOrchestrator } from "../runtime/orchestrator.ts"
 import { type Logger } from "../logging/logger.ts"
 import { BOOT_WING_ORDER, isBootWingName } from "../bootstrap/bootWings.ts"
@@ -1489,6 +1492,46 @@ const tools: ToolDefinition[] = [
     },
   },
   {
+    name: "CanonicalMemoryRead",
+    description: "Read stable structured identity/profile memory such as assistant name, user preferred name, location, and timezone.",
+    inputSchema: emptyInputSchema,
+    concurrencySafe: true,
+    async run(_input, context) {
+      const state = readCanonicalMemory(context.rootDir, context.profileId ?? "default")
+      return {
+        profile: context.profileId ?? "default",
+        state,
+      }
+    },
+  },
+  {
+    name: "CanonicalMemoryWrite",
+    description: "Write a stable structured identity/profile fact. Prefer this over BOOT_* for confirmed assistant/user facts.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        slot: { type: "string", enum: ["assistant_name", "user_name", "user_preferred_name", "user_location", "user_timezone"] },
+        value: { type: "string" },
+      },
+      required: ["slot", "value"],
+      additionalProperties: false,
+    },
+    concurrencySafe: false,
+    async run(input, context) {
+      const slot = requireString(input, "slot") as "assistant_name" | "user_name" | "user_preferred_name" | "user_location" | "user_timezone"
+      const value = requireString(input, "value")
+      const result = await writeCanonicalMemory(context.rootDir, slot, value, context.profileId ?? "default")
+      return {
+        ok: true,
+        profile: context.profileId ?? "default",
+        slot,
+        value: result.value,
+        changed: result.changed,
+        bytes: result.bytes,
+      }
+    },
+  },
+  {
     name: "WorkspaceMemoryFiling",
     description: "Store facts, decisions, or snippets in the SQLite Memory Palace. Use wing='SHARED' for team-wide memory visible to every profile. Any other wing stays private to the current profile.",
     inputSchema: {
@@ -1531,13 +1574,24 @@ const tools: ToolDefinition[] = [
       const room = optionalString(input, "room")
       const key = optionalString(input, "key")
       const query = optionalString(input, "query")
-      
-      const results = await recallMemory(context.rootDir, wing, room, query, context.profileId, key)
+
+      let results: any[] = []
+      let warning: string | null = null
+      let semanticSearchActive = !!query
+      try {
+        results = await recallMemory(context.rootDir, wing, room, query, context.profileId, key)
+      } catch (error) {
+        if (!query || !isEmbeddingsUnavailableError(error)) throw error
+        semanticSearchActive = false
+        warning = "La memoria semántica no está disponible en este momento; muestro memoria básica reciente."
+        results = await recallMemory(context.rootDir, wing, room, undefined, context.profileId, key)
+      }
       
       if (!wing && !room && !key && !query) {
         return {
           wings: listWings(context.rootDir, context.profileId),
-          recentMemories: results
+          recentMemories: results,
+          warning,
         }
       }
       if (wing && !room && !key && !query) {
@@ -1545,6 +1599,7 @@ const tools: ToolDefinition[] = [
           wing,
           rooms: listRooms(context.rootDir, wing, context.profileId),
           memories: results,
+          warning,
         }
       }
       return {
@@ -1552,7 +1607,8 @@ const tools: ToolDefinition[] = [
         room,
         key,
         query,
-        semanticSearchActive: !!query,
+        semanticSearchActive,
+        warning,
         memories: results
       }
     },

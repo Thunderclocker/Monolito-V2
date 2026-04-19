@@ -424,6 +424,18 @@ export function renderToolStart(tool: string, input: unknown): ToolRenderLine {
         tone: "info",
         text: `Updating ${getString(value, "wing") ?? "BOOT wing"}...`,
       }
+    case "CanonicalMemoryRead":
+      return {
+        label: "",
+        tone: "info",
+        text: "Reading canonical memory...",
+      }
+    case "CanonicalMemoryWrite":
+      return {
+        label: "",
+        tone: "info",
+        text: `Updating canonical memory ${getString(value, "slot") ?? "slot"}...`,
+      }
     case "WorkspaceMemoryFiling":
       return {
         label: "",

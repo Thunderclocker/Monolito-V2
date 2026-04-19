@@ -1,5 +1,13 @@
 import type { SessionRecord } from "../ipc/protocol.ts"
-import { appendWorklog, fileMemory, readBootWing, writeBootWing } from "../session/store.ts"
+import {
+  appendWorklog,
+  fileMemory,
+  readBootWing,
+  writeBootWing,
+  readCanonicalMemory,
+  writeCanonicalMemory,
+  type CanonicalMemorySlot,
+} from "../session/store.ts"
 import { runBackgroundTextTask } from "./modelAdapter.ts"
 import type { BootWingName } from "../bootstrap/bootWings.ts"
 import { createLogger } from "../logging/logger.ts"
@@ -214,12 +222,71 @@ function buildSystemPrompt(trigger: MemoryTrigger) {
 function buildUserPrompt(session: SessionRecord, rootDir: string, profileId: string) {
   const userCore = clip(readCoreWing(rootDir, profileId, "USER"), 6000)
   const memoryCore = clip(readCoreWing(rootDir, profileId, "MEMORY"), 6000)
+  const canonical = readCanonicalMemory(rootDir, profileId)
+  const canonicalLines = [
+    canonical.assistant_name ? `assistant_name: ${canonical.assistant_name}` : null,
+    canonical.user_name ? `user_name: ${canonical.user_name}` : null,
+    canonical.user_preferred_name ? `user_preferred_name: ${canonical.user_preferred_name}` : null,
+    canonical.user_location ? `user_location: ${canonical.user_location}` : null,
+    canonical.user_timezone ? `user_timezone: ${canonical.user_timezone}` : null,
+  ].filter(Boolean)
   return [
     "BOOT_USER:", userCore || "(empty)",
     "", "BOOT_MEMORY:", memoryCore || "(empty)",
+    "", "CANONICAL_MEMORY:", canonicalLines.length > 0 ? canonicalLines.join("\n") : "(empty)",
     "", "Conversation:", formatRecentConversation(session),
     "", "Return JSON only. No markdown. No newlines inside strings.",
   ].join("\n")
+}
+
+function normalizeForCanonical(value: string) {
+  return value.replace(/\s+/g, " ").trim()
+}
+
+function extractCanonicalUpdates(content: string, current: ReturnType<typeof readCanonicalMemory>) {
+  const text = normalizeForCanonical(content)
+  const updates: Array<{ slot: CanonicalMemorySlot; value: string }> = []
+
+  const assistantNamePatterns = [
+    /identidad del asistente:\s*se llama\s*['"`“”]?([^.'"`]+?)['"`“”]?(?:[.]|$)/i,
+    /nombre para el asistente[^.\n]*['"`“”]([^'"`“”\n]+)['"`“”]/i,
+    /(?:entonces soy|se llama)\s*['"`“”]?([A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ0-9 _-]{1,40})['"`“”]?(?:[.]|$)/i,
+  ]
+  for (const pattern of assistantNamePatterns) {
+    const match = text.match(pattern)
+    const value = normalizeForCanonical(match?.[1] ?? "")
+    if (value && !/^cristian$/i.test(value)) {
+      updates.push({ slot: "assistant_name", value })
+      break
+    }
+  }
+
+  const locationMatch = text.match(/vive en\s+([^.\n]+(?:,\s*[^.\n]+){0,4})/i)
+  const location = normalizeForCanonical(locationMatch?.[1] ?? "")
+  if (location) {
+    updates.push({ slot: "user_location", value: location })
+  }
+
+  const preferredMatch = text.match(/prefiere ser llamado\s+([^.\n]+)/i)
+  const preferred = normalizeForCanonical(preferredMatch?.[1] ?? "")
+  if (preferred) {
+    updates.push({ slot: "user_preferred_name", value: preferred })
+  } else if (/prefiere su nombre sin apodo/i.test(text) && current.user_name) {
+    updates.push({ slot: "user_preferred_name", value: current.user_name })
+  }
+
+  const timezoneMatch = text.match(/zona horaria:\s*([^.\n]+)/i)
+  const timezone = normalizeForCanonical(timezoneMatch?.[1] ?? "")
+  if (timezone && !/por definir/i.test(timezone)) {
+    updates.push({ slot: "user_timezone", value: timezone })
+  }
+
+  const unique = new Map<CanonicalMemorySlot, string>()
+  for (const update of updates) {
+    if (!update.value) continue
+    unique.set(update.slot, update.value)
+  }
+  return [...unique.entries()].map(([slot, value]) => ({ slot, value }))
 }
 
 export async function runMemoryAgentReview(
@@ -301,6 +368,7 @@ export async function runMemoryAgentReview(
   }
 
   const appliedSummaries: string[] = []
+  const canonicalBefore = readCanonicalMemory(rootDir, profileId)
   for (const proposal of proposals) {
     if (!validateProposal(proposal)) {
       logMemoryAgent(rootDir, "proposal.skip", {
@@ -392,6 +460,33 @@ export async function runMemoryAgentReview(
         action: proposal.action,
         content: clip(proposal.content, 120),
       })
+    }
+
+    const canonicalUpdates = extractCanonicalUpdates(proposal.content, canonicalBefore)
+    for (const update of canonicalUpdates) {
+      try {
+        const result = await writeCanonicalMemory(rootDir, update.slot, update.value, profileId)
+        if (result.changed) {
+          appliedSummaries.push(`CanonicalMemory updated (${update.slot})`)
+          ;(canonicalBefore as Record<string, string | undefined>)[update.slot] = update.value
+          logMemoryAgent(rootDir, "proposal.applied", {
+            sessionId: session.id,
+            trigger,
+            destination: "CANONICAL",
+            slot: update.slot,
+            value: clip(update.value, 120),
+          })
+        }
+      } catch (error) {
+        logMemoryAgent(rootDir, "proposal.skip", {
+          sessionId: session.id,
+          trigger,
+          reason: "canonical_write_failed",
+          destination: "CANONICAL",
+          slot: update.slot,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
     }
   }
 
