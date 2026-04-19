@@ -912,7 +912,6 @@ export type ContextExtras = {
   adultMode?: boolean
   webSearchProvider?: WebSearchProvider
   stallAlert?: string | null
-  backgroundResult?: string | null
 }
 
 type SystemPrompt = {
@@ -1082,14 +1081,6 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
 
   if (contextExtras?.stallAlert) {
     dynamicParts.push("", contextExtras.stallAlert)
-  }
-
-  if (contextExtras?.backgroundResult) {
-    const trimmed = contextExtras.backgroundResult.trim()
-    if (trimmed) {
-      const clipped = trimmed.length > 3500 ? `${trimmed.slice(0, 3500)}...` : trimmed
-      dynamicParts.push("", "BACKGROUND TASK RESULT (use this to reply to the user):", clipped)
-    }
   }
 
   if (contextExtras?.dateContext) {
