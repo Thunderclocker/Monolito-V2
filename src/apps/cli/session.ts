@@ -377,6 +377,8 @@ class InteractiveTranscriptFormatter {
         return [{ type: "event", label: "mcp", tone: "info", text: this.pendingMcpCall }]
       case "error":
         return [{ type: "event", label: "error", tone: "error", text: event.error }]
+      default:
+        return []
     }
   }
 }
