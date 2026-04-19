@@ -931,6 +931,11 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
     "Do not use tools merely to personalize, contextualize, or inspect the workspace for a general conversational message.",
     "For greetings, acknowledgments, or casual chat such as 'hola', 'ok', 'genial', or 'gracias', do not use tools at all.",
     "Do not probe scratchpad, memory logs, or workspace memory files unless the user explicitly asks about memory, history, scratchpad contents, or persisted notes.",
+    "For questions about what happened in a session, what you said, what the user said, whether workers/tools ran, or where a previous conclusion came from, inspect persisted evidence before answering.",
+    "Use SessionForensics first for operational introspection. Treat messages/worklog/events as the primary evidence for session history.",
+    "Use BOOT_MEMORY or WorkspaceMemoryRecall only for durable cross-session context, not to reconstruct a specific execution when session evidence exists.",
+    "Use raw logs only as a last resort for daemon/runtime discrepancies after session evidence is insufficient or contradictory.",
+    "If evidence is missing, say that you did not find evidence. Do not reconstruct a plausible story about internal actions, workers, or prior tool usage.",
     "If a scratchpad or memory file does not exist, treat that as normal absence of saved notes, not as a failure that needs further investigation.",
     "Use the provided tools to take action. You have two ways to call tools:",
     "1. Native tool_use blocks (preferred if supported by the model).",
@@ -1041,6 +1046,7 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
     "- CONFIG wings (CONF_MODELS, CONF_CHANNELS, CONF_SYSTEM, CONF_WEBSEARCH) = technical settings. Read/write: tool_manage_config(action='read'|'write', wing='...').",
     "- CONF_CHANNELS Telegram shape is {\"telegram\":{\"token\":\"...\",\"enabled\":true,\"allowedChats\":[123456]}}. Never use bot_token, authorized_chat_ids, session_name, or root-level enabled.",
     "- Memory Palace = long-term contextual memory. File: WorkspaceMemoryFiling. Recall: WorkspaceMemoryRecall.",
+    "- SessionForensics = session-level evidence lookup for messages, worklog, events, delegation, and provenance of prior answers.",
   )
 
   staticSections.push(

@@ -7,7 +7,23 @@ import { ensureDirs, getPaths } from "../ipc/protocol.ts"
 import { MONOLITO_ROOT } from "../system/root.ts"
 import { type StdioMcpClient, getDefaultMcpServers } from "../mcp/client.ts"
 import { normalizeChannelsConfigForWrite, readChannelsConfig } from "../channels/config.ts"
-import { fileMemory, recallMemory, listWings, listRooms, listProfiles, createProfile, readBootWing, writeBootWing, ensureBootWings, readConfigWing, writeConfigWing, appendActionLog } from "../session/store.ts"
+import {
+  appendActionLog,
+  fileMemory,
+  recallMemory,
+  listWings,
+  listRooms,
+  listProfiles,
+  createProfile,
+  readBootWing,
+  writeBootWing,
+  ensureBootWings,
+  readConfigWing,
+  writeConfigWing,
+  getSession,
+  listSessions,
+  tailEvents,
+} from "../session/store.ts"
 import { type AgentOrchestrator } from "../runtime/orchestrator.ts"
 import { type Logger } from "../logging/logger.ts"
 import { BOOT_WING_ORDER, isBootWingName } from "../bootstrap/bootWings.ts"
@@ -120,6 +136,92 @@ function optionalString(input: Record<string, unknown>, key: string) {
 function optionalNumber(input: Record<string, unknown>, key: string) {
   const value = input[key]
   return typeof value === "number" && Number.isFinite(value) ? value : undefined
+}
+
+function compactWhitespace(value: string) {
+  return value.replace(/\s+/g, " ").trim()
+}
+
+function truncateText(value: string, max = 220) {
+  const compact = compactWhitespace(value)
+  return compact.length > max ? `${compact.slice(0, Math.max(0, max - 3))}...` : compact
+}
+
+function stringifyValue(value: unknown, max = 220) {
+  if (typeof value === "string") return truncateText(value, max)
+  try {
+    return truncateText(JSON.stringify(value), max)
+  } catch {
+    return truncateText(String(value), max)
+  }
+}
+
+type ForensicsIntent = "auto" | "history" | "actions" | "delegation" | "origin"
+
+function resolveForensicsIntent(raw: string | undefined): ForensicsIntent {
+  switch (raw) {
+    case undefined:
+    case "auto":
+    case "history":
+    case "actions":
+    case "delegation":
+    case "origin":
+      return raw ?? "auto"
+    default:
+      throw new Error(`Unsupported intent: ${raw}`)
+  }
+}
+
+function inferForensicsIntent(question: string | undefined): ForensicsIntent {
+  const normalized = compactWhitespace(question ?? "").toLowerCase()
+  if (!normalized) return "actions"
+  if (/\b(worker|workers|agent|agente|sub.?agente|delegat|deleg|parallel|paralelo|spawn)\b/.test(normalized)) return "delegation"
+  if (/\b(de donde|de dónde|origen|source|fuente|salio|salió|conclusion|conclusión)\b/.test(normalized)) return "origin"
+  if (/\b(que dije|qué dije|que dijo|qué dijo|mensaje|conversation|conversaci|chat|historial)\b/.test(normalized)) return "history"
+  return "actions"
+}
+
+function pickForensicsSession(rootDir: string, profileId: string | undefined, preferredSessionId: string | undefined) {
+  if (preferredSessionId) {
+    const exact = getSession(rootDir, preferredSessionId)
+    if (!exact) throw new Error(`Session ${preferredSessionId} not found`)
+    return exact
+  }
+  const sessions = listSessions(rootDir, profileId)
+  if (sessions.length === 0) throw new Error("No sessions available for forensics")
+  const latest = getSession(rootDir, sessions[0]!.id)
+  if (!latest) throw new Error(`Session ${sessions[0]!.id} not found`)
+  return latest
+}
+
+function buildEventLine(event: Record<string, unknown>) {
+  const type = typeof event.type === "string" ? event.type : "unknown"
+  switch (type) {
+    case "tool.start":
+      return `${type}: ${(event.tool as string) ?? "unknown"} started`
+    case "tool.finish":
+      return `${type}: ${(event.tool as string) ?? "unknown"} ${event.ok === true ? "ok" : "failed"}${event.output !== undefined ? ` -> ${stringifyValue(event.output, 160)}` : ""}`
+    case "agent.background.completed":
+      return `${type}: ${(event.agentId as string) ?? "unknown"} ${(event.status as string) ?? "unknown"}${event.result ? ` -> ${stringifyValue(event.result, 160)}` : ""}${event.error ? ` error=${stringifyValue(event.error, 120)}` : ""}`
+    case "message.received":
+      return `${type}: ${(event.role as string) ?? "unknown"} -> ${truncateText(String(event.text ?? ""), 160)}`
+    case "error":
+      return `${type}: ${truncateText(String(event.error ?? ""), 160)}`
+    default:
+      return `${type}: ${stringifyValue(event, 180)}`
+  }
+}
+
+function uniqueLines(lines: string[]) {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const line of lines) {
+    const normalized = compactWhitespace(line)
+    if (!normalized || seen.has(normalized)) continue
+    seen.add(normalized)
+    result.push(normalized)
+  }
+  return result
 }
 
 function optionalBoolean(input: Record<string, unknown>, key: string) {
@@ -1452,6 +1554,117 @@ const tools: ToolDefinition[] = [
         query,
         semanticSearchActive: !!query,
         memories: results
+      }
+    },
+  },
+  {
+    name: "SessionForensics",
+    description: "Inspect persisted session evidence before answering questions about what happened, what was said, which tools/workers ran, or where a prior conclusion came from.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string", description: "Optional session ID. Defaults to the current session, otherwise the latest session for the active profile." },
+        intent: { type: "string", enum: ["auto", "history", "actions", "delegation", "origin"], description: "What kind of reconstruction you need." },
+        question: { type: "string", description: "Optional natural language cue to help auto-select the right evidence." },
+        messageLimit: { type: "number", description: "How many recent messages to inspect. Default 6." },
+        worklogLimit: { type: "number", description: "How many recent worklog entries to inspect. Default 8." },
+        eventLimit: { type: "number", description: "How many recent runtime events to inspect. Default 12." },
+      },
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    async run(input, context) {
+      const requestedSessionId = optionalString(input, "sessionId") ?? context.sessionId
+      const requestedIntent = resolveForensicsIntent(optionalString(input, "intent"))
+      const question = optionalString(input, "question")
+      const messageLimit = Math.max(1, Math.min(12, optionalNumber(input, "messageLimit") ?? 6))
+      const worklogLimit = Math.max(1, Math.min(20, optionalNumber(input, "worklogLimit") ?? 8))
+      const eventLimit = Math.max(1, Math.min(30, optionalNumber(input, "eventLimit") ?? 12))
+      const session = pickForensicsSession(context.rootDir, context.profileId, requestedSessionId)
+      const events = tailEvents(context.rootDir, session.id, eventLimit)
+      const recentMessages = session.messages.slice(-messageLimit)
+      const recentWorklog = session.worklog.slice(-worklogLimit)
+      const effectiveIntent = requestedIntent === "auto" ? inferForensicsIntent(question) : requestedIntent
+
+      const messageLines = recentMessages.map(message => `${message.at} ${message.role}: ${truncateText(message.text, 220)}`)
+      const worklogLines = recentWorklog.map(entry => `${entry.at} [${entry.type}] ${truncateText(entry.summary, 220)}`)
+      const eventLines = events.map(event => buildEventLine(event as Record<string, unknown>))
+
+      const delegationEvidence = uniqueLines([
+        ...events
+          .filter(event => event.type === "agent.background.completed")
+          .map(event => buildEventLine(event as Record<string, unknown>)),
+        ...events
+          .filter(event => event.type === "tool.start" || event.type === "tool.finish")
+          .filter(event => {
+            const tool = typeof (event as { tool?: unknown }).tool === "string" ? String((event as { tool?: unknown }).tool) : ""
+            return ["AgentSpawn", "delegate_background_task", "list_active_workers", "AgentSendMessage"].includes(tool)
+          })
+          .map(event => buildEventLine(event as Record<string, unknown>)),
+        ...recentWorklog
+          .map(entry => entry.summary)
+          .filter(summary => /\b(worker|workers|agent|agente|delegat|spawn|background)\b/i.test(summary)),
+      ])
+
+      let summary = ""
+      let evidence: string[] = []
+      let recommendedSources: string[] = []
+
+      switch (effectiveIntent) {
+        case "history":
+          summary = "Usá los mensajes persistidos como fuente principal para reconstruir quién dijo qué."
+          evidence = messageLines
+          recommendedSources = ["messages", "worklog"]
+          break
+        case "delegation":
+          summary = delegationEvidence.length > 0
+            ? "Encontré evidencia operativa de delegación/workers en los eventos y/o worklog de la sesión."
+            : "No encontré evidencia operativa de delegación/workers en los eventos recientes de la sesión."
+          evidence = delegationEvidence.length > 0 ? delegationEvidence : [...eventLines, ...worklogLines].slice(-8)
+          recommendedSources = ["events", "worklog", "messages"]
+          break
+        case "origin": {
+          const lastUser = recentMessages.filter(message => message.role === "user").at(-1)
+          const lastAssistant = recentMessages.filter(message => message.role === "assistant").at(-1)
+          const originEvidence = uniqueLines([
+            lastUser ? `Last user message: ${truncateText(lastUser.text, 220)}` : "",
+            lastAssistant ? `Last assistant message: ${truncateText(lastAssistant.text, 220)}` : "",
+            ...eventLines.filter(line => /tool\.finish|agent\.background\.completed|error/.test(line)),
+            ...worklogLines.filter(line => /\b(Tool|Assistant:|Memory agent:|Turn completed|Turn started)\b/.test(line)),
+          ])
+          summary = "Reconstruí el origen probable desde el último intercambio y la evidencia operativa reciente."
+          evidence = originEvidence.slice(0, 10)
+          recommendedSources = ["messages", "events", "worklog"]
+          break
+        }
+        case "actions":
+        default:
+          summary = "Usá worklog y eventos como fuente principal para explicar qué hizo el runtime en esta sesión."
+          evidence = uniqueLines([...worklogLines, ...eventLines]).slice(-12)
+          recommendedSources = ["worklog", "events", "messages"]
+          break
+      }
+
+      return {
+        ok: true,
+        session: {
+          id: session.id,
+          title: session.title,
+          state: session.state,
+          createdAt: session.createdAt,
+          updatedAt: session.updatedAt,
+        },
+        intent: effectiveIntent,
+        question: question ?? null,
+        summary,
+        recommendedSources,
+        evidence,
+        counts: {
+          messagesInspected: recentMessages.length,
+          worklogInspected: recentWorklog.length,
+          eventsInspected: events.length,
+        },
+        nextStepHint: "If this is still insufficient, inspect raw logs only for runtime/daemon discrepancies rather than conversational history.",
       }
     },
   },
