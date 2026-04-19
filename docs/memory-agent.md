@@ -1,95 +1,152 @@
 # Memory Agent
 
-The background `Memory Agent` reviews conversation after the main reply is already done and decides whether something should be remembered for future interactions.
+The background `Memory Agent` reviews recent conversation after the main reply is already sent and decides whether something should be persisted for future turns.
+
+This document describes the current runtime behavior. It replaces older descriptions that treated `BOOT_*` as the only durable memory target.
 
 ## Purpose
 
-The goal is to let Monolito learn useful user context without interrupting the main chat flow and without pushing everything into the most canonical memory files.
+The memory system now has three distinct layers:
 
-The agent should be conservative with core memory and more permissive with Memory Palace entries.
+- `BOOT_*`: deterministic bootstrap state and persona scaffolding
+- canonical structured memory: stable assistant/user profile facts
+- Memory Palace: broader long-term contextual memory
+
+The `Memory Agent` is responsible for conservative, post-turn persistence without interrupting the chat.
 
 ## Triggers
 
 The `Memory Agent` runs in the background at these moments:
 
-- After normal turns (`post-turn`)
-- Before `/compact` rewrites older session history (`pre-compact`)
-- Before session resets such as `/new` (`session-end`)
+- after normal turns (`post-turn`)
+- before `/compact` rewrites older session history (`pre-compact`)
+- before session resets such as `/new` (`session-end`)
 
-## Memory destinations
+## Memory layers
 
-### `BOOT_USER`
+### Bootstrap wings
 
-Use `BOOT_USER` for stable facts about the person:
+`BOOT_*` wings are SQLite-backed bootstrap records, not free-form workspace files.
 
-- communication preferences
-- preferred language
-- tone and style preferences
-- boundaries
-- recurring habits
-- stable preferences about how the assistant should behave
+Important ones for memory behavior:
 
-This is the strictest destination.
+- `BOOT_IDENTITY`: deterministic bootstrap identity seed
+- `BOOT_USER`: deterministic bootstrap user/profile seed
+- `BOOT_MEMORY`: curated long-term context visible in the main session prompt
 
-### `BOOT_MEMORY`
+These are still read by the runtime, but they are no longer the only place where stable facts can live.
 
-Use `BOOT_MEMORY` for durable relational context:
+### Canonical structured memory
 
-- repeated long-term goals
-- important ongoing life context
-- long-lived interaction patterns
-- durable context that should stay visible across many future conversations
+Canonical memory stores stable facts in structured slots inside `memory_drawers`.
 
-This is also strict, but it is about the relationship and long-running context more than personal profile.
+Current slots:
+
+- `assistant_name`
+- `user_name`
+- `user_preferred_name`
+- `user_location`
+- `user_timezone`
+
+This layer is now the primary source of truth for stable assistant identity and stable user profile facts.
+
+Examples:
+
+- the assistant's confirmed name
+- the user's preferred way of being addressed
+- the user's city/location
+- the user's timezone
+
+The runtime prefers canonical memory over stale `BOOT_*` fields when they conflict.
 
 ### Memory Palace
 
-Use Memory Palace for useful but less canonical context:
+Memory Palace is the broader SQLite-backed long-term memory system used for contextual recall.
 
-- plans
-- worries
-- current situations
-- medium-term intentions
-- contextual facts that may help later
-- tentative personal signals that are worth recalling, but not important enough for `BOOT_USER` or `BOOT_MEMORY`
+It stores:
 
-This is the cheapest place to remember something. It should accept useful context even when it is not fully stable.
+- `wing`
+- `room`
+- optional `key`
+- `content`
+
+Use it for:
+
+- ongoing projects
+- medium-term plans
+- recurring interaction patterns
+- contextual facts worth recalling later
+
+## Current routing behavior
+
+The `Memory Agent` model still proposes one of these destinations:
+
+- `USER`
+- `MEMORY`
+- `MEMPALACE`
+
+Current runtime behavior after a proposal:
+
+1. `USER` writes to `BOOT_USER`
+2. `MEMORY` writes to `BOOT_MEMORY`
+3. `MEMPALACE` files into Memory Palace
+4. the runtime also inspects proposal text and promotes stable profile facts into canonical structured memory when detected
+
+That promotion step is important. It fixes a class of historical bugs where facts like assistant name or user location were captured in `BOOT_MEMORY` but later not found when the agent looked for canonical profile data.
 
 ## Routing guidelines
 
-- Highly stable and identity-level: `BOOT_USER`
-- Durable and important across many future conversations: `BOOT_MEMORY`
-- Useful later, but not stable or central enough for deterministic BOOT memory: Memory Palace
-- Trivial or low-value context: do not save it
+Use these semantics when thinking about where information belongs:
 
-## Contradictions
+- stable assistant/user profile fact: canonical structured memory first
+- deterministic bootstrap seed or onboarding scaffold: `BOOT_*`
+- durable relational or long-running context: `BOOT_MEMORY`
+- useful but less canonical context: Memory Palace
+- trivial or low-value context: do not save it
 
-If new information clearly updates or contradicts an existing line in `BOOT_USER` or `BOOT_MEMORY`, the agent should prefer a replace-style update instead of accumulating both versions.
+Examples:
 
-If the contradiction is weak or uncertain, the safer fallback is Memory Palace or no write.
+- `"Amanda"` as the assistant's confirmed name: canonical memory
+- `"Cristian vive en Santo Tomé, Santa Fe"`: canonical memory
+- `"Cristian prefiere explicaciones simples y directas"`: `BOOT_MEMORY` or `BOOT_USER` depending on whether it is a user-profile preference vs interaction pattern
+- `"investigación sobre clima pendiente"`: Memory Palace or `BOOT_MEMORY` depending on durability
 
-## Writing style
+## Contradictions and replacement
 
-Stored memories should be:
+If new information clearly updates an older stable fact, prefer replacement over accumulation.
 
-- short
-- atomic
-- factual
-- close to the user's wording
-- in the same language used by the user
+Examples:
 
-The agent should avoid:
+- user location changed
+- assistant name was finally confirmed
+- preferred user name was clarified
 
-- speculative conclusions
-- assistant advice mixed into the memory
-- invented needs or future actions
-- verbose summaries
+When contradiction is weak or uncertain:
+
+- prefer Memory Palace
+- or save nothing
+
+## Embeddings and semantic lookup
+
+Memory Palace recall supports semantic lookup through local embeddings.
+
+Current runtime behavior:
+
+- embeddings use a local `@xenova/transformers` model
+- the daemon attempts a non-blocking background warmup on startup
+- if warmup fails, Monolito continues in lazy mode
+- filing can still succeed without vectors
+- semantic recall falls back to non-semantic recent memory when embeddings are unavailable
+
+This means embeddings improve recall quality, but they are not a hard startup dependency.
 
 ## Logging
 
-The `Memory Agent` writes a dedicated log at:
+The `Memory Agent` uses the normal daemon logger category `memory-agent`.
 
-` .monolito-v2/logs/memory-agent.log `
+In practice, operational logs are typically observed in:
+
+- `~/.monolito-v2/logs/monolitod.log`
 
 Typical events include:
 
@@ -100,4 +157,4 @@ Typical events include:
 - `review.done`
 - `review.noop`
 
-If the agent applies a change, Monolito also appends a summary to the session worklog.
+If the agent applies a change, Monolito also appends a summary to session worklog.

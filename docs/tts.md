@@ -101,4 +101,4 @@ Do not patch the live VPS checkout by hand if you rely on `/update`.
 
 ## Related STT
 
-Incoming Telegram audio and voice notes can be transcribed automatically through the managed STT flow documented in [`channels-and-telegram.md`](./channels-and-telegram.md) and [`model-and-config.md`](./model-and-config.md).
+Incoming Telegram audio and voice notes can be transcribed automatically through the managed STT flow documented in [`stt.md`](./stt.md).

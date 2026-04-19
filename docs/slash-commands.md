@@ -45,10 +45,12 @@ Monolito exposes runtime control commands in the CLI and, where supported, throu
 - `/stt`: shows or controls the managed local speech-to-text service lifecycle.
 - `/websearch`: opens web search configuration controls through menus in the CLI and Telegram.
 - `/new`: resets the current session and restarts the agent startup sequence.
-- `/config set tts_base_url|tts_api_key|tts_voice|tts_model|tts_format|tts_speed|tts_managed|tts_auto_deploy|tts_port <value>`: configures the runtime TTS backend used by speech-generation tools.
-- `/tts deploy|stop|remove|list`: manages the local Docker-backed TTS service and cleans conflicting legacy Edge TTS containers when needed.
-- `/config set stt_managed|stt_auto_deploy|stt_auto_transcribe|stt_port|stt_model|stt_language|stt_engine|stt_vad_filter <value>`: configures the runtime STT backend used for incoming audio transcription.
-- `/stt deploy|stop|remove|list`: manages the local Docker-backed STT service and cleans conflicting legacy Whisper containers when needed.
+- `/config set <field> <value>`: configures runtime settings.
+  - Fields for main model: `base_url`, `api_key`, `model`.
+  - Fields for TTS: `tts_base_url`, `tts_api_key`, `tts_voice`, `tts_model`, `tts_format`, `tts_speed`, `tts_managed`, `tts_auto_deploy`, `tts_port`.
+  - Fields for STT: `stt_managed`, `stt_auto_deploy`, `stt_auto_transcribe`, `stt_port`, `stt_model`, `stt_language`, `stt_engine`, `stt_vad_filter`.
+- `/tts [show|on|off|deploy|stop|remove|list|status]`: manages the local Docker-backed TTS service.
+- `/stt [show|on|off|deploy|stop|remove|list|status]`: manages the local Docker-backed STT service.
 
 ## Configuration scope
 
