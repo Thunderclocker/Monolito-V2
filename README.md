@@ -7,52 +7,74 @@ Further documentation lives in [`docs/`](./docs/README.md).
 ## Core capabilities
 
 - Daemon + CLI client with resumable local sessions
-- SQLite-backed session storage, worklog, events, and semantic memory retrieval
-- Profile-based workspaces with deterministic BOOT wings in SQLite such as `BOOT_SOUL`, `BOOT_AGENTS`, `BOOT_USER`, `BOOT_TOOLS`, and `BOOT_MEMORY`
-- First-run bootstrap ritual that asks for agent identity and user profile, then persists the result into BOOT wings
+- SQLite-backed session storage for messages, worklog, events, tasks, and long-term memory
+- Profile-based workspaces with deterministic BOOT wings in SQLite such as `BOOT_SOUL`, `BOOT_AGENTS`, `BOOT_IDENTITY`, `BOOT_USER`, `BOOT_TOOLS`, and `BOOT_MEMORY`
+- Structured canonical memory for stable assistant/user facts such as assistant name, preferred user name, location, and timezone
+- First-run bootstrap ritual that asks for agent identity and user profile, then persists bootstrap state while also allowing stable facts to live in canonical memory
 - Multi-agent orchestration with worker spawning, follow-up messaging, and stop controls
-- Tool harness for shell execution, web fetches, workspace file access, memory filing/recall, MCP calls, Telegram send, and task tracking
+- Tool harness for shell execution, web fetches, workspace file access, BOOT access, canonical memory access, memory filing/recall, MCP calls, Telegram send, and task tracking
 - OpenAI-compatible text-to-speech generation into local audio files, with Telegram audio/voice delivery tools
+- Managed speech-to-text ingestion for Telegram audio and voice notes
 - Slash-command interface for runtime inspection and control
 - Channel ingestion and reply flow for Telegram chats
 - Web search mode switching with a menu-driven SearxNG local backend for web and image search
-- Persisted model/profile settings in SQLite `CONF_*` wings, plus permission rules and post-tool hooks
+- Persisted runtime configuration in SQLite `CONF_*` wings, plus permission rules and post-tool hooks
 - MCP bridge for listing tools/resources, reading resources, and calling remote MCP tools
 - Agnostic model backend selection across Anthropic-compatible endpoints, OpenAI-compatible endpoints, and local Ollama instances
+
+## Architecture snapshot
+
+Monolito is split into a few main layers:
+
+- daemon/runtime: owns sessions, orchestration, slash commands, background work, channels, and logging
+- model adapter: builds the prompt, injects BOOT/canonical memory/config, and applies runtime guardrails
+- tool registry: exposes structured tools with permission checks and renderer metadata
+- session store: persists messages, worklog, events, tasks, BOOT wings, canonical memory, and Memory Palace entries in SQLite
+- channels: Telegram ingestion/reply flow plus media handling
+- managed services: optional local TTS, STT, and SearxNG lifecycle helpers
+
+The runtime is designed so the assistant does not rely on ad-hoc workspace markdown files for identity or memory. Those older file conventions are historical only.
 
 ## Memory system
 
 - Session history, messages, worklog entries, and runtime events are persisted locally.
-- Long-term memory uses SQLite plus `sqlite-vec` vector search with 384-dimension embeddings.
-- Memories are stored as `wing` and `room` entries in a "Memory Palace" structure.
+- Long-term memory has three layers:
+  - `BOOT_*` for deterministic bootstrap state
+  - canonical memory for stable assistant/user facts
+  - Memory Palace for broader durable contextual memory
+- Memory Palace entries are stored as `wing` and `room` records in SQLite.
 - `SHARED` wings are visible across profiles; other wings stay private to the current profile.
-- Recall supports structural filters (`wing`, `room`, `key`) and semantic lookup with embeddings.
+- Recall supports structural filters (`wing`, `room`, `key`) and semantic lookup with local embeddings.
+- Embeddings use a local `@xenova/transformers` model and are warmed in the background at daemon startup.
+- If embeddings are unavailable, Monolito degrades cleanly: filing can continue without vectors and semantic recall falls back to recent non-semantic memory.
 - Session history can also be compacted while keeping continuity markers.
 
 ### Background Memory Agent
 
 - Monolito runs a background `Memory Agent` that reviews recent conversation and proposes memory updates without interrupting the main reply flow.
-- It can write to `BOOT_USER` for stable personal preferences, `BOOT_MEMORY` for durable relational context, and the SQLite Memory Palace for useful but less canonical context.
-- The agent is intentionally stricter for `BOOT_USER` and `BOOT_MEMORY` than for Memory Palace entries.
+- It still routes proposals through `USER`, `MEMORY`, and `MEMPALACE`, but the runtime can also promote stable profile facts into canonical memory.
+- This means confirmed facts such as assistant name or user location no longer have to rely on old BOOT-only routing.
+- The agent is intentionally stricter for deterministic/bootstrap memory than for broader contextual memory.
 - It is triggered after normal turns, before `/compact`, and before session resets such as `/new`.
-- Actions and failures are logged to `.monolito-v2/logs/memory-agent.log`.
+- Operational logging is emitted through the daemon log under the `memory-agent` logger category.
 - Memory Agent updates are also summarized into the session worklog when something is applied.
 - See `docs/memory-agent.md` for routing and behavior details.
 
 ## Multi-agent model
 
-- Agents are represented as profile-scoped sub-sessions with their own workspace bootstrap files.
+- Agents are represented as profile-scoped sub-sessions with their own isolated runtime context.
 - A parent session can spawn worker, researcher, or verifier agents in parallel.
 - Sub-agents report back through task notifications and can be continued or stopped explicitly.
 - Profiles can be created dynamically and keep separate identity, workspace, and task lists.
-- Main sessions auto-load curated memory; background agent sessions are isolated more tightly.
+- Main sessions can see curated bootstrap and canonical memory; worker sessions stay more isolated unless context is explicitly passed in.
 
 ## Tool harness
 
 - Tools run through a permission-checked execution harness rather than free-form shell instructions.
-- The registry includes local shell execution, MCP access, Telegram send, workspace read/write, memory filing/recall, todo/task tracking, and agent orchestration tools.
+- The registry includes local shell execution, MCP access, Telegram send, workspace read/write, BOOT read/write, canonical memory read/write, memory filing/recall, todo/task tracking, and agent orchestration tools.
 - Tool starts, finishes, failures, and summaries are emitted as structured runtime events and appended to the worklog.
 - Post-tool hooks and per-profile/session permission rules are supported.
+- Session forensics is also tool-driven, so the assistant can inspect messages, worklog, and events before answering questions about what happened in a session.
 
 ## Channels
 
@@ -78,7 +100,7 @@ Further documentation lives in [`docs/`](./docs/README.md).
 - Monolito can manage its own local Docker STT backend with `/stt`.
 - The default managed STT flow uses a Whisper webservice with `faster_whisper` as the engine.
 - Managed deployment cleans conflicting legacy Whisper containers before starting its own service.
-- See [`docs/channels-and-telegram.md`](./docs/channels-and-telegram.md) and [`docs/model-and-config.md`](./docs/model-and-config.md) for the full STT configuration and runtime behavior.
+- See [`docs/stt.md`](./docs/stt.md) and [`docs/channels-and-telegram.md`](./docs/channels-and-telegram.md) for the full STT configuration and runtime behavior.
 
 ## Web search
 
@@ -127,10 +149,11 @@ Further documentation lives in [`docs/`](./docs/README.md).
 - `/doctor`
 - `/update`
 - `/channels`
-- `/tts`
-- `/stt`
 - `/config [show|set <field> <value>]`
+- `/tts [show|on|off|deploy|stop|remove|list|status]`
+- `/stt [show|on|off|deploy|stop|remove|list|status]`
 - `/websearch`
+- `/adult`
 - `/new`
 
 `/update` fetches from `origin`, applies a fast-forward pull on the current branch, and restarts the daemon automatically. If the working tree has local changes, Monolito backs them up to a git stash automatically before updating.
@@ -194,10 +217,9 @@ monolito -p '/stt status'
 
 ## Notes
 
-- Runtime config wings live in the SQLite Memory Palace: `CONF_SYSTEM`, `CONF_MODELS`, `CONF_CHANNELS`, `CONF_WEBSEARCH`
+- Runtime config lives in SQLite `CONF_*` wings: `CONF_SYSTEM`, `CONF_MODELS`, `CONF_CHANNELS`, `CONF_WEBSEARCH`
 - SearxNG settings: `~/.monolito-v2/searxng/settings.yml`
 - Session data: `.monolito-v2/` relative to the project root (created on first daemon start)
 - Local memory database: `.monolito-v2/memory/memory.sqlite`
-- Daemon log: `.monolito-v2/logs/monolitod-v2.log`
-- Memory Agent log: `.monolito-v2/logs/memory-agent.log`
+- Daemon log: `.monolito-v2/logs/monolitod.log`
 - Profile workspaces: `.monolito-v2/profiles/<profile-id>/workspace/`
