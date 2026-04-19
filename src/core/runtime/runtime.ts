@@ -1097,13 +1097,14 @@ export class MonolitoV2Runtime {
     const abortController = new AbortController()
     const telegramTyping = startTelegramTypingIndicator(sessionId)
     this.abortControllers.set(sessionId, abortController)
+    const timeoutMs = sessionId.startsWith("agent-") ? 600_000 : TURN_HARD_TIMEOUT_MS
     const turnTimeout = setTimeout(() => {
       appendWorklog(this.rootDir, sessionId, {
         type: "note",
-        summary: `Hard turn timeout reached after ${TURN_HARD_TIMEOUT_MS}ms; aborting active work`,
+        summary: `Hard turn timeout reached after ${timeoutMs}ms; aborting active work`,
       })
-      abortController.abort(new TurnTimeoutError(`Turn exceeded hard timeout of ${TURN_HARD_TIMEOUT_MS}ms`))
-    }, TURN_HARD_TIMEOUT_MS)
+      abortController.abort(new TurnTimeoutError(`Turn exceeded hard timeout of ${timeoutMs}ms`))
+    }, timeoutMs)
     
     try {
       if (lastUserText.startsWith("/")) {
@@ -1220,7 +1221,7 @@ export class MonolitoV2Runtime {
             costState: this.costState,
             abortSignal: abortController.signal,
             turnStartedAt,
-            maxTurnDurationMs: TURN_HARD_TIMEOUT_MS - 5_000,
+            maxTurnDurationMs: timeoutMs - 5_000,
           },
         )
         if (turn.usage) {
@@ -1288,7 +1289,7 @@ export class MonolitoV2Runtime {
     } catch (error) {
       const timeoutReason = abortController.signal.reason
       if (timeoutReason instanceof TurnTimeoutError) {
-        const message = `I could not finish this turn within the hard limit of ${Math.floor(TURN_HARD_TIMEOUT_MS / 1000)}s. Retry with a narrower request or split it into steps.`
+        const message = `I could not finish this turn within the hard limit of ${Math.floor(timeoutMs / 1000)}s. Retry with a narrower request or split it into steps.`
         appendWorklog(this.rootDir, sessionId, {
           type: "session",
           summary: `Turn failed: ${clipForWorklog(message)}`,
@@ -1346,13 +1347,14 @@ export class MonolitoV2Runtime {
     const turnStartedAt = turnStartedAtIso ? Date.parse(turnStartedAtIso) : Date.now()
     const abortController = new AbortController()
     this.abortControllers.set(sessionId, abortController)
+    const timeoutMs = sessionId.startsWith("agent-") ? 600_000 : TURN_HARD_TIMEOUT_MS
     const turnTimeout = setTimeout(() => {
       appendWorklog(this.rootDir, sessionId, {
         type: "note",
-        summary: `Hard turn timeout reached after ${TURN_HARD_TIMEOUT_MS}ms; aborting active work`,
+        summary: `Hard turn timeout reached after ${timeoutMs}ms; aborting active work`,
       })
-      abortController.abort(new TurnTimeoutError(`Turn exceeded hard timeout of ${TURN_HARD_TIMEOUT_MS}ms`))
-    }, TURN_HARD_TIMEOUT_MS)
+      abortController.abort(new TurnTimeoutError(`Turn exceeded hard timeout of ${timeoutMs}ms`))
+    }, timeoutMs)
 
     try {
       const session = getSession(this.rootDir, sessionId)
@@ -1396,7 +1398,7 @@ export class MonolitoV2Runtime {
           costState: this.costState,
           abortSignal: abortController.signal,
           turnStartedAt,
-          maxTurnDurationMs: TURN_HARD_TIMEOUT_MS - 5_000,
+          maxTurnDurationMs: timeoutMs - 5_000,
         },
       )
       if (turn.usage) {
@@ -1436,7 +1438,7 @@ export class MonolitoV2Runtime {
     } catch (error) {
       const timeoutReason = abortController.signal.reason
       const message = timeoutReason instanceof TurnTimeoutError
-        ? `I could not finish this startup within the hard limit of ${Math.floor(TURN_HARD_TIMEOUT_MS / 1000)}s.`
+        ? `I could not finish this startup within the hard limit of ${Math.floor(timeoutMs / 1000)}s.`
         : error instanceof Error ? error.message : String(error)
       appendWorklog(this.rootDir, sessionId, {
         type: "session",
