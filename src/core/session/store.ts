@@ -10,7 +10,7 @@ import {
   ensureDirs,
   getPaths,
 } from "../ipc/protocol.ts"
-import { generateEmbedding } from "./embeddings.ts"
+import { generateEmbedding, isEmbeddingsUnavailableError } from "./embeddings.ts"
 import {
   BOOT_WING_ORDER,
   DEFAULT_BOOT_WING_CONTENT,
@@ -30,6 +30,81 @@ let dbPathCache: string | null = null
 const BOOTSTRAP_SOURCE_ROOM = "__bootstrap__"
 const CONFIG_SOURCE_ROOM = "__config__"
 const ACTION_LOG_ROOM = "agent-actions"
+const CANONICAL_WING = "CANONICAL"
+
+export type CanonicalMemorySlot =
+  | "assistant_name"
+  | "user_name"
+  | "user_preferred_name"
+  | "user_location"
+  | "user_timezone"
+
+export type CanonicalMemoryState = Partial<Record<CanonicalMemorySlot, string>>
+
+const CANONICAL_SLOT_META: Record<CanonicalMemorySlot, { room: "identity" | "user"; label: string }> = {
+  assistant_name: { room: "identity", label: "Assistant name" },
+  user_name: { room: "user", label: "User name" },
+  user_preferred_name: { room: "user", label: "Preferred user name" },
+  user_location: { room: "user", label: "User location" },
+  user_timezone: { room: "user", label: "User timezone" },
+}
+
+function normalizeCanonicalValue(value: string) {
+  return value.replace(/\s+/g, " ").trim()
+}
+
+function sanitizeCanonicalValue(value: string | null | undefined) {
+  if (!value) return null
+  const normalized = normalizeCanonicalValue(value)
+  if (!normalized) return null
+  if (/^(desconocido|opcional|\(por definir\)|por definir)$/i.test(normalized)) return null
+  return normalized
+}
+
+function extractBootField(content: string, label: string) {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const match = content.match(new RegExp(`(?:^|\\n)\\s*[-*]?\\s*${escaped}:\\s*([^\\n]+)`, "i"))
+  return sanitizeCanonicalValue(match?.[1] ?? null)
+}
+
+function extractAssistantNameFallback(...sources: string[]) {
+  for (const source of sources) {
+    const direct = extractBootField(source, "Nombre")
+    if (direct) return direct
+    for (const pattern of [
+      /identidad del asistente:\s*se llama\s*['"`“”]?([^.'"`\n]+?)['"`“”]?(?:[.\n]|$)/i,
+      /nombre para el asistente[^.\n]*['"`“”]([^'"`“”\n]+)['"`“”]/i,
+      /(?:entonces soy|se llama)\s+\*{0,2}['"`“”]?([^*'"`“”\n]+?)['"`“”]?\*{0,2}(?:[.\n]|$)/i,
+    ]) {
+      const match = source.match(pattern)
+      const value = sanitizeCanonicalValue(match?.[1] ?? null)
+      if (value && !/^cristian$/i.test(value)) return value
+    }
+  }
+  return null
+}
+
+function extractUserLocationFallback(...sources: string[]) {
+  for (const source of sources) {
+    const direct = extractBootField(source, "Ubicación")
+    if (direct) return direct
+    const match = source.match(/vive en\s+([^.\n]+(?:,\s*[^.\n]+){0,3})/i)
+    const value = sanitizeCanonicalValue(match?.[1] ?? null)
+    if (value) return value
+  }
+  return null
+}
+
+function extractPreferredNameFallback(...sources: string[]) {
+  for (const source of sources) {
+    const direct = extractBootField(source, "Como prefiere ser llamado")
+    if (direct) return direct
+    const match = source.match(/prefiere ser llamado\s+([^.\n]+)/i)
+    const value = sanitizeCanonicalValue(match?.[1] ?? null)
+    if (value) return value
+  }
+  return null
+}
 
 export function getDb(rootDir: string): Database.Database {
   const path = join(getPaths(rootDir).stateDir, "memory.sqlite")
@@ -349,6 +424,118 @@ export function writeBootWing(rootDir: string, wing: BootWingName, content: stri
     throw error
   }
   return { changed: true, bytes: Buffer.byteLength(content) }
+}
+
+export function readCanonicalMemory(rootDir: string, profileId = "default"): CanonicalMemoryState {
+  const db = getDb(rootDir)
+  const rows = db.prepare(`
+    SELECT memory_key, content
+    FROM memory_drawers
+    WHERE wing = ?
+      AND (profile_id = ? OR profile_id IS NULL)
+      AND memory_key IS NOT NULL
+    ORDER BY CASE WHEN profile_id = ? THEN 0 ELSE 1 END ASC, created_at DESC, id DESC
+  `).all(CANONICAL_WING, profileId, profileId) as Array<{ memory_key: string; content: string }>
+
+  const state: CanonicalMemoryState = {}
+  for (const row of rows) {
+    const key = row.memory_key as CanonicalMemorySlot
+    if (!(key in CANONICAL_SLOT_META)) continue
+    if (state[key]) continue
+    const value = sanitizeCanonicalValue(row.content)
+    if (value) state[key] = value
+  }
+
+  const bootIdentity = readBootWing(rootDir, "BOOT_IDENTITY", profileId) ?? ""
+  const bootUser = readBootWing(rootDir, "BOOT_USER", profileId) ?? ""
+  const bootMemory = readBootWing(rootDir, "BOOT_MEMORY", profileId) ?? ""
+
+  state.assistant_name ??= extractAssistantNameFallback(bootIdentity, bootMemory)
+  state.user_name ??= extractBootField(bootUser, "Nombre")
+  state.user_preferred_name ??= extractPreferredNameFallback(bootUser, bootMemory)
+  state.user_location ??= extractUserLocationFallback(bootUser, bootMemory)
+  state.user_timezone ??= extractBootField(bootUser, "Zona horaria")
+
+  return state
+}
+
+export function listCanonicalMemoryEntries(rootDir: string, profileId = "default") {
+  const state = readCanonicalMemory(rootDir, profileId)
+  return (Object.keys(CANONICAL_SLOT_META) as CanonicalMemorySlot[])
+    .filter(slot => state[slot])
+    .map(slot => ({
+      slot,
+      room: CANONICAL_SLOT_META[slot].room,
+      label: CANONICAL_SLOT_META[slot].label,
+      value: state[slot]!,
+    }))
+}
+
+export async function writeCanonicalMemory(
+  rootDir: string,
+  slot: CanonicalMemorySlot,
+  value: string,
+  profileId = "default",
+) {
+  const normalized = sanitizeCanonicalValue(value)
+  if (!normalized) {
+    throw new Error(`Canonical memory value for ${slot} must be a non-empty stable string`)
+  }
+  const meta = CANONICAL_SLOT_META[slot]
+  const db = getDb(rootDir)
+  const now = new Date().toISOString()
+  const existingRows = db.prepare(`
+    SELECT id, content
+    FROM memory_drawers
+    WHERE wing = ? AND room = ? AND memory_key = ? AND profile_id = ?
+    ORDER BY created_at DESC, id DESC
+  `).all(CANONICAL_WING, meta.room, slot, profileId) as Array<{ id: string; content: string }>
+
+  if (sanitizeCanonicalValue(existingRows[0]?.content ?? null) === normalized) {
+    return { changed: false, bytes: Buffer.byteLength(normalized), slot, value: normalized }
+  }
+
+  let embedding: number[] | null = null
+  try {
+    embedding = await generateEmbedding(rootDir, normalized)
+  } catch {
+    embedding = null
+  }
+
+  db.exec("BEGIN TRANSACTION")
+  try {
+    if (existingRows.length > 0) {
+      db.prepare(`
+        UPDATE memory_drawers
+        SET content = ?, created_at = ?, room = ?, memory_key = ?
+        WHERE id = ?
+      `).run(normalized, now, meta.room, slot, existingRows[0]!.id)
+      db.prepare(`DELETE FROM vec_drawers WHERE id = ?`).run(existingRows[0]!.id)
+      if (embedding) {
+        db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(existingRows[0]!.id, embedding)
+      }
+      const deleteMemory = db.prepare(`DELETE FROM memory_drawers WHERE id = ?`)
+      const deleteVec = db.prepare(`DELETE FROM vec_drawers WHERE id = ?`)
+      for (const row of existingRows.slice(1)) {
+        deleteVec.run(row.id)
+        deleteMemory.run(row.id)
+      }
+    } else {
+      const id = randomUUID()
+      db.prepare(`
+        INSERT INTO memory_drawers (id, profile_id, wing, room, memory_key, content, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(id, profileId, CANONICAL_WING, meta.room, slot, normalized, now)
+      if (embedding) {
+        db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(id, embedding)
+      }
+    }
+    db.exec("COMMIT")
+  } catch (error) {
+    db.exec("ROLLBACK")
+    throw error
+  }
+  return { changed: true, bytes: Buffer.byteLength(normalized), slot, value: normalized }
 }
 
 export function listBootEntries(rootDir: string, profileId = "default", options?: { includeMemory?: boolean; maxCharsPerEntry?: number; maxTotalChars?: number }) {
@@ -697,7 +884,12 @@ export async function fileMemory(rootDir: string, wing: string, room: string, co
   const normalizedRoom = room.trim() || "general"
   const normalizedKey = key?.trim() || null
   const storedProfileId = normalizedWing.toUpperCase() === "SHARED" ? null : profileId
-  const floatArray = await generateEmbedding(rootDir, content)
+  let floatArray: Float32Array | null = null
+  try {
+    floatArray = await generateEmbedding(rootDir, content)
+  } catch (error) {
+    if (!isEmbeddingsUnavailableError(error)) throw error
+  }
   
   db.exec("BEGIN TRANSACTION")
   try {
@@ -705,8 +897,10 @@ export async function fileMemory(rootDir: string, wing: string, room: string, co
     stmt.run(id, storedProfileId, normalizedWing, normalizedRoom, normalizedKey, content, now)
     
     // Guardar vector matematico
-    const stmtVec = db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`)
-    stmtVec.run(id, floatArray)
+    if (floatArray) {
+      const stmtVec = db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`)
+      stmtVec.run(id, floatArray)
+    }
     
     db.exec("COMMIT")
   } catch (err) {
