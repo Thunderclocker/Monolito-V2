@@ -590,6 +590,15 @@ function sanitizeExternalAssistantText(sessionId: string, text: string, lastUser
   const normalized = text.trim()
 
   if (/^Model request failed:/i.test(normalized) || /^Network\/model error after retries:/i.test(normalized)) {
+    if (/HTTP 429/i.test(normalized) || /RateLimitError/i.test(normalized)) {
+      return "Me frené: el proveedor del modelo está saturado (rate-limit). En unos minutos lo vuelvo a intentar."
+    }
+    if (/HTTP (5\d\d)/i.test(normalized) || /ProviderOverloaded/i.test(normalized)) {
+      return "El proveedor del modelo está caído. Probá de nuevo en un rato."
+    }
+    if (/ContextOverflow/i.test(normalized)) {
+      return "Me quedé sin margen de contexto en este turno. Recortá la request o abrí una sesión nueva."
+    }
     return "Tengo un problema tecnico temporal con el proveedor del modelo. Proba de nuevo en unos segundos."
   }
 
@@ -605,6 +614,12 @@ function sanitizeExternalAssistantText(sessionId: string, text: string, lastUser
 }
 
 const TELEGRAM_MESSAGE_LIMIT = 4096
+const ACK_PATTERNS = [
+  /^ahí me pongo/i,
+  /^dame un (rato|minuto)/i,
+  /^(ok|dale|listo|perfecto)[,.\s]*$/i,
+  /^voy a (revisar|hacerlo|arrancar)/i,
+]
 
 function chunkTelegramMessage(text: string, maxLength = TELEGRAM_MESSAGE_LIMIT) {
   const normalized = text.replace(/\r\n/g, "\n")
@@ -763,11 +778,25 @@ export class MonolitoV2Runtime {
       : error?.trim()
         ? `Error: ${error.trim()}`
         : `Background task ${task.status}`
-    const systemPayload =
-      `The background worker just returned this raw information: [${rawResult}]. ` +
-      "Incorporate it into your extended processing and present it to the user directly and naturally. " +
-      "Do not begin the response with technical explanations about the sub-agent or delegation; just deliver the value. " +
-      "If the user asks about the process, you may confirm that you used a background process."
+    const looksLikeAck = rawResult.length < 80 && ACK_PATTERNS.some(re => re.test(rawResult))
+    const systemPayload = task.status === "completed" && looksLikeAck
+      ? [
+          `The background worker returned only an acknowledgement ([${rawResult}]), not a final result.`,
+          "Treat this as 'worker still not done' — do not present this to the user as the answer.",
+          "You may acknowledge that work is still in progress if the user asks.",
+        ].join(" ")
+      : task.status === "failed" || task.status === "killed"
+        ? [
+            `The background worker ended with status ${task.status}. Details: [${rawResult}].`,
+            "Do not present this as successful raw information.",
+            "If you answer the user, explain the status naturally and conservatively.",
+          ].join(" ")
+        : [
+            `The background worker just returned this raw information: [${rawResult}].`,
+            "Incorporate it into your extended processing and present it to the user directly and naturally.",
+            "Do not begin the response with technical explanations about the sub-agent or delegation; just deliver the value.",
+            "If the user asks about the process, you may confirm that you used a background process.",
+          ].join(" ")
 
     appendMessage(this.rootDir, sessionId, "system", systemPayload)
     appendWorklog(this.rootDir, sessionId, {

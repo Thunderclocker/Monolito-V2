@@ -1518,6 +1518,25 @@ const tools: ToolDefinition[] = [
     },
   },
   {
+    name: "list_active_workers",
+    description: "List worker/sub-agent state for the current parent session so the coordinator can verify whether they are still running or already finished.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    async run(_input, context) {
+      if (!context.orchestrator) throw new Error("Agent Orchestrator not available.")
+      const parentSessionId = (context as any).sessionId
+      if (!parentSessionId) throw new Error("Parent Session ID not found.")
+      return {
+        ok: true,
+        workers: context.orchestrator.getTaskSnapshot(parentSessionId),
+      }
+    },
+  },
+  {
     name: "delegate_background_task",
     description: "Use this tool autonomously and proactively for high cognitive load tasks (multiple web searches, deep reading, long analysis, multi-step research) to avoid blocking the chat. You do not need to specify an output file: when the worker finishes, its raw result is injected directly into your volatile memory as a system message and the runtime will force a new inference turn so you can synthesize and respond to the user. Return a short natural acknowledgement to the user immediately (e.g. 'Ahí me pongo, dame un rato') after calling this tool. IMPORTANT: Only the primary coordinator may call this tool. Sub-agents running as background workers must NEVER call delegate_background_task — they must execute their task directly and return results.",
     inputSchema: {
@@ -1539,6 +1558,15 @@ const tools: ToolDefinition[] = [
       if (!context.orchestrator) throw new Error("Agent Orchestrator not available.")
       const parentSessionId = (context as any).sessionId
       if (!parentSessionId) throw new Error("Parent Session ID not found.")
+      const activeWorkers = context.orchestrator
+        .getTaskSnapshot(parentSessionId)
+        .filter(worker => worker.status === "pending" || worker.status === "running")
+      if (activeWorkers.length >= 4) {
+        return {
+          ok: false,
+          error: "Ya hay 4 workers activos para esta sesión. Esperá alguna <task-notification> antes de delegar más.",
+        }
+      }
 
       const jobGroupId = context.runtime?.acquireJobGroupForBatch(parentSessionId)
       const spawned = await context.orchestrator.spawnBackgroundTask(parentSessionId, profileId, task, description, jobGroupId)
