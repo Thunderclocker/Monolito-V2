@@ -216,6 +216,7 @@ const MAX_REPEATED_BASH_COMMANDS = 2
 const MAX_REJECTED_REPEATED_BASH_COMMANDS = 4
 const MAX_REJECTED_FINAL_REPEATS = 2
 const MAX_OPERATIONAL_TOOL_STEPS = 8
+const EQUIVALENT_SOURCE_FAMILY_THRESHOLD = 2
 const PROTECTED_TAIL_MESSAGES = 12
 const MAX_HISTORY_MESSAGES_BEFORE_COMPACT = 20
 const SNIP_TEXT_LIMIT = 900
@@ -712,6 +713,132 @@ function hasUsefulToolEvidence(records: ToolExecutionRecord[]) {
   return getUsefulToolEvidenceSnippets(records, 1).length > 0
 }
 
+function extractHostnameFromUrl(raw: string) {
+  try {
+    return new URL(raw).hostname.toLowerCase()
+  } catch {
+    return null
+  }
+}
+
+function extractHostnameFromCurlCommand(command: string) {
+  const match = command.match(/https?:\/\/[^\s"'`]+/i)
+  return match ? extractHostnameFromUrl(match[0]) : null
+}
+
+function isLikelyStructuredText(text: string) {
+  const trimmed = text.trim()
+  if (!trimmed) return false
+  if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+    return true
+  }
+  return [
+    '"time":',
+    '"daily":',
+    '"hourly":',
+    '"current":',
+    '"forecast":',
+    '"temperature',
+    '"precip',
+    '"weather',
+    "latitude",
+    "longitude",
+  ].some(fragment => trimmed.includes(fragment))
+}
+
+function getSourceFamilyFromRecord(record: ToolExecutionRecord) {
+  if (record.tool === "WebFetch") {
+    const output = record.output && typeof record.output === "object" && !Array.isArray(record.output)
+      ? record.output as Record<string, unknown>
+      : null
+    if (typeof output?.url === "string") return extractHostnameFromUrl(output.url) ?? "webfetch"
+    return "webfetch"
+  }
+  if (record.tool === "Bash") {
+    const command = getRecordCommand(record)
+    if (/\bcurl\b|\bwget\b/i.test(command)) {
+      return extractHostnameFromCurlCommand(command) ?? "bash:http"
+    }
+  }
+  return null
+}
+
+function getSourceFamilyFromUse(use: InternalToolUse) {
+  if (use.tool === "WebFetch" && typeof use.input.url === "string") {
+    return extractHostnameFromUrl(use.input.url) ?? "webfetch"
+  }
+  if (use.tool === "Bash" && typeof use.input.command === "string" && /\bcurl\b|\bwget\b/i.test(use.input.command)) {
+    return extractHostnameFromCurlCommand(use.input.command) ?? "bash:http"
+  }
+  return null
+}
+
+function getEquivalentSourceFamilyCounts(records: ToolExecutionRecord[]) {
+  const counts = new Map<string, number>()
+  for (const record of records) {
+    if (record.error) continue
+    const family = getSourceFamilyFromRecord(record)
+    if (!family) continue
+    counts.set(family, (counts.get(family) ?? 0) + 1)
+  }
+  return counts
+}
+
+function hasStructuredEvidenceHit(records: ToolExecutionRecord[]) {
+  return records.some(record => {
+    if (record.error) return false
+    if (record.tool === "WebFetch") {
+      const output = record.output && typeof record.output === "object" && !Array.isArray(record.output)
+        ? record.output as Record<string, unknown>
+        : null
+      const code = typeof output?.code === "number" ? output.code : null
+      const result = typeof output?.result === "string" ? output.result : ""
+      const hostname = typeof output?.url === "string" ? extractHostnameFromUrl(output.url) : null
+      return code !== null && code >= 200 && code < 300 &&
+        (isLikelyStructuredText(result) || !!hostname?.startsWith("api.") || hostname === "api.open-meteo.com")
+    }
+    if (record.tool === "Bash") {
+      const command = getRecordCommand(record)
+      const stdout = getRecordStdout(record)
+      return /\bcurl\b|\bwget\b/i.test(command) && isLikelyStructuredText(stdout)
+    }
+    return false
+  })
+}
+
+function buildEvidenceSufficiencyMessage(records: ToolExecutionRecord[]) {
+  const counts = [...getEquivalentSourceFamilyCounts(records).entries()]
+    .filter(([, count]) => count >= EQUIVALENT_SOURCE_FAMILY_THRESHOLD)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+  const snippets = getUsefulToolEvidenceSnippets(records, 3, 400)
+  return [
+    "EVIDENCE_SUFFICIENCY",
+    "You already have usable evidence in this turn. Synthesize the answer now instead of probing more equivalent sources.",
+    "Only call another source if there is a concrete contradiction or a required field is still missing.",
+    counts.length > 0 ? "Repeated source families:" : "",
+    ...counts.map(([family, count]) => `- ${family} x${count}`),
+    snippets.length > 0 ? "Verified evidence to use:" : "",
+    ...snippets.map(snippet => `\`\`\`\n${snippet}\n\`\`\``),
+  ].filter(Boolean).join("\n\n")
+}
+
+function shouldNudgeTowardSynthesis(records: ToolExecutionRecord[]) {
+  if (!hasUsefulToolEvidence(records)) return false
+  if (hasStructuredEvidenceHit(records)) return true
+  return [...getEquivalentSourceFamilyCounts(records).values()].some(count => count >= EQUIVALENT_SOURCE_FAMILY_THRESHOLD)
+}
+
+function shouldRejectRedundantFollowUpToolUses(existingRecords: ToolExecutionRecord[], uses: InternalToolUse[]) {
+  if (!shouldNudgeTowardSynthesis(existingRecords) || uses.length === 0) return false
+  const counts = getEquivalentSourceFamilyCounts(existingRecords)
+  return uses.every(use => {
+    const family = getSourceFamilyFromUse(use)
+    if (!family) return false
+    return (counts.get(family) ?? 0) >= 1
+  })
+}
+
 function finalClaimsShellOrProbeFailure(text: string) {
   const normalized = compactWhitespace(text).toLowerCase()
   return [
@@ -937,6 +1064,9 @@ function buildToolPrompt(session: SessionRecord, rootDir: string, context?: Tool
     "Use raw logs only as a last resort for daemon/runtime discrepancies after session evidence is insufficient or contradictory.",
     "If evidence is missing, say that you did not find evidence. Do not reconstruct a plausible story about internal actions, workers, or prior tool usage.",
     "If you say you will investigate, check, search, or handle something, you MUST call a real tool in the same turn. Do not promise future work without starting it.",
+    "When a successful tool already provides enough evidence to answer the user's question, synthesize and stop. Do not keep probing equivalent sources for the same fact.",
+    "Prefer one structured source over many noisy ones. If a structured/API-like result already answers the question, only query another source when there is a concrete contradiction or a required field is still missing.",
+    "Define done pragmatically: answer the exact user question with the best verified evidence you already have, mention any uncertainty, and move on instead of looping for extra confirmation.",
     "Task notifications can arrive interleaved with user turns. Treat <task-notification> blocks as worker updates, not as the user's current request.",
     "If a scratchpad or memory file does not exist, treat that as normal absence of saved notes, not as a failure that needs further investigation.",
     "Use the provided tools to take action. You have two ways to call tools:",
@@ -2259,6 +2389,9 @@ async function* continueAfterToolExecution(
   if (guidance) {
     state.toolMessages.push({ role: "user", content: guidance })
   }
+  if (shouldNudgeTowardSynthesis(state.toolEvidence)) {
+    state.toolMessages.push({ role: "user", content: buildEvidenceSufficiencyMessage(state.toolEvidence) })
+  }
 
   return yield* runAssistantTurnState(state)
 }
@@ -2276,6 +2409,16 @@ async function* rejectFinalAndContinue(
   if (rejectedCount > MAX_REJECTED_FINAL_REPEATS) {
     return yield* finishTurn(state, stalledText, response, stalledText, true)
   }
+  state.toolMessages.push({ role: "assistant", content: assistantContent })
+  state.toolMessages.push({ role: "user", content: rejectionMessage })
+  return yield* runAssistantTurnState(state)
+}
+
+async function* rejectToolUseAndContinue(
+  state: TurnLoopState,
+  assistantContent: AnthropicMessage["content"],
+  rejectionMessage: string,
+): AsyncGenerator<AssistantTurnEvent, AssistantTurnResult> {
   state.toolMessages.push({ role: "assistant", content: assistantContent })
   state.toolMessages.push({ role: "user", content: rejectionMessage })
   return yield* runAssistantTurnState(state)
@@ -2333,6 +2476,13 @@ async function* runAssistantTurnState(
   const nativeToolUses = extractNativeToolUses(response)
   if (nativeToolUses.length > 0) {
     const assistantContent = toAssistantNativeContent(response)
+    if (shouldRejectRedundantFollowUpToolUses(state.toolEvidence, nativeToolUses)) {
+      return yield* rejectToolUseAndContinue(
+        state,
+        assistantContent,
+        buildEvidenceSufficiencyMessage(state.toolEvidence),
+      )
+    }
     if (assistantContent.length > 0) {
       state.toolMessages.push({ role: "assistant", content: assistantContent })
     }
@@ -2560,13 +2710,21 @@ async function* runAssistantTurnState(
   }
 
   const uses = directives.map(toInternalToolUse)
+  const assistantToolContent: AnthropicMessage["content"] = [
+    ...(extracted.text.trim() ? [{ type: "text" as const, text: extracted.text }] : []),
+    ...uses.map(use => ({ type: "tool_use" as const, id: use.id, name: use.tool, input: use.input as Record<string, unknown> })),
+  ]
+  if (shouldRejectRedundantFollowUpToolUses(state.toolEvidence, uses)) {
+    return yield* rejectToolUseAndContinue(
+      state,
+      assistantToolContent,
+      buildEvidenceSufficiencyMessage(state.toolEvidence),
+    )
+  }
   state.steps.push(...uses.map(use => ({ type: "tool" as const, id: use.id, tool: use.tool, input: use.input })))
   state.toolMessages.push({
     role: "assistant",
-    content: [
-      ...(extracted.text.trim() ? [{ type: "text" as const, text: extracted.text }] : []),
-      ...uses.map(use => ({ type: "tool_use" as const, id: use.id, name: use.tool, input: use.input as Record<string, unknown> })),
-    ],
+    content: assistantToolContent,
   })
   const records = await executeToolUses(
     uses,
@@ -2679,4 +2837,10 @@ export async function runBackgroundTextTask(
     text,
     usage: extractUsage(response),
   }
+}
+
+export const MODEL_ADAPTER_TESTING = {
+  hasStructuredEvidenceHit,
+  shouldNudgeTowardSynthesis,
+  shouldRejectRedundantFollowUpToolUses,
 }
