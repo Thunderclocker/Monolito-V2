@@ -701,7 +701,7 @@ export class MonolitoV2Runtime {
   private toolStallState = new Map<string, { key: string; count: number }>()
   private stallAlerts = new Map<string, string>()
   private currentBatchGroups = new Map<string, string>()
-  private pendingBackgroundWakeups = new Map<string, { profileId: string; payloads: string[] }>()
+  private pendingBackgroundWakeups = new Map<string, { profileId: string }>()
   private memoryReviewInFlight = new Map<string, Promise<void>>()
   private pendingMemoryReviews = new Map<string, { profileId: string; trigger: MemoryReviewTrigger; sessionSnapshot?: SessionRecord | null }>()
   private lastMemoryReviewAt = new Map<string, number>()
@@ -751,14 +751,10 @@ export class MonolitoV2Runtime {
     return jobGroupId
   }
 
-  private enqueueBackgroundWakeup(sessionId: string, profileId: string, payload?: string) {
-    const current = this.pendingBackgroundWakeups.get(sessionId)
-    const nextPayloads = current?.payloads ?? []
-    if (payload && payload.trim()) nextPayloads.push(payload)
-    this.pendingBackgroundWakeups.set(sessionId, {
-      profileId,
-      payloads: nextPayloads,
-    })
+  private enqueueBackgroundWakeup(sessionId: string, profileId: string) {
+    if (!this.pendingBackgroundWakeups.has(sessionId)) {
+      this.pendingBackgroundWakeups.set(sessionId, { profileId })
+    }
   }
 
   private consumeBackgroundWakeup(sessionId: string) {
@@ -772,8 +768,7 @@ export class MonolitoV2Runtime {
     if (this.activeSessions.has(sessionId)) return
     const pending = this.consumeBackgroundWakeup(sessionId)
     if (!pending) return
-    const payload = pending.payloads.filter(Boolean).join("\n\n")
-    void this.runProactiveBackgroundTurn(sessionId, pending.profileId, payload, 0)
+    void this.runProactiveBackgroundTurn(sessionId, pending.profileId, 0)
   }
 
   async handleBackgroundDelegationResult(task: DelegationTask, error?: string) {
@@ -796,17 +791,17 @@ export class MonolitoV2Runtime {
     const looksLikeError = ERROR_PATTERNS.some(re => re.test(rawResult))
     const effectiveStatus = looksLikeError ? "failed" : task.status
     const looksLikeAck = !looksLikeError && rawResult.length < 80 && ACK_PATTERNS.some(re => re.test(rawResult))
-    const systemPayload = effectiveStatus === "completed" && looksLikeAck
-      ? "El worker de fondo devolvió solo un ACK, no un resultado final. No lo presentes como respuesta al usuario."
-      : effectiveStatus === "failed" || effectiveStatus === "killed"
-        ? `El worker de fondo falló. Informale al usuario de forma natural y breve que la tarea no pudo completarse. No expongas detalles técnicos internos.`
-        : [
-            `Resultado del worker de fondo: [${rawResult}].`,
-            "Incorporalo a tu respuesta de forma natural y directa.",
-            "No menciones el proceso técnico interno salvo que el usuario lo pregunte.",
-          ].join(" ")
+    const xmlPayload = [
+      "<task-notification>",
+      `Agent ID: ${task.id}`,
+      `Status: ${effectiveStatus}`,
+      effectiveStatus === "completed" && looksLikeAck ? "Note: Worker returned only an ACK. Do not present this as a final answer." : "",
+      effectiveStatus === "failed" || effectiveStatus === "killed" ? "Note: Worker failed. Inform the user naturally without exposing internal errors." : "",
+      effectiveStatus === "completed" && !looksLikeAck ? `Result: ${rawResult}` : "",
+      "</task-notification>"
+    ].filter(Boolean).join("\n")
 
-    appendMessage(this.rootDir, sessionId, "system", systemPayload)
+    appendMessage(this.rootDir, sessionId, "user", xmlPayload)
     appendWorklog(this.rootDir, sessionId, {
       type: "note",
       summary: `Background task ${task.status}: ${task.description}`,
@@ -826,13 +821,13 @@ export class MonolitoV2Runtime {
       }
     }
 
-    this.enqueueBackgroundWakeup(sessionId, profileId, systemPayload)
+    this.enqueueBackgroundWakeup(sessionId, profileId)
     this.flushPendingBackgroundWakeup(sessionId)
   }
 
-  private async runProactiveBackgroundTurn(sessionId: string, profileId: string, backgroundResult: string, attempt: number) {
+  private async runProactiveBackgroundTurn(sessionId: string, profileId: string, attempt: number) {
     if (this.activeSessions.has(sessionId)) {
-      this.enqueueBackgroundWakeup(sessionId, profileId, backgroundResult)
+      this.enqueueBackgroundWakeup(sessionId, profileId)
       return
     }
 
@@ -871,7 +866,6 @@ export class MonolitoV2Runtime {
             workspaceContext,
             adultMode: this.adultModeSessions.has(sessionId),
             webSearchProvider: webSearchConfig.provider,
-            backgroundResult,
           },
           costState: this.costState,
           turnStartedAt,
