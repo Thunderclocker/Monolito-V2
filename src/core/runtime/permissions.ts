@@ -102,6 +102,7 @@ const READ_ONLY_TOOLS = new Set([
   "ReadMcpResourceTool",
   "BootRead",
   "CanonicalMemoryRead",
+  "SessionForensics",
   "WorkspaceMemoryRecall",
   "AgentList",
   "list_active_workers",

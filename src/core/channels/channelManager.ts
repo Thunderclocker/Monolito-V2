@@ -11,6 +11,26 @@ import { deployManagedSttContainer, normalizeSttConfig, transcribeManagedAudioFi
 const logger = createLogger("channels")
 let activePoller: TelegramPoller | null = null
 const pendingTelegramInputs = new Map<number, { kind: "channels-token" | "channels-chats" | "websearch-test" }>()
+const pendingTelegramRetries = new Map<string, { attempts: number; timer: ReturnType<typeof setTimeout> }>()
+const MAX_TELEGRAM_BUSY_RETRIES = 3
+
+function scheduleTelegramBusyRetry(
+  key: string,
+  attempt: number,
+  callback: () => Promise<void>,
+) {
+  const existing = pendingTelegramRetries.get(key)
+  if (existing) clearTimeout(existing.timer)
+  const delayMs = Math.min(1500 * attempt, 5000)
+  const timer = setTimeout(() => {
+    pendingTelegramRetries.delete(key)
+    void callback().catch(error => {
+      const message = error instanceof Error ? error.message : String(error)
+      logger.error(`Error retrying queued Telegram message ${key}: ${message}`)
+    })
+  }, delayMs)
+  pendingTelegramRetries.set(key, { attempts: attempt, timer })
+}
 
 const TELEGRAM_BOT_COMMANDS = [
   { command: "help", description: "Show available commands" },
@@ -567,10 +587,38 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
         try {
           runtime.ensureSession(sessionId, `Telegram ${chatId}`)
           await runtime.processMessage(sessionId, inboundText)
+          if (msg.message_id) {
+            const retryKey = `${chatId}:${msg.message_id}`
+            const existing = pendingTelegramRetries.get(retryKey)
+            if (existing) {
+              clearTimeout(existing.timer)
+              pendingTelegramRetries.delete(retryKey)
+            }
+          }
         } catch (error) {
           const err = error as Error & { code?: string }
           const detail = err.code ? ` code=${err.code}` : ""
           logger.error(`Error handling Telegram message in session ${sessionId}${detail}: ${err.message}`)
+          if (err.code === "SESSION_BUSY" && msg.message_id) {
+            const retryKey = `${chatId}:${msg.message_id}`
+            const nextAttempt = (pendingTelegramRetries.get(retryKey)?.attempts ?? 0) + 1
+            if (nextAttempt <= MAX_TELEGRAM_BUSY_RETRIES) {
+              const retryProcessMessage = async (attempt: number): Promise<void> => {
+                try {
+                  runtime.ensureSession(sessionId, `Telegram ${chatId}`)
+                  await runtime.processMessage(sessionId, inboundText)
+                } catch (retryError) {
+                  const typed = retryError as Error & { code?: string }
+                  if (typed.code === "SESSION_BUSY" && attempt < MAX_TELEGRAM_BUSY_RETRIES) {
+                    scheduleTelegramBusyRetry(retryKey, attempt + 1, () => retryProcessMessage(attempt + 1))
+                    return
+                  }
+                  throw retryError
+                }
+              }
+              scheduleTelegramBusyRetry(retryKey, nextAttempt, () => retryProcessMessage(nextAttempt))
+            }
+          }
           if (err.stack) logger.debug(`Stack: ${err.stack}`)
         }
       },

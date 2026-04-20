@@ -62,3 +62,23 @@ test("model adapter rejects redundant follow-up probes for the same source famil
 
   assert.equal(MODEL_ADAPTER_TESTING.shouldRejectRedundantFollowUpToolUses(existingRecords, nextUses), true)
 })
+
+test("model adapter excludes task notifications from normal history messages", () => {
+  const session = {
+    id: "telegram-1",
+    title: "Test",
+    profileId: "default",
+    state: "idle",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    messages: [
+      { role: "user", text: "hola", at: new Date().toISOString() },
+      { role: "user", text: "<task-notification>\n<status>completed</status>\n<summary>done</summary>\n<result>x</result>\n</task-notification>", at: new Date().toISOString() },
+      { role: "assistant", text: "ok", at: new Date().toISOString() },
+    ],
+    worklog: [],
+  }
+
+  const messages = MODEL_ADAPTER_TESTING.sessionToAnthropicMessages(session as any)
+  assert.equal(messages.some(message => typeof message.content === "string" && message.content.includes("<task-notification>")), false)
+})

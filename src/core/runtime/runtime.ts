@@ -537,6 +537,54 @@ function getTelegramChatId(sessionId: string) {
   return sessionId.startsWith("telegram-") ? sessionId.slice("telegram-".length) : null
 }
 
+function isTaskNotificationText(text: string) {
+  const normalized = text.trim()
+  return normalized.startsWith("<task-notification>") && normalized.endsWith("</task-notification>")
+}
+
+function extractXmlTagValue(text: string, tag: string) {
+  const match = text.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "i"))
+  return match ? match[1]!.trim() : ""
+}
+
+function summarizeTaskNotification(text: string) {
+  const normalized = text.trim()
+  const status = extractXmlTagValue(normalized, "status") || (/Status:\s*([^\n]+)/i.exec(normalized)?.[1]?.trim() ?? "")
+  const summary = extractXmlTagValue(normalized, "summary")
+  const result = extractXmlTagValue(normalized, "result") || (/Result:\s*([\s\S]*?)<\/task-notification>/i.exec(normalized)?.[1]?.trim() ?? "")
+  const compactResult = result.replace(/\s+/g, " ").trim()
+  return [
+    status ? `status=${status}` : "",
+    summary || "",
+    compactResult ? `result=${compactResult.slice(0, 400)}` : "",
+  ].filter(Boolean).join(" | ")
+}
+
+function collectRecentTaskNotifications(session: SessionRecord, limit = 3) {
+  const notifications: string[] = []
+  for (let index = session.messages.length - 1; index >= 0; index -= 1) {
+    const message = session.messages[index]
+    if (!message || message.role !== "user") break
+    if (!isTaskNotificationText(message.text)) break
+    notifications.push(summarizeTaskNotification(message.text))
+    if (notifications.length >= limit) break
+  }
+  return notifications.reverse()
+}
+
+function buildBackgroundWakeupPrompt(notifications: string[]) {
+  return [
+    "Background worker updates arrived.",
+    "Use these updates to answer the user now.",
+    "Do not spawn new agents, do not delegate more work, and do not retry automatically in this wake-up turn.",
+    "If a worker failed, state that plainly and stop unless the user explicitly asked you to continue researching.",
+    "If the updates contain usable findings, summarize them directly for the user.",
+    "",
+    "Updates:",
+    ...notifications.map(item => `- ${item}`),
+  ].join("\n")
+}
+
 function extractTelegramAudioFileId(text: string) {
   const voiceMatch = text.match(/<attachment kind="voice"[^>]*file_id="([^"]+)"/i)
   if (voiceMatch?.[1]) return voiceMatch[1]
@@ -839,6 +887,20 @@ export class MonolitoV2Runtime {
 
       const session = getSession(this.rootDir, sessionId)
       if (!session) return
+      const taskNotifications = collectRecentTaskNotifications(session)
+      const backgroundSession = taskNotifications.length > 0
+        ? {
+            ...session,
+            messages: [
+              ...session.messages.filter(message => !isTaskNotificationText(message.text)),
+              {
+                role: "user" as const,
+                text: buildBackgroundWakeupPrompt(taskNotifications),
+                at: new Date().toISOString(),
+              },
+            ],
+          }
+        : session
 
       const isMainSession = !session.id.startsWith("agent-") && !session.id.startsWith("telegram-")
       const [gitContext, dateContext, workspaceContext] = await Promise.all([
@@ -849,7 +911,7 @@ export class MonolitoV2Runtime {
       const webSearchConfig = readWebSearchConfig()
 
       const turn = await runAssistantTurn(
-        session,
+        backgroundSession,
         this.rootDir,
         async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, sessionId, orchestrator: this.orchestrator, runtime: this }, toolUseId, profileId),
         {
@@ -866,6 +928,7 @@ export class MonolitoV2Runtime {
             workspaceContext,
             adultMode: this.adultModeSessions.has(sessionId),
             webSearchProvider: webSearchConfig.provider,
+            taskNotifications,
           },
           costState: this.costState,
           turnStartedAt,
