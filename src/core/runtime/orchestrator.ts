@@ -3,7 +3,26 @@ import { type MonolitoV2Runtime } from "./runtime.ts"
 import { ensureDirs } from "../ipc/protocol.ts"
 import { appendMessage, createProfile, createSession, listProfiles } from "../session/store.ts"
 import { createInstanceLogger, type Logger } from "../logging/logger.ts"
-import { buildSubagentRetryPrompt } from "./recoveryPolicy.ts"
+
+function compactWhitespace(value: string) {
+  return value.replace(/\s+/g, " ").trim()
+}
+
+function clip(value: string, max = 500) {
+  const normalized = compactWhitespace(value)
+  return normalized.length <= max ? normalized : `${normalized.slice(0, max - 3)}...`
+}
+
+function buildSubagentRetryPrompt(task: string, error: unknown, partialResult?: string) {
+  const message = error instanceof Error ? error.message : String(error)
+  return [
+    task.trim(),
+    "",
+    "Retry the same task with a smaller, more direct execution path.",
+    `Technical error: ${clip(message, 240)}`,
+    partialResult?.trim() ? `Partial result to keep: ${clip(partialResult, 500)}` : "",
+  ].filter(Boolean).join("\n")
+}
 
 
 export type DelegationTask = {
@@ -199,28 +218,16 @@ export class AgentOrchestrator {
       while (attempt <= maxAttempts) {
         appendMessage(runtime.rootDir, task.subSessionId, "user", currentText)
         turn = await runtime.runTurn(task.subSessionId, currentText, task.profileId, { logger: task.logger })
-        
-        let isPrematureSurrender = false
-        if (!turn.error && turn.finalText && attempt < maxAttempts) {
-          const lower = turn.finalText.toLowerCase()
-          const surrenderPhrases = ["no puedo", "i cannot", "no pude", "failed to", "me es imposible"]
-          const delegationPhrases = ["delegar", "delegate", "background_task", "sub-agent", "subagente"]
-          
-          if (surrenderPhrases.some(p => lower.includes(p)) && delegationPhrases.some(p => lower.includes(p))) {
-            isPrematureSurrender = true
-          }
-        }
 
-        if (turn.error || isPrematureSurrender) {
+        if (turn.error) {
           partialResult = turn.finalText || partialResult
           if (attempt >= maxAttempts) {
-            throw new Error(turn.error || "El sub-agente se rindió sin completar la tarea.")
+            throw new Error(turn.error)
           }
           currentText = buildSubagentRetryPrompt(
-            task.description, 
-            attempt, 
-            turn.error || "Task execution halted prematurely. As a leaf-node background worker, you are strictly forbidden from delegar/delegating tasks. You MUST find an alternative execution path and complete the objective yourself.", 
-            partialResult
+            task.task,
+            turn.error,
+            partialResult,
           )
           attempt++
           continue

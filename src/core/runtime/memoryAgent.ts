@@ -8,7 +8,7 @@ import {
   writeCanonicalMemory,
   type CanonicalMemorySlot,
 } from "../session/store.ts"
-import { runBackgroundTextTask } from "./modelAdapter.ts"
+import { runBackgroundTextTask } from "./modelAdapterLite.ts"
 import type { BootWingName } from "../bootstrap/bootWings.ts"
 import { createLogger } from "../logging/logger.ts"
 
