@@ -31,7 +31,7 @@ import {
   deleteBackgroundTaskGroup,
 } from "../session/store.ts"
 import { getTool, listTools, type ToolContext } from "../tools/registry.ts"
-import { getEffectiveModelConfig, runAssistantTurn, runBackgroundTextTask } from "./modelAdapter.ts"
+import { getEffectiveModelConfig, runAssistantTurn, runBackgroundTextTask } from "./modelAdapterLite.ts"
 import {
   applyModelSettingsToEnv,
   draftToSettings,
