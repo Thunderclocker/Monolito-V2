@@ -750,6 +750,7 @@ export class MonolitoV2Runtime {
   private stallAlerts = new Map<string, string>()
   private currentBatchGroups = new Map<string, string>()
   private pendingBackgroundWakeups = new Map<string, { profileId: string }>()
+  private pendingUserMessages = new Map<string, string[]>()
   private memoryReviewInFlight = new Map<string, Promise<void>>()
   private pendingMemoryReviews = new Map<string, { profileId: string; trigger: MemoryReviewTrigger; sessionSnapshot?: SessionRecord | null }>()
   private lastMemoryReviewAt = new Map<string, number>()
@@ -817,6 +818,18 @@ export class MonolitoV2Runtime {
     const pending = this.consumeBackgroundWakeup(sessionId)
     if (!pending) return
     void this.runProactiveBackgroundTurn(sessionId, pending.profileId, 0)
+  }
+
+  private flushPendingUserMessage(sessionId: string) {
+    if (this.activeSessions.has(sessionId)) return
+    const queue = this.pendingUserMessages.get(sessionId)
+    if (!queue || queue.length === 0) return
+    const next = queue.shift()
+    if (!next) return
+    if (queue.length === 0) this.pendingUserMessages.delete(sessionId)
+    void this.processMessage(sessionId, next).catch(error => {
+      console.error(`Queued message for ${sessionId} failed`, error)
+    })
   }
 
   async handleBackgroundDelegationResult(task: DelegationTask, error?: string) {
@@ -1101,7 +1114,11 @@ export class MonolitoV2Runtime {
 
   async processMessage(sessionId: string, text: string) {
     if (this.activeSessions.has(sessionId)) {
-      throw createSessionBusyError(sessionId)
+      const queue = this.pendingUserMessages.get(sessionId) ?? []
+      queue.push(text)
+      this.pendingUserMessages.set(sessionId, queue)
+      this.emit({ type: "message.queued", sessionId, role: "user", text })
+      return
     }
     this.activeSessions.add(sessionId)
     try {
@@ -1145,6 +1162,7 @@ export class MonolitoV2Runtime {
     } finally {
       this.activeSessions.delete(sessionId)
       this.flushPendingBackgroundWakeup(sessionId)
+      this.flushPendingUserMessage(sessionId)
     }
   }
 
@@ -1397,6 +1415,7 @@ export class MonolitoV2Runtime {
       this.activeSessions.delete(sessionId)
       this.abortControllers.delete(sessionId)
       this.flushPendingBackgroundWakeup(sessionId)
+      this.flushPendingUserMessage(sessionId)
     }
   }
 
