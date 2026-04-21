@@ -8,6 +8,7 @@ export type AgentEvent =
   | { type: "session.resumed"; sessionId: string }
   | { type: "state.changed"; sessionId: string; state: "idle" | "running" | "error" }
   | { type: "message.received"; sessionId: string; role: "user" | "assistant" | "system"; text: string }
+  | { type: "message.queued"; sessionId: string; role: "user"; text: string }
   | {
       type: "turn.completed"
       sessionId: string
