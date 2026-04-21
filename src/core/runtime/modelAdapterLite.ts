@@ -295,6 +295,11 @@ async function callAnthropicApi(config: ReturnType<typeof getEffectiveModelConfi
     baseURL: config.baseUrl || undefined,
     dangerouslyAllowBrowser: true,
   })
+  const anthropicTools = buildToolDefinitions(isSubAgent).map(tool => ({
+    name: tool.name,
+    description: tool.description,
+    input_schema: tool.input_schema,
+  }))
   const response = await client.messages.create({
     model: config.model,
     max_tokens: maxTokens ?? 4_000,
@@ -303,7 +308,7 @@ async function callAnthropicApi(config: ReturnType<typeof getEffectiveModelConfi
       ...(bootBlock ? [{ type: "text" as const, text: bootBlock, cache_control: { type: "ephemeral" as const } }] : []),
     ],
     messages: buildAnthropicMessages(messages),
-    tools: buildToolDefinitions(isSubAgent),
+    tools: anthropicTools,
     abortSignal,
   })
   return {
@@ -403,7 +408,9 @@ async function callOllamaApi(config: ReturnType<typeof getEffectiveModelConfig>,
 }
 
 async function callProvider(config: ReturnType<typeof getEffectiveModelConfig>, prompt: ReturnType<typeof buildSystemPrompt>, messages: ConversationMessage[], abortSignal: AbortSignal | undefined, isSubAgent: boolean, maxTokens?: number) {
-  if (config.provider === "anthropic_compatible") return await callAnthropicApi(config, prompt.system, prompt.bootBlock, messages, abortSignal, maxTokens, isSubAgent)
+  if (config.provider === "anthropic_compatible" || config.provider === "minimax") {
+    return await callAnthropicApi(config, prompt.system, prompt.bootBlock, messages, abortSignal, maxTokens, isSubAgent)
+  }
   if (config.provider === "ollama") return await callOllamaApi(config, prompt.system, messages, abortSignal, isSubAgent)
   return await callOpenAiCompatibleApi(config, prompt.system, messages, abortSignal, maxTokens, isSubAgent)
 }
