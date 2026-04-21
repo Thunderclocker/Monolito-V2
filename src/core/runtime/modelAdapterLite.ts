@@ -1,6 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk"
 import type { MessageParam } from "@anthropic-ai/sdk/resources/messages"
+import { randomUUID } from "node:crypto"
 import type { SessionRecord } from "../ipc/protocol.ts"
+import { parseDirective } from "./directiveParser.ts"
 import { type ToolContext, isToolConcurrencySafe, listModelTools } from "../tools/registry.ts"
 import { BOOT_WING_DESCRIPTION, type BootWingEntry } from "../bootstrap/bootWings.ts"
 import type { WorkspaceBootstrapContext } from "../context/workspaceContext.ts"
@@ -287,7 +289,7 @@ async function parseError(response: Response) {
   throw new Error(`Model request failed (${response.status}): ${text}`)
 }
 
-async function callAnthropicApi(config: ReturnType<typeof getEffectiveModelConfig>, system: string, bootBlock: string, messages: ConversationMessage[], abortSignal: AbortSignal | undefined, maxTokens: number | undefined): Promise<ProviderResponse> {
+async function callAnthropicApi(config: ReturnType<typeof getEffectiveModelConfig>, system: string, bootBlock: string, messages: ConversationMessage[], abortSignal: AbortSignal | undefined, maxTokens: number | undefined, isSubAgent: boolean): Promise<ProviderResponse> {
   const client = new Anthropic({
     apiKey: config.apiKey || "not-needed",
     baseURL: config.baseUrl || undefined,
@@ -295,13 +297,13 @@ async function callAnthropicApi(config: ReturnType<typeof getEffectiveModelConfi
   })
   const response = await client.messages.create({
     model: config.model,
-    max_tokens: maxTokens ?? config.maxTokens ?? 4_000,
+    max_tokens: maxTokens ?? 4_000,
     system: [
       { type: "text", text: system, cache_control: { type: "ephemeral" } },
       ...(bootBlock ? [{ type: "text" as const, text: bootBlock, cache_control: { type: "ephemeral" as const } }] : []),
     ],
     messages: buildAnthropicMessages(messages),
-    tools: buildToolDefinitions(messages.some(message => message.role === "assistant" && "toolCalls" in message && message.toolCalls.some(call => call.name === "delegate_background_task"))),
+    tools: buildToolDefinitions(isSubAgent),
     abortSignal,
   })
   return {
@@ -324,7 +326,7 @@ async function callJsonApi(url: string, init: RequestInit) {
   return await response.json() as Record<string, any>
 }
 
-async function callOpenAiCompatibleApi(config: ReturnType<typeof getEffectiveModelConfig>, system: string, messages: ConversationMessage[], abortSignal: AbortSignal | undefined, maxTokens: number | undefined): Promise<ProviderResponse> {
+async function callOpenAiCompatibleApi(config: ReturnType<typeof getEffectiveModelConfig>, system: string, messages: ConversationMessage[], abortSignal: AbortSignal | undefined, maxTokens: number | undefined, isSubAgent: boolean): Promise<ProviderResponse> {
   const data = await callJsonApi(`${config.baseUrl}/v1/chat/completions`, {
     method: "POST",
     headers: {
@@ -334,25 +336,50 @@ async function callOpenAiCompatibleApi(config: ReturnType<typeof getEffectiveMod
     body: JSON.stringify({
       model: config.model,
       messages: buildOpenAiMessages(system, messages),
-      tools: buildToolDefinitions(false).map(tool => ({ type: tool.type, function: tool.function })),
+      tools: buildToolDefinitions(isSubAgent).map(tool => ({ type: tool.type, function: tool.function })),
       tool_choice: "auto",
-      max_tokens: maxTokens ?? config.maxTokens ?? 4_000,
+      max_tokens: maxTokens ?? 4_000,
       stream: false,
     }),
     signal: abortSignal,
   })
   const choice = data.choices?.[0]?.message ?? {}
-  return {
-    text: typeof choice.content === "string" ? choice.content.trim() : "",
-    toolCalls: parseStructuredToolCalls(choice.tool_calls),
-    usage: {
-      inputTokens: data.usage?.prompt_tokens,
-      outputTokens: data.usage?.completion_tokens,
-    },
+  const rawContent = typeof choice.content === "string" ? choice.content : ""
+  const structured = parseStructuredToolCalls(choice.tool_calls)
+  const usage = {
+    inputTokens: data.usage?.prompt_tokens,
+    outputTokens: data.usage?.completion_tokens,
   }
+
+  if (structured.length > 0) {
+    return { text: rawContent.trim(), toolCalls: structured, usage }
+  }
+
+  // Fallback: algunos providers (ej. MiniMax) devuelven tool calls como XML embebido en el contenido.
+  const directive = parseDirective(rawContent)
+  if (directive?.mode === "tool") {
+    const cleaned = rawContent
+      .replace(/<(minimax:)?tool_call[\s\S]*?<\/(minimax:)?tool_call>/gi, "")
+      .replace(/<invoke[\s\S]*?<\/invoke>/gi, "")
+      .trim()
+    return {
+      text: cleaned,
+      toolCalls: [{ id: `xml-${randomUUID().slice(0, 8)}`, name: directive.tool, input: directive.input }],
+      usage,
+    }
+  }
+  if (directive?.mode === "tools") {
+    return {
+      text: "",
+      toolCalls: directive.tools.map(t => ({ id: `xml-${randomUUID().slice(0, 8)}`, name: t.tool, input: t.input })),
+      usage,
+    }
+  }
+
+  return { text: rawContent.trim(), toolCalls: [], usage }
 }
 
-async function callOllamaApi(config: ReturnType<typeof getEffectiveModelConfig>, system: string, messages: ConversationMessage[], abortSignal: AbortSignal | undefined): Promise<ProviderResponse> {
+async function callOllamaApi(config: ReturnType<typeof getEffectiveModelConfig>, system: string, messages: ConversationMessage[], abortSignal: AbortSignal | undefined, isSubAgent: boolean): Promise<ProviderResponse> {
   const data = await callJsonApi(`${config.baseUrl}/api/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -360,7 +387,7 @@ async function callOllamaApi(config: ReturnType<typeof getEffectiveModelConfig>,
       model: config.model,
       stream: false,
       messages: buildOpenAiMessages(system, messages),
-      tools: buildToolDefinitions(false).map(tool => ({ type: tool.type, function: tool.function })),
+      tools: buildToolDefinitions(isSubAgent).map(tool => ({ type: tool.type, function: tool.function })),
     }),
     signal: abortSignal,
   })
@@ -375,16 +402,16 @@ async function callOllamaApi(config: ReturnType<typeof getEffectiveModelConfig>,
   }
 }
 
-async function callProvider(config: ReturnType<typeof getEffectiveModelConfig>, prompt: ReturnType<typeof buildSystemPrompt>, messages: ConversationMessage[], abortSignal: AbortSignal | undefined, maxTokens?: number) {
-  if (config.provider === "anthropic_compatible") return await callAnthropicApi(config, prompt.system, prompt.bootBlock, messages, abortSignal, maxTokens)
-  if (config.provider === "ollama") return await callOllamaApi(config, prompt.system, messages, abortSignal)
-  return await callOpenAiCompatibleApi(config, prompt.system, messages, abortSignal, maxTokens)
+async function callProvider(config: ReturnType<typeof getEffectiveModelConfig>, prompt: ReturnType<typeof buildSystemPrompt>, messages: ConversationMessage[], abortSignal: AbortSignal | undefined, isSubAgent: boolean, maxTokens?: number) {
+  if (config.provider === "anthropic_compatible") return await callAnthropicApi(config, prompt.system, prompt.bootBlock, messages, abortSignal, maxTokens, isSubAgent)
+  if (config.provider === "ollama") return await callOllamaApi(config, prompt.system, messages, abortSignal, isSubAgent)
+  return await callOpenAiCompatibleApi(config, prompt.system, messages, abortSignal, maxTokens, isSubAgent)
 }
 
-async function callProviderWithRetry(config: ReturnType<typeof getEffectiveModelConfig>, prompt: ReturnType<typeof buildSystemPrompt>, messages: ConversationMessage[], abortSignal: AbortSignal | undefined, maxTokens: number | undefined) {
+async function callProviderWithRetry(config: ReturnType<typeof getEffectiveModelConfig>, prompt: ReturnType<typeof buildSystemPrompt>, messages: ConversationMessage[], abortSignal: AbortSignal | undefined, isSubAgent: boolean, maxTokens: number | undefined) {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
-      return await callProvider(config, prompt, messages, abortSignal, maxTokens)
+      return await callProvider(config, prompt, messages, abortSignal, isSubAgent, maxTokens)
     } catch (error) {
       if (abortSignal?.aborted) throw abortSignal.reason ?? error
       if (error instanceof RateLimitError || error instanceof ProviderOverloadedError) {
@@ -439,6 +466,7 @@ export async function runAssistantTurn(
   const maxIterations = options?.maxIterations ?? MAX_TURN_ITERATIONS
   const maxTurnDurationMs = options?.maxTurnDurationMs ?? DEFAULT_MAX_TURN_DURATION_MS
   const config = getEffectiveModelConfig()
+  const isSubAgent = session.id.startsWith("agent-")
   let activeSession = session
   let compacted = false
   let usage: TurnUsage | undefined
@@ -450,7 +478,7 @@ export async function runAssistantTurn(
     if (options?.abortSignal?.aborted) return finalize("", steps, startedAt, iteration - 1, usage, undefined, "aborted")
     if (Date.now() - startedAt > maxTurnDurationMs) return finalize("", steps, startedAt, iteration - 1, usage, "Turn duration exceeded", "max_duration")
     try {
-      const response = await callProviderWithRetry(config, prompt, messages, options?.abortSignal, undefined)
+      const response = await callProviderWithRetry(config, prompt, messages, options?.abortSignal, isSubAgent, undefined)
       usage = sumUsage(usage, response.usage)
       if (response.toolCalls.length === 0) return finalize(response.text, steps, startedAt, iteration, usage)
       const assistantMessage: ConversationMessage = { role: "assistant", content: response.text, toolCalls: response.toolCalls }
@@ -503,6 +531,7 @@ export async function runBackgroundTextTask(
     prompt,
     messages,
     options?.abortSignal,
+    false,
     options?.maxTokens ?? MAX_BACKGROUND_TOKENS,
   )
   return { text: response.text, usage: response.usage }
