@@ -1,8 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk"
-import type { MessageParam } from "@anthropic-ai/sdk/resources/messages"
-import { randomUUID } from "node:crypto"
 import type { SessionRecord } from "../ipc/protocol.ts"
-import { parseDirective } from "./directiveParser.ts"
 import { type ToolContext, isToolConcurrencySafe, listModelTools } from "../tools/registry.ts"
 import { BOOT_WING_DESCRIPTION, type BootWingEntry } from "../bootstrap/bootWings.ts"
 import type { WorkspaceBootstrapContext } from "../context/workspaceContext.ts"
@@ -11,8 +7,8 @@ import { ApiError, ContextOverflowError, HttpError, ProviderOverloadedError, Rat
 import { createLogger, type Logger } from "../logging/logger.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider } from "./modelRegistry.ts"
-import { normalizeToolInputPayload } from "./toolInput.ts"
 import { compactSession, getSession, listCanonicalMemoryEntries } from "../session/store.ts"
+import { callProvider, type ConversationMessage, type ProviderConfig, type ProviderResponse, type ToolCall } from "./providers/index.ts"
 
 const defaultLogger = createLogger("modelAdapterLite")
 const MAX_TURN_ITERATIONS = 16
@@ -49,23 +45,6 @@ type ContextExtras = {
   adultMode?: boolean
   webSearchProvider?: string
   taskNotifications?: string[]
-}
-
-type ConversationMessage =
-  | { role: "user" | "assistant"; content: string }
-  | { role: "assistant"; content: string; toolCalls: ToolCall[] }
-  | { role: "tool"; toolCallId: string; toolName: string; content: string }
-
-type ToolCall = {
-  id: string
-  name: string
-  input: Record<string, unknown>
-}
-
-type ProviderResponse = {
-  text: string
-  toolCalls: ToolCall[]
-  usage?: TurnUsage
 }
 
 function normalizeBaseUrl(value: string) {
@@ -194,68 +173,6 @@ function buildSystemPrompt(args: {
   }
 }
 
-function buildAnthropicMessages(messages: ConversationMessage[]): MessageParam[] {
-  return messages.flatMap<MessageParam>(message => {
-    if (message.role === "tool") {
-      return [{
-        role: "user",
-        content: [{
-          type: "tool_result",
-          tool_use_id: message.toolCallId,
-          content: message.content,
-        }],
-      }]
-    }
-    if ("toolCalls" in message) {
-      const content = []
-      if (message.content.trim()) content.push({ type: "text" as const, text: message.content })
-      for (const toolCall of message.toolCalls) {
-        content.push({ type: "tool_use" as const, id: toolCall.id, name: toolCall.name, input: toolCall.input })
-      }
-      return [{ role: "assistant", content }]
-    }
-    return [{ role: message.role, content: message.content }]
-  })
-}
-
-function buildOpenAiMessages(system: string, messages: ConversationMessage[]) {
-  const output: Array<Record<string, unknown>> = [{ role: "system", content: system }]
-  for (const message of messages) {
-    if (message.role === "tool") {
-      output.push({ role: "tool", tool_call_id: message.toolCallId, content: message.content })
-      continue
-    }
-    if ("toolCalls" in message) {
-      output.push({
-        role: "assistant",
-        content: message.content || "",
-        tool_calls: message.toolCalls.map(toolCall => ({
-          id: toolCall.id,
-          type: "function",
-          function: { name: toolCall.name, arguments: JSON.stringify(toolCall.input) },
-        })),
-      })
-      continue
-    }
-    output.push({ role: message.role, content: message.content })
-  }
-  return output
-}
-
-function buildToolDefinitions(isSubAgent: boolean) {
-  return listModelTools(isSubAgent).map(tool => ({
-    name: tool.name,
-    description: tool.description,
-    input_schema: tool.input_schema,
-    type: "function",
-    function: {
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.input_schema,
-    },
-  }))
-}
-
 async function sleep(ms: number, abortSignal?: AbortSignal) {
   if (!ms) return
   await new Promise<void>((resolve, reject) => {
@@ -290,158 +207,7 @@ function isRetriableNetworkError(error: unknown) {
   ].includes(code ?? "")
 }
 
-function parseStructuredToolCalls(rawToolCalls: unknown): ToolCall[] {
-  if (!Array.isArray(rawToolCalls)) return []
-  return rawToolCalls.flatMap<ToolCall>(item => {
-    const toolCall = item as { id?: string; function?: { name?: string; arguments?: string } }
-    if (!toolCall?.id || !toolCall.function?.name) return []
-    try {
-      const parsed = normalizeToolInputPayload(JSON.parse(toolCall.function.arguments ?? "{}"))
-      return [{ id: toolCall.id, name: toolCall.function.name, input: parsed as Record<string, unknown> }]
-    } catch {
-      return []
-    }
-  })
-}
-
-async function parseError(response: Response) {
-  const text = await response.text()
-  const lowered = text.toLowerCase()
-  if (response.status === 429 || lowered.includes("rate limit")) throw new RateLimitError(`Rate limit: ${text}`, { statusCode: response.status, responseBody: text, headers: response.headers })
-  if (response.status === 529 || response.status === 503) throw new ProviderOverloadedError(`Provider overloaded: ${text}`, { statusCode: response.status, responseBody: text, headers: response.headers })
-  if (response.status === 400 || response.status === 413 || lowered.includes("context") || lowered.includes("too many tokens") || lowered.includes("maximum context")) {
-    throw new ContextOverflowError(`Context overflow: ${text}`, { statusCode: response.status, responseBody: text, headers: response.headers })
-  }
-  throw new Error(`Model request failed (${response.status}): ${text}`)
-}
-
-async function callAnthropicApi(config: ReturnType<typeof getEffectiveModelConfig>, system: string, bootBlock: string, messages: ConversationMessage[], abortSignal: AbortSignal | undefined, maxTokens: number | undefined, isSubAgent: boolean): Promise<ProviderResponse> {
-  const client = new Anthropic({
-    apiKey: config.apiKey || "not-needed",
-    baseURL: config.baseUrl || undefined,
-    dangerouslyAllowBrowser: true,
-  })
-  const anthropicTools = buildToolDefinitions(isSubAgent).map(tool => ({
-    name: tool.name,
-    description: tool.description,
-    input_schema: tool.input_schema,
-  }))
-  const response = await client.messages.create({
-    model: config.model,
-    max_tokens: maxTokens ?? 4_000,
-    system: [
-      { type: "text", text: system, cache_control: { type: "ephemeral" } },
-      ...(bootBlock ? [{ type: "text" as const, text: bootBlock, cache_control: { type: "ephemeral" as const } }] : []),
-    ],
-    messages: buildAnthropicMessages(messages),
-    tools: anthropicTools,
-    abortSignal,
-  })
-  return {
-    text: response.content.filter(block => block.type === "text").map(block => block.text).join("\n").trim(),
-    toolCalls: response.content
-      .filter(block => block.type === "tool_use")
-      .map(block => ({ id: block.id, name: block.name, input: normalizeToolInputPayload(block.input) as Record<string, unknown> })),
-    usage: {
-      inputTokens: response.usage.input_tokens,
-      outputTokens: response.usage.output_tokens,
-      cacheReadInputTokens: response.usage.cache_read_input_tokens,
-      cacheCreationInputTokens: response.usage.cache_creation_input_tokens,
-    },
-  }
-}
-
-async function callJsonApi(url: string, init: RequestInit) {
-  const response = await fetch(url, init)
-  if (!response.ok) await parseError(response)
-  return await response.json() as Record<string, any>
-}
-
-async function callOpenAiCompatibleApi(config: ReturnType<typeof getEffectiveModelConfig>, system: string, messages: ConversationMessage[], abortSignal: AbortSignal | undefined, maxTokens: number | undefined, isSubAgent: boolean): Promise<ProviderResponse> {
-  const data = await callJsonApi(`${config.baseUrl}/v1/chat/completions`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${config.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: config.model,
-      messages: buildOpenAiMessages(system, messages),
-      tools: buildToolDefinitions(isSubAgent).map(tool => ({ type: tool.type, function: tool.function })),
-      tool_choice: "auto",
-      max_tokens: maxTokens ?? 4_000,
-      stream: false,
-    }),
-    signal: abortSignal,
-  })
-  const choice = data.choices?.[0]?.message ?? {}
-  const rawContent = typeof choice.content === "string" ? choice.content : ""
-  const structured = parseStructuredToolCalls(choice.tool_calls)
-  const usage = {
-    inputTokens: data.usage?.prompt_tokens,
-    outputTokens: data.usage?.completion_tokens,
-  }
-
-  if (structured.length > 0) {
-    return { text: rawContent.trim(), toolCalls: structured, usage }
-  }
-
-  // Fallback: algunos providers (ej. MiniMax) devuelven tool calls como XML embebido en el contenido.
-  const directive = parseDirective(rawContent)
-  if (directive?.mode === "tool") {
-    const cleaned = rawContent
-      .replace(/<(minimax:)?tool_call[\s\S]*?<\/(minimax:)?tool_call>/gi, "")
-      .replace(/<invoke[\s\S]*?<\/invoke>/gi, "")
-      .trim()
-    return {
-      text: cleaned,
-      toolCalls: [{ id: `xml-${randomUUID().slice(0, 8)}`, name: directive.tool, input: directive.input }],
-      usage,
-    }
-  }
-  if (directive?.mode === "tools") {
-    return {
-      text: "",
-      toolCalls: directive.tools.map(t => ({ id: `xml-${randomUUID().slice(0, 8)}`, name: t.tool, input: t.input })),
-      usage,
-    }
-  }
-
-  return { text: rawContent.trim(), toolCalls: [], usage }
-}
-
-async function callOllamaApi(config: ReturnType<typeof getEffectiveModelConfig>, system: string, messages: ConversationMessage[], abortSignal: AbortSignal | undefined, isSubAgent: boolean): Promise<ProviderResponse> {
-  const data = await callJsonApi(`${config.baseUrl}/api/chat`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      model: config.model,
-      stream: false,
-      messages: buildOpenAiMessages(system, messages),
-      tools: buildToolDefinitions(isSubAgent).map(tool => ({ type: tool.type, function: tool.function })),
-    }),
-    signal: abortSignal,
-  })
-  const message = data.message ?? {}
-  return {
-    text: typeof message.content === "string" ? message.content.trim() : "",
-    toolCalls: parseStructuredToolCalls(message.tool_calls),
-    usage: {
-      inputTokens: data.prompt_eval_count,
-      outputTokens: data.eval_count,
-    },
-  }
-}
-
-async function callProvider(config: ReturnType<typeof getEffectiveModelConfig>, prompt: ReturnType<typeof buildSystemPrompt>, messages: ConversationMessage[], abortSignal: AbortSignal | undefined, isSubAgent: boolean, maxTokens?: number) {
-  if (config.provider === "anthropic_compatible" || config.provider === "minimax") {
-    return await callAnthropicApi(config, prompt.system, prompt.bootBlock, messages, abortSignal, maxTokens, isSubAgent)
-  }
-  if (config.provider === "ollama") return await callOllamaApi(config, prompt.system, messages, abortSignal, isSubAgent)
-  return await callOpenAiCompatibleApi(config, prompt.system, messages, abortSignal, maxTokens, isSubAgent)
-}
-
-async function callProviderWithRetry(config: ReturnType<typeof getEffectiveModelConfig>, prompt: ReturnType<typeof buildSystemPrompt>, messages: ConversationMessage[], abortSignal: AbortSignal | undefined, isSubAgent: boolean, maxTokens: number | undefined) {
+async function callProviderWithRetry(config: ProviderConfig, prompt: ReturnType<typeof buildSystemPrompt>, messages: ConversationMessage[], abortSignal: AbortSignal | undefined, isSubAgent: boolean, maxTokens: number | undefined) {
   let currentConfig = config
   let rateLimitAttempts = 0
   let overloadAttempts = 0
