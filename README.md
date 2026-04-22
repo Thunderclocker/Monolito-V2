@@ -1,18 +1,19 @@
 # Monolito v2
 
-Local orchestration runtime with daemon mode, terminal UI, persistent sessions, SQLite memory, multi-agent delegation, tool harness execution, slash commands, channel integration, and basic MCP support.
+Local orchestration runtime with daemon mode, terminal UI, persistent sessions, SQLite-first memory, multi-agent delegation, structured tool execution, slash commands, channel integration, and basic MCP support.
 
 Further documentation lives in [`docs/`](./docs/README.md).
 
 ## Core capabilities
 
 - Daemon + CLI client with resumable local sessions
-- SQLite-backed session storage for messages, worklog, events, tasks, and long-term memory
-- Profile-based workspaces with deterministic BOOT wings in SQLite such as `BOOT_SOUL`, `BOOT_AGENTS`, `BOOT_IDENTITY`, `BOOT_USER`, `BOOT_TOOLS`, and `BOOT_MEMORY`
-- Structured canonical memory for stable assistant/user facts such as assistant name, preferred user name, location, and timezone
-- First-run bootstrap ritual that asks for agent identity and user profile, then persists bootstrap state while also allowing stable facts to live in canonical memory
-- Multi-agent orchestration with worker spawning, follow-up messaging, and stop controls
-- Tool harness for shell execution, web fetches, workspace file access, BOOT access, canonical memory access, memory filing/recall, MCP calls, Telegram send, and task tracking
+- SQLite-backed runtime for sessions, worklog, events, BOOT wings, canonical memory, verbatim long-term memory, and the temporal knowledge graph
+- Profile-based workspaces with deterministic `BOOT_*` wings stored in SQLite instead of legacy markdown memory files
+- Canonical memory slots for stable assistant/user facts such as assistant name, preferred user name, location, and timezone
+- Verbatim long-term memory filing into SQLite `memory.sqlite`, plus a temporal knowledge graph for subject-predicate-object facts with validity windows
+- First-run bootstrap ritual that persists bootstrap state into BOOT wings while stable facts can also live in canonical memory and the graph
+- Multi-agent orchestration with worker spawning, follow-up messaging, stop controls, and real filesystem isolation via Git Worktrees
+- Tool harness for shell execution, web fetches, workspace file access, BOOT access, canonical memory access, Memory Palace filing/recall, knowledge-graph tools, MCP calls, Telegram send, and task tracking
 - OpenAI-compatible text-to-speech generation into local audio files, with Telegram audio/voice delivery tools
 - Managed speech-to-text ingestion for Telegram audio and voice notes
 - Slash-command interface for runtime inspection and control
@@ -21,29 +22,34 @@ Further documentation lives in [`docs/`](./docs/README.md).
 - Persisted runtime configuration in SQLite `CONF_*` wings, plus permission rules and post-tool hooks
 - MCP bridge for listing tools/resources, reading resources, and calling remote MCP tools
 - Agnostic model backend selection across Anthropic-compatible endpoints, OpenAI-compatible endpoints, and local Ollama instances
+- Native Anthropic prompt caching layout with static prompt blocks separated from dynamic turn context
+- In-flight provider recovery for `429`, `503`/`529`, auth expiration (`401`/`403`), and context overflow routing
 
 ## Architecture snapshot
 
 Monolito is split into a few main layers:
 
 - daemon/runtime: owns sessions, orchestration, slash commands, background work, channels, and logging
-- model adapter: builds the prompt, injects BOOT/canonical memory/config, and applies runtime guardrails
+- model adapter: builds the prompt, injects BOOT/canonical memory/config, applies prompt-caching boundaries, and handles provider recovery state
 - tool registry: exposes structured tools with permission checks and renderer metadata
-- session store: persists messages, worklog, events, tasks, BOOT wings, canonical memory, and Memory Palace entries in SQLite
+- session store: persists messages, worklog, events, tasks, BOOT wings, canonical memory, Memory Palace entries, and the temporal knowledge graph in SQLite
 - channels: Telegram ingestion/reply flow plus media handling
 - managed services: optional local TTS, STT, and SearxNG lifecycle helpers
 
-The runtime is designed so the assistant does not rely on ad-hoc workspace markdown files for identity or memory. Those older file conventions are historical only.
+The runtime does not rely on workspace markdown files for identity or memory. The operational state lives in SQLite `memory.sqlite`, plus runtime files under `~/.monolito-v2/` for logs, sockets, caches, and managed services.
 
 ## Memory system
 
-- Session history, messages, worklog entries, and runtime events are persisted locally.
-- Long-term memory has three layers:
+- Session history, messages, worklog entries, runtime events, BOOT wings, canonical slots, Memory Palace entries, and graph triples are persisted locally in SQLite.
+- Long-term memory has four layers:
   - `BOOT_*` for deterministic bootstrap state
   - canonical memory for stable assistant/user facts
-  - Memory Palace for broader durable contextual memory
-- Memory Palace entries are stored as `wing` and `room` records in SQLite.
-- `SHARED` wings are visible across profiles; other wings stay private to the current profile.
+  - Memory Palace for broader durable context and verbatim turn capture
+  - temporal knowledge graph for time-scoped relations
+- Verbatim conversation storage now writes the latest `USER` / `ASSISTANT` turn pair directly into SQLite under `HISTORY/verbatim`.
+- Memory Palace entries are stored as `wing`, `room`, optional `key`, and `content`.
+- Knowledge graph entries are stored as `subject`, `predicate`, `object`, `valid_from`, and optional `valid_to`.
+- `SHARED` wings are visible across profiles; other Memory Palace entries and graph triples stay profile-scoped.
 - Recall supports structural filters (`wing`, `room`, `key`) and semantic lookup with local embeddings.
 - Embeddings use a local `@xenova/transformers` model and are warmed in the background at daemon startup.
 - If embeddings are unavailable, Monolito degrades cleanly: filing can continue without vectors and semantic recall falls back to recent non-semantic memory.
@@ -51,10 +57,9 @@ The runtime is designed so the assistant does not rely on ad-hoc workspace markd
 
 ### Background Memory Agent
 
-- Monolito runs a background `Memory Agent` that reviews recent conversation and proposes memory updates without interrupting the main reply flow.
-- It still routes proposals through `USER`, `MEMORY`, and `MEMPALACE`, but the runtime can also promote stable profile facts into canonical memory.
-- This means confirmed facts such as assistant name or user location no longer have to rely on old BOOT-only routing.
-- The agent is intentionally stricter for deterministic/bootstrap memory than for broader contextual memory.
+- Monolito runs a background `Memory Agent` that reviews recent conversation and proposes updates for `USER` and `MEMORY` without interrupting the main reply flow.
+- The same review pass also stores the last conversation turn verbatim into SQLite, without asking the LLM to invent summaries for the Memory Palace.
+- Stable profile facts can also be promoted into canonical memory.
 - It is triggered after normal turns, before `/compact`, and before session resets such as `/new`.
 - Operational logging is emitted through the daemon log under the `memory-agent` logger category.
 - Memory Agent updates are also summarized into the session worklog when something is applied.
@@ -65,16 +70,26 @@ The runtime is designed so the assistant does not rely on ad-hoc workspace markd
 - Agents are represented as profile-scoped sub-sessions with their own isolated runtime context.
 - A parent session can spawn worker, researcher, or verifier agents in parallel.
 - Sub-agents report back through task notifications and can be continued or stopped explicitly.
+- When isolation is enabled, each worker runs in its own Git Worktree with a temporary branch, so it cannot collide with files in the main workspace root.
 - Profiles can be created dynamically and keep separate identity, workspace, and task lists.
 - Main sessions can see curated bootstrap and canonical memory; worker sessions stay more isolated unless context is explicitly passed in.
 
 ## Tool harness
 
 - Tools run through a permission-checked execution harness rather than free-form shell instructions.
-- The registry includes local shell execution, MCP access, Telegram send, workspace read/write, BOOT read/write, canonical memory read/write, memory filing/recall, todo/task tracking, and agent orchestration tools.
+- The registry includes local shell execution, MCP access, Telegram send, workspace read/write, BOOT read/write, canonical memory read/write, memory filing/recall, knowledge-graph tools, todo/task tracking, and agent orchestration tools.
 - Tool starts, finishes, failures, and summaries are emitted as structured runtime events and appended to the worklog.
 - Post-tool hooks and per-profile/session permission rules are supported.
 - Session forensics is also tool-driven, so the assistant can inspect messages, worklog, and events before answering questions about what happened in a session.
+
+## Model runtime
+
+- Anthropic calls are arranged for prompt caching by keeping the static prompt block stable and appending a `=== DYNAMIC CONTEXT ===` section separately.
+- Provider calls use a retry state machine instead of a flat loop.
+- `429` rate limits honor `retry-after` when available and otherwise use exponential backoff.
+- `503` / `529` provider overloads and retriable network failures use a short bounded retry policy.
+- `401` / `403` auth failures trigger a one-time in-flight credential reload before surfacing the error.
+- `ContextOverflowError` is allowed to bubble so the runtime can compact the session and retry with a smaller prompt.
 
 ## Channels
 

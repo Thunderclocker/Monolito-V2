@@ -1,16 +1,17 @@
 # Memory Agent
 
-The background `Memory Agent` reviews recent conversation after the main reply is already sent and decides whether something should be persisted for future turns.
+The background `Memory Agent` reviews recent conversation after the main reply is already sent and decides whether stable information should be persisted for future turns.
 
-This document describes the current runtime behavior. It replaces older descriptions that treated `BOOT_*` as the only durable memory target.
+This document describes the current runtime behavior. Monolito no longer relies on LLM-generated summaries for the Memory Palace.
 
 ## Purpose
 
-The memory system now has three distinct layers:
+The memory system now has four distinct layers:
 
 - `BOOT_*`: deterministic bootstrap state and persona scaffolding
 - canonical structured memory: stable assistant/user profile facts
-- Memory Palace: broader long-term contextual memory
+- Memory Palace: broader long-term contextual memory and verbatim turn storage
+- temporal knowledge graph: time-scoped subject-predicate-object facts
 
 The `Memory Agent` is responsible for conservative, post-turn persistence without interrupting the chat.
 
@@ -70,27 +71,39 @@ It stores:
 - optional `key`
 - `content`
 
-Use it for:
+Current runtime usage:
 
-- ongoing projects
-- medium-term plans
-- recurring interaction patterns
-- contextual facts worth recalling later
+- direct verbatim turn capture into `HISTORY / verbatim`
+- broader durable notes filed intentionally through tools
+- semantic recall over stored content when embeddings are available
+
+The Memory Agent no longer asks the model to invent compressed Memory Palace summaries. Instead, the runtime writes the latest conversation turn directly into SQLite as raw text.
+
+### Temporal knowledge graph
+
+Monolito also stores time-aware graph triples in SQLite:
+
+- `subject`
+- `predicate`
+- `object`
+- `valid_from`
+- optional `valid_to`
+
+This graph is profile-scoped and is intended for facts that can change over time, such as status, roles, goals, or relationships.
 
 ## Current routing behavior
 
-The `Memory Agent` model still proposes one of these destinations:
+The `Memory Agent` model only proposes one of these destinations:
 
 - `USER`
 - `MEMORY`
-- `MEMPALACE`
 
 Current runtime behavior after a proposal:
 
 1. `USER` writes to `BOOT_USER`
 2. `MEMORY` writes to `BOOT_MEMORY`
-3. `MEMPALACE` files into Memory Palace
-4. the runtime also inspects proposal text and promotes stable profile facts into canonical structured memory when detected
+3. the runtime also inspects proposal text and promotes stable profile facts into canonical structured memory when detected
+4. independently of the model output, the runtime files the latest `USER` / `ASSISTANT` messages verbatim into SQLite Memory Palace storage
 
 That promotion step is important. It fixes a class of historical bugs where facts like assistant name or user location were captured in `BOOT_MEMORY` but later not found when the agent looked for canonical profile data.
 
@@ -100,8 +113,8 @@ Use these semantics when thinking about where information belongs:
 
 - stable assistant/user profile fact: canonical structured memory first
 - deterministic bootstrap seed or onboarding scaffold: `BOOT_*`
-- durable relational or long-running context: `BOOT_MEMORY`
-- useful but less canonical context: Memory Palace
+- durable relational or long-running context: `BOOT_MEMORY` or the temporal knowledge graph
+- verbatim conversational history: Memory Palace `HISTORY / verbatim`
 - trivial or low-value context: do not save it
 
 Examples:
@@ -109,7 +122,7 @@ Examples:
 - `"Amanda"` as the assistant's confirmed name: canonical memory
 - `"Cristian vive en Santo Tomé, Santa Fe"`: canonical memory
 - `"Cristian prefiere explicaciones simples y directas"`: `BOOT_MEMORY` or `BOOT_USER` depending on whether it is a user-profile preference vs interaction pattern
-- `"investigación sobre clima pendiente"`: Memory Palace or `BOOT_MEMORY` depending on durability
+- `"investigación sobre clima pendiente"`: `BOOT_MEMORY` or a graph triple depending on whether the fact is temporal/relational
 
 ## Contradictions and replacement
 
@@ -125,6 +138,21 @@ When contradiction is weak or uncertain:
 
 - prefer Memory Palace
 - or save nothing
+
+## Verbatim storage path
+
+After the session passes `shouldSkipSession`, the runtime takes the last two `user` / `assistant` messages, formats them as:
+
+- `USER: ...`
+- `ASSISTANT: ...`
+
+and files that raw text into SQLite using `fileMemory(rootDir, "HISTORY", "verbatim", ...)`.
+
+This means:
+
+- no LLM summary is needed to preserve the turn
+- recall can surface exact prior wording
+- the Memory Palace is now a direct persisted substrate, not an LLM-authored abstraction layer
 
 ## Embeddings and semantic lookup
 
@@ -151,6 +179,7 @@ In practice, operational logs are typically observed in:
 Typical events include:
 
 - `review.start`
+- `review.verbatim_stored`
 - `review.model_response`
 - `proposal.applied`
 - `proposal.skip`

@@ -133,3 +133,50 @@ The first created profile becomes active automatically.
 Monolito applies saved settings into the live process environment before model calls. If a field is missing in local settings, it can fall back to preserved system environment values.
 
 Sensitive values such as API keys are masked in user-facing output.
+
+## Provider recovery state machine
+
+`src/core/runtime/modelAdapterLite.ts` uses a stateful `callProviderWithRetry` loop instead of a flat retry counter.
+
+Current behavior:
+
+- `ContextOverflowError` is not retried there; it is allowed to bubble so the runtime can compact the session and retry with a smaller prompt.
+- `429` `RateLimitError` uses `retry-after` when present, otherwise exponential backoff.
+- `503` / `529` overloads use a short bounded retry policy.
+- transient network failures such as `ECONNRESET`, `ETIMEDOUT`, `ENOTFOUND`, and similar socket/connectivity errors are treated like overloads.
+- `401` / `403` auth failures trigger one in-flight credential reload via `loadAndApplyModelSettings(process.env)` and then retry once with a refreshed effective config.
+
+This keeps turns alive during temporary provider failures instead of aborting immediately.
+
+## Prompt caching layout
+
+Monolito now uses a Claude-Code-style prompt caching boundary inside `buildSystemPrompt`.
+
+The prompt is split into:
+
+- a static `system` block
+- a dynamic `bootBlock`
+
+The static block contains:
+
+- core assistant instructions
+- canonical identity facts
+- tool-use instructions
+- the tool summary
+- the BOOT entries
+
+The dynamic block begins with the explicit marker:
+
+- `=== DYNAMIC CONTEXT ===`
+
+and then appends volatile per-turn data such as:
+
+- workspace path
+- current user request
+- date context
+- git context
+- background task notifications
+
+The goal is to keep the hash of the static block stable across turns so Anthropic prompt caching can turn repeated prompt reads into cache reads after the first request.
+
+Operationally, if cache behavior is healthy, `/cost` should show `cache read` climbing after the first turn of a session.

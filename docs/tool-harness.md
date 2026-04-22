@@ -20,6 +20,7 @@ The registry includes tools for:
 - BOOT wing read/write
 - canonical memory read/write
 - Memory Palace filing and recall
+- temporal knowledge graph reads and writes
 - MCP listing, reading, and tool calls
 - Telegram send and file handling
 - task tracking
@@ -72,13 +73,48 @@ Semantic lookup depends on embeddings. Monolito now warms the local embeddings p
 
 This means semantic memory is opportunistic, not a hard boot dependency.
 
-## BOOT vs Canonical vs Memory Palace
+## Knowledge graph tools
+
+Monolito also exposes temporal knowledge graph tools backed by SQLite:
+
+- `KgAdd`
+- `KgInvalidate`
+- `KgQuery`
+
+`KgAdd` schema:
+
+- `subject`
+- `predicate`
+- `object`
+- optional `valid_from`
+
+`KgInvalidate` schema:
+
+- `subject`
+- `predicate`
+- `object`
+- optional `valid_to`
+
+`KgQuery` schema:
+
+- `entity`
+
+Behavior:
+
+- `KgAdd` inserts a profile-scoped triple into `knowledge_graph`
+- `KgInvalidate` sets `valid_to` on matching active triples
+- `KgQuery` returns triples where the entity appears as `subject` or `object`, including whether each fact is still active
+
+Use these tools for time-aware facts that should not be flattened into free-form Memory Palace text.
+
+## BOOT vs Canonical vs Graph vs Memory Palace
 
 Use the layers differently:
 
 - BOOT tools: bootstrap seed, onboarding, stable system instructions
 - canonical memory tools: durable assistant identity and user profile facts
-- Memory Palace tools: broader durable memory, notes, patterns, and semantic recall
+- graph tools: time-aware relations and facts with lifecycle
+- Memory Palace tools: verbatim history, broader durable memory, notes, patterns, and semantic recall
 
 Older docs sometimes described BOOT as the main memory layer. That is no longer accurate for current runtime behavior.
 
