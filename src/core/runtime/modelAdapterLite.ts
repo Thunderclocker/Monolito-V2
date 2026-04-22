@@ -162,32 +162,35 @@ function buildSystemPrompt(args: {
   const bootstrap = args.bootstrap ?? args.extras?.workspaceContext
   const canonical = listCanonicalMemoryEntries(args.rootDir, args.context?.profileId ?? "default")
   const identity = canonical.length > 0 ? canonical.map(entry => `- ${entry.label}: ${entry.value}`).join("\n") : "- No canonical identity facts recorded yet."
-  const dynamic: string[] = []
+  const isSubAgent = args.session.id.startsWith("agent-")
+  const staticSystem = [
+    "You are Monolito V2, a local assistant with tool access.",
+    "Use tools when the answer depends on current files, system state, background worker status, or external resources.",
+    "If no tool is needed, answer directly and finish.",
+    "Do not describe future work unless the same turn already started it.",
+    "Identity and durable user facts:",
+    identity,
+    isSubAgent
+      ? "You are a worker. Complete the task directly with the tools available to you."
+      : "You may delegate only when it materially helps and the corresponding tool is available.",
+    "Available tools:",
+    buildToolSummary(isSubAgent),
+    bootstrap ? describeBootEntries(bootstrap.entries) : "",
+  ].filter(Boolean).join("\n\n")
+
+  const dynamicContext = ["=== DYNAMIC CONTEXT ==="]
   const lastUserMessage = getLastUserMessage(args.session)
-  if (lastUserMessage) dynamic.push(`Current user request: ${lastUserMessage}`)
-  if (args.extras?.taskNotifications?.length) dynamic.push(`Background updates:\n${args.extras.taskNotifications.map(item => `- ${item}`).join("\n")}`)
-  if (args.extras?.dateContext) dynamic.push(args.extras.dateContext)
-  if (args.extras?.gitContext) dynamic.push(args.extras.gitContext)
-  if (args.extras?.adultMode) dynamic.push("Adult mode is enabled.")
-  if (args.extras?.webSearchProvider) dynamic.push(`Web search provider: ${args.extras.webSearchProvider}`)
+  dynamicContext.push(`Workspace root: ${args.rootDir}`)
+  if (lastUserMessage) dynamicContext.push(`Current user request: ${lastUserMessage}`)
+  if (args.extras?.dateContext) dynamicContext.push(args.extras.dateContext)
+  if (args.extras?.gitContext) dynamicContext.push(args.extras.gitContext)
+  if (args.extras?.taskNotifications?.length) dynamicContext.push(`Background updates:\n${args.extras.taskNotifications.map(item => `- ${item}`).join("\n")}`)
+  if (args.extras?.adultMode) dynamicContext.push("Adult mode is enabled.")
+  if (args.extras?.webSearchProvider) dynamicContext.push(`Web search provider: ${args.extras.webSearchProvider}`)
 
   return {
-    system: [
-      "You are Monolito V2, a local assistant with tool access.",
-      "Use tools when the answer depends on current files, system state, background worker status, or external resources.",
-      "If no tool is needed, answer directly and finish.",
-      "Do not describe future work unless the same turn already started it.",
-      "Identity and durable user facts:",
-      identity,
-      `Workspace root: ${args.rootDir}`,
-      args.session.id.startsWith("agent-")
-        ? "You are a worker. Complete the task directly with the tools available to you."
-        : "You may delegate only when it materially helps and the corresponding tool is available.",
-      "Available tools:",
-      buildToolSummary(args.session.id.startsWith("agent-")),
-      dynamic.join("\n\n"),
-    ].filter(Boolean).join("\n\n"),
-    bootBlock: bootstrap ? describeBootEntries(bootstrap.entries) : "",
+    system: staticSystem,
+    bootBlock: dynamicContext.join("\n\n"),
   }
 }
 
