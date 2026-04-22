@@ -25,11 +25,18 @@ function buildSubagentRetryPrompt(task: string, error: unknown, partialResult?: 
   ].filter(Boolean).join("\n")
 }
 
+function createTraceparent() {
+  const traceId = randomUUID().replace(/-/g, "")
+  const spanId = randomUUID().replace(/-/g, "").slice(0, 16)
+  return `00-${traceId}-${spanId}-01`
+}
+
 
 export type DelegationTask = {
   id: string
   parentSessionId: string
   subSessionId: string
+  traceId?: string
   profileId: string
   type: "worker" | "researcher" | "verifier"
   mode: "interactive" | "background"
@@ -128,6 +135,7 @@ export class AgentOrchestrator {
   }): Promise<SpawnAgentResult> {
     const rootDir = this.runtime.rootDir
     const subSessionId = `agent-${options.profileId}-${randomUUID().slice(0, 8)}`
+    const traceId = createTraceparent()
 
     const profiles = listProfiles(rootDir)
     if (!profiles.find(profile => profile.id === options.profileId)) {
@@ -142,6 +150,7 @@ export class AgentOrchestrator {
       id: subSessionId, // Use subSessionId as the taskId for simplicity and SendMessage correlation
       parentSessionId: options.parentSessionId,
       subSessionId,
+      traceId,
       profileId: options.profileId,
       type: options.type,
       mode: options.mode,
@@ -149,7 +158,7 @@ export class AgentOrchestrator {
       task: options.task,
       status: "pending",
       jobGroupId: options.jobGroupId,
-      logger: createInstanceLogger(subSessionId, options.type),
+      logger: createInstanceLogger(subSessionId, options.type, traceId),
     }
 
     if (options.isolation === "worktree") {
@@ -239,6 +248,7 @@ export class AgentOrchestrator {
         turn = await runtime.runTurn(task.subSessionId, currentText, task.profileId, {
           logger: task.logger,
           cwd: task.cwd,
+          traceId: task.traceId,
         })
 
         if (turn.error) {

@@ -13,6 +13,7 @@ export type LogEntry = {
   timestamp: string
   level: LogLevel
   category: string
+  traceId?: string
   message: string
   data?: Record<string, unknown>
   durationMs?: number
@@ -64,7 +65,9 @@ function normalizeLogData(data: unknown): Record<string, unknown> | undefined {
 }
 
 function formatEntry(entry: LogEntry): string {
-  const parts = [entry.timestamp, `[${entry.level.toUpperCase()}]`, `[${entry.category}]`, entry.message]
+  const parts = [entry.timestamp, `[${entry.level.toUpperCase()}]`, `[${entry.category}]`]
+  if (entry.traceId) parts.push(`[trace:${entry.traceId}]`)
+  parts.push(entry.message)
   if (entry.durationMs !== undefined) parts.push(`(${entry.durationMs}ms)`)
   if (entry.data) {
     const data = Object.entries(entry.data)
@@ -164,7 +167,7 @@ export function createLogger(category: string) {
   } satisfies Logger
 }
 
-export function createInstanceLogger(agentId: string, role: string): Logger {
+export function createInstanceLogger(agentId: string, role: string, traceId?: string): Logger {
   const logPath = join(MONOLITO_ROOT, "logs", "instances", `${role}-${agentId}.log`)
   mkdirSync(dirname(logPath), { recursive: true })
   const stream = createWriteStream(logPath, { flags: "a" })
@@ -178,6 +181,7 @@ export function createInstanceLogger(agentId: string, role: string): Logger {
       timestamp: new Date().toISOString(),
       level,
       category,
+      traceId,
       message,
       data: normalizeLogData(data),
       durationMs,
