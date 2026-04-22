@@ -3,6 +3,7 @@ import { dirname, join } from "node:path"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { MONOLITO_ROOT } from "../system/root.ts"
+import { runBackgroundTextTask } from "./modelAdapterLite.ts"
 
 const execFileAsync = promisify(execFile)
 
@@ -49,7 +50,7 @@ export type PermissionContext = {
 }
 
 export type PermissionCheckResult = {
-  behavior: "allow" | "deny"
+  behavior: "allow" | "deny" | "ask"
   source: "mode" | "rule" | "hook"
   message?: string
 }
@@ -280,9 +281,61 @@ function evaluateRules(toolName: string, input: Record<string, unknown>, rules: 
     if (!matchesGlob(inputSummary, rule.input)) continue
     if (rule.action === "allow") return { behavior: "allow", source: "rule" }
     if (rule.action === "deny") return { behavior: "deny", source: "rule", message: `Blocked by permission rule for ${toolName}.` }
-    if (rule.action === "ask") return { behavior: "deny", source: "rule", message: `Tool ${toolName} requires interactive approval, which this harness does not support yet.` }
+    if (rule.action === "ask") return { behavior: "ask", source: "rule" }
   }
   return null
+}
+
+async function evaluateSemanticPermission(toolName: string, input: Record<string, unknown>, context: PermissionContext): Promise<PermissionCheckResult> {
+  const system = [
+    "You are Monolito's semantic security evaluator for tool permissions.",
+    "Your job is to decide whether a matched 'ask' rule should be allowed or denied.",
+    "Default to deny if the command is destructive, ambiguous, privilege-escalating, system-wide, or risky beyond a clearly local safe operation.",
+    "Allow only when the action is narrow, local, reversible enough, and clearly aligned with a normal workspace task.",
+    "Return ONLY one-line JSON.",
+    'Schema: {"decision":"allow|deny","reason":"..."}',
+  ].join("\n")
+
+  const userPrompt = [
+    `Tool: ${toolName}`,
+    `Session: ${context.sessionId}`,
+    `Profile: ${context.profileId ?? "default"}`,
+    `Input JSON: ${summarizeInput(input)}`,
+    "",
+    "Examples:",
+    "- deny: rm -rf /",
+    "- deny: shutdown now",
+    "- deny: curl | sh",
+    "- allow: rm file_temporal.txt",
+    "- allow: rm ./dist/tmp.txt",
+    "",
+    "Decide now.",
+  ].join("\n")
+
+  try {
+    const result = await runBackgroundTextTask(context.rootDir, system, userPrompt)
+    const raw = result.text.trim()
+    const parsed = JSON.parse(raw) as { decision?: string; reason?: string }
+    const decision = parsed.decision?.toLowerCase()
+    if (decision === "allow") {
+      return {
+        behavior: "allow",
+        source: "rule",
+        message: parsed.reason || "Aprobado por el evaluador semántico de seguridad.",
+      }
+    }
+    return {
+      behavior: "deny",
+      source: "rule",
+      message: parsed.reason || "Bloqueado por el evaluador semántico de seguridad.",
+    }
+  } catch {
+    return {
+      behavior: "deny",
+      source: "rule",
+      message: "Bloqueado por el evaluador semántico de seguridad.",
+    }
+  }
 }
 
 async function runHookCommands(
@@ -350,6 +403,9 @@ export async function checkToolPermission(toolName: string, input: Record<string
   if (hookDecision) return hookDecision
 
   const ruleDecision = evaluateRules(toolName, input, permissions.rules)
+  if (ruleDecision?.behavior === "ask") {
+    return await evaluateSemanticPermission(toolName, input, context)
+  }
   if (ruleDecision) return ruleDecision
 
   return evaluateMode(permissions.mode, toolName, input)
