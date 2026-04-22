@@ -14,7 +14,7 @@ import { createLogger } from "../logging/logger.ts"
 
 type MemoryTrigger = "post-turn" | "pre-compact" | "session-end"
 
-type MemoryDestination = "USER" | "MEMORY" | "MEMPALACE"
+type MemoryDestination = "USER" | "MEMORY"
 
 type MemoryAction = "append" | "replace"
 
@@ -36,7 +36,6 @@ type MemoryReviewResult = {
 const MAX_RECENT_MESSAGES = 10
 const MAX_ITEMS_PER_REVIEW = 2
 const MIN_CONFIDENCE_FOR_CORE = 0.74
-const MIN_CONFIDENCE_FOR_MEMPALACE = 0.3
 const MEMORY_AGENT_TIMEOUT_MS = 20_000
 const logger = createLogger("memory-agent")
 
@@ -175,7 +174,7 @@ function persistCoreMemory(
 
 function validateProposal(proposal: MemoryProposal) {
   if (!proposal || typeof proposal !== "object") return false
-  if (!["USER", "MEMORY", "MEMPALACE"].includes(proposal.destination)) return false
+  if (!["USER", "MEMORY"].includes(proposal.destination)) return false
   if (!["append", "replace"].includes(proposal.action)) return false
   if (typeof proposal.content !== "string" || normalizeWhitespace(proposal.content).length < 8) return false
   return true
@@ -206,13 +205,13 @@ function buildSystemPrompt(trigger: MemoryTrigger) {
     "- All string values must be on ONE line. Never put literal newlines inside a JSON string.",
     "- If nothing to save, return exactly: {\"items\":[]}",
     "",
-    "Destinations: USER (stable profile), MEMORY (durable context), MEMPALACE (useful but less stable).",
+    "Destinations: USER (stable profile), MEMORY (durable context).",
     "Prefer saving nothing over saving weak info. Max " + MAX_ITEMS_PER_REVIEW + " items.",
     "Write memory in the same language as the user. Keep content short and atomic.",
     "Confidence: 0 to 1. To update existing memory, use action='replace' with old_text.",
     `Trigger: ${trigger}.`,
     "",
-    'Schema: {"items":[{"destination":"USER|MEMORY|MEMPALACE","action":"append|replace","content":"...","confidence":0.0}]}',
+    'Schema: {"items":[{"destination":"USER|MEMORY","action":"append|replace","content":"...","confidence":0.0}]}',
     "",
     'Example good output: {"items":[{"destination":"MEMORY","action":"append","content":"El usuario prefiere respuestas cortas.","confidence":0.85}]}',
     'Example empty: {"items":[]}',
@@ -310,6 +309,33 @@ export async function runMemoryAgentReview(
     return
   }
 
+  const verbatimMessages = session.messages
+    .filter(message => message.role === "user" || message.role === "assistant")
+    .slice(-2)
+  if (verbatimMessages.length > 0) {
+    const verbatimContent = verbatimMessages
+      .map(message => `${message.role.toUpperCase()}: ${message.text}`)
+      .join("\n\n")
+    const verbatimKey = `${session.id}:${verbatimMessages.at(0)?.at ?? "unknown"}:${trigger}`
+    try {
+      await fileMemory(rootDir, "HISTORY", "verbatim", verbatimContent, profileId, verbatimKey)
+      logMemoryAgent(rootDir, "review.verbatim_stored", {
+        sessionId: session.id,
+        profileId,
+        trigger,
+        key: verbatimKey,
+        messageCount: verbatimMessages.length,
+      })
+    } catch (error) {
+      logMemoryAgent(rootDir, "review.verbatim_failed", {
+        sessionId: session.id,
+        profileId,
+        trigger,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
   let text = ""
   try {
     const result = await runBackgroundTextTaskWithTimeout(
@@ -380,43 +406,6 @@ export async function runMemoryAgentReview(
       continue
     }
     const confidence = typeof proposal.confidence === "number" ? proposal.confidence : 0
-    if (proposal.destination === "MEMPALACE") {
-      if (confidence < MIN_CONFIDENCE_FOR_MEMPALACE) {
-        logMemoryAgent(rootDir, "proposal.skip", {
-          sessionId: session.id,
-          trigger,
-          reason: "low_confidence_mempalace",
-          confidence,
-          destination: proposal.destination,
-          content: clip(proposal.content, 120),
-        })
-        continue
-      }
-      const wing = proposal.wing?.trim() || "PERSONAL"
-      const room = proposal.room?.trim() || "signals"
-      try {
-        await fileMemory(rootDir, wing, room, proposal.content.trim(), profileId)
-        appliedSummaries.push(`MemPalace updated (${wing}/${room})`)
-        logMemoryAgent(rootDir, "proposal.applied", {
-          sessionId: session.id,
-          trigger,
-          destination: "MEMPALACE",
-          wing,
-          room,
-          confidence,
-          content: clip(proposal.content, 120),
-        })
-      } catch (error) {
-        logMemoryAgent(rootDir, "proposal.skip", {
-          sessionId: session.id,
-          trigger,
-          reason: "mempalace_write_failed",
-          destination: proposal.destination,
-          error: error instanceof Error ? error.message : String(error),
-        })
-      }
-      continue
-    }
     if (confidence < MIN_CONFIDENCE_FOR_CORE) {
       logMemoryAgent(rootDir, "proposal.skip", {
         sessionId: session.id,
