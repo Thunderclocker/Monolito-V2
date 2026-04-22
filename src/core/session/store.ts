@@ -800,6 +800,10 @@ export function appendEvent(rootDir: string, event: AgentEvent) {
 // --- Session compaction ---
 
 const DEFAULT_COMPACT_MESSAGE_LIMIT = 40
+const COMPACT_PROTECTED_TAIL = 5
+const COMPACT_SNIP_THRESHOLD_CHARS = 3_000
+const COMPACT_SNIP_TARGET_CHARS = 1_000
+const COMPACT_SNIP_SUFFIX = "\n...[snipped by compaction]"
 
 type CompactOptions = {
   maxMessages?: number
@@ -816,6 +820,48 @@ export function compactSession(rootDir: string, sessionId: string, options: Comp
   // We need to find how many messages there are.
   const stmtCount = db.prepare(`SELECT count(id) as c FROM messages WHERE session_id = ?`)
   const { c: totalMessages } = stmtCount.get(sessionId) as { c: number }
+
+  const snipCandidates = db.prepare(`
+    SELECT id, text
+    FROM messages
+    WHERE session_id = ?
+      AND id NOT IN (
+        SELECT id
+        FROM messages
+        WHERE session_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+      )
+      AND length(text) > ?
+      AND text NOT LIKE ?
+    ORDER BY id ASC
+  `).all(
+    sessionId,
+    sessionId,
+    COMPACT_PROTECTED_TAIL,
+    COMPACT_SNIP_THRESHOLD_CHARS,
+    `%${COMPACT_SNIP_SUFFIX}`,
+  ) as Array<{ id: number; text: string }>
+
+  if (snipCandidates.length > 0) {
+    const updateSnip = db.prepare(`
+      UPDATE messages
+      SET text = substr(text, 1, ?) || ?, is_compacted = 1
+      WHERE id = ?
+    `)
+
+    db.exec("BEGIN TRANSACTION")
+    try {
+      for (const candidate of snipCandidates) {
+        updateSnip.run(COMPACT_SNIP_TARGET_CHARS, COMPACT_SNIP_SUFFIX, candidate.id)
+      }
+      db.exec("COMMIT")
+    } catch (err) {
+      db.exec("ROLLBACK")
+      throw err
+    }
+    return { compacted: snipCandidates.length, remaining: totalMessages }
+  }
   
   if (totalMessages <= maxMessages) {
     return { compacted: 0, remaining: totalMessages }
