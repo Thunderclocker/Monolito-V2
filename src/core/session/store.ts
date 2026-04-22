@@ -41,6 +41,18 @@ export type CanonicalMemorySlot =
 
 export type CanonicalMemoryState = Partial<Record<CanonicalMemorySlot, string>>
 
+export type KnowledgeGraphTriple = {
+  id: string
+  profile_id: string | null
+  subject: string
+  predicate: string
+  object: string
+  valid_from: string
+  valid_to: string | null
+  created_at: string
+  is_active: boolean
+}
+
 const CANONICAL_SLOT_META: Record<CanonicalMemorySlot, { room: "identity" | "user"; label: string }> = {
   assistant_name: { room: "identity", label: "Assistant name" },
   user_name: { room: "user", label: "User name" },
@@ -195,6 +207,25 @@ export function getDb(rootDir: string): Database.Database {
 
     CREATE INDEX IF NOT EXISTS idx_bg_groups_session
       ON background_task_groups(parent_session_id);
+
+    CREATE TABLE IF NOT EXISTS knowledge_graph (
+      id TEXT PRIMARY KEY,
+      profile_id TEXT,
+      subject TEXT NOT NULL,
+      predicate TEXT NOT NULL,
+      object TEXT NOT NULL,
+      valid_from TEXT NOT NULL,
+      valid_to TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(profile_id) REFERENCES profiles(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_kg_profile_subject
+      ON knowledge_graph(profile_id, subject);
+    CREATE INDEX IF NOT EXISTS idx_kg_profile_object
+      ON knowledge_graph(profile_id, object);
+    CREATE INDEX IF NOT EXISTS idx_kg_profile_active
+      ON knowledge_graph(profile_id, valid_to);
 
     -- Insert default profile if not exists
     INSERT OR IGNORE INTO profiles (id, name, description, created_at)
@@ -1064,4 +1095,84 @@ export function deleteBackgroundTaskGroup(rootDir: string, jobGroupId: string): 
   getDb(rootDir)
     .prepare(`DELETE FROM background_task_groups WHERE job_group_id = ?`)
     .run(jobGroupId)
+}
+
+export function addGraphTriple(
+  rootDir: string,
+  profileId: string,
+  subject: string,
+  predicate: string,
+  object: string,
+  validFrom: string,
+) {
+  const db = getDb(rootDir)
+  const id = randomUUID()
+  const now = new Date().toISOString()
+  db.prepare(`
+    INSERT INTO knowledge_graph (id, profile_id, subject, predicate, object, valid_from, valid_to, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
+  `).run(
+    id,
+    profileId,
+    subject.trim(),
+    predicate.trim(),
+    object.trim(),
+    validFrom,
+    now,
+  )
+  return id
+}
+
+export function invalidateGraphTriple(
+  rootDir: string,
+  profileId: string,
+  subject: string,
+  predicate: string,
+  object: string,
+  validTo: string,
+) {
+  const db = getDb(rootDir)
+  const result = db.prepare(`
+    UPDATE knowledge_graph
+    SET valid_to = ?
+    WHERE profile_id = ?
+      AND subject = ?
+      AND predicate = ?
+      AND object = ?
+      AND valid_to IS NULL
+  `).run(
+    validTo,
+    profileId,
+    subject.trim(),
+    predicate.trim(),
+    object.trim(),
+  )
+  return { changes: result.changes }
+}
+
+export function queryGraphEntity(
+  rootDir: string,
+  profileId: string,
+  entity: string,
+): KnowledgeGraphTriple[] {
+  const db = getDb(rootDir)
+  return db.prepare(`
+    SELECT
+      id,
+      profile_id,
+      subject,
+      predicate,
+      object,
+      valid_from,
+      valid_to,
+      created_at,
+      CASE WHEN valid_to IS NULL THEN 1 ELSE 0 END AS is_active
+    FROM knowledge_graph
+    WHERE profile_id = ?
+      AND (subject = ? OR object = ?)
+    ORDER BY
+      CASE WHEN valid_to IS NULL THEN 0 ELSE 1 END ASC,
+      valid_from DESC,
+      created_at DESC
+  `).all(profileId, entity.trim(), entity.trim()) as KnowledgeGraphTriple[]
 }

@@ -9,7 +9,10 @@ import { type StdioMcpClient, getDefaultMcpServers } from "../mcp/client.ts"
 import { normalizeChannelsConfigForWrite, readChannelsConfig } from "../channels/config.ts"
 import {
   appendActionLog,
+  addGraphTriple,
   fileMemory,
+  invalidateGraphTriple,
+  queryGraphEntity,
   recallMemory,
   listWings,
   listRooms,
@@ -1610,6 +1613,88 @@ const tools: ToolDefinition[] = [
         semanticSearchActive,
         warning,
         memories: results
+      }
+    },
+  },
+  {
+    name: "KgAdd",
+    description: "Add a temporal knowledge-graph triple scoped to the current profile.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        subject: { type: "string", description: "Entity or subject node." },
+        predicate: { type: "string", description: "Relationship label." },
+        object: { type: "string", description: "Entity, value, or object node." },
+        valid_from: { type: "string", description: "Optional ISO timestamp for when the fact became valid." },
+      },
+      required: ["subject", "predicate", "object"],
+      additionalProperties: false,
+    },
+    concurrencySafe: false,
+    async run(input, context) {
+      const subject = requireString(input, "subject")
+      const predicate = requireString(input, "predicate")
+      const object = requireString(input, "object")
+      const validFrom = optionalString(input, "valid_from") ?? new Date().toISOString()
+      const profileId = context.profileId ?? "default"
+      const id = addGraphTriple(context.rootDir, profileId, subject, predicate, object, validFrom)
+      return { ok: true, id, profileId, subject, predicate, object, valid_from: validFrom, active: true }
+    },
+  },
+  {
+    name: "KgInvalidate",
+    description: "Invalidate an active temporal knowledge-graph triple by setting valid_to.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        subject: { type: "string", description: "Entity or subject node." },
+        predicate: { type: "string", description: "Relationship label." },
+        object: { type: "string", description: "Entity, value, or object node." },
+        valid_to: { type: "string", description: "Optional ISO timestamp for when the fact stopped being valid." },
+      },
+      required: ["subject", "predicate", "object"],
+      additionalProperties: false,
+    },
+    concurrencySafe: false,
+    async run(input, context) {
+      const subject = requireString(input, "subject")
+      const predicate = requireString(input, "predicate")
+      const object = requireString(input, "object")
+      const validTo = optionalString(input, "valid_to") ?? new Date().toISOString()
+      const profileId = context.profileId ?? "default"
+      const result = invalidateGraphTriple(context.rootDir, profileId, subject, predicate, object, validTo)
+      return {
+        ok: result.changes > 0,
+        profileId,
+        subject,
+        predicate,
+        object,
+        valid_to: validTo,
+        invalidated: result.changes,
+      }
+    },
+  },
+  {
+    name: "KgQuery",
+    description: "Query temporal knowledge-graph facts for an entity within the current profile.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        entity: { type: "string", description: "Entity to search as subject or object." },
+      },
+      required: ["entity"],
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    async run(input, context) {
+      const entity = requireString(input, "entity")
+      const profileId = context.profileId ?? "default"
+      const facts = queryGraphEntity(context.rootDir, profileId, entity)
+      return {
+        ok: true,
+        profileId,
+        entity,
+        facts,
       }
     },
   },
