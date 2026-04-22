@@ -6,13 +6,15 @@
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { existsSync } from "node:fs"
+import { mkdir, rm } from "node:fs/promises"
 import { join } from "node:path"
+import { ensureMonolitoRoot } from "../system/root.ts"
 
 const execFileAsync = promisify(execFile)
 const MAX_STATUS_CHARS = 2000
 const GIT_TIMEOUT_MS = 5000
 
-async function runGit(args: string[], cwd: string): Promise<string> {
+async function runGit(args: string[], cwd: string, options?: { throwOnError?: boolean }): Promise<string> {
   try {
     const result = await execFileAsync("git", args, {
       cwd,
@@ -20,9 +22,30 @@ async function runGit(args: string[], cwd: string): Promise<string> {
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
     })
     return result.stdout.trim()
-  } catch {
+  } catch (error) {
+    if (options?.throwOnError) throw error
     return ""
   }
+}
+
+export async function createAgentWorktree(rootDir: string, branchName: string): Promise<string> {
+  const worktreeRoot = join(ensureMonolitoRoot(), "run", "worktrees")
+  const worktreePath = join(worktreeRoot, branchName)
+  await mkdir(worktreeRoot, { recursive: true })
+  try {
+    await runGit(["worktree", "add", "-b", branchName, worktreePath], rootDir, { throwOnError: true })
+    if (!existsSync(worktreePath)) {
+      throw new Error(`Git worktree path was not created: ${worktreePath}`)
+    }
+    return worktreePath
+  } catch (error) {
+    await rm(worktreePath, { recursive: true, force: true }).catch(() => {})
+    throw error
+  }
+}
+
+export async function removeAgentWorktree(rootDir: string, worktreePath: string): Promise<void> {
+  await runGit(["worktree", "remove", "-f", worktreePath], rootDir, { throwOnError: true })
 }
 
 export async function isGitRepository(rootDir: string): Promise<boolean> {

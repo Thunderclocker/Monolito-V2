@@ -3,6 +3,7 @@ import { type MonolitoV2Runtime } from "./runtime.ts"
 import { ensureDirs } from "../ipc/protocol.ts"
 import { appendMessage, createProfile, createSession, listProfiles } from "../session/store.ts"
 import { createInstanceLogger, type Logger } from "../logging/logger.ts"
+import { createAgentWorktree, removeAgentWorktree } from "../context/gitContext.ts"
 
 function compactWhitespace(value: string) {
   return value.replace(/\s+/g, " ").trim()
@@ -44,6 +45,7 @@ export type DelegationTask = {
   }
   error?: string
   logger?: Logger
+  cwd?: string
 }
 
 export type SpawnAgentResult = {
@@ -80,7 +82,8 @@ export class AgentOrchestrator {
     profileId: string, 
     task: string, 
     description?: string, 
-    type: DelegationTask["type"] = "worker"
+    type: DelegationTask["type"] = "worker",
+    options?: { isolation?: "none" | "worktree" },
   ): Promise<SpawnAgentResult> {
     return await this.spawnTask({
       parentSessionId,
@@ -89,6 +92,7 @@ export class AgentOrchestrator {
       description,
       type,
       mode: "interactive",
+      isolation: options?.isolation,
     })
   }
 
@@ -98,6 +102,7 @@ export class AgentOrchestrator {
     task: string,
     description?: string,
     jobGroupId?: string,
+    options?: { isolation?: "none" | "worktree" },
   ): Promise<SpawnAgentResult> {
     return await this.spawnTask({
       parentSessionId,
@@ -107,6 +112,7 @@ export class AgentOrchestrator {
       type: "worker",
       mode: "background",
       jobGroupId,
+      isolation: options?.isolation,
     })
   }
 
@@ -118,6 +124,7 @@ export class AgentOrchestrator {
     type: DelegationTask["type"]
     mode: DelegationTask["mode"]
     jobGroupId?: string
+    isolation?: "none" | "worktree"
   }): Promise<SpawnAgentResult> {
     const rootDir = this.runtime.rootDir
     const subSessionId = `agent-${options.profileId}-${randomUUID().slice(0, 8)}`
@@ -145,7 +152,15 @@ export class AgentOrchestrator {
       logger: createInstanceLogger(subSessionId, options.type),
     }
 
+    if (options.isolation === "worktree") {
+      const branchName = `monolito-worker-${randomUUID()}`
+      delegationTask.cwd = await createAgentWorktree(rootDir, branchName)
+    }
+
     if (this.runningWorkerCount >= MAX_CONCURRENT_WORKERS) {
+      if (delegationTask.cwd) {
+        await removeAgentWorktree(rootDir, delegationTask.cwd).catch(() => {})
+      }
       return {
         agentId: "",
         status: "failed" as const,
@@ -200,7 +215,7 @@ export class AgentOrchestrator {
     
     this.runtime.abortSession(task.subSessionId)
     task.status = "killed"
-    this.notifyParent(task, "Agent was stopped by coordinator.")
+    await this.notifyParent(task, "Agent was stopped by coordinator.")
   }
 
   private async executeTurn(task: DelegationTask, text: string) {
@@ -217,7 +232,10 @@ export class AgentOrchestrator {
 
       while (attempt <= maxAttempts) {
         appendMessage(runtime.rootDir, task.subSessionId, "user", currentText)
-        turn = await runtime.runTurn(task.subSessionId, currentText, task.profileId, { logger: task.logger })
+        turn = await runtime.runTurn(task.subSessionId, currentText, task.profileId, {
+          logger: task.logger,
+          cwd: task.cwd,
+        })
 
         if (turn.error) {
           partialResult = turn.finalText || partialResult
@@ -244,19 +262,30 @@ export class AgentOrchestrator {
         duration_ms: Date.now() - turnStartedAt
       }
       // 3. Notify parent session with XML
-      this.notifyParent(task)
+      await this.notifyParent(task)
 
     } catch (error) {
       task.status = "failed"
       const errorMsg = error instanceof Error ? error.message : String(error)
       task.error = errorMsg
-      this.notifyParent(task, errorMsg)
+      await this.notifyParent(task, errorMsg)
     } finally {
       this.runningWorkerCount--
     }
   }
 
-  private notifyParent(task: DelegationTask, error?: string) {
+  private async notifyParent(task: DelegationTask, error?: string) {
+    if (task.cwd) {
+      const worktreePath = task.cwd
+      task.cwd = undefined
+      try {
+        await removeAgentWorktree(this.runtime.rootDir, worktreePath)
+      } catch (cleanupError) {
+        const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+        task.logger?.warn(`Failed to remove agent worktree ${worktreePath}: ${message}`)
+      }
+    }
+
     // Schedule removal from activeTasks after retention window
     setTimeout(() => this.activeTasks.delete(task.id), TASK_RETENTION_MS)
 

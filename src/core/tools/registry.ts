@@ -1734,6 +1734,7 @@ const tools: ToolDefinition[] = [
         task: { type: "string", description: "The specific instructions for the agent." },
         description: { type: "string", description: "A brief name for this task (e.g. 'Fix auth bug')." },
         type: { type: "string", enum: ["worker", "researcher", "verifier"], description: "The specialization level of the agent." },
+        isolation: { type: "string", enum: ["none", "worktree"], description: "Use worktree for isolated filesystem access." },
       },
       required: ["profileId", "task"],
       additionalProperties: false,
@@ -1744,6 +1745,7 @@ const tools: ToolDefinition[] = [
       const task = requireString(input, "task")
       const description = optionalString(input, "description")
       const type = (optionalString(input, "type") as any) || "worker"
+      const isolation = (optionalString(input, "isolation") as "none" | "worktree" | undefined) || "none"
       
       if (!context.orchestrator) throw new Error("Agent Orchestrator not available.")
 
@@ -1753,7 +1755,7 @@ const tools: ToolDefinition[] = [
         throw new Error("Los sub-agentes no pueden spawnear otros agentes. Ejecutá la tarea directamente y devolvé los resultados.")
       }
 
-      const spawned = await context.orchestrator.spawnAgent(parentSessionId, profileId, task, description, type)
+      const spawned = await context.orchestrator.spawnAgent(parentSessionId, profileId, task, description, type, { isolation })
       if (spawned.status === "failed") {
         return {
           ok: false,
