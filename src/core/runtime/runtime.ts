@@ -88,6 +88,9 @@ type TelegramTypingIndicator = {
 }
 
 type MemoryReviewTrigger = "post-turn" | "pre-compact" | "session-end"
+type PendingSessionInput =
+  | { kind: "message"; text: string }
+  | { kind: "startup"; prompt: string; logger?: Logger }
 
 const execFileAsync = promisify(execFile)
 const SEARXNG_CONTAINER = "monolito-searxng"
@@ -750,7 +753,7 @@ export class MonolitoV2Runtime {
   private stallAlerts = new Map<string, string>()
   private currentBatchGroups = new Map<string, string>()
   private pendingBackgroundWakeups = new Map<string, { profileId: string }>()
-  private pendingUserMessages = new Map<string, string[]>()
+  private pendingUserMessages = new Map<string, PendingSessionInput[]>()
   private memoryReviewInFlight = new Map<string, Promise<void>>()
   private pendingMemoryReviews = new Map<string, { profileId: string; trigger: MemoryReviewTrigger; sessionSnapshot?: SessionRecord | null }>()
   private lastMemoryReviewAt = new Map<string, number>()
@@ -827,9 +830,21 @@ export class MonolitoV2Runtime {
     const next = queue.shift()
     if (!next) return
     if (queue.length === 0) this.pendingUserMessages.delete(sessionId)
-    void this.processMessage(sessionId, next).catch(error => {
+    if (next.kind === "startup") {
+      void this.processSessionStartup(sessionId, next.prompt, { logger: next.logger }).catch(error => {
+        console.error(`Queued startup for ${sessionId} failed`, error)
+      })
+      return
+    }
+    void this.processMessage(sessionId, next.text).catch(error => {
       console.error(`Queued message for ${sessionId} failed`, error)
     })
+  }
+
+  private releaseSessionLock(sessionId: string) {
+    this.activeSessions.delete(sessionId)
+    this.flushPendingUserMessage(sessionId)
+    this.flushPendingBackgroundWakeup(sessionId)
   }
 
   async handleBackgroundDelegationResult(task: DelegationTask, error?: string) {
@@ -996,7 +1011,7 @@ export class MonolitoV2Runtime {
       }
     } finally {
       await this.transitionState(sessionId, "idle")
-      this.activeSessions.delete(sessionId)
+      this.releaseSessionLock(sessionId)
     }
   }
 
@@ -1115,7 +1130,7 @@ export class MonolitoV2Runtime {
   async processMessage(sessionId: string, text: string) {
     if (this.activeSessions.has(sessionId)) {
       const queue = this.pendingUserMessages.get(sessionId) ?? []
-      queue.push(text)
+      queue.push({ kind: "message", text })
       this.pendingUserMessages.set(sessionId, queue)
       this.emit({ type: "message.queued", sessionId, role: "user", text })
       return
@@ -1137,7 +1152,7 @@ export class MonolitoV2Runtime {
 
       await this.runTurn(sessionId, text, profileId)
     } catch (error) {
-      this.activeSessions.delete(sessionId)
+      this.releaseSessionLock(sessionId)
       throw error
     }
   }
@@ -1146,7 +1161,10 @@ export class MonolitoV2Runtime {
     const session = getSession(this.rootDir, sessionId)
     if (!session) throw new Error(`Session ${sessionId} not found`)
     if (this.activeSessions.has(sessionId)) {
-      throw new Error(`Session ${sessionId} is already busy`)
+      const queue = this.pendingUserMessages.get(sessionId) ?? []
+      queue.push({ kind: "startup", prompt, logger: options?.logger })
+      this.pendingUserMessages.set(sessionId, queue)
+      return
     }
 
     const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
@@ -1160,9 +1178,7 @@ export class MonolitoV2Runtime {
       await this.transitionState(sessionId, "running")
       await this.runStartupTurn(sessionId, prompt, profileId, turnStartedAt, { logger: options?.logger })
     } finally {
-      this.activeSessions.delete(sessionId)
-      this.flushPendingBackgroundWakeup(sessionId)
-      this.flushPendingUserMessage(sessionId)
+      this.releaseSessionLock(sessionId)
     }
   }
 
@@ -1193,7 +1209,7 @@ export class MonolitoV2Runtime {
           const startupPrompt = resetWorkspaceContext.bootstrapPending
             ? "El bootstrap del workspace sigue pendiente. Inicia ahora el ritual de primer arranque usando el contexto inyectado de BOOT_BOOTSTRAP, BOOT_IDENTITY, BOOT_USER, BOOT_SOUL y BOOT_AGENTS. Deja que el modelo orqueste la conversacion segun lo ya sabido. Responde en el idioma del usuario; si aun no hay una preferencia clara, comienza en espanol neutro y adapta el idioma enseguida si el usuario marca otro. Saluda brevemente y haz exactamente una sola pregunta corta por turno. No recites una checklist ni menciones almacenamiento interno salvo que el usuario lo pida."
             : "A new session was started via /new. Run your Session Startup sequence using the injected BOOT context already present in this turn before responding. Then greet the user in your configured persona. Keep it to 1-3 sentences. Do not mention internal steps, tools, or reasoning."
-          this.activeSessions.delete(sessionId)
+          this.releaseSessionLock(sessionId)
           await this.processSessionStartup(sessionId, startupPrompt, { logger: instanceLogger })
           return { finalText: "", usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } }
         }
@@ -1413,10 +1429,8 @@ export class MonolitoV2Runtime {
     } finally {
       clearTimeout(turnTimeout)
       telegramTyping?.stop()
-      this.activeSessions.delete(sessionId)
+      this.releaseSessionLock(sessionId)
       this.abortControllers.delete(sessionId)
-      this.flushPendingBackgroundWakeup(sessionId)
-      this.flushPendingUserMessage(sessionId)
     }
   }
 

@@ -170,10 +170,14 @@ export class AgentOrchestrator {
 
     this.activeTasks.set(delegationTask.id, delegationTask)
 
-    // Execute in background
     const runPromise = this.executeTurn(delegationTask, options.task).catch(err => {
       console.error(`Delegation task ${delegationTask.id} failed:`, err)
     })
+
+    if (options.mode === "background") {
+      return { agentId: delegationTask.id, status: "spawned" }
+    }
+
     const settled = await Promise.race([
       runPromise.then(() => delegationTask.status),
       new Promise<null>(resolve => setTimeout(() => resolve(null), IMMEDIATE_AGENT_SETTLE_MS)),
