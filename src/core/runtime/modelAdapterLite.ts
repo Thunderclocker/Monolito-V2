@@ -7,9 +7,9 @@ import { type ToolContext, isToolConcurrencySafe, listModelTools } from "../tool
 import { BOOT_WING_DESCRIPTION, type BootWingEntry } from "../bootstrap/bootWings.ts"
 import type { WorkspaceBootstrapContext } from "../context/workspaceContext.ts"
 import { type CostState, type TurnUsage } from "../cost/tracker.ts"
-import { ContextOverflowError, ProviderOverloadedError, RateLimitError } from "../errors.ts"
+import { ApiError, ContextOverflowError, HttpError, ProviderOverloadedError, RateLimitError } from "../errors.ts"
 import { createLogger, type Logger } from "../logging/logger.ts"
-import { readModelSettings } from "./modelConfig.ts"
+import { loadAndApplyModelSettings, readModelSettings } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider } from "./modelRegistry.ts"
 import { normalizeToolInputPayload } from "./toolInput.ts"
 import { compactSession, getSession, listCanonicalMemoryEntries } from "../session/store.ts"
@@ -19,7 +19,8 @@ const MAX_TURN_ITERATIONS = 16
 const DEFAULT_MAX_TURN_DURATION_MS = 120_000
 const MAX_BACKGROUND_TOKENS = 1_500
 const MAX_TOOL_RESULT_CHARS = 20_000
-const MAX_RETRIES = 5
+const MAX_RATE_LIMIT_RETRIES = 5
+const MAX_OVERLOAD_RETRIES = 3
 
 export type AssistantTurnStep =
   | { type: "tool"; id?: string; tool: string; input: Record<string, unknown> }
@@ -264,6 +265,28 @@ async function sleep(ms: number, abortSignal?: AbortSignal) {
   })
 }
 
+function isAuthError(error: unknown) {
+  if (error instanceof HttpError || error instanceof ApiError) {
+    return error.statusCode === 401 || error.statusCode === 403
+  }
+  return false
+}
+
+function isRetriableNetworkError(error: unknown) {
+  if (!(error instanceof Error)) return false
+  const code = (error as Error & { code?: string }).code
+  return [
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "ECONNABORTED",
+    "ETIMEDOUT",
+    "EAI_AGAIN",
+    "ENOTFOUND",
+    "UND_ERR_CONNECT_TIMEOUT",
+    "UND_ERR_SOCKET",
+  ].includes(code ?? "")
+}
+
 function parseStructuredToolCalls(rawToolCalls: unknown): ToolCall[] {
   if (!Array.isArray(rawToolCalls)) return []
   return rawToolCalls.flatMap<ToolCall>(item => {
@@ -416,20 +439,48 @@ async function callProvider(config: ReturnType<typeof getEffectiveModelConfig>, 
 }
 
 async function callProviderWithRetry(config: ReturnType<typeof getEffectiveModelConfig>, prompt: ReturnType<typeof buildSystemPrompt>, messages: ConversationMessage[], abortSignal: AbortSignal | undefined, isSubAgent: boolean, maxTokens: number | undefined) {
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+  let currentConfig = config
+  let rateLimitAttempts = 0
+  let overloadAttempts = 0
+  let authAttempts = 0
+
+  while (true) {
     try {
-      return await callProvider(config, prompt, messages, abortSignal, isSubAgent, maxTokens)
+      return await callProvider(currentConfig, prompt, messages, abortSignal, isSubAgent, maxTokens)
     } catch (error) {
       if (abortSignal?.aborted) throw abortSignal.reason ?? error
-      if (error instanceof RateLimitError || error instanceof ProviderOverloadedError) {
-        if (attempt === MAX_RETRIES - 1) throw error
-        await sleep(Math.min(30_000, 1_000 * 2 ** attempt), abortSignal)
+
+      if (error instanceof ContextOverflowError) {
+        throw error
+      }
+
+      if (isAuthError(error)) {
+        if (authAttempts > 0) throw error
+        authAttempts++
+        loadAndApplyModelSettings(process.env)
+        currentConfig = getEffectiveModelConfig()
         continue
       }
+
+      if (error instanceof RateLimitError) {
+        rateLimitAttempts++
+        overloadAttempts = 0
+        if (rateLimitAttempts > MAX_RATE_LIMIT_RETRIES) throw error
+        const waitMs = error.retryAfterMs ?? Math.min(30_000, 1_000 * 2 ** (rateLimitAttempts - 1))
+        await sleep(waitMs, abortSignal)
+        continue
+      }
+
+      if (error instanceof ProviderOverloadedError || isRetriableNetworkError(error)) {
+        overloadAttempts++
+        if (overloadAttempts >= MAX_OVERLOAD_RETRIES) throw error
+        await sleep(Math.min(5_000, 750 * 2 ** (overloadAttempts - 1)), abortSignal)
+        continue
+      }
+
       throw error
     }
   }
-  throw new Error("Unreachable retry state")
 }
 
 export function getEffectiveModelConfig() {
