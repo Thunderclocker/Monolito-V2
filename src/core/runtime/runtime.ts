@@ -1166,9 +1166,10 @@ export class MonolitoV2Runtime {
     }
   }
 
-  async runTurn(sessionId: string, lastUserText: string, profileId = "default", options?: { logger?: Logger }) {
+  async runTurn(sessionId: string, lastUserText: string, profileId = "default", options?: { logger?: Logger; cwd?: string }) {
     const turnStartedAt = Date.now()
     const instanceLogger = options?.logger
+    const effectiveCwd = options?.cwd ?? this.rootDir
     const abortController = new AbortController()
     const telegramTyping = startTelegramTypingIndicator(sessionId)
     this.abortControllers.set(sessionId, abortController)
@@ -1231,7 +1232,7 @@ export class MonolitoV2Runtime {
             try {
               const toolContext = {
                 rootDir: this.rootDir,
-                cwd: this.rootDir,
+                cwd: effectiveCwd,
                 getMcpClient: async (serverName: string) => this.ensureMcpClient(serverName, sessionId),
                 profileId,
                 sessionId,
@@ -1278,7 +1279,7 @@ export class MonolitoV2Runtime {
           async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, sessionId, orchestrator: this.orchestrator, runtime: this }, toolUseId, profileId),
           {
             rootDir: this.rootDir,
-            cwd: this.rootDir,
+            cwd: effectiveCwd,
             getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
             profileId,
             orchestrator: this.orchestrator,
