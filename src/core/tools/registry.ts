@@ -67,6 +67,7 @@ const TTS_RESPONSE_FORMATS = new Set(["mp3", "opus", "aac", "flac", "wav", "pcm"
 export type ToolContext = {
   rootDir: string
   cwd: string
+  traceId?: string
   profileId?: string
   getMcpClient?: (serverName: string) => Promise<StdioMcpClient>
   orchestrator?: AgentOrchestrator
@@ -124,6 +125,10 @@ function toWorkspaceRelative(rootDir: string, absolute: string) {
 function normalizePathInput(input: Record<string, unknown>, key = "path") {
   const value = input[key]
   return typeof value === "string" && value.length > 0 ? value : "."
+}
+
+function buildTraceEnv(traceId?: string) {
+  return traceId ? { ...process.env, TRACEPARENT: traceId } : process.env
 }
 
 function requireString(input: Record<string, unknown>, key: string) {
@@ -653,6 +658,7 @@ const tools: ToolDefinition[] = [
       const timeout = optionalNumber(input, "timeout") ?? DEFAULT_BASH_TIMEOUT_MS
       const runInBackground = optionalBoolean(input, "run_in_background") ?? false
       const shell = process.env.SHELL || "/bin/zsh"
+      const env = buildTraceEnv(context.traceId)
       const instanceLogPath = context.logger?.logPath
       if (runInBackground) {
         const taskId = randomUUID()
@@ -664,7 +670,7 @@ const tools: ToolDefinition[] = [
           cwd: context.cwd,
           detached: true,
           stdio: ["ignore", stdout, stderr],
-          env: process.env,
+          env,
         })
         child.unref()
         return {
@@ -682,7 +688,7 @@ const tools: ToolDefinition[] = [
         const child = spawn(shell, ["-lc", command], {
           cwd: context.cwd,
           stdio: ["ignore", "pipe", "pipe"],
-          env: process.env,
+          env,
         })
         const timeoutId = setTimeout(() => {
           child.kill("SIGKILL")
@@ -716,7 +722,7 @@ const tools: ToolDefinition[] = [
           cwd: context.cwd,
           timeout,
           maxBuffer: MAX_EXEC_BUFFER,
-          env: process.env,
+          env,
         })
         return {
           command,
