@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto"
 import { type MonolitoV2Runtime } from "./runtime.ts"
 import { ensureDirs } from "../ipc/protocol.ts"
-import { appendMessage, createProfile, createSession, listProfiles } from "../session/store.ts"
+import { appendMessage, appendWorklog, createProfile, createSession, getSession, listProfiles } from "../session/store.ts"
 import { createInstanceLogger, type Logger } from "../logging/logger.ts"
 import { createAgentWorktree, removeAgentWorktree } from "../context/gitContext.ts"
+
+const SUBAGENT_VERIFICATION_TAG = "<verified>SUCCESS</verified>"
 
 function compactWhitespace(value: string) {
   return value.replace(/\s+/g, " ").trim()
@@ -23,6 +25,26 @@ function buildSubagentRetryPrompt(task: string, error: unknown, partialResult?: 
     `Technical error: ${clip(message, 240)}`,
     partialResult?.trim() ? `Partial result to keep: ${clip(partialResult, 500)}` : "",
   ].filter(Boolean).join("\n")
+}
+
+function hasVerificationTag(text: string | undefined) {
+  return typeof text === "string" && text.trimEnd().endsWith(SUBAGENT_VERIFICATION_TAG)
+}
+
+function buildRalphLoopPrompt(task: string, assistantReply: string) {
+  return [
+    task.trim(),
+    "",
+    "[Ralph Loop] SYSTEM ALERT",
+    `Intentaste finalizar sin incluir ${SUBAGENT_VERIFICATION_TAG}.`,
+    "No podes cerrar la tarea todavia.",
+    "Volvé a trabajar desde evidencia real del workspace o de herramientas ejecutadas en esta sesion.",
+    "Si algo no fue verificado, decilo, corregilo y recien despues responde.",
+    "No mientas para escapar del loop.",
+    "Tu proxima respuesta final debe incluir exactamente el tag requerido.",
+    "",
+    `Ultimo intento rechazado: ${clip(assistantReply, 500)}`,
+  ].join("\n")
 }
 
 function createTraceparent() {
@@ -240,10 +262,10 @@ export class AgentOrchestrator {
       let currentText = text
       let turn: any
       let attempt = 1
-      const maxAttempts = 3
+      const maxAttempts = 6
       let partialResult = ""
 
-      while (attempt <= maxAttempts) {
+      while (attempt <= maxAttempts && task.status === "running") {
         appendMessage(runtime.rootDir, task.subSessionId, "user", currentText)
         turn = await runtime.runTurn(task.subSessionId, currentText, task.profileId, {
           logger: task.logger,
@@ -261,6 +283,28 @@ export class AgentOrchestrator {
             turn.error,
             partialResult,
           )
+          attempt++
+          continue
+        }
+
+        const session = getSession(runtime.rootDir, task.subSessionId)
+        const lastMessage = session?.messages.at(-1)
+        const assistantReply = lastMessage?.role === "assistant"
+          ? lastMessage.text
+          : typeof turn.finalText === "string"
+            ? turn.finalText
+            : ""
+
+        if (!hasVerificationTag(assistantReply)) {
+          appendWorklog(runtime.rootDir, task.subSessionId, {
+            type: "note",
+            summary: `[Ralph Loop] Blocked premature completion on attempt ${attempt}: missing ${SUBAGENT_VERIFICATION_TAG}`,
+          })
+          partialResult = assistantReply || partialResult
+          if (attempt >= maxAttempts) {
+            throw new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts without emitting ${SUBAGENT_VERIFICATION_TAG}`)
+          }
+          currentText = buildRalphLoopPrompt(task.task, assistantReply)
           attempt++
           continue
         }
