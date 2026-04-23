@@ -3,9 +3,11 @@ import { randomUUID } from "node:crypto"
 import { promisify } from "node:util"
 import { createWriteStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { dirname, join, relative, resolve, sep } from "node:path"
+import { pathToFileURL } from "node:url"
 import { ensureDirs, getPaths } from "../ipc/protocol.ts"
 import { MONOLITO_ROOT } from "../system/root.ts"
 import { type StdioMcpClient, getDefaultMcpServers } from "../mcp/client.ts"
+import { getSharedLspClient } from "../lsp/client.ts"
 import { normalizeChannelsConfigForWrite, readChannelsConfig } from "../channels/config.ts"
 import {
   appendActionLog,
@@ -789,6 +791,64 @@ const tools: ToolDefinition[] = [
         server,
         uri,
         resource: await client.readResource(uri),
+      }
+    },
+  },
+  {
+    name: "LspQuery",
+    description: "Query TypeScript semantic information through the workspace LSP server.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["definition", "references", "hover"] },
+        file: { type: "string" },
+        line: { type: "number" },
+        character: { type: "number" },
+      },
+      required: ["action", "file", "line", "character"],
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    validate: input => {
+      if (typeof input.action !== "string" || !["definition", "references", "hover"].includes(input.action)) {
+        return "action must be one of: definition, references, hover"
+      }
+      if (typeof input.file !== "string" || input.file.length === 0) return "file must be a non-empty string"
+      if (typeof input.line !== "number" || !Number.isInteger(input.line) || input.line < 0) return "line must be a non-negative integer"
+      if (typeof input.character !== "number" || !Number.isInteger(input.character) || input.character < 0) {
+        return "character must be a non-negative integer"
+      }
+      return null
+    },
+    async run(input, context) {
+      const action = requireString(input, "action") as "definition" | "references" | "hover"
+      const file = requireString(input, "file")
+      const line = input.line as number
+      const character = input.character as number
+      const absoluteFile = resolveWorkspacePath(context.rootDir, context.rootDir, file)
+      const relativeFile = toWorkspaceRelative(context.rootDir, absoluteFile)
+      const fileUri = pathToFileURL(absoluteFile).href
+      const client = await getSharedLspClient(context.rootDir)
+
+      let result: unknown
+      switch (action) {
+        case "definition":
+          result = await client.getDefinition(relativeFile, line, character)
+          break
+        case "references":
+          result = await client.getReferences(relativeFile, line, character)
+          break
+        case "hover":
+          result = await client.getHover(relativeFile, line, character)
+          break
+      }
+
+      return {
+        action,
+        file: relativeFile,
+        uri: fileUri,
+        position: { line, character },
+        result,
       }
     },
   },
