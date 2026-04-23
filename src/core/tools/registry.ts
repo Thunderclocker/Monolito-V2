@@ -2287,6 +2287,56 @@ const tools: ToolDefinition[] = [
       }
     },
   },
+  {
+    name: "WebSearch",
+    description: "Search the web for current text results via the local SearxNG instance and return clean summaries with title, URL, and snippet.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Free-text search query." },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    async run(input) {
+      const query = requireString(input, "query")
+      const searchUrl = `http://127.0.0.1:8888/search?q=${encodeURIComponent(query)}&format=json`
+
+      try {
+        const response = await fetch(searchUrl, { signal: AbortSignal.timeout(15_000) })
+        if (!response.ok) {
+          return { ok: false, error: `SearxNG returned HTTP ${response.status}` }
+        }
+
+        const data = await response.json() as {
+          results?: Array<{ title?: string; url?: string; content?: string }>
+        }
+        const results = (data.results ?? [])
+          .filter(result => typeof result.url === "string" && result.url.length > 0)
+          .slice(0, 8)
+          .map(result => ({
+            title: compactWhitespace(result.title ?? "Untitled result"),
+            url: result.url ?? "",
+            snippet: compactWhitespace(result.content ?? ""),
+          }))
+
+        const formatted = results.length === 0
+          ? "No results found."
+          : results
+            .map((result, index) => {
+              const snippet = result.snippet ? `\n${truncateText(result.snippet, 280)}` : ""
+              return `${index + 1}. ${result.title}\n${result.url}${snippet}`
+            })
+            .join("\n\n")
+
+        return { ok: true, query, count: results.length, results, formatted }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        return { ok: false, error: `Search failed: ${message}` }
+      }
+    },
+  },
 
   // --- Git Tools ---
   {

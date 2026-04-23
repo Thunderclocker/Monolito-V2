@@ -209,6 +209,9 @@ function buildSystemPrompt(trigger: MemoryTrigger) {
     "Prefer saving nothing over saving weak info. Max " + MAX_ITEMS_PER_REVIEW + " items.",
     "Write memory in the same language as the user. Keep content short and atomic.",
     "Confidence: 0 to 1. To update existing memory, use action='replace' with old_text.",
+    "PROHIBITED: never store apologies, temporary errors, hallucinations, or episodic states.",
+    "Store only hard facts and stable preferences.",
+    "If the message is an apology, ignore it and return exactly: {\"items\":[]}",
     `Trigger: ${trigger}.`,
     "",
     'Schema: {"items":[{"destination":"USER|MEMORY","action":"append|replace","content":"...","confidence":0.0}]}',
@@ -336,53 +339,71 @@ export async function runMemoryAgentReview(
     }
   }
 
-  let text = ""
-  try {
-    const result = await runBackgroundTextTaskWithTimeout(
-      rootDir,
-      buildSystemPrompt(trigger),
-      buildUserPrompt(session, rootDir, profileId),
-    )
-    text = result.text
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    logMemoryAgent(rootDir, "review.error", {
+  let parsed: MemoryReviewResult | null = null
+  let currentPrompt = buildUserPrompt(session, rootDir, profileId)
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    let text = ""
+    try {
+      const result = await runBackgroundTextTaskWithTimeout(
+        rootDir,
+        buildSystemPrompt(trigger),
+        currentPrompt,
+      )
+      text = result.text
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      logMemoryAgent(rootDir, "review.error", {
+        sessionId: session.id,
+        trigger,
+        stage: "model_call",
+        attempt,
+        error: message,
+      })
+      appendWorklog(rootDir, session.id, {
+        type: "note",
+        summary: `Memory agent skipped after model failure (${trigger}): ${clip(message, 160)}`,
+      })
+      return
+    }
+
+    logMemoryAgent(rootDir, "review.model_response", {
       sessionId: session.id,
       trigger,
-      stage: "model_call",
-      error: message,
+      attempt,
+      chars: text.length,
+      preview: clip(text, 240),
     })
-    appendWorklog(rootDir, session.id, {
-      type: "note",
-      summary: `Memory agent skipped after model failure (${trigger}): ${clip(message, 160)}`,
-    })
+
+    try {
+      parsed = extractJsonObject(text)
+      break
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (attempt >= 2) {
+        logMemoryAgent(rootDir, "review.error", {
+          sessionId: session.id,
+          trigger,
+          stage: "json_parse",
+          attempt,
+          error: message,
+        })
+        return
+      }
+      logMemoryAgent(rootDir, "review.retry", {
+        sessionId: session.id,
+        trigger,
+        stage: "json_parse",
+        attempt,
+        error: message,
+      })
+      currentPrompt += `\n\nSYSTEM ALERT: Parseo falló. Error: ${message}. Corrige y devuelve JSON estricto.`
+    }
+  }
+
+  if (!parsed) {
     return
   }
 
-  logMemoryAgent(rootDir, "review.model_response", {
-    sessionId: session.id,
-    trigger,
-    chars: text.length,
-    preview: clip(text, 240),
-  })
-
-  let parsed: MemoryReviewResult
-  try {
-    parsed = extractJsonObject(text)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    logMemoryAgent(rootDir, "review.error", {
-      sessionId: session.id,
-      trigger,
-      stage: "json_parse",
-      error: message,
-    })
-    appendWorklog(rootDir, session.id, {
-      type: "note",
-      summary: `Memory agent skipped after invalid JSON (${trigger}): ${clip(message, 160)}`,
-    })
-    return
-  }
   const proposals = Array.isArray(parsed.items) ? parsed.items.slice(0, MAX_ITEMS_PER_REVIEW) : []
   if (proposals.length === 0) {
     logMemoryAgent(rootDir, "review.noop", {

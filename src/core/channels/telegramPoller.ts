@@ -29,6 +29,16 @@ function isTelegramConflictError(error: Error): boolean {
   return message.includes("409") && message.includes("conflict")
 }
 
+function isRetriableTelegramNetworkError(error: Error): boolean {
+  const message = error.message.toLowerCase()
+  return (
+    error.name === "TimeoutError" ||
+    error.name === "AbortError" ||
+    message.includes("502") ||
+    message.includes("bad gateway")
+  )
+}
+
 export interface TelegramUpdate {
   update_id: number
   message?: TelegramMessage
@@ -230,6 +240,10 @@ export function createTelegramPoller(
         return POLLING_INTERVAL_MS
       }
 
+      if (isRetriableTelegramNetworkError(err)) {
+        throw err
+      }
+
       logger.debug(`[Telegram] Polling error: ${err.message}`)
       callbacks.onError(err)
       reconnectAttempts++
@@ -249,8 +263,26 @@ export function createTelegramPoller(
     // Sequential polling - each poll completes before the next starts
     // This prevents duplicate messages from overlapping requests
     async function sequentialPoll(): Promise<void> {
+      let networkBackoffMs = POLLING_INTERVAL_MS
       while (!stopped) {
-        const nextDelay = await pollOnce()
+        let nextDelay = POLLING_INTERVAL_MS
+        try {
+          nextDelay = await pollOnce()
+          networkBackoffMs = POLLING_INTERVAL_MS
+        } catch (error) {
+          const err = error as Error
+          if (isRetriableTelegramNetworkError(err)) {
+            callbacks.onError(err)
+            networkBackoffMs = Math.min(
+              networkBackoffMs <= 0 ? POLLING_INTERVAL_MS : networkBackoffMs * 2,
+              MAX_BACKOFF_MS,
+            )
+            logger.debug(`[Telegram] Retriable network error: ${err.message}. Backing off for ${networkBackoffMs}ms`)
+            nextDelay = networkBackoffMs
+          } else {
+            throw err
+          }
+        }
         if (stopped) break
         await new Promise(resolve => setTimeout(resolve, typeof nextDelay === "number" ? nextDelay : POLLING_INTERVAL_MS))
       }
