@@ -101,6 +101,7 @@ const READ_ONLY_TOOLS = new Set([
   "Grep",
   "ListMcpResourcesTool",
   "ReadMcpResourceTool",
+  "LspQuery",
   "BootRead",
   "CanonicalMemoryRead",
   "SessionForensics",
