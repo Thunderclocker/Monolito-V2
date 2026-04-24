@@ -106,6 +106,51 @@ test("tool_manage_config rejects JSON string CONF_CHANNELS values that use sessi
   }
 })
 
+test("WebFetch strips noisy HTML assets before selecting relevant text", async () => {
+  const rootDir = createRootDir()
+  try {
+    const tool = getTool("WebFetch")
+    assert.ok(tool)
+
+    const noisyCss = ".unused{color:red;}".repeat(600)
+    const html = `
+      <html>
+        <head>
+          <style>${noisyCss}</style>
+          <script>window.analytics = true;</script>
+        </head>
+        <body>
+          <nav>Inicio Buscar Menú</nav>
+          <main>
+            <h1>Clima en Santo Tomé</h1>
+            <section>
+              <h2>Pronóstico extendido</h2>
+              <p>Domingo 26/4</p>
+              <p>Lluvia ligera</p>
+              <p>Máx: 21°C Mín: 9°C</p>
+            </section>
+          </main>
+        </body>
+      </html>
+    `
+    const url = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
+    const result = await tool.run({
+      url,
+      prompt: "Pronóstico del tiempo para Santo Tomé domingo 26 abril lluvia temperatura",
+    }, {
+      rootDir,
+      cwd: rootDir,
+    }) as { result: string }
+
+    assert.doesNotMatch(result.result, /\.unused/)
+    assert.doesNotMatch(result.result, /window\.analytics/)
+    assert.match(result.result, /Domingo 26\/4/)
+    assert.match(result.result, /Máx: 21°C Mín: 9°C/)
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
 test("SessionForensics reconstructs recent session actions from persisted evidence", async () => {
   const rootDir = createRootDir()
   try {
