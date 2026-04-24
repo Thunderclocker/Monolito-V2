@@ -2473,6 +2473,20 @@ export class MonolitoV2Runtime {
       if (field === "base_url") draft.baseUrl = value
       else if (field === "api_key") draft.apiKey = value
       else if (field === "model") draft.model = value
+      else if (field === "max_budget_usd") {
+        const parsed = Number(value)
+        if (!Number.isFinite(parsed) || parsed < 0) return "Invalid: max_budget_usd must be a positive number"
+        const next = {
+          ...settings,
+          env: {
+            ...settings.env,
+            MAX_BUDGET_USD: value.trim(),
+          },
+        }
+        saveModelSettings(next)
+        applyModelSettingsToEnv(process.env, next)
+        return `Saved ${field} = ${value}`
+      }
       else if (field === "tts_base_url" || field === "tts_api_key" || field === "tts_voice" || field === "tts_model" || field === "tts_format" || field === "tts_speed" || field === "tts_managed" || field === "tts_auto_deploy" || field === "tts_port") {
         const nextChannels = { ...channels, tts: { ...(channels.tts ?? {}) } }
         if (field === "tts_base_url") nextChannels.tts.baseUrl = value

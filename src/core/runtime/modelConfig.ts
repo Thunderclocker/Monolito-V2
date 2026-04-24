@@ -14,6 +14,7 @@ export type ModelSettings = {
     ANTHROPIC_AUTH_TOKEN: string
     ANTHROPIC_MODEL: string
     API_TIMEOUT_MS: string
+    MAX_BUDGET_USD: string
   }
 }
 
@@ -22,6 +23,7 @@ export type ModelDraft = {
   baseUrl: string
   apiKey: string
   model: string
+  maxBudgetUsd?: string
 }
 
 function normalizeString(value: unknown) {
@@ -43,6 +45,7 @@ export function createDefaultSettings(): ModelSettings {
       ANTHROPIC_AUTH_TOKEN: defaults.env.ANTHROPIC_AUTH_TOKEN,
       ANTHROPIC_MODEL: defaults.env.ANTHROPIC_MODEL,
       API_TIMEOUT_MS: defaults.env.API_TIMEOUT_MS,
+      MAX_BUDGET_USD: defaults.env.MAX_BUDGET_USD,
     },
   }
 }
@@ -59,6 +62,7 @@ export function readModelSettings(): ModelSettings {
       ANTHROPIC_AUTH_TOKEN: normalizeString(raw?.env?.ANTHROPIC_AUTH_TOKEN) || defaults.env.ANTHROPIC_AUTH_TOKEN,
       ANTHROPIC_MODEL: normalizeString(raw?.env?.ANTHROPIC_MODEL) || defaults.env.ANTHROPIC_MODEL,
       API_TIMEOUT_MS: normalizeString(raw?.env?.API_TIMEOUT_MS) || defaults.env.API_TIMEOUT_MS,
+      MAX_BUDGET_USD: normalizeString(raw?.env?.MAX_BUDGET_USD) || defaults.env.MAX_BUDGET_USD,
     },
   }
 }
@@ -69,6 +73,7 @@ export function settingsToDraft(settings: ModelSettings): ModelDraft {
     baseUrl: settings.env.ANTHROPIC_BASE_URL,
     apiKey: settings.env.ANTHROPIC_AUTH_TOKEN,
     model: settings.env.ANTHROPIC_MODEL,
+    maxBudgetUsd: settings.env.MAX_BUDGET_USD,
   }
 }
 
@@ -83,6 +88,7 @@ export function draftToSettings(draft: ModelDraft): ModelSettings {
       ANTHROPIC_AUTH_TOKEN: draft.apiKey.trim(),
       ANTHROPIC_MODEL: draft.model.trim(),
       API_TIMEOUT_MS: defaults.env.API_TIMEOUT_MS,
+      MAX_BUDGET_USD: (draft.maxBudgetUsd || "0").trim(),
     },
   }
 }
@@ -133,6 +139,7 @@ export function applyModelSettingsToEnv(env: NodeJS.ProcessEnv, settings: ModelS
   env.ANTHROPIC_API_KEY = settings.env.ANTHROPIC_AUTH_TOKEN.trim()
   env.ANTHROPIC_MODEL = settings.env.ANTHROPIC_MODEL.trim()
   env.API_TIMEOUT_MS = settings.env.API_TIMEOUT_MS
+  env.MAX_BUDGET_USD = settings.env.MAX_BUDGET_USD
   delete env.MONOLITO_ACTIVE_PROVIDER
   return env
 }

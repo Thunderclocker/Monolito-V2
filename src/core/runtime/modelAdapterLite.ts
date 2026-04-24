@@ -5,8 +5,8 @@ import type { SessionRecord } from "../ipc/protocol.ts"
 import { type ToolContext, isToolConcurrencySafe, listModelTools } from "../tools/registry.ts"
 import { BOOT_WING_DESCRIPTION, type BootWingEntry } from "../bootstrap/bootWings.ts"
 import type { WorkspaceBootstrapContext } from "../context/workspaceContext.ts"
-import { type CostState, type TurnUsage } from "../cost/tracker.ts"
-import { ApiError, ContextOverflowError, HttpError, ProviderOverloadedError, RateLimitError } from "../errors.ts"
+import { estimateTurnCostUSD, type CostState, type TurnUsage } from "../cost/tracker.ts"
+import { AbortError, ApiError, ContextOverflowError, HttpError, ProviderOverloadedError, RateLimitError } from "../errors.ts"
 import { createLogger, type Logger } from "../logging/logger.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider } from "./modelRegistry.ts"
@@ -100,6 +100,23 @@ function stringifyToolResult(value: unknown) {
     return `${preview}\n...[OUTPUT TRUNCATED]\nFull output saved to: ${outputPath}\nUse the Read tool with offset/line_limit to inspect the rest.`
   } catch {
     return `...[OUTPUT TRUNCATED]\nFull output saved to: ${outputPath}\nUse the Read tool with offset/line_limit to inspect the rest.`
+  }
+}
+
+function getMaxBudgetUsd() {
+  const raw = readModelSettings().env.MAX_BUDGET_USD
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+}
+
+function enforceBudgetLimit(costState: CostState | undefined, model: string, pendingUsage?: TurnUsage) {
+  if (!costState) return
+  const maxBudgetUsd = getMaxBudgetUsd()
+  if (maxBudgetUsd <= 0) return
+  const pendingCostUsd = pendingUsage ? estimateTurnCostUSD(model, pendingUsage) : 0
+  const projectedCostUsd = costState.totalCostUSD + pendingCostUsd
+  if (projectedCostUsd > maxBudgetUsd) {
+    throw new AbortError(`MAX_BUDGET_USD exceeded: projected session cost $${projectedCostUsd.toFixed(6)} is above limit $${maxBudgetUsd.toFixed(6)}.`)
   }
 }
 
@@ -340,10 +357,12 @@ export async function runAssistantTurn(
   const prompt = buildSystemPrompt({ session: activeSession, rootDir, context, bootstrap: options?.bootstrap, extras: options?.contextExtras, systemPromptOverride: options?.systemPromptOverride })
 
   for (let iteration = 1; iteration <= maxIterations; iteration++) {
+    enforceBudgetLimit(options?.costState, config.model)
     if (options?.abortSignal?.aborted) return finalize("", steps, startedAt, iteration - 1, usage, undefined, "aborted")
     if (Date.now() - startedAt > maxTurnDurationMs) return finalize("", steps, startedAt, iteration - 1, usage, "Turn duration exceeded", "max_duration")
     try {
       const response = await callProviderWithRetry(config, prompt, messages, options?.abortSignal, isSubAgent, undefined)
+      enforceBudgetLimit(options?.costState, config.model, response.usage)
       usage = sumUsage(usage, response.usage)
       if (response.toolCalls.length === 0) return finalize(response.text, steps, startedAt, iteration, usage)
       const assistantMessage: ConversationMessage = { role: "assistant", content: response.text, toolCalls: response.toolCalls }
@@ -401,6 +420,7 @@ export async function runAssistantTurn(
         compacted = true
         continue
       }
+      if (error instanceof AbortError) throw error
       logger.error("assistant turn failed", { error: error instanceof Error ? error.message : String(error), sessionId: session.id })
       const message = error instanceof Error ? error.message : String(error)
       return finalize(message, steps, startedAt, Math.min(maxIterations, steps.length + 1), usage, message)

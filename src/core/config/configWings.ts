@@ -33,6 +33,7 @@ export function createDefaultSystemConfig(): ModelSettings {
       ANTHROPIC_AUTH_TOKEN: "",
       ANTHROPIC_MODEL: "",
       API_TIMEOUT_MS: "3000000",
+      MAX_BUDGET_USD: "0",
     },
   }
 }
