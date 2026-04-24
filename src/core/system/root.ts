@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs"
+import { mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
@@ -13,4 +13,27 @@ export function ensureMonolitoRoot() {
   mkdirSync(join(MONOLITO_ROOT, "profiles"), { recursive: true })
   mkdirSync(join(MONOLITO_ROOT, "scratchpad"), { recursive: true })
   return MONOLITO_ROOT
+}
+
+export function cleanupScratchpad() {
+  const scratchpadDir = join(MONOLITO_ROOT, "scratchpad")
+  try {
+    const files = readdirSync(scratchpadDir)
+    const now = Date.now()
+    const maxAgeMs = 24 * 60 * 60 * 1000
+
+    for (const file of files) {
+      const filePath = join(scratchpadDir, file)
+      try {
+        const stats = statSync(filePath)
+        if (now - stats.mtimeMs > maxAgeMs) {
+          unlinkSync(filePath)
+        }
+      } catch {
+        // Ignore individual file cleanup failures.
+      }
+    }
+  } catch {
+    // Ignore missing scratchpad directory or listing failures.
+  }
 }
