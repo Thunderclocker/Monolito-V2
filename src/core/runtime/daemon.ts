@@ -10,7 +10,7 @@ import {
   ensureDirs,
   getPaths,
 } from "../ipc/protocol.ts"
-import { MonolitoV2Runtime } from "./runtime.ts"
+import { clearUpdateRestartState, MonolitoV2Runtime, readUpdateRestartState } from "./runtime.ts"
 import { startChannels, stopChannels } from "../channels/channelManager.ts"
 import { addLogSink, createFileSink } from "../logging/logger.ts"
 import { warmupEmbeddings } from "../session/embeddings.ts"
@@ -239,11 +239,32 @@ export class MonolitoV2Daemon {
         const stdout = openSync(paths.daemonLog, "a")
         const stderr = openSync(paths.daemonLog, "a")
         const daemonPath = `${this.rootDir}/src/apps/daemon.ts`
+        const restartState = readUpdateRestartState(this.rootDir)
+        const restartStatePath = `${paths.runDir}/update-restart.json`
         const restartScript = [
           "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done",
+          "\"$2\" --experimental-strip-types \"$3\" --foreground &",
+          "child=$!",
+          "sleep 2",
+          "if kill -0 \"$child\" 2>/dev/null; then rm -f \"$7\"; exit 0; fi",
+          "if [ -n \"$4\" ]; then git -C \"$5\" reset --hard \"$4\" || exit 1; fi",
+          "if [ -n \"$4\" ]; then git -C \"$5\" clean -fd || exit 1; fi",
+          "if [ -n \"$6\" ]; then stash_ref=$(git -C \"$5\" stash list --format='%gd\t%s' | awk -F '\t' -v label=\"$6\" '$2==label { print $1; exit }'); if [ -n \"$stash_ref\" ]; then git -C \"$5\" stash apply --index \"$stash_ref\" || exit 1; git -C \"$5\" stash drop \"$stash_ref\" || exit 1; fi; fi",
+          "rm -f \"$7\"",
           "exec \"$2\" --experimental-strip-types \"$3\" --foreground",
         ].join("; ")
-        const child = spawn("sh", ["-lc", restartScript, "monolito-restart", String(process.pid), process.execPath, daemonPath], {
+        const child = spawn("sh", [
+          "-lc",
+          restartScript,
+          "monolito-restart",
+          String(process.pid),
+          process.execPath,
+          daemonPath,
+          restartState?.currentHead ?? "",
+          this.rootDir,
+          restartState?.stashLabel ?? "",
+          restartStatePath,
+        ], {
           cwd: this.rootDir,
           detached: true,
           stdio: ["ignore", stdout, stderr],
@@ -252,6 +273,7 @@ export class MonolitoV2Daemon {
         this.writeDaemonLog(`daemon self-restart spawned child pid ${child.pid ?? "unknown"}`)
         this.stop()
       } catch (error) {
+        clearUpdateRestartState(this.rootDir)
         this.writeDaemonLog(`daemon self-restart failed: ${error instanceof Error ? error.message : String(error)}`)
       } finally {
         process.exit(0)

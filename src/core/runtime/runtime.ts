@@ -92,6 +92,11 @@ type PendingSessionInput =
   | { kind: "message"; text: string }
   | { kind: "startup"; prompt: string; logger?: Logger }
 
+type UpdateRestartState = {
+  currentHead: string
+  stashLabel: string
+}
+
 const execFileAsync = promisify(execFile)
 const SEARXNG_CONTAINER = "monolito-searxng"
 const SEARXNG_PORT = 8888
@@ -103,6 +108,7 @@ const TURN_HARD_TIMEOUT_MS = 95_000
 const COMMAND_REPAIR_MAX_ATTEMPTS = 3
 const MEMORY_REVIEW_POST_TURN_DEBOUNCE_MS = 45_000
 const STALL_ALERT_MESSAGE = "SYSTEM ALERT: STALL DETECTED. You have hit the exact same tool execution error twice. Evaluate your remaining viable strategies. If you have a logically distinct path, execute it now. If you have EXHAUSTED ALL viable paths, you MUST format your response to yield control back to the user, summarizing what you tried and why it failed."
+const UPDATE_RESTART_STATE_FILE = "update-restart.json"
 
 class TurnTimeoutError extends Error {
   constructor(message: string) {
@@ -530,6 +536,37 @@ async function restoreUpdateBackup(rootDir: string, currentHead: string, stashLa
   if (!stashRef) throw new Error(`Rollback could not find backup stash ${stashLabel}`)
   await runGitCommand(rootDir, ["stash", "apply", "--index", stashRef])
   await runGitCommand(rootDir, ["stash", "drop", stashRef])
+}
+
+function getUpdateRestartStatePath(rootDir: string) {
+  return join(getPaths(rootDir).runDir, UPDATE_RESTART_STATE_FILE)
+}
+
+function writeUpdateRestartState(rootDir: string, state: UpdateRestartState) {
+  const paths = getPaths(rootDir)
+  mkdirSync(paths.runDir, { recursive: true })
+  writeFileSync(getUpdateRestartStatePath(rootDir), `${JSON.stringify(state)}\n`, "utf8")
+}
+
+export function readUpdateRestartState(rootDir: string): UpdateRestartState | null {
+  const path = getUpdateRestartStatePath(rootDir)
+  if (!existsSync(path)) return null
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<UpdateRestartState>
+    if (typeof parsed.currentHead !== "string" || typeof parsed.stashLabel !== "string") return null
+    return {
+      currentHead: parsed.currentHead,
+      stashLabel: parsed.stashLabel,
+    }
+  } catch {
+    return null
+  }
+}
+
+export function clearUpdateRestartState(rootDir: string) {
+  try {
+    unlinkSync(getUpdateRestartStatePath(rootDir))
+  } catch {}
 }
 
 function acquireUpdateLock(rootDir: string) {
@@ -2289,6 +2326,7 @@ export class MonolitoV2Runtime {
       }
 
       currentHead = await runGitCommand(this.rootDir, ["rev-parse", "HEAD"])
+      clearUpdateRestartState(this.rootDir)
 
       try {
         await runGitCommand(this.rootDir, ["fetch", "--prune", "origin", branch])
@@ -2313,6 +2351,7 @@ export class MonolitoV2Runtime {
         }
 
         rollbackReady = true
+        writeUpdateRestartState(this.rootDir, { currentHead, stashLabel })
         await runGitCommand(this.rootDir, ["reset", "--hard", `origin/${branch}`])
         await runGitCommand(this.rootDir, ["clean", "-fd"])
         const nextHead = await runGitCommand(this.rootDir, ["rev-parse", "--short", "HEAD"])
@@ -2330,6 +2369,7 @@ export class MonolitoV2Runtime {
         if (rollbackReady) {
           try {
             await restoreUpdateBackup(this.rootDir, currentHead, stashLabel)
+            clearUpdateRestartState(this.rootDir)
           } catch (rollbackError) {
             const rollbackMessage = rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
             const originalMessage = error instanceof Error ? error.message : String(error)
@@ -2339,6 +2379,7 @@ export class MonolitoV2Runtime {
         throw error
       }
     } catch (error) {
+      clearUpdateRestartState(this.rootDir)
       const message = error instanceof Error ? error.message : String(error)
       return `Update failed: ${message}`
     } finally {
