@@ -21,10 +21,6 @@ export function buildMasterDashboard(prefixMessage?: string): MenuSchemaEnvelope
   const wsConfig = readWebSearchConfig()
   const wsStatus = wsConfig.provider === "searxng" ? "SearxNG" : "Default"
 
-  const ttsManaged = channelsConfig.tts?.managed ? "managed" : "external"
-  const sttManaged = channelsConfig.stt?.managed ? "managed" : "external"
-  const audioStatus = `TTS: ${ttsManaged}, STT: ${sttManaged}`
-
   const menu: MenuDefinition = {
     id: "master-dashboard",
     title: "Configuration Hub",
@@ -46,16 +42,6 @@ export function buildMasterDashboard(prefixMessage?: string): MenuSchemaEnvelope
         key: "3",
         label: `\u{1F50D} Web Search  [${wsStatus}]`,
         action: { type: "delegate", menuDomain: "websearch" },
-      },
-      {
-        key: "4",
-        label: `\u{1F5E3}\u{FE0F} Audio  [${audioStatus}]`,
-        action: { type: "delegate", menuDomain: "audio" },
-      },
-      {
-        key: "5",
-        label: `\u{1F6E0}\u{FE0F} System`,
-        action: { type: "delegate", menuDomain: "system" },
       },
       {
         key: "0",

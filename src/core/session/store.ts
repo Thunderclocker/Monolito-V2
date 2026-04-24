@@ -24,9 +24,11 @@ import {
   type ConfigWingName,
   type ConfigWingValueMap,
 } from "../config/configWings.ts"
+import { createLogger } from "../logging/logger.ts"
 
 let dbInstance: Database.Database | null = null
 let dbPathCache: string | null = null
+const logger = createLogger("store")
 const BOOTSTRAP_SOURCE_ROOM = "__bootstrap__"
 const CONFIG_SOURCE_ROOM = "__config__"
 const ACTION_LOG_ROOM = "agent-actions"
@@ -235,12 +237,20 @@ export function getDb(rootDir: string): Database.Database {
   // Migration: Add profile_id to sessions if missing (better-sqlite3)
   const sessionInfo = db.prepare(`PRAGMA table_info(sessions)`).all() as any[]
   if (!sessionInfo.find(c => c.name === "profile_id")) {
-    db.exec(`ALTER TABLE sessions ADD COLUMN profile_id TEXT DEFAULT 'default'`)
+    try {
+      db.exec(`ALTER TABLE sessions ADD COLUMN profile_id TEXT DEFAULT 'default'`)
+    } catch (e) {
+      if (!String(e).includes("duplicate column")) throw e
+    }
   }
 
   const memoryInfo = db.prepare(`PRAGMA table_info(memory_drawers)`).all() as any[]
   if (!memoryInfo.find(c => c.name === "memory_key")) {
-    db.exec(`ALTER TABLE memory_drawers ADD COLUMN memory_key TEXT`)
+    try {
+      db.exec(`ALTER TABLE memory_drawers ADD COLUMN memory_key TEXT`)
+    } catch (e) {
+      if (!String(e).includes("duplicate column")) throw e
+    }
   }
 
   db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_drawers_key ON memory_drawers(memory_key)`)
@@ -529,7 +539,8 @@ export async function writeCanonicalMemory(
   let embedding: number[] | null = null
   try {
     embedding = await generateEmbedding(rootDir, normalized)
-  } catch {
+  } catch (error) {
+    logger.warn("Embeddings fallaron, guardando memoria sin vectores: " + (error instanceof Error ? error.message : String(error)))
     embedding = null
   }
 
@@ -965,6 +976,7 @@ export async function fileMemory(rootDir: string, wing: string, room: string, co
   try {
     floatArray = await generateEmbedding(rootDir, content)
   } catch (error) {
+    logger.warn("Embeddings fallaron, guardando memoria sin vectores: " + (error instanceof Error ? error.message : String(error)))
     if (!isEmbeddingsUnavailableError(error)) throw error
   }
   
