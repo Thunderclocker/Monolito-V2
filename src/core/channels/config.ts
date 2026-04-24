@@ -41,8 +41,12 @@ export type ChannelsConfig = {
 
 type LooseTelegramConfig = {
   token?: unknown
+  bot_token?: unknown
   enabled?: unknown
   allowedChats?: unknown
+  allowed_chats?: unknown
+  authorized_chats?: unknown
+  authorized_chat_ids?: unknown
 }
 
 type LooseChannelsConfig = ChannelsConfig & {
@@ -75,16 +79,20 @@ function assertValidChannelsConfigForWrite(config: unknown) {
       throw new Error("CONF_CHANNELS.telegram must be an object.")
     }
     const telegram = record.telegram as Record<string, unknown>
-    if (hasOwn(telegram, "bot_token")) {
-      throw new Error("CONF_CHANNELS.telegram must not use 'bot_token'. Use 'token' instead.")
-    }
-    if (hasOwn(telegram, "authorized_chat_ids")) {
-      throw new Error("CONF_CHANNELS.telegram must not use 'authorized_chat_ids'. Use 'allowedChats' instead.")
-    }
     if (hasOwn(telegram, "session_name")) {
       throw new Error("CONF_CHANNELS.telegram must not use 'session_name'. It is not part of the config schema.")
     }
-    const unknownTelegramKeys = Object.keys(telegram).filter(key => !TELEGRAM_KEYS.has(key))
+    if (typeof telegram.token === "string" && typeof telegram.bot_token === "string" && telegram.token !== telegram.bot_token) {
+      throw new Error("CONF_CHANNELS.telegram has conflicting 'token' and 'bot_token' values.")
+    }
+    const chatValues = [telegram.allowedChats, telegram.allowed_chats, telegram.authorized_chats, telegram.authorized_chat_ids]
+      .filter(value => value !== undefined)
+      .map(value => JSON.stringify(toIntegerArray(value)))
+    if (new Set(chatValues).size > 1) {
+      throw new Error("CONF_CHANNELS.telegram has conflicting allowed chat aliases. Use 'allowedChats'.")
+    }
+    const aliasKeys = new Set(["bot_token", "allowed_chats", "authorized_chats", "authorized_chat_ids"])
+    const unknownTelegramKeys = Object.keys(telegram).filter(key => !TELEGRAM_KEYS.has(key) && !aliasKeys.has(key))
     if (unknownTelegramKeys.length > 0) {
       throw new Error(`CONF_CHANNELS.telegram contains unsupported keys: ${unknownTelegramKeys.join(", ")}`)
     }
@@ -101,8 +109,10 @@ function toIntegerArray(value: unknown) {
 function normalizeTelegramConfig(value: unknown): TelegramConfig | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
   const telegram = value as LooseTelegramConfig
-  const token = typeof telegram.token === "string" ? telegram.token : ""
-  const allowedChats = toIntegerArray(telegram.allowedChats)
+  const tokenCandidate = telegram.token ?? telegram.bot_token
+  const chatsCandidate = telegram.allowedChats ?? telegram.allowed_chats ?? telegram.authorized_chats ?? telegram.authorized_chat_ids
+  const token = typeof tokenCandidate === "string" ? tokenCandidate : ""
+  const allowedChats = toIntegerArray(chatsCandidate)
   const enabled = typeof telegram.enabled === "boolean"
     ? telegram.enabled
     : token.trim().length > 0
