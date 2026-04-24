@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, wr
 import { join } from "node:path"
 import { promisify } from "node:util"
 import { getPaths, type AgentEvent, type SessionRecord } from "../ipc/protocol.ts"
-import { createMcpClient, getDefaultMcpServers, type McpClient } from "../mcp/client.ts"
+import { createMcpClient, getDefaultMcpServers, type McpClient, type ResolvedMcpServerConfig } from "../mcp/client.ts"
 import {
   appendActionLog,
   appendEvent,
@@ -29,6 +29,8 @@ import {
   decrementBackgroundTaskGroup,
   sealBackgroundTaskGroup,
   deleteBackgroundTaskGroup,
+  readConfigWing,
+  writeConfigWing,
 } from "../session/store.ts"
 import { getTool, listTools, type ToolContext } from "../tools/registry.ts"
 import { getEffectiveModelConfig, runAssistantTurn, runBackgroundTextTask } from "./modelAdapterLite.ts"
@@ -1642,7 +1644,9 @@ export class MonolitoV2Runtime {
   }
 
   private async ensureMcpClient(serverName: string, sessionId: string) {
-    const server = getDefaultMcpServers(this.rootDir)[serverName]
+    const configuredServers = readConfigWing(this.rootDir, "CONF_MCP")
+    const defaultServers = getDefaultMcpServers(this.rootDir)
+    const server = configuredServers[serverName] ?? defaultServers[serverName]
     if (!server) throw new Error(`Unknown MCP server: ${serverName}`)
     let client = this.mcpClients.get(serverName)
     if (!client) {
@@ -1652,6 +1656,12 @@ export class MonolitoV2Runtime {
       this.emit({ type: "mcp.connected", sessionId, server: serverName })
     }
     return client
+  }
+
+  private resetMcpClient(serverName: string) {
+    const client = this.mcpClients.get(serverName)
+    client?.close()
+    this.mcpClients.delete(serverName)
   }
 
   private async runSlashCommand(sessionId: string, line: string) {
@@ -1664,6 +1674,9 @@ export class MonolitoV2Runtime {
           "/status",
           "/sessions",
           "/tool <name> <json>",
+          "/mcp list-servers",
+          "/mcp add <server> <json>",
+          "/mcp remove <server>",
           "/mcp tools <server>",
           "/mcp resources <server>",
           "/mcp read <server> <uri>",
@@ -1963,6 +1976,40 @@ export class MonolitoV2Runtime {
 
   private async runMcpCommand(sessionId: string, rest: string[]) {
     const action = rest[0]
+    const configuredServers = readConfigWing(this.rootDir, "CONF_MCP")
+    const defaultServers = getDefaultMcpServers(this.rootDir)
+    if (action === "list-servers") {
+      return JSON.stringify({
+        configured: configuredServers,
+        defaults: defaultServers,
+      }, null, 2)
+    }
+    if (action === "add") {
+      const serverName = rest[1]
+      if (!serverName) throw new Error("Usage: /mcp add <server> <json>")
+      const rawConfig = rest.slice(2).join(" ").trim()
+      if (!rawConfig) throw new Error("Usage: /mcp add <server> <json>")
+      const serverConfig = JSON.parse(rawConfig) as ResolvedMcpServerConfig
+      const nextServers = {
+        ...configuredServers,
+        [serverName]: serverConfig,
+      }
+      writeConfigWing(this.rootDir, "CONF_MCP", nextServers)
+      this.resetMcpClient(serverName)
+      return `MCP server '${serverName}' added.`
+    }
+    if (action === "remove") {
+      const serverName = rest[1]
+      if (!serverName) throw new Error("Usage: /mcp remove <server>")
+      if (!(serverName in configuredServers)) {
+        throw new Error(`MCP server '${serverName}' not found in CONF_MCP.`)
+      }
+      const nextServers = { ...configuredServers }
+      delete nextServers[serverName]
+      writeConfigWing(this.rootDir, "CONF_MCP", nextServers)
+      this.resetMcpClient(serverName)
+      return `MCP server '${serverName}' removed.`
+    }
     const serverName = rest[1] ?? "demo"
     const client = await this.ensureMcpClient(serverName, sessionId)
     if (action === "tools") {
@@ -1982,7 +2029,7 @@ export class MonolitoV2Runtime {
       this.emit({ type: "mcp.called", sessionId, server: serverName, tool })
       return JSON.stringify(await client.callTool(tool, args), null, 2)
     }
-    return "Usage: /mcp tools <server> | /mcp resources <server> | /mcp read <server> <uri> | /mcp call <server> <tool> <json>"
+    return "Usage: /mcp list-servers | /mcp add <server> <json> | /mcp remove <server> | /mcp tools <server> | /mcp resources <server> | /mcp read <server> <uri> | /mcp call <server> <tool> <json>"
   }
 
   private async runModelCommand(rest: string[]) {
