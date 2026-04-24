@@ -57,6 +57,7 @@ import {
   stopManagedSttContainer,
   transcribeManagedAudioFile,
 } from "../stt/managed.ts"
+import { deploySearxng, SEARXNG_URL } from "../websearch/managed.ts"
 
 const execFileAsync = promisify(execFile)
 const DEFAULT_GREP_LIMIT = 250
@@ -2233,169 +2234,8 @@ const tools: ToolDefinition[] = [
     async run(input) {
       const query = requireString(input, "query")
       const limit = optionalNumber(input, "limit") ?? 5
-      const SEARXNG_PORT = 8888
-      const SEARXNG_URL = `http://127.0.0.1:${SEARXNG_PORT}`
-      const CONTAINER_NAME = "monolito-searxng"
-      const SETTINGS_DIR = join(MONOLITO_ROOT, "searxng")
-      const SETTINGS_FILE = join(SETTINGS_DIR, "settings.yml")
-
-      type SearxngContainerInfo = {
-        id: string
-        name: string
-        image: string
-        status: string
-        isOurs: boolean
-      }
-
-      async function findAllSearxngContainers(): Promise<SearxngContainerInfo[]> {
-        try {
-          const { stdout: byImage } = await execFileAsync("docker", [
-            "ps", "-a",
-            "--filter", "ancestor=searxng/searxng",
-            "--format", "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}",
-          ], { timeout: 10_000 })
-          const { stdout: byName } = await execFileAsync("docker", [
-            "ps", "-a",
-            "--filter", "name=searxng",
-            "--format", "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}",
-          ], { timeout: 10_000 })
-
-          const seen = new Set<string>()
-          const containers: SearxngContainerInfo[] = []
-          for (const line of [...byImage.trim().split("\n"), ...byName.trim().split("\n")]) {
-            if (!line.trim()) continue
-            const [id, name, image, status] = line.split("\t")
-            if (!id || seen.has(id)) continue
-            seen.add(id)
-            containers.push({
-              id: id.slice(0, 12),
-              name: name ?? "",
-              image: image ?? "",
-              status: status ?? "",
-              isOurs: name === CONTAINER_NAME,
-            })
-          }
-          return containers
-        } catch {
-          return []
-        }
-      }
-
-      async function waitForHealthy(seconds: number) {
-        for (let i = 0; i < seconds; i++) {
-          await new Promise(resolve => setTimeout(resolve, 1000))
-          try {
-            const probe = await fetch(`${SEARXNG_URL}/healthz`, { signal: AbortSignal.timeout(2000) })
-            if (probe.ok) return true
-          } catch {}
-        }
-        return false
-      }
-
-      function withManagedSearxngSettings(content: string) {
-        let updated = content
-        if (!/^\s*-\s*json\s*$/m.test(updated)) {
-          updated = updated.replace(/(^\s*formats:\n(?:\s*#.*\n)*\s*-\s*html\s*$)/m, `$1\n    - json`)
-        }
-        if (/^\s*safe_search:\s*0\s*$/m.test(updated)) return updated
-        if (/^\s*safe_search:\s*\d+\s*$/m.test(updated)) {
-          return updated.replace(/^(\s*safe_search:\s*)\d+\s*$/m, (_, prefix: string) => `${prefix}0`)
-        }
-        if (/^\s*search:\s*$/m.test(updated)) {
-          return updated.replace(/^(\s*search:\s*)$/m, "$1\n  safe_search: 0")
-        }
-        return updated
-      }
-
-      async function ensureSearxngSettingsFile(): Promise<{ ok: boolean; error?: string }> {
-        mkdirSync(SETTINGS_DIR, { recursive: true })
-        if (existsSync(SETTINGS_FILE)) {
-          const current = readFileSync(SETTINGS_FILE, "utf8")
-          const updated = withManagedSearxngSettings(current)
-          if (updated !== current) writeFileSync(SETTINGS_FILE, updated, "utf8")
-          if (/^\s*-\s*json\s*$/m.test(updated) && /^\s*safe_search:\s*0\s*$/m.test(updated)) return { ok: true }
-        }
-
-        const bootstrapContainer = `${CONTAINER_NAME}-bootstrap`
-        let createdBootstrap = false
-        try {
-          const containers = await findAllSearxngContainers()
-          const ours = containers.find(container => container.isOurs)
-          if (ours) {
-            await execFileAsync("docker", ["cp", `${CONTAINER_NAME}:/etc/searxng/settings.yml`, SETTINGS_FILE], { timeout: 15_000 })
-          } else {
-            await execFileAsync("docker", ["run", "-d", "--name", bootstrapContainer, "searxng/searxng:latest"], { timeout: 60_000 })
-            createdBootstrap = true
-            await new Promise(resolve => setTimeout(resolve, 3000))
-            await execFileAsync("docker", ["cp", `${bootstrapContainer}:/etc/searxng/settings.yml`, SETTINGS_FILE], { timeout: 15_000 })
-          }
-          const updated = withManagedSearxngSettings(readFileSync(SETTINGS_FILE, "utf8"))
-          writeFileSync(SETTINGS_FILE, updated, "utf8")
-          return { ok: true }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          return { ok: false, error: `Failed to prepare SearxNG settings: ${message}` }
-        } finally {
-          if (createdBootstrap) {
-            await execFileAsync("docker", ["rm", "-f", bootstrapContainer], { timeout: 15_000 }).catch(() => {})
-          }
-        }
-      }
-
-      async function probeJsonApi() {
-        try {
-          const response = await fetch(`${SEARXNG_URL}/search?q=mountains&categories=images&format=json`, {
-            signal: AbortSignal.timeout(5000),
-          })
-          return response.ok
-        } catch {
-          return false
-        }
-      }
-
-      // 1. Check if SearxNG is reachable
-      let alive = false
-      try {
-        const probe = await fetch(`${SEARXNG_URL}/healthz`, { signal: AbortSignal.timeout(3000) })
-        alive = probe.ok && await probeJsonApi()
-      } catch {}
-
-      // 2. If not alive, ensure Docker container is running
-      if (!alive) {
-        try {
-          const settings = await ensureSearxngSettingsFile()
-          if (!settings.ok) {
-            return { ok: false, error: settings.error ?? "Failed to prepare SearxNG settings." }
-          }
-
-          const containers = await findAllSearxngContainers()
-          const ours = containers.find(container => container.isOurs)
-
-          for (const container of containers.filter(container => !container.isOurs)) {
-            await execFileAsync("docker", ["rm", "-f", container.id], { timeout: 15_000 })
-          }
-
-          if (ours) {
-            await execFileAsync("docker", ["rm", "-f", CONTAINER_NAME], { timeout: 15_000 }).catch(() => {})
-          }
-          await execFileAsync("docker", [
-            "run", "-d",
-            "--name", CONTAINER_NAME,
-            "-p", `127.0.0.1:${SEARXNG_PORT}:8080`,
-            "--restart", "unless-stopped",
-            "-v", `${SETTINGS_FILE}:/etc/searxng/settings.yml:ro`,
-            "searxng/searxng:latest",
-          ], { timeout: 60_000 })
-        } catch (dockerErr) {
-          const msg = dockerErr instanceof Error ? dockerErr.message : String(dockerErr)
-          return { ok: false, error: `Failed to start SearxNG container: ${msg}` }
-        }
-
-        alive = await waitForHealthy(25) && await probeJsonApi()
-        if (!alive) {
-          return { ok: false, error: "SearxNG container started but its JSON API did not become ready within 25s." }
-        }
-      }
+      const deploy = await deploySearxng()
+      if (!deploy.ok) throw new Error(`Error auto-desplegando SearxNG: ${deploy.message}`)
 
       // 3. Search
       const encoded = encodeURIComponent(query)
@@ -2433,7 +2273,9 @@ const tools: ToolDefinition[] = [
     concurrencySafe: true,
     async run(input) {
       const query = requireString(input, "query")
-      const searchUrl = `http://127.0.0.1:8888/search?q=${encodeURIComponent(query)}&format=json`
+      const deploy = await deploySearxng()
+      if (!deploy.ok) throw new Error(`Error auto-desplegando SearxNG: ${deploy.message}`)
+      const searchUrl = `${SEARXNG_URL}/search?q=${encodeURIComponent(query)}&format=json`
 
       try {
         const response = await fetch(searchUrl, { signal: AbortSignal.timeout(15_000) })
