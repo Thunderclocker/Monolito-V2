@@ -151,7 +151,7 @@ function normalizeVisionConfig(value: unknown): VisionConfig | undefined {
     ? Math.trunc(vision.port)
     : 11435
   return {
-    managed: typeof vision.managed === "boolean" ? vision.managed : false,
+    managed: typeof vision.managed === "boolean" ? vision.managed : true,
     autoDeploy: typeof vision.autoDeploy === "boolean" ? vision.autoDeploy : true,
     port,
     containerName: typeof vision.containerName === "string" && vision.containerName.trim()

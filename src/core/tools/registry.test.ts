@@ -52,7 +52,7 @@ test("tool_manage_config writes CONF_CHANNELS when value is a JSON string with v
     assert.deepEqual(readConfigWing(rootDir, "CONF_CHANNELS"), {
       telegram: { token: "abc", enabled: true, allowedChats: [] },
       vision: {
-        managed: false,
+        managed: true,
         autoDeploy: true,
         port: 11435,
         containerName: "monolito-vision-moondream",
@@ -88,7 +88,7 @@ test("tool_manage_config normalizes legacy CONF_CHANNELS telegram aliases", asyn
         allowedChats: [1515784684],
       },
       vision: {
-        managed: false,
+        managed: true,
         autoDeploy: true,
         port: 11435,
         containerName: "monolito-vision-moondream",
@@ -162,7 +162,7 @@ test("tool_manage_config redacts CONF_CHANNELS secrets when reading config", asy
         allowedChats: [1515784684],
       },
       vision: {
-        managed: false,
+        managed: true,
         autoDeploy: true,
         port: 11435,
         containerName: "monolito-vision-moondream",
@@ -176,7 +176,7 @@ test("tool_manage_config redacts CONF_CHANNELS secrets when reading config", asy
         allowedChats: [1515784684],
       },
       vision: {
-        managed: false,
+        managed: true,
         autoDeploy: true,
         port: 11435,
         containerName: "monolito-vision-moondream",
