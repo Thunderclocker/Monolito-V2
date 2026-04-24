@@ -461,17 +461,41 @@ const tools: ToolDefinition[] = [
       type: "object",
       properties: {
         path: { type: "string" },
+        offset: { type: "number" },
+        line_limit: { type: "number" },
       },
       required: ["path"],
       additionalProperties: false,
     },
     concurrencySafe: true,
-    validate: input => typeof input.path === "string" && input.path.length > 0 ? null : "path must be a non-empty string",
+    validate: input => {
+      if (typeof input.path !== "string" || input.path.length === 0) return "path must be a non-empty string"
+      if (input.offset !== undefined && (typeof input.offset !== "number" || !Number.isInteger(input.offset) || input.offset < 0)) {
+        return "offset must be a non-negative integer"
+      }
+      if (input.line_limit !== undefined && (typeof input.line_limit !== "number" || !Number.isInteger(input.line_limit) || input.line_limit < 0)) {
+        return "line_limit must be a non-negative integer"
+      }
+      return null
+    },
     async run(input, context) {
       const path = requireString(input, "path")
+      const offset = optionalNumber(input, "offset") ?? 0
+      const lineLimit = optionalNumber(input, "line_limit")
       const file = resolveWorkspacePath(context.rootDir, context.cwd, path)
       const content = readFileSync(file, "utf8")
-      return { path, content }
+      const lines = content.split("\n")
+      const totalLines = lines.length
+      const pagedLines = lineLimit === undefined ? lines.slice(offset) : lines.slice(offset, offset + lineLimit)
+      return {
+        path,
+        content: pagedLines.join("\n"),
+        totalLines,
+        offset,
+        lineLimit,
+        returnedLines: pagedLines.length,
+        hasMore: offset + pagedLines.length < totalLines,
+      }
     },
   },
   {
