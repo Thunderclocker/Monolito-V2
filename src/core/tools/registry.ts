@@ -88,6 +88,7 @@ export type ToolInputSchema = {
 export type ToolDefinition = {
   name: string
   aliases?: string[]
+  permissionTier: "read" | "edit"
   description: string
   inputSchema: ToolInputSchema
   concurrencySafe?: boolean | ((input: Record<string, unknown>) => boolean)
@@ -411,6 +412,7 @@ async function fetchWithCurl(url: string) {
 const tools: ToolDefinition[] = [
   {
     name: "pwd",
+    permissionTier: "read",
     description: "Return the current workspace directory.",
     inputSchema: emptyInputSchema,
     concurrencySafe: true,
@@ -420,6 +422,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "list_files",
+    permissionTier: "read",
     description: "List files in a workspace-relative directory.",
     inputSchema: optionalPathInputSchema,
     concurrencySafe: true,
@@ -440,6 +443,7 @@ const tools: ToolDefinition[] = [
   {
     name: "Read",
     aliases: ["read_file"],
+    permissionTier: "read",
     description: "Read a UTF-8 file from the workspace.",
     inputSchema: {
       type: "object",
@@ -461,6 +465,7 @@ const tools: ToolDefinition[] = [
   {
     name: "Write",
     aliases: ["write_file"],
+    permissionTier: "edit",
     description: "Create or overwrite a file in the workspace.",
     inputSchema: {
       type: "object",
@@ -490,6 +495,7 @@ const tools: ToolDefinition[] = [
   {
     name: "Edit",
     aliases: ["edit_file"],
+    permissionTier: "edit",
     description: "Edit a file in place by replacing an existing string.",
     inputSchema: {
       type: "object",
@@ -529,6 +535,7 @@ const tools: ToolDefinition[] = [
   {
     name: "Glob",
     aliases: ["glob"],
+    permissionTier: "read",
     description: "Find files by glob pattern inside the workspace.",
     inputSchema: {
       type: "object",
@@ -567,6 +574,7 @@ const tools: ToolDefinition[] = [
   {
     name: "Grep",
     aliases: ["grep"],
+    permissionTier: "read",
     description: "Search file contents with ripgrep.",
     inputSchema: {
       type: "object",
@@ -642,6 +650,7 @@ const tools: ToolDefinition[] = [
   {
     name: "Bash",
     aliases: ["bash"],
+    permissionTier: "edit",
     description: "Execute a shell command locally from the workspace. Optional: run_in_background=true for long-running commands.",
     inputSchema: {
       type: "object",
@@ -750,6 +759,7 @@ const tools: ToolDefinition[] = [
   {
     name: "ListMcpResourcesTool",
     aliases: ["mcp_list_resources"],
+    permissionTier: "read",
     description: "List resources exposed by an MCP server.",
     inputSchema: {
       type: "object",
@@ -771,6 +781,7 @@ const tools: ToolDefinition[] = [
   {
     name: "ReadMcpResourceTool",
     aliases: ["mcp_read_resource"],
+    permissionTier: "read",
     description: "Read a specific MCP resource by URI.",
     inputSchema: {
       type: "object",
@@ -796,6 +807,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "LspQuery",
+    permissionTier: "read",
     description: "Query TypeScript semantic information through the workspace LSP server.",
     inputSchema: {
       type: "object",
@@ -854,6 +866,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "WebFetch",
+    permissionTier: "read",
     description: "Fetch a URL and extract content relevant to a prompt.",
     inputSchema: {
       type: "object",
@@ -928,6 +941,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "TodoWrite",
+    permissionTier: "edit",
     description: "Add a task to the session task list. Tasks are private to the current profile and session.",
     inputSchema: {
       type: "object",
@@ -969,6 +983,7 @@ const tools: ToolDefinition[] = [
   {
     name: "SttServiceStatus",
     aliases: ["stt_service_status"],
+    permissionTier: "read",
     description: "Show the status of the managed local speech-to-text service container.",
     inputSchema: emptyInputSchema,
     concurrencySafe: true,
@@ -993,6 +1008,7 @@ const tools: ToolDefinition[] = [
   {
     name: "SttServiceDeploy",
     aliases: ["stt_service_deploy"],
+    permissionTier: "edit",
     description: "Deploy or restart the managed local speech-to-text service container using Docker. Cleans conflicting legacy Whisper containers first.",
     inputSchema: emptyInputSchema,
     concurrencySafe: false,
@@ -1005,6 +1021,7 @@ const tools: ToolDefinition[] = [
   {
     name: "SttServiceStop",
     aliases: ["stt_service_stop"],
+    permissionTier: "edit",
     description: "Stop the managed local speech-to-text service container without deleting it.",
     inputSchema: emptyInputSchema,
     concurrencySafe: false,
@@ -1017,6 +1034,7 @@ const tools: ToolDefinition[] = [
   {
     name: "SttServiceRemove",
     aliases: ["stt_service_remove"],
+    permissionTier: "edit",
     description: "Remove the managed local speech-to-text service container and conflicting legacy Whisper containers when found.",
     inputSchema: emptyInputSchema,
     concurrencySafe: false,
@@ -1029,6 +1047,7 @@ const tools: ToolDefinition[] = [
   {
     name: "SttServiceList",
     aliases: ["stt_service_list"],
+    permissionTier: "read",
     description: "List detected local speech-to-text service containers related to the managed image or container name, including legacy Whisper containers.",
     inputSchema: emptyInputSchema,
     concurrencySafe: true,
@@ -1041,6 +1060,7 @@ const tools: ToolDefinition[] = [
   {
     name: "TranscribeAudio",
     aliases: ["transcribe_audio"],
+    permissionTier: "edit",
     description: "Transcribe a local audio file using the managed speech-to-text backend. Deploys the service automatically when configured.",
     inputSchema: {
       type: "object",
@@ -1068,6 +1088,7 @@ const tools: ToolDefinition[] = [
   {
     name: "TtsServiceStatus",
     aliases: ["tts_service_status"],
+    permissionTier: "read",
     description: "Show the status of the managed local TTS service container.",
     inputSchema: emptyInputSchema,
     concurrencySafe: true,
@@ -1089,6 +1110,7 @@ const tools: ToolDefinition[] = [
   {
     name: "TtsServiceDeploy",
     aliases: ["tts_service_deploy"],
+    permissionTier: "edit",
     description: "Deploy or restart the managed local TTS service container using Docker. Cleans conflicting legacy OpenAI Edge TTS containers first.",
     inputSchema: emptyInputSchema,
     concurrencySafe: false,
@@ -1101,6 +1123,7 @@ const tools: ToolDefinition[] = [
   {
     name: "TtsServiceStop",
     aliases: ["tts_service_stop"],
+    permissionTier: "edit",
     description: "Stop the managed local TTS service container without deleting it.",
     inputSchema: emptyInputSchema,
     concurrencySafe: false,
@@ -1113,6 +1136,7 @@ const tools: ToolDefinition[] = [
   {
     name: "TtsServiceRemove",
     aliases: ["tts_service_remove"],
+    permissionTier: "edit",
     description: "Remove the managed local TTS service container. Also removes conflicting legacy OpenAI Edge TTS containers when found.",
     inputSchema: emptyInputSchema,
     concurrencySafe: false,
@@ -1125,6 +1149,7 @@ const tools: ToolDefinition[] = [
   {
     name: "TtsServiceList",
     aliases: ["tts_service_list"],
+    permissionTier: "read",
     description: "List detected local TTS service containers related to the managed image or container name, including legacy OpenAI Edge TTS containers such as tts-edge.",
     inputSchema: emptyInputSchema,
     concurrencySafe: true,
@@ -1137,6 +1162,7 @@ const tools: ToolDefinition[] = [
   {
     name: "GenerateSpeech",
     aliases: ["generate_speech", "tts_generate"],
+    permissionTier: "edit",
     description: "Generate a speech audio file with the configured OpenAI-compatible TTS backend and save it to Monolito scratchpad storage.",
     inputSchema: {
       type: "object",
@@ -1231,6 +1257,7 @@ const tools: ToolDefinition[] = [
   {
     name: "TelegramSend",
     aliases: ["telegram_send"],
+    permissionTier: "edit",
     description: "Send a message to a Telegram chat. Requires Telegram to be configured and enabled via /channels.",
     inputSchema: {
       type: "object",
@@ -1274,6 +1301,7 @@ const tools: ToolDefinition[] = [
   {
     name: "TelegramSendAudio",
     aliases: ["telegram_send_audio"],
+    permissionTier: "edit",
     description: "Send an audio file to a Telegram chat. Accepts a Telegram file_id, an HTTP URL, or a local file path. Local files should usually be mp3, m4a, or aac.",
     inputSchema: {
       type: "object",
@@ -1320,6 +1348,7 @@ const tools: ToolDefinition[] = [
   {
     name: "TelegramSendVoice",
     aliases: ["telegram_send_voice"],
+    permissionTier: "edit",
     description: "Send a voice note to a Telegram chat. Accepts a Telegram file_id, an HTTP URL, or a local file path. Local files should usually be ogg or opus.",
     inputSchema: {
       type: "object",
@@ -1359,6 +1388,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "TelegramSendPhoto",
+    permissionTier: "edit",
     description: "Send a photo to a Telegram chat. Accepts a Telegram file_id, an HTTP URL, or a local file path.",
     inputSchema: {
       type: "object",
@@ -1398,6 +1428,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "TelegramSendDocument",
+    permissionTier: "edit",
     description: "Send a document to a Telegram chat. Accepts a Telegram file_id, an HTTP URL, or a local file path.",
     inputSchema: {
       type: "object",
@@ -1434,6 +1465,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "TelegramGetFile",
+    permissionTier: "read",
     description: "Resolve a Telegram file_id into Telegram file metadata and a downloadable file_path.",
     inputSchema: {
       type: "object",
@@ -1458,6 +1490,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "TelegramDownloadFile",
+    permissionTier: "edit",
     description: "Download a Telegram file_id into Monolito scratchpad storage and return the local path.",
     inputSchema: {
       type: "object",
@@ -1482,6 +1515,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "TodoList",
+    permissionTier: "read",
     description: "List tasks for the current agent profile and session.",
     inputSchema: {
       type: "object",
@@ -1520,6 +1554,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "BootRead",
+    permissionTier: "read",
     description: "Read a deterministic BOOT wing from SQLite without relying on legacy workspace files.",
     inputSchema: {
       type: "object",
@@ -1541,6 +1576,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "BootWrite",
+    permissionTier: "edit",
     description: "Replace the canonical content of a deterministic BOOT wing in SQLite.",
     inputSchema: {
       type: "object",
@@ -1562,6 +1598,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "CanonicalMemoryRead",
+    permissionTier: "read",
     description: "Read stable structured identity/profile memory such as assistant name, user preferred name, location, and timezone.",
     inputSchema: emptyInputSchema,
     concurrencySafe: true,
@@ -1575,6 +1612,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "CanonicalMemoryWrite",
+    permissionTier: "edit",
     description: "Write a stable structured identity/profile fact. Prefer this over BOOT_* for confirmed assistant/user facts.",
     inputSchema: {
       type: "object",
@@ -1602,6 +1640,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "WorkspaceMemoryFiling",
+    permissionTier: "edit",
     description: "Store facts, decisions, or snippets in the SQLite Memory Palace. Use wing='SHARED' for team-wide memory visible to every profile. Any other wing stays private to the current profile.",
     inputSchema: {
       type: "object",
@@ -1626,6 +1665,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "WorkspaceMemoryRecall",
+    permissionTier: "read",
     description: "Recall memories from the SQLite Memory Palace. Results are limited to the current profile plus global SHARED memories. Calls without filters still respect that isolation.",
     inputSchema: {
       type: "object",
@@ -1684,6 +1724,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "KgAdd",
+    permissionTier: "edit",
     description: "Add a temporal knowledge-graph triple scoped to the current profile.",
     inputSchema: {
       type: "object",
@@ -1709,6 +1750,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "KgInvalidate",
+    permissionTier: "edit",
     description: "Invalidate an active temporal knowledge-graph triple by setting valid_to.",
     inputSchema: {
       type: "object",
@@ -1742,6 +1784,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "KgQuery",
+    permissionTier: "read",
     description: "Query temporal knowledge-graph facts for an entity within the current profile.",
     inputSchema: {
       type: "object",
@@ -1766,6 +1809,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "SessionForensics",
+    permissionTier: "read",
     description: "Inspect persisted session evidence before answering questions about what happened, what was said, which tools/workers ran, or where a prior conclusion came from.",
     inputSchema: {
       type: "object",
@@ -1877,6 +1921,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "AgentSpawn",
+    permissionTier: "edit",
     description: "Delegate a mission to a worker agent. Workers can run in parallel and report back autonomously. Use this for research, implementation, or verification.",
     inputSchema: {
       type: "object",
@@ -1944,6 +1989,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "list_active_workers",
+    permissionTier: "read",
     description: "List worker/sub-agent state for the current parent session so the coordinator can verify whether they are still running or already finished.",
     inputSchema: {
       type: "object",
@@ -1963,6 +2009,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "delegate_background_task",
+    permissionTier: "edit",
     description: "Use this tool autonomously and proactively for high cognitive load tasks (multiple web searches, deep reading, long analysis, multi-step research) to avoid blocking the chat. You do not need to specify an output file: when the worker finishes, its raw result is injected directly into your volatile memory as a system message and the runtime will force a new inference turn so you can synthesize and respond to the user. Return a short natural acknowledgement to the user immediately (e.g. 'Ahí me pongo, dame un rato') after calling this tool. IMPORTANT: Only the primary coordinator may call this tool. Sub-agents running as background workers must NEVER call delegate_background_task — they must execute their task directly and return results.",
     inputSchema: {
       type: "object",
@@ -2012,6 +2059,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "AgentSendMessage",
+    permissionTier: "edit",
     description: "Send a follow-up message to an existing sub-agent to continue its work, correct its path, or give new instructions.",
     inputSchema: {
       type: "object",
@@ -2033,6 +2081,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "AgentStop",
+    permissionTier: "edit",
     description: "Stop a running agent task immediately.",
     inputSchema: {
       type: "object",
@@ -2052,6 +2101,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "AgentList",
+    permissionTier: "read",
     description: "List available agent profiles that can be used for delegation.",
     inputSchema: emptyInputSchema,
     concurrencySafe: true,
@@ -2061,6 +2111,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "ProfileCreate",
+    permissionTier: "edit",
     description: "Create a new agent profile with its own identity and workspace.",
     inputSchema: {
       type: "object",
@@ -2088,6 +2139,7 @@ const tools: ToolDefinition[] = [
   // --- ImageSearch via SearxNG Docker ---
   {
     name: "ImageSearch",
+    permissionTier: "read",
     description: "Search for images on the internet via SearxNG. Auto-deploys SearxNG Docker container if not running (localhost only). Returns image URLs.",
     inputSchema: {
       type: "object",
@@ -2289,6 +2341,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "WebSearch",
+    permissionTier: "read",
     description: "Search the web for current text results via the local SearxNG instance and return clean summaries with title, URL, and snippet.",
     inputSchema: {
       type: "object",
@@ -2341,6 +2394,7 @@ const tools: ToolDefinition[] = [
   // --- Git Tools ---
   {
     name: "GitStatus",
+    permissionTier: "read",
     description: "Get the working tree status using git status --porcelain.",
     inputSchema: emptyInputSchema,
     concurrencySafe: true,
@@ -2354,6 +2408,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "GitDiff",
+    permissionTier: "read",
     description: "Show changes in the working tree that are not yet staged.",
     inputSchema: emptyInputSchema,
     concurrencySafe: true,
@@ -2367,6 +2422,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "GitDiffCached",
+    permissionTier: "read",
     description: "Show changes that are staged for the next commit.",
     inputSchema: emptyInputSchema,
     concurrencySafe: true,
@@ -2380,6 +2436,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "GitAdd",
+    permissionTier: "edit",
     description: "Add file contents to the staging area.",
     inputSchema: {
       type: "object",
@@ -2402,6 +2459,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: "GitCommit",
+    permissionTier: "edit",
     description: "Record changes to the repository.",
     inputSchema: {
       type: "object",
@@ -2428,6 +2486,7 @@ const tools: ToolDefinition[] = [
   // ---------------------------------------------------------------------------
   {
     name: "tool_manage_config",
+    permissionTier: "edit",
     description: "Read or update technical configuration stored in SQLite CONF_* wings. Use this instead of reading or writing JSON config files manually.",
     inputSchema: {
       type: "object",
@@ -2473,6 +2532,7 @@ const tools: ToolDefinition[] = [
   {
     name: "show_master_dashboard",
     aliases: ["master_config", "config_hub"],
+    permissionTier: "read",
     description:
       "Opens the Master Configuration Hub — an interactive menu for managing all system settings: models, channels, web search, audio/voice, and system configuration. ALWAYS use this tool (instead of reading config files manually) when the user wants to view or change settings, configure the system, or asks about current configuration. The tool returns a visual interactive menu to the CLI.",
     inputSchema: emptyInputSchema,
