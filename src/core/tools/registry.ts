@@ -2458,11 +2458,11 @@ const tools: ToolDefinition[] = [
   {
     name: "AnalyzeImage",
     permissionTier: "read",
-    description: "Descarga una imagen desde una URL y usa el motor de visión local para describirla. Usala para verificar visualmente que las URLs de ImageSearch coinciden con lo pedido.",
+    description: "Descarga una imagen de una URL, la analiza con visión local y devuelve la descripción visual junto con la ruta local del archivo (local_path). Ideal para validar empíricamente resultados de ImageSearch y obtener el archivo local para enviarlo vía TelegramSendPhoto.",
     inputSchema: {
       type: "object",
       properties: {
-        url: { type: "string", description: "URL directa de la imagen a descargar y analizar." },
+        url: { type: "string" },
       },
       required: ["url"],
       additionalProperties: false,
@@ -2474,12 +2474,11 @@ const tools: ToolDefinition[] = [
       const config = readChannelsConfig()
       const vision = normalizeVisionConfig(config.vision)
       if (!vision.managed) {
-        throw new Error("La visión local no está activa. Habilitá channels.vision.managed para usar AnalyzeImage.")
+        throw new Error("La visión local no está habilitada en la configuración.")
       }
 
       const response = await fetch(url, {
-        headers: { "User-Agent": "MonolitoV2/AnalyzeImage" },
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.timeout(15_000),
       })
       if (!response.ok) {
         throw new Error(`Image download failed: HTTP ${response.status}`)
@@ -2487,10 +2486,12 @@ const tools: ToolDefinition[] = [
 
       const scratchpadDir = join(context.rootDir, ".monolito-v2", "scratchpad")
       mkdirSync(scratchpadDir, { recursive: true })
-      const tmpPath = join(scratchpadDir, `vision-verify-${randomUUID()}.jpg`)
-      writeFileSync(tmpPath, Buffer.from(await response.arrayBuffer()))
+      const tmpPath = join(scratchpadDir, `vision-${randomUUID()}.jpg`)
+      const buffer = Buffer.from(await response.arrayBuffer())
+      writeFileSync(tmpPath, buffer)
 
-      return await analyzeManagedImage(tmpPath, vision)
+      const description = await analyzeManagedImage(tmpPath, vision)
+      return { ok: true, description, local_path: tmpPath }
     },
   },
   {
