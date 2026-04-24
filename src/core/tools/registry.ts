@@ -58,6 +58,7 @@ import {
   stopManagedSttContainer,
   transcribeManagedAudioFile,
 } from "../stt/managed.ts"
+import { analyzeManagedImage, normalizeVisionConfig } from "../vision/managed.ts"
 import { deploySearxng, SEARXNG_URL } from "../websearch/managed.ts"
 
 const execFileAsync = promisify(execFile)
@@ -2452,6 +2453,44 @@ const tools: ToolDefinition[] = [
         const msg = searchErr instanceof Error ? searchErr.message : String(searchErr)
         return { ok: false, error: `Search failed: ${msg}` }
       }
+    },
+  },
+  {
+    name: "AnalyzeImage",
+    permissionTier: "read",
+    description: "Descarga una imagen desde una URL y usa el motor de visión local para describirla. Usala para verificar visualmente que las URLs de ImageSearch coinciden con lo pedido.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "URL directa de la imagen a descargar y analizar." },
+      },
+      required: ["url"],
+      additionalProperties: false,
+    },
+    concurrencySafe: false,
+    validate: input => typeof input.url === "string" && input.url.trim().length > 0 ? null : "url must be a non-empty string",
+    async run(input, context) {
+      const url = requireString(input, "url")
+      const config = readChannelsConfig()
+      const vision = normalizeVisionConfig(config.vision)
+      if (!vision.managed) {
+        throw new Error("La visión local no está activa. Habilitá channels.vision.managed para usar AnalyzeImage.")
+      }
+
+      const response = await fetch(url, {
+        headers: { "User-Agent": "MonolitoV2/AnalyzeImage" },
+        signal: AbortSignal.timeout(30_000),
+      })
+      if (!response.ok) {
+        throw new Error(`Image download failed: HTTP ${response.status}`)
+      }
+
+      const scratchpadDir = join(context.rootDir, ".monolito-v2", "scratchpad")
+      mkdirSync(scratchpadDir, { recursive: true })
+      const tmpPath = join(scratchpadDir, `vision-verify-${randomUUID()}.jpg`)
+      writeFileSync(tmpPath, Buffer.from(await response.arrayBuffer()))
+
+      return await analyzeManagedImage(tmpPath, vision)
     },
   },
   {
