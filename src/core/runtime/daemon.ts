@@ -14,6 +14,7 @@ import { clearUpdateRestartState, MonolitoV2Runtime, readUpdateRestartState } fr
 import { startChannels, stopChannels } from "../channels/channelManager.ts"
 import { addLogSink, createFileSink } from "../logging/logger.ts"
 import { warmupEmbeddings } from "../session/embeddings.ts"
+import { cleanupScratchpad } from "../system/root.ts"
 
 function isIgnorableSocketError(error: unknown) {
   if (!(error instanceof Error)) return false
@@ -43,6 +44,7 @@ export class MonolitoV2Daemon {
   async start() {
     const paths = ensureDirs(this.rootDir)
     this.acquireOwnership(paths)
+    cleanupScratchpad()
     if (existsSync(paths.socketPath)) unlinkSync(paths.socketPath)
     writeFileSync(paths.pidFile, String(process.pid))
     const recoveredOnStart = this.runtime.recoverSessions("Recovered after daemon restart")
