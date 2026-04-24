@@ -1672,7 +1672,6 @@ export class MonolitoV2Runtime {
         return [
           "Commands:",
           "/help",
-          "/status",
           "/sessions",
           "/tool <name> <json>",
           "/mcp list-servers",
@@ -1686,10 +1685,6 @@ export class MonolitoV2Runtime {
           "/model info",
           "/model set <base_url|api_key|model> <value>",
           "/model reset",
-          "/history [limit]",
-          "/cost",
-          "/compact [max-messages]",
-          "/stats",
           "/doctor",
           "/update",
           "/channels [show|on|off|token <token>|chats <id,id,...>|clear]",
@@ -1700,32 +1695,6 @@ export class MonolitoV2Runtime {
           "/websearch — Open web search menu",
           "/new — Reset session and restart agent",
         ].join("\n")
-      case "/status": {
-        const session = getSession(this.rootDir, sessionId)
-        const model = redactSensitiveModelSettings(readModelSettings())
-        const toolCount = listTools().length
-        const lines: string[] = []
-        if (session) {
-          lines.push(`Session: ${session.title} (${session.id})`)
-          lines.push(`State: ${session.state}`)
-          lines.push(`Profile: ${session.profileId}`)
-          lines.push(`Messages: ${session.messages.length}`)
-          lines.push(`Created: ${session.createdAt}`)
-          lines.push(`Updated: ${session.updatedAt}`)
-        } else {
-          lines.push(`Session: ${sessionId} (not found)`)
-        }
-        lines.push("")
-        lines.push("Model:")
-        lines.push(`  Protocol: ${model.modelConfig.protocol}`)
-        lines.push(`  Base URL: ${model.env.ANTHROPIC_BASE_URL || "(default)"}`)
-        lines.push(`  Model: ${model.env.ANTHROPIC_MODEL || "(default)"}`)
-        lines.push(`  API Key: ${model.env.ANTHROPIC_AUTH_TOKEN}`)
-        lines.push(`  Timeout: ${model.env.API_TIMEOUT_MS}ms`)
-        lines.push("")
-        lines.push(`Tools: ${toolCount} available`)
-        return lines.join("\n")
-      }
       case "/sessions":
         return listSessions(this.rootDir).map(item => `${item.id} ${item.state} ${item.title}`).join("\n")
       case "/tool":
@@ -1734,30 +1703,6 @@ export class MonolitoV2Runtime {
         return this.runMcpCommand(sessionId, rest)
       case "/model":
         return this.runModelCommand(rest)
-      case "/history":
-        return this.runHistoryCommand(sessionId, rest)
-      case "/cost":
-        return formatCostSummary(this.costState)
-      case "/compact": {
-        const session = getSession(this.rootDir, sessionId)
-        const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
-        this.scheduleMemoryReview(sessionId, profileId, "pre-compact", session)
-        const max = rest[0] ? Number.parseInt(rest[0], 10) : undefined
-        const result = compactSession(this.rootDir, sessionId, max ? { maxMessages: max } : {})
-        return `Compacted ${result.compacted} message${result.compacted !== 1 ? "s" : ""}. ${result.remaining} remaining.`
-      }
-      case "/stats": {
-        const stats = getSessionStats(this.rootDir, sessionId)
-        if (!stats) return "Session not found."
-        return [
-          `Messages: ${stats.messageCount}`,
-          `Characters: ${stats.totalChars.toLocaleString()}`,
-          `Worklog entries: ${stats.worklogEntries}`,
-          `Created: ${stats.createdAt}`,
-          `Updated: ${stats.updatedAt}`,
-          `State: ${stats.state}`,
-        ].join("\n")
-      }
       case "/doctor": {
         return this.runDoctor()
       }
@@ -1852,6 +1797,15 @@ export class MonolitoV2Runtime {
     this.emit({ type: "tool.start", sessionId, toolUseId, tool: tool.name, input: normalizedInput })
     const toolStartedAt = Date.now()
 
+    const toolContext: ToolContext = {
+      ...context,
+      profileId: profileId ?? context.profileId,
+      querySessionStatus: id => this.querySessionStatus(id),
+      queryCost: () => this.queryCost(),
+      queryStats: id => this.queryStats(id),
+      compactSession: (id, maxMessages) => this.queryCompact(id, maxMessages),
+    }
+
     const tryRepairBashFailure = async (error: ToolExecutionError) => {
       if (tool.name !== "Bash") throw error
       if (!error.command || error.exitCode === 0) throw error
@@ -1900,7 +1854,7 @@ export class MonolitoV2Runtime {
 
         const repairedOutput = await bashTool.run(
           repairedInput,
-          { ...context, profileId: profileId ?? context.profileId },
+          toolContext,
         )
 
         await runPostToolHooks(tool.name, repairedInput, {
@@ -1925,7 +1879,7 @@ export class MonolitoV2Runtime {
     }
 
     try {
-      let output = await tool.run(normalizedInput, { ...context, profileId: profileId ?? context.profileId })
+      let output = await tool.run(normalizedInput, toolContext)
       await runPostToolHooks(tool.name, normalizedInput, {
         rootDir: this.rootDir,
         sessionId,
@@ -2091,15 +2045,6 @@ export class MonolitoV2Runtime {
       `API key: ${maskApiKey(effective.apiKey)}`,
       `Model: ${effective.model || "(unset)"}`,
     ].join("\n")
-  }
-
-  private async runHistoryCommand(sessionId: string, rest: string[]) {
-    const limitRaw = rest[0]
-    const limit = limitRaw ? Number.parseInt(limitRaw, 10) : 20
-    if (!Number.isFinite(limit) || limit < 1) throw new Error("Usage: /history [limit]")
-    const session = getSession(this.rootDir, sessionId)
-    if (!session || session.worklog.length === 0) return "No history entries for this session yet."
-    return session.worklog.slice(-limit).map(entry => `${entry.at} [${entry.type}] ${entry.summary}`).join("\n")
   }
 
   private async runChannelsCommand(rest: string[]) {
@@ -2580,6 +2525,33 @@ export class MonolitoV2Runtime {
   }
 
   // --- Public query methods (for CLI local commands) ---
+  querySessionStatus(sessionId: string) {
+    const session = getSession(this.rootDir, sessionId)
+    const model = redactSensitiveModelSettings(readModelSettings())
+    const toolCount = listTools().length
+    const lines: string[] = []
+    if (session) {
+      lines.push(`Session: ${session.title} (${session.id})`)
+      lines.push(`State: ${session.state}`)
+      lines.push(`Profile: ${session.profileId}`)
+      lines.push(`Messages: ${session.messages.length}`)
+      lines.push(`Created: ${session.createdAt}`)
+      lines.push(`Updated: ${session.updatedAt}`)
+    } else {
+      lines.push(`Session: ${sessionId} (not found)`)
+    }
+    lines.push("")
+    lines.push("Model:")
+    lines.push(`  Protocol: ${model.modelConfig.protocol}`)
+    lines.push(`  Base URL: ${model.env.ANTHROPIC_BASE_URL || "(default)"}`)
+    lines.push(`  Model: ${model.env.ANTHROPIC_MODEL || "(default)"}`)
+    lines.push(`  API Key: ${model.env.ANTHROPIC_AUTH_TOKEN}`)
+    lines.push(`  Timeout: ${model.env.API_TIMEOUT_MS}ms`)
+    lines.push("")
+    lines.push(`Tools: ${toolCount} available`)
+    return lines.join("\n")
+  }
+
   queryCost() {
     return formatCostSummary(this.costState)
   }
@@ -2598,6 +2570,9 @@ export class MonolitoV2Runtime {
   }
 
   queryCompact(sessionId: string, maxMessages?: number) {
+    const session = getSession(this.rootDir, sessionId)
+    const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
+    this.scheduleMemoryReview(sessionId, profileId, "pre-compact", session)
     const result = compactSession(this.rootDir, sessionId, maxMessages ? { maxMessages } : {})
     return `Compacted ${result.compacted} message${result.compacted !== 1 ? "s" : ""}. ${result.remaining} remaining.`
   }

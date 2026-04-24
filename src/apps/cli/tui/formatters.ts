@@ -139,10 +139,6 @@ export function formatHelp(): FormattedBlock {
     ["/help", "Show this help"],
     ["/new", "Start a fresh session"],
     ["/sessions", "List all sessions"],
-    ["/status", "Show current session status"],
-    ["/cost", "Show session cost summary"],
-    ["/compact [n]", "Compact messages (default 40)"],
-    ["/stats", "Show session statistics"],
     ["/doctor", "Run system health check"],
     ["/update", "Fetch and fast-forward from origin"],
     ["/channels", "Interactive Telegram channel menu or text command"],
@@ -151,7 +147,6 @@ export function formatHelp(): FormattedBlock {
     ["/model", "Interactive model configuration menu"],
     ["/tool [name] [json]", "Run a tool directly"],
     ["/mcp tools [server]", "List MCP tools"],
-    ["/history [n]", "Show session history"],
     ["/stop", "Stop daemon and exit"],
     ["/quit /exit", "Exit CLI"],
   ]

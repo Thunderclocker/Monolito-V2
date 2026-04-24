@@ -77,6 +77,10 @@ export type ToolContext = {
   logger?: Logger
   sessionId?: string
   runtime?: { acquireJobGroupForBatch: (sessionId: string) => string }
+  querySessionStatus?: (sessionId: string) => string
+  queryCost?: () => string
+  queryStats?: (sessionId: string) => string
+  compactSession?: (sessionId: string, maxMessages?: number) => string
 }
 
 export type ToolInputSchema = {
@@ -524,6 +528,82 @@ async function fetchWithCurl(url: string) {
 }
 
 const tools: ToolDefinition[] = [
+  {
+    name: "QuerySessionStatus",
+    permissionTier: "read",
+    description: "Return metadata for the current Monolito session, model configuration, and available tool count.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string", description: "Optional session ID. Defaults to the current session." },
+      },
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    async run(input, context) {
+      const sessionId = optionalString(input, "sessionId") ?? context.sessionId
+      if (!sessionId) throw new Error("sessionId is required")
+      if (!context.querySessionStatus) throw new Error("Session status query is not available in this context")
+      return context.querySessionStatus(sessionId)
+    },
+  },
+  {
+    name: "QueryCost",
+    permissionTier: "read",
+    description: "Return the current Monolito session token and cost summary.",
+    inputSchema: emptyInputSchema,
+    concurrencySafe: true,
+    async run(_input, context) {
+      if (!context.queryCost) throw new Error("Cost query is not available in this context")
+      return context.queryCost()
+    },
+  },
+  {
+    name: "QuerySessionStats",
+    permissionTier: "read",
+    description: "Return usage statistics for a Monolito session.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string", description: "Optional session ID. Defaults to the current session." },
+      },
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    async run(input, context) {
+      const sessionId = optionalString(input, "sessionId") ?? context.sessionId
+      if (!sessionId) throw new Error("sessionId is required")
+      if (!context.queryStats) throw new Error("Session stats query is not available in this context")
+      return context.queryStats(sessionId)
+    },
+  },
+  {
+    name: "CompactSession",
+    permissionTier: "edit",
+    description: "Compact older messages in the current Monolito session.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string", description: "Optional session ID. Defaults to the current session." },
+        maxMessages: { type: "number", description: "Optional number of recent messages to keep un-compacted." },
+      },
+      additionalProperties: false,
+    },
+    validate: input => {
+      const maxMessages = input.maxMessages
+      if (maxMessages !== undefined && (typeof maxMessages !== "number" || !Number.isInteger(maxMessages) || maxMessages < 1)) {
+        return "maxMessages must be a positive integer"
+      }
+      return null
+    },
+    async run(input, context) {
+      const sessionId = optionalString(input, "sessionId") ?? context.sessionId
+      const maxMessages = optionalNumber(input, "maxMessages")
+      if (!sessionId) throw new Error("sessionId is required")
+      if (!context.compactSession) throw new Error("Session compaction is not available in this context")
+      return context.compactSession(sessionId, maxMessages)
+    },
+  },
   {
     name: "pwd",
     permissionTier: "read",
