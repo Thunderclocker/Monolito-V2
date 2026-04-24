@@ -12,7 +12,7 @@ export function normalizeVisionConfig(config?: Partial<VisionConfig>): VisionCon
     ? Math.trunc(config.port)
     : 11435
   return {
-    managed: typeof config?.managed === "boolean" ? config.managed : false,
+    managed: typeof config?.managed === "boolean" ? config.managed : true,
     autoDeploy: typeof config?.autoDeploy === "boolean" ? config.autoDeploy : true,
     port,
     containerName: typeof config?.containerName === "string" && config.containerName.trim()
