@@ -4,6 +4,7 @@ import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { MONOLITO_ROOT } from "../system/root.ts"
 import { runBackgroundTextTask } from "./modelAdapterLite.ts"
+import { getTool } from "../tools/registry.ts"
 
 const execFileAsync = promisify(execFile)
 
@@ -92,65 +93,6 @@ const DEFAULT_SAFE_BASH_PREFIXES = [
   "systemctl status",
   "journalctl -n",
 ]
-
-const READ_ONLY_TOOLS = new Set([
-  "pwd",
-  "list_files",
-  "Read",
-  "Glob",
-  "Grep",
-  "ListMcpResourcesTool",
-  "ReadMcpResourceTool",
-  "LspQuery",
-  "BootRead",
-  "CanonicalMemoryRead",
-  "SessionForensics",
-  "WorkspaceMemoryRecall",
-  "AgentList",
-  "list_active_workers",
-  "TodoList",
-  "ProfileList",
-  "WebFetch",
-  "ImageSearch",
-  "TelegramGetFile",
-  "TtsServiceStatus",
-  "TtsServiceList",
-  "SttServiceStatus",
-  "SttServiceList",
-  "show_master_dashboard",
-  "master_config",
-  "config_hub",
-])
-
-const EDIT_TOOLS = new Set([
-  "Write",
-  "Edit",
-  "BootWrite",
-  "CanonicalMemoryWrite",
-  "tool_manage_config",
-  "WorkspaceMemoryFiling",
-  "TodoWrite",
-  "ProfileCreate",
-  "AgentSpawn",
-  "delegate_background_task",
-  "AgentSendMessage",
-  "AgentStop",
-  "Bash",
-  "TelegramSend",
-  "TelegramSendPhoto",
-  "TelegramSendDocument",
-  "TelegramDownloadFile",
-  "GenerateSpeech",
-  "TelegramSendAudio",
-  "TelegramSendVoice",
-  "TtsServiceDeploy",
-  "TtsServiceStop",
-  "TtsServiceRemove",
-  "TranscribeAudio",
-  "SttServiceDeploy",
-  "SttServiceStop",
-  "SttServiceRemove",
-])
 
 function getPermissionsPath(rootDir?: string) {
   void rootDir
@@ -266,10 +208,11 @@ function evaluateMode(mode: PermissionMode, toolName: string, input: Record<stri
     }
     return { behavior: "allow", source: "mode" }
   }
-  if (READ_ONLY_TOOLS.has(toolName)) {
+  const tool = getTool(toolName)
+  if (tool?.permissionTier === "read") {
     return { behavior: "allow", source: "mode" }
   }
-  if (mode === "acceptEdits" && EDIT_TOOLS.has(toolName)) {
+  if (mode === "acceptEdits" && tool?.permissionTier === "edit") {
     return { behavior: "allow", source: "mode" }
   }
   return { behavior: "deny", source: "mode", message: `Tool ${toolName} requires a more permissive mode or an explicit allow rule.` }
