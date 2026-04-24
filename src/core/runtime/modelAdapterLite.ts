@@ -74,6 +74,11 @@ function getLastUserMessage(session: SessionRecord) {
   return session.messages.filter(message => message.role === "user" && !shouldSkipMessage(message.text)).at(-1)?.text ?? ""
 }
 
+function isEvidenceAuditRequest(text: string) {
+  const normalized = compactWhitespace(text).toLowerCase()
+  return /\b(de donde|de dónde|fuente|fuentes|origen|source|sources|evidencia|evidence|sacaste|salio|salió|herramienta|tool|tools)\b/.test(normalized)
+}
+
 function truncate(value: string, max: number) {
   const trimmed = value.trim()
   return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max).trimEnd()}\n...[truncated]`
@@ -103,6 +108,16 @@ function stringifyToolResult(value: unknown) {
   }
 }
 
+function formatToolEvidenceResult(toolCall: ToolCall, status: "success" | "error", value: unknown) {
+  const serialized = stringifyToolResult(value)
+  return [
+    `<tool-evidence tool="${toolCall.name}" status="${status}" tool_use_id="${toolCall.id}">`,
+    "This block is runtime evidence from an executed tool. Use it as the source of truth for claims derived from this tool. If the user asks where a prior answer came from, do not deny this tool was used; cite this evidence and its fields/URLs/paths when relevant.",
+    "</tool-evidence>",
+    serialized,
+  ].join("\n")
+}
+
 function getMaxBudgetUsd() {
   const raw = readModelSettings().env.MAX_BUDGET_USD
   const parsed = Number(raw)
@@ -129,12 +144,12 @@ async function executeToolCall(
     const output = await executeTool(toolCall.name, toolCall.input, context, toolCall.id)
     return {
       toolCall,
-      content: stringifyToolResult(output),
+      content: formatToolEvidenceResult(toolCall, "success", output),
     }
   } catch (error) {
     return {
       toolCall,
-      content: stringifyToolResult({ error: error instanceof Error ? error.message : String(error) }),
+      content: formatToolEvidenceResult(toolCall, "error", { error: error instanceof Error ? error.message : String(error) }),
     }
   }
 }
@@ -202,6 +217,12 @@ function buildSystemPrompt(args: {
     "Use tools when the answer depends on current files, system state, background worker status, or external resources.",
     "If no tool is needed, answer directly and finish.",
     "Do not describe future work unless the same turn already started it.",
+    "Global evidence contract:",
+    "- Treat tool results, files, logs, memory records, and user messages as evidence. Do not invent facts that are not supported by those sources.",
+    "- For current, external, runtime, filesystem, financial, legal, medical, version, weather, schedule, or other unstable facts, use tools before making concrete claims.",
+    "- If evidence is missing, ambiguous, blocked, stale, or only inferential, say that explicitly instead of filling the gap.",
+    "- When a user asks where a prior answer came from, inspect the conversation/tool evidence first. Use SessionForensics when available. Never claim no tool was used if tool evidence exists in the session.",
+    "- When giving a user-facing conclusion based on tools, preserve traceability: mention the relevant tool/source path/URL/log/session evidence when it matters for trust or reproducibility.",
     "Identity and durable user facts:",
     identity,
     isSubAgent
@@ -216,6 +237,9 @@ function buildSystemPrompt(args: {
   const lastUserMessage = getLastUserMessage(args.session)
   dynamicContext.push(`Workspace root: ${args.rootDir}`)
   if (lastUserMessage) dynamicContext.push(`Current user request: ${lastUserMessage}`)
+  if (lastUserMessage && isEvidenceAuditRequest(lastUserMessage)) {
+    dynamicContext.push("Evidence audit mode: the user is asking about source/origin/evidence. Before answering, reconstruct what actually happened from prior messages and tool evidence. Prefer SessionForensics if the origin is not obvious from the visible conversation.")
+  }
   if (args.extras?.dateContext) dynamicContext.push(args.extras.dateContext)
   if (args.extras?.gitContext) dynamicContext.push(args.extras.gitContext)
   if (args.extras?.taskNotifications?.length) dynamicContext.push(`Background updates:\n${args.extras.taskNotifications.map(item => `- ${item}`).join("\n")}`)
