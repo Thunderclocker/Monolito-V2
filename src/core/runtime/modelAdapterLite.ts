@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto"
+import { writeFileSync } from "node:fs"
+import { join } from "node:path"
 import type { SessionRecord } from "../ipc/protocol.ts"
 import { type ToolContext, isToolConcurrencySafe, listModelTools } from "../tools/registry.ts"
 import { BOOT_WING_DESCRIPTION, type BootWingEntry } from "../bootstrap/bootWings.ts"
@@ -9,6 +12,7 @@ import { loadAndApplyModelSettings, readModelSettings } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider } from "./modelRegistry.ts"
 import { compactSession, getSession, listCanonicalMemoryEntries } from "../session/store.ts"
 import { callProvider, type ConversationMessage, type ProviderConfig, type ProviderResponse, type ToolCall } from "./providers/index.ts"
+import { ensureMonolitoRoot } from "../system/root.ts"
 
 const defaultLogger = createLogger("modelAdapterLite")
 const MAX_TURN_ITERATIONS = 16
@@ -76,11 +80,26 @@ function truncate(value: string, max: number) {
 }
 
 function stringifyToolResult(value: unknown) {
-  if (typeof value === "string") return truncate(value, MAX_TOOL_RESULT_CHARS)
+  let serialized = ""
+  if (typeof value === "string") serialized = value.trim()
+  else {
+    try {
+      serialized = JSON.stringify(value, null, 2)
+    } catch {
+      serialized = String(value)
+    }
+  }
+  if (serialized.length <= MAX_TOOL_RESULT_CHARS) {
+    return truncate(serialized, MAX_TOOL_RESULT_CHARS)
+  }
+  const monolitoRoot = ensureMonolitoRoot()
+  const outputPath = join(monolitoRoot, "scratchpad", `tool-output-${randomUUID()}.txt`)
+  writeFileSync(outputPath, serialized, "utf8")
   try {
-    return truncate(JSON.stringify(value, null, 2), MAX_TOOL_RESULT_CHARS)
+    const preview = truncate(serialized, MAX_TOOL_RESULT_CHARS)
+    return `${preview}\n...[OUTPUT TRUNCATED]\nFull output saved to: ${outputPath}\nUse the Read tool with offset/line_limit to inspect the rest.`
   } catch {
-    return truncate(String(value), MAX_TOOL_RESULT_CHARS)
+    return `...[OUTPUT TRUNCATED]\nFull output saved to: ${outputPath}\nUse the Read tool with offset/line_limit to inspect the rest.`
   }
 }
 
