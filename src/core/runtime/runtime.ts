@@ -513,6 +513,25 @@ async function backupCurrentHead(rootDir: string, branch: string, currentHead: s
   return backupBranch
 }
 
+async function findStashRefByLabel(rootDir: string, stashLabel: string) {
+  const list = await runGitCommand(rootDir, ["stash", "list", "--format=%gd%x00%s"]).catch(() => "")
+  for (const line of list.split("\n")) {
+    const [ref, subject] = line.split("\u0000")
+    if (subject === stashLabel && ref) return ref
+  }
+  return ""
+}
+
+async function restoreUpdateBackup(rootDir: string, currentHead: string, stashLabel: string) {
+  await runGitCommand(rootDir, ["reset", "--hard", currentHead])
+  await runGitCommand(rootDir, ["clean", "-fd"])
+  if (!stashLabel) return
+  const stashRef = await findStashRefByLabel(rootDir, stashLabel)
+  if (!stashRef) throw new Error(`Rollback could not find backup stash ${stashLabel}`)
+  await runGitCommand(rootDir, ["stash", "apply", "--index", stashRef])
+  await runGitCommand(rootDir, ["stash", "drop", stashRef])
+}
+
 function acquireUpdateLock(rootDir: string) {
   const paths = getPaths(rootDir)
   mkdirSync(paths.runDir, { recursive: true })
@@ -2257,6 +2276,9 @@ export class MonolitoV2Runtime {
   private async runUpdate(): Promise<string> {
     const lock = acquireUpdateLock(this.rootDir)
     if (!lock.ok) return lock.message
+    let currentHead = ""
+    let stashLabel = ""
+    let rollbackReady = false
     try {
       const branch = await runGitCommand(this.rootDir, ["rev-parse", "--abbrev-ref", "HEAD"])
       if (!branch) return "Update failed: could not determine current git branch."
@@ -2266,41 +2288,56 @@ export class MonolitoV2Runtime {
         return "Update failed: no git remote named 'origin' is configured."
       }
 
-      const currentHead = await runGitCommand(this.rootDir, ["rev-parse", "HEAD"])
-      await runGitCommand(this.rootDir, ["fetch", "--prune", "origin", branch])
-      const remoteHead = await runGitCommand(this.rootDir, ["rev-parse", `origin/${branch}`]).catch(() => "")
-      if (!remoteHead) {
-        return `Update failed: origin/${branch} was not found after fetch.`
-      }
+      currentHead = await runGitCommand(this.rootDir, ["rev-parse", "HEAD"])
 
-      const status = await runGitCommand(this.rootDir, ["status", "--porcelain"])
-      let stashLabel = ""
-      if (status.trim()) {
-        stashLabel = makeUpdateBackupLabel("monolito-update-stash")
-        await runGitCommand(this.rootDir, ["stash", "push", "--include-untracked", "--message", stashLabel])
-        const statusAfterStash = await runGitCommand(this.rootDir, ["status", "--porcelain"])
-        if (statusAfterStash.trim()) {
-          return buildResidualUpdateError(this.rootDir, stashLabel, statusAfterStash)
+      try {
+        await runGitCommand(this.rootDir, ["fetch", "--prune", "origin", branch])
+        const remoteHead = await runGitCommand(this.rootDir, ["rev-parse", `origin/${branch}`]).catch(() => "")
+        if (!remoteHead) {
+          return `Update failed: origin/${branch} was not found after fetch.`
         }
-      }
 
-      let backupBranch = ""
-      if (currentHead !== remoteHead) {
-        backupBranch = await backupCurrentHead(this.rootDir, branch, currentHead)
-      }
+        const status = await runGitCommand(this.rootDir, ["status", "--porcelain"])
+        if (status.trim()) {
+          stashLabel = makeUpdateBackupLabel("monolito-update-stash")
+          await runGitCommand(this.rootDir, ["stash", "push", "--include-untracked", "--message", stashLabel])
+          const statusAfterStash = await runGitCommand(this.rootDir, ["status", "--porcelain"])
+          if (statusAfterStash.trim()) {
+            return buildResidualUpdateError(this.rootDir, stashLabel, statusAfterStash)
+          }
+        }
 
-      await runGitCommand(this.rootDir, ["reset", "--hard", `origin/${branch}`])
-      await runGitCommand(this.rootDir, ["clean", "-fd"])
-      const nextHead = await runGitCommand(this.rootDir, ["rev-parse", "--short", "HEAD"])
-      this.restartRequested = true
-      return [
-        `Synchronized successfully with origin/${branch}.`,
-        `Remote: ${remoteUrl}`,
-        `Current revision: ${nextHead}`,
-        backupBranch ? `Previous local HEAD was backed up to branch: ${backupBranch}` : "",
-        stashLabel ? `Local uncommitted changes were backed up automatically to stash: ${stashLabel}` : "",
-        "Daemon restart scheduled automatically.",
-      ].filter(Boolean).join("\n")
+        let backupBranch = ""
+        if (currentHead !== remoteHead) {
+          backupBranch = await backupCurrentHead(this.rootDir, branch, currentHead)
+        }
+
+        rollbackReady = true
+        await runGitCommand(this.rootDir, ["reset", "--hard", `origin/${branch}`])
+        await runGitCommand(this.rootDir, ["clean", "-fd"])
+        const nextHead = await runGitCommand(this.rootDir, ["rev-parse", "--short", "HEAD"])
+        this.restartRequested = true
+        return [
+          `Synchronized successfully with origin/${branch}.`,
+          `Remote: ${remoteUrl}`,
+          `Current revision: ${nextHead}`,
+          backupBranch ? `Previous local HEAD was backed up to branch: ${backupBranch}` : "",
+          stashLabel ? `Local uncommitted changes were backed up automatically to stash: ${stashLabel}` : "",
+          "Daemon restart scheduled automatically.",
+        ].filter(Boolean).join("\n")
+      } catch (error) {
+        this.restartRequested = false
+        if (rollbackReady) {
+          try {
+            await restoreUpdateBackup(this.rootDir, currentHead, stashLabel)
+          } catch (rollbackError) {
+            const rollbackMessage = rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+            const originalMessage = error instanceof Error ? error.message : String(error)
+            return `Update failed: ${originalMessage}\nRollback failed: ${rollbackMessage}`
+          }
+        }
+        throw error
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       return `Update failed: ${message}`
