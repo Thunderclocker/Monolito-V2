@@ -1,10 +1,27 @@
 import test from "node:test"
 import assert from "node:assert/strict"
+import { randomUUID } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { getTool } from "./registry.ts"
-import { appendEvent, appendMessage, appendWorklog, ensureSession, readConfigWing, writeBootWing } from "../session/store.ts"
+import {
+  addGraphTriple,
+  appendEvent,
+  appendMessage,
+  appendWorklog,
+  clearMemoryPalace,
+  ensureSession,
+  getDb,
+  queryGraphEntity,
+  readBootWing,
+  readCanonicalMemory,
+  readConfigWing,
+  recallMemory,
+  writeBootWing,
+  writeCanonicalMemory,
+  writeConfigWing,
+} from "../session/store.ts"
 
 function createRootDir() {
   return mkdtempSync(join(tmpdir(), "monolito-tools-test-"))
@@ -329,6 +346,41 @@ test("CanonicalMemoryRead falls back to legacy BOOT memory when canonical slots 
 
     assert.equal((result as { state: Record<string, string> }).state.assistant_name, "Amanda")
     assert.equal((result as { state: Record<string, string> }).state.user_location, "Santo Tome, Santa Fe, Argentina")
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("clearMemoryPalace removes profile memory while preserving configuration", async () => {
+  const rootDir = createRootDir()
+  try {
+    writeConfigWing(rootDir, "CONF_CHANNELS", {
+      telegram: { token: "abc", enabled: true, allowedChats: [1515784684] },
+    })
+    writeBootWing(rootDir, "BOOT_MEMORY", "Cristian vive en Santo Tome.", "default")
+    await writeCanonicalMemory(rootDir, "assistant_name", "Amanda", "default")
+    getDb(rootDir).prepare(`
+      INSERT INTO memory_drawers (id, profile_id, wing, room, memory_key, content, created_at)
+      VALUES (?, 'default', 'PRIVATE', 'notes', NULL, 'dato durable', ?)
+    `).run(randomUUID(), new Date().toISOString())
+    addGraphTriple(rootDir, "default", "Cristian", "lives_in", "Santo Tome", new Date().toISOString())
+
+    const before = await recallMemory(rootDir, undefined, undefined, undefined, "default")
+    assert.ok(before.some(row => row.wing === "PRIVATE"))
+    assert.equal(readCanonicalMemory(rootDir, "default").assistant_name, "Amanda")
+    assert.equal(queryGraphEntity(rootDir, "default", "Cristian").length, 1)
+
+    const cleared = clearMemoryPalace(rootDir, "default")
+
+    assert.ok(cleared.memoryRowsDeleted >= 3)
+    assert.equal(cleared.graphRowsDeleted, 1)
+    assert.deepEqual(readConfigWing(rootDir, "CONF_CHANNELS"), {
+      telegram: { token: "abc", enabled: true, allowedChats: [1515784684] },
+    })
+    assert.equal(readCanonicalMemory(rootDir, "default").assistant_name, undefined)
+    assert.equal(queryGraphEntity(rootDir, "default", "Cristian").length, 0)
+    assert.equal(await recallMemory(rootDir, undefined, undefined, undefined, "default").then(rows => rows.some(row => row.wing === "PRIVATE")), false)
+    assert.equal(readBootWing(rootDir, "BOOT_MEMORY", "default"), "# BOOT_MEMORY - Memoria Curada de Largo Plazo\n\nGuarda aqui notas destiladas y durables. No uses esto para logs ruidosos del dia a dia.\n")
   } finally {
     cleanupRootDir(rootDir)
   }

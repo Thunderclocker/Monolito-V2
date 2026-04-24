@@ -3,7 +3,7 @@ import { listTools } from "../../../core/tools/registry.ts"
 import type { CompletionMatch } from "./types.ts"
 
 export const INTERACTIVE_COMMANDS = [
-  "/help", "/new", "/sessions", "/tool", "/mcp", "/model", "/channels",
+  "/help", "/new", "/reset", "/sessions", "/tool", "/mcp", "/model", "/channels",
   "/doctor", "/update", "/websearch", "/config", "/dashboard", "/quit", "/exit", "/stop",
 ]
 export const MCP_SUBCOMMANDS = ["tools", "resources", "read", "call"]
@@ -77,6 +77,7 @@ export function createInteractiveCompleter(rootDir: string) {
         if (tokens.length === 3 && subcommand === "set") return [["(field)"], third]
         return [[], line]
       case "/new":
+      case "/reset":
       case "/doctor":
       case "/update":
       case "/websearch":

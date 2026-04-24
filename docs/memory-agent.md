@@ -21,7 +21,7 @@ The `Memory Agent` runs in the background at these moments:
 
 - after normal turns (`post-turn`)
 - before `/compact` rewrites older session history (`pre-compact`)
-- before session resets such as `/new` (`session-end`)
+- before session-only resets such as `/new` (`session-end`)
 
 ## Memory layers
 

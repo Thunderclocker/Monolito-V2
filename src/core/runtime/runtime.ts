@@ -9,6 +9,7 @@ import {
   appendEvent,
   appendMessage,
   appendWorklog,
+  clearMemoryPalace,
   compactSession,
   ensureConfigWings,
   ensureBootWings,
@@ -1709,6 +1710,7 @@ export class MonolitoV2Runtime {
           "/adult — Toggle adult content mode",
           "/websearch — Open web search menu",
           "/new — Reset session and restart agent",
+          "/reset — Reset session, clear Memory Palace for this profile, and restart agent",
         ].join("\n")
       case "/sessions":
         return listSessions(this.rootDir).map(item => `${item.id} ${item.state} ${item.title}`).join("\n")
@@ -1748,13 +1750,26 @@ export class MonolitoV2Runtime {
         this.adultModeSessions.add(sessionId)
         return "Modo adulto activado."
       }
-      case "/new":
-      case "/reset": {
+      case "/new": {
         const session = getSession(this.rootDir, sessionId)
         const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
         await runLifecycleHooks("SessionEnd", { rootDir: this.rootDir, sessionId, profileId })
         this.scheduleMemoryReview(sessionId, profileId, "session-end", session)
         resetSession(this.rootDir, sessionId)
+        return "__SESSION_RESET__"
+      }
+      case "/reset": {
+        const session = getSession(this.rootDir, sessionId)
+        const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
+        await runLifecycleHooks("SessionEnd", { rootDir: this.rootDir, sessionId, profileId })
+        const cleared = clearMemoryPalace(this.rootDir, profileId)
+        appendActionLog(this.rootDir, "Memory Palace reset", {
+          profileId,
+          memoryRowsDeleted: cleared.memoryRowsDeleted,
+          graphRowsDeleted: cleared.graphRowsDeleted,
+        })
+        this.adultModeSessions.delete(sessionId)
+        resetSession(this.rootDir, sessionId, { summary: "Session and Memory Palace reset via /reset" })
         return "__SESSION_RESET__"
       }
       default:

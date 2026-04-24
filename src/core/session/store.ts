@@ -491,11 +491,17 @@ export function readCanonicalMemory(rootDir: string, profileId = "default"): Can
   const bootUser = readBootWing(rootDir, "BOOT_USER", profileId) ?? ""
   const bootMemory = readBootWing(rootDir, "BOOT_MEMORY", profileId) ?? ""
 
-  state.assistant_name ??= extractAssistantNameFallback(bootIdentity, bootMemory)
-  state.user_name ??= extractBootField(bootUser, "Nombre")
-  state.user_preferred_name ??= extractPreferredNameFallback(bootUser, bootMemory)
-  state.user_location ??= extractUserLocationFallback(bootUser, bootMemory)
-  state.user_timezone ??= extractBootField(bootUser, "Zona horaria")
+  const assistantName = extractAssistantNameFallback(bootIdentity, bootMemory)
+  const userName = extractBootField(bootUser, "Nombre")
+  const preferredName = extractPreferredNameFallback(bootUser, bootMemory)
+  const userLocation = extractUserLocationFallback(bootUser, bootMemory)
+  const userTimezone = extractBootField(bootUser, "Zona horaria")
+
+  if (!state.assistant_name && assistantName) state.assistant_name = assistantName
+  if (!state.user_name && userName) state.user_name = userName
+  if (!state.user_preferred_name && preferredName) state.user_preferred_name = preferredName
+  if (!state.user_location && userLocation) state.user_location = userLocation
+  if (!state.user_timezone && userTimezone) state.user_timezone = userTimezone
 
   return state
 }
@@ -750,20 +756,60 @@ export function appendWorklog(rootDir: string, sessionId: string, entry: Omit<Se
   }
 }
 
-export function resetSession(rootDir: string, sessionId: string) {
+export function resetSession(rootDir: string, sessionId: string, options?: { summary?: string }) {
   const db = getDb(rootDir)
   const now = new Date().toISOString()
+  const summary = options?.summary ?? "Session reset via /new"
   db.exec("BEGIN TRANSACTION")
   try {
     db.prepare(`DELETE FROM messages WHERE session_id = ?`).run(sessionId)
     db.prepare(`DELETE FROM worklog WHERE session_id = ?`).run(sessionId)
     db.prepare(`DELETE FROM events WHERE session_id = ?`).run(sessionId)
     db.prepare(`UPDATE sessions SET updated_at = ? WHERE id = ?`).run(now, sessionId)
-    db.prepare(`INSERT INTO worklog (session_id, type, summary, at) VALUES (?, ?, ?, ?)`).run(sessionId, "session", "Session reset via /new", now)
+    db.prepare(`INSERT INTO worklog (session_id, type, summary, at) VALUES (?, ?, ?, ?)`).run(sessionId, "session", summary, now)
     db.exec("COMMIT")
   } catch (err) {
     db.exec("ROLLBACK")
     throw err
+  }
+}
+
+export function clearMemoryPalace(rootDir: string, profileId = "default") {
+  const db = getDb(rootDir)
+  const rows = db.prepare(`
+    SELECT id
+    FROM memory_drawers
+    WHERE profile_id = ?
+      AND wing NOT LIKE 'CONF\\_%' ESCAPE '\\'
+  `).all(profileId) as { id: string }[]
+  const graphRows = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM knowledge_graph
+    WHERE profile_id = ?
+  `).get(profileId) as { count: number }
+
+  db.exec("BEGIN TRANSACTION")
+  try {
+    const deleteVec = db.prepare(`DELETE FROM vec_drawers WHERE id = ?`)
+    for (const row of rows) {
+      deleteVec.run(row.id)
+    }
+    db.prepare(`
+      DELETE FROM memory_drawers
+      WHERE profile_id = ?
+        AND wing NOT LIKE 'CONF\\_%' ESCAPE '\\'
+    `).run(profileId)
+    db.prepare(`DELETE FROM knowledge_graph WHERE profile_id = ?`).run(profileId)
+    db.exec("COMMIT")
+  } catch (err) {
+    db.exec("ROLLBACK")
+    throw err
+  }
+
+  ensureBootWings(rootDir, profileId)
+  return {
+    memoryRowsDeleted: rows.length,
+    graphRowsDeleted: graphRows.count,
   }
 }
 
