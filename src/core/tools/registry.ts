@@ -71,6 +71,7 @@ const TTS_RESPONSE_FORMATS = new Set(["mp3", "opus", "aac", "flac", "wav", "pcm"
 export type ToolContext = {
   rootDir: string
   cwd: string
+  abortSignal?: AbortSignal
   traceId?: string
   profileId?: string
   getMcpClient?: (serverName: string) => Promise<McpClient>
@@ -137,7 +138,12 @@ function normalizePathInput(input: Record<string, unknown>, key = "path") {
 }
 
 function buildTraceEnv(traceId?: string) {
-  return traceId ? { ...process.env, TRACEPARENT: traceId } : process.env
+  const env = { ...process.env }
+  delete env.ANTHROPIC_API_KEY
+  delete env.ANTHROPIC_AUTH_TOKEN
+  delete env.OPENAI_API_KEY
+  if (traceId) env.TRACEPARENT = traceId
+  return env
 }
 
 function requireString(input: Record<string, unknown>, key: string) {
@@ -932,7 +938,9 @@ const tools: ToolDefinition[] = [
           detached: true,
           stdio: ["ignore", stdout, stderr],
           env,
+          signal: context.abortSignal,
         })
+        child.on("error", () => {})
         child.unref()
         return {
           background: true,
@@ -950,6 +958,7 @@ const tools: ToolDefinition[] = [
           cwd: context.cwd,
           stdio: ["ignore", "pipe", "pipe"],
           env,
+          signal: context.abortSignal,
         })
         const timeoutId = setTimeout(() => {
           child.kill("SIGKILL")
@@ -965,6 +974,7 @@ const tools: ToolDefinition[] = [
           outputStream.write(buffer)
         })
         const exitCode = await new Promise<number | null>(resolve => {
+          child.on("error", () => resolve(null))
           child.on("close", code => resolve(code === null ? null : code))
         })
         clearTimeout(timeoutId)
@@ -984,6 +994,7 @@ const tools: ToolDefinition[] = [
           timeout,
           maxBuffer: MAX_EXEC_BUFFER,
           env,
+          signal: context.abortSignal,
         })
         return {
           command,

@@ -272,6 +272,7 @@ export class AgentOrchestrator {
           logger: task.logger,
           cwd: task.cwd,
           traceId: task.traceId,
+          maxTokens: SUBAGENT_TOKEN_BUDGET,
         })
         task.usage ??= {
           total_tokens: 0,

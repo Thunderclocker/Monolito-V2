@@ -969,6 +969,10 @@ export class MonolitoV2Runtime {
 
     this.activeSessions.add(sessionId)
     const turnStartedAt = Date.now()
+    const abortController = new AbortController()
+    const turnTimeout = setTimeout(() => {
+      abortController.abort(new TurnTimeoutError(`Background turn exceeded hard timeout of ${TURN_HARD_TIMEOUT_MS}ms`))
+    }, TURN_HARD_TIMEOUT_MS)
     try {
       loadAndApplyModelSettings(process.env)
       await this.transitionState(sessionId, "running")
@@ -1001,10 +1005,11 @@ export class MonolitoV2Runtime {
       const turn = await runAssistantTurn(
         backgroundSession,
         this.rootDir,
-        async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, sessionId, orchestrator: this.orchestrator, runtime: this }, toolUseId, profileId),
+        async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, abortSignal: abortController.signal, sessionId, orchestrator: this.orchestrator, runtime: this }, toolUseId, profileId),
         {
           rootDir: this.rootDir,
           cwd: this.rootDir,
+          abortSignal: abortController.signal,
           getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
           profileId,
           orchestrator: this.orchestrator,
@@ -1019,6 +1024,7 @@ export class MonolitoV2Runtime {
             taskNotifications,
           },
           costState: this.costState,
+          abortSignal: abortController.signal,
           turnStartedAt,
           maxTurnDurationMs: TURN_HARD_TIMEOUT_MS - 5_000,
         },
@@ -1070,6 +1076,7 @@ export class MonolitoV2Runtime {
         }
       }
     } finally {
+      clearTimeout(turnTimeout)
       await this.transitionState(sessionId, "idle")
       this.releaseSessionLock(sessionId)
     }
@@ -1243,7 +1250,7 @@ export class MonolitoV2Runtime {
     }
   }
 
-  async runTurn(sessionId: string, lastUserText: string, profileId = "default", options?: { logger?: Logger; cwd?: string; traceId?: string }) {
+  async runTurn(sessionId: string, lastUserText: string, profileId = "default", options?: { logger?: Logger; cwd?: string; traceId?: string; maxTokens?: number }) {
     const turnStartedAt = Date.now()
     const instanceLogger = options?.logger
     const effectiveCwd = options?.cwd ?? this.rootDir
@@ -1311,6 +1318,7 @@ export class MonolitoV2Runtime {
               const toolContext = {
                 rootDir: this.rootDir,
                 cwd: effectiveCwd,
+                abortSignal: abortController.signal,
                 traceId,
                 getMcpClient: async (serverName: string) => this.ensureMcpClient(serverName, sessionId),
                 profileId,
@@ -1355,10 +1363,11 @@ export class MonolitoV2Runtime {
         const turn = await runAssistantTurn(
           preparedSession,
           this.rootDir,
-          async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, sessionId, orchestrator: this.orchestrator, runtime: this }, toolUseId, profileId),
+          async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, abortSignal: abortController.signal, sessionId, orchestrator: this.orchestrator, runtime: this }, toolUseId, profileId),
           {
             rootDir: this.rootDir,
             cwd: effectiveCwd,
+            abortSignal: abortController.signal,
             traceId,
             getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
             profileId,
@@ -1376,6 +1385,7 @@ export class MonolitoV2Runtime {
             },
             costState: this.costState,
             abortSignal: abortController.signal,
+            maxTokens: options?.maxTokens,
             turnStartedAt,
             maxTurnDurationMs: timeoutMs - 5_000,
           },
@@ -1532,10 +1542,11 @@ export class MonolitoV2Runtime {
       const turn = await runAssistantTurn(
         syntheticSession,
         this.rootDir,
-        async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, sessionId, orchestrator: this.orchestrator, runtime: this }, toolUseId, profileId),
+        async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, abortSignal: abortController.signal, sessionId, orchestrator: this.orchestrator, runtime: this }, toolUseId, profileId),
         {
           rootDir: this.rootDir,
           cwd: this.rootDir,
+          abortSignal: abortController.signal,
           getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
           profileId,
           orchestrator: this.orchestrator,
@@ -1552,6 +1563,7 @@ export class MonolitoV2Runtime {
           },
           costState: this.costState,
           abortSignal: abortController.signal,
+          maxTokens: sessionId.startsWith("agent-") ? options?.maxTokens : undefined,
           turnStartedAt,
           maxTurnDurationMs: timeoutMs - 5_000,
         },
