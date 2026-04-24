@@ -620,11 +620,17 @@ export function createSession(rootDir: string, title = "Monolito v2 Session", se
   const id = sessionId ?? randomUUID()
 
   const stmtSession = db.prepare(`INSERT INTO sessions (id, profile_id, title, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
-  stmtSession.run(id, profileId, title, "idle", now, now)
-
   const stmtWorklog = db.prepare(`INSERT INTO worklog (session_id, type, summary, at) VALUES (?, ?, ?, ?)`)
   const summary = `Session created: ${truncateSummary(title, 120)}`
-  stmtWorklog.run(id, "session", summary, now)
+  db.exec("BEGIN TRANSACTION")
+  try {
+    stmtSession.run(id, profileId, title, "idle", now, now)
+    stmtWorklog.run(id, "session", summary, now)
+    db.exec("COMMIT")
+  } catch (error) {
+    db.exec("ROLLBACK")
+    throw error
+  }
 
   return getSession(rootDir, id)!
 }

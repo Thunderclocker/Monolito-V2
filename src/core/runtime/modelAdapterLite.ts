@@ -365,6 +365,7 @@ export async function runAssistantTurn(
     systemPromptOverride?: string
     maxIterations?: number
     maxTurnDurationMs?: number
+    maxTokens?: number
     costState?: CostState
     contextExtras?: ContextExtras
     turnStartedAt?: number
@@ -388,7 +389,7 @@ export async function runAssistantTurn(
     if (options?.abortSignal?.aborted) return finalize("", steps, startedAt, iteration - 1, usage, undefined, "aborted")
     if (Date.now() - startedAt > maxTurnDurationMs) return finalize("", steps, startedAt, iteration - 1, usage, "Turn duration exceeded", "max_duration")
     try {
-      const response = await callProviderWithRetry(config, prompt, messages, options?.abortSignal, isSubAgent, undefined)
+      const response = await callProviderWithRetry(config, prompt, messages, options?.abortSignal, isSubAgent, options?.maxTokens)
       enforceBudgetLimit(options?.costState, config.model, response.usage)
       usage = sumUsage(usage, response.usage)
       if (response.toolCalls.length === 0) return finalize(response.text, steps, startedAt, iteration, usage)
