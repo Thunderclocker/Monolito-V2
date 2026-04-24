@@ -42,6 +42,8 @@ type PermissionsFile = {
 type HooksFile = {
   PreToolUse?: HookDefinition[]
   PostToolUse?: HookDefinition[]
+  SessionStart?: HookDefinition[]
+  SessionEnd?: HookDefinition[]
 }
 
 export type PermissionContext = {
@@ -283,7 +285,7 @@ async function evaluateSemanticPermission(toolName: string, input: Record<string
 }
 
 async function runHookCommands(
-  event: "PreToolUse" | "PostToolUse",
+  event: "PreToolUse" | "PostToolUse" | "SessionStart" | "SessionEnd",
   hooks: HookDefinition[] | undefined,
   toolName: string,
   input: Record<string, unknown>,
@@ -358,4 +360,11 @@ export async function checkToolPermission(toolName: string, input: Record<string
 export async function runPostToolHooks(toolName: string, input: Record<string, unknown>, context: PermissionContext, output: unknown) {
   const hooks = readHooksConfig(context.rootDir)
   await runHookCommands("PostToolUse", hooks.PostToolUse, toolName, input, context, output)
+}
+
+export async function runLifecycleHooks(event: "SessionStart" | "SessionEnd", context: PermissionContext) {
+  const hooks = readHooksConfig(context.rootDir)
+  const targetHooks = hooks[event]
+  if (!targetHooks || targetHooks.length === 0) return
+  await runHookCommands(event, targetHooks, "System", {}, context)
 }

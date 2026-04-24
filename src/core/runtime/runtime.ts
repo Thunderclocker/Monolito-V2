@@ -54,7 +54,7 @@ import { getWorkspaceContext } from "../context/workspaceContext.ts"
 import { normalizeToolInputPayload } from "./toolInput.ts"
 import { AgentOrchestrator } from "./orchestrator.ts"
 import { renderToolFinish, renderToolStart, renderToolStartText } from "../renderer/toolRenderer.ts"
-import { checkToolPermission, runPostToolHooks } from "./permissions.ts"
+import { checkToolPermission, runLifecycleHooks, runPostToolHooks } from "./permissions.ts"
 import { runMemoryAgentReview } from "./memoryAgent.ts"
 import type { Logger } from "../logging/logger.ts"
 import type { DelegationTask } from "./orchestrator.ts"
@@ -1218,6 +1218,8 @@ export class MonolitoV2Runtime {
   async processSessionStartup(sessionId: string, prompt: string, options?: { logger?: Logger }) {
     const session = getSession(this.rootDir, sessionId)
     if (!session) throw new Error(`Session ${sessionId} not found`)
+    const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
+    await runLifecycleHooks("SessionStart", { rootDir: this.rootDir, sessionId, profileId })
     if (this.activeSessions.has(sessionId)) {
       const queue = this.pendingUserMessages.get(sessionId) ?? []
       queue.push({ kind: "startup", prompt, logger: options?.logger })
@@ -1225,7 +1227,6 @@ export class MonolitoV2Runtime {
       return
     }
 
-    const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
     const turnStartedAt = new Date().toISOString()
     this.activeSessions.add(sessionId)
     try {
@@ -1791,6 +1792,7 @@ export class MonolitoV2Runtime {
       case "/reset": {
         const session = getSession(this.rootDir, sessionId)
         const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
+        await runLifecycleHooks("SessionEnd", { rootDir: this.rootDir, sessionId, profileId })
         this.scheduleMemoryReview(sessionId, profileId, "session-end", session)
         resetSession(this.rootDir, sessionId)
         return "__SESSION_RESET__"
