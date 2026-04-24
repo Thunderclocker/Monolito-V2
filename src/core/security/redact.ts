@@ -1,6 +1,6 @@
 const REDACTED = "[REDACTED]"
 
-const SENSITIVE_KEY_PATTERN = /(^|_)(token|api[_-]?key|authorization|password|secret|credential)(_|$)/i
+const SENSITIVE_KEY_PATTERN = /(^|[_-])(token|api[_-]?key|authorization|password|secret|credential)([_-]|$)|^(apiKey|authToken|accessToken|refreshToken|botToken)$/i
 const TELEGRAM_BOT_TOKEN_PATTERN = /\b\d{6,}:[A-Za-z0-9_-]{20,}\b/g
 const BEARER_TOKEN_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/=-]{16,}\b/gi
 const GENERIC_API_KEY_PATTERN = /\b(sk-[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,})\b/g

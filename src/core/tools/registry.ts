@@ -33,6 +33,7 @@ import {
 } from "../session/store.ts"
 import { isEmbeddingsUnavailableError } from "../session/embeddings.ts"
 import { type AgentOrchestrator } from "../runtime/orchestrator.ts"
+import { redactSensitiveValue } from "../security/redact.ts"
 import { type Logger } from "../logging/logger.ts"
 import { BOOT_WING_ORDER, isBootWingName } from "../bootstrap/bootWings.ts"
 import { CONFIG_WING_ORDER, type ConfigWingName } from "../config/configWings.ts"
@@ -2608,7 +2609,7 @@ const tools: ToolDefinition[] = [
       const action = requireString(input, "action") as "read" | "write"
       const wing = requireString(input, "wing") as ConfigWingName
       if (action === "read") {
-        return { wing, value: readConfigWing(context.rootDir, wing) }
+        return { wing, value: redactSensitiveValue(readConfigWing(context.rootDir, wing)) }
       }
       const value = parseJsonStringValue(input.value)
       if (value === undefined) throw new Error("value is required when action='write'")

@@ -13,6 +13,7 @@ import { getActiveProfile, type ModelProvider } from "./modelRegistry.ts"
 import { compactSession, getSession, listCanonicalMemoryEntries } from "../session/store.ts"
 import { callProvider, type ConversationMessage, type ProviderConfig, type ProviderResponse, type ToolCall } from "./providers/index.ts"
 import { ensureMonolitoRoot } from "../system/root.ts"
+import { redactSensitiveText } from "../security/redact.ts"
 
 const defaultLogger = createLogger("modelAdapterLite")
 const MAX_TURN_ITERATIONS = 16
@@ -94,6 +95,7 @@ function stringifyToolResult(value: unknown) {
       serialized = String(value)
     }
   }
+  serialized = redactSensitiveText(serialized)
   if (serialized.length <= MAX_TOOL_RESULT_CHARS) {
     return truncate(serialized, MAX_TOOL_RESULT_CHARS)
   }
@@ -165,10 +167,11 @@ function sumUsage(total: TurnUsage | undefined, next: TurnUsage | undefined): Tu
 }
 
 function finalize(finalText: string, steps: AssistantTurnStep[], startedAt: number, iterationCount: number, usage?: TurnUsage, error?: string, stopReason: AssistantTurnResult["meta"]["stopReason"] = "completed"): AssistantTurnResult {
+  const safeFinalText = redactSensitiveText(finalText)
   return {
-    finalText,
-    steps: [...steps, { type: "final", message: finalText }],
-    error,
+    finalText: safeFinalText,
+    steps: [...steps, { type: "final", message: safeFinalText }],
+    error: error ? redactSensitiveText(error) : undefined,
     usage: usage ? {
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,

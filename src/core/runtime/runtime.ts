@@ -78,6 +78,7 @@ import {
 } from "../stt/managed.ts"
 import { MONOLITO_ROOT } from "../system/root.ts"
 import { ToolExecutionError } from "../errors.ts"
+import { redactSensitiveText, redactSensitiveValue } from "../security/redact.ts"
 
 type EventListener = (event: AgentEvent) => void
 
@@ -698,8 +699,9 @@ function shouldSuppressEmit(text: string | null | undefined): boolean {
 }
 
 function sanitizeExternalAssistantText(sessionId: string, text: string, lastUserText?: string) {
-  if (!getTelegramChatId(sessionId)) return text
-  const normalized = text.trim()
+  const safeText = redactSensitiveText(text)
+  if (!getTelegramChatId(sessionId)) return safeText
+  const normalized = safeText.trim()
 
   if (/^Model request failed:/i.test(normalized) || /^Network\/model error after retries:/i.test(normalized)) {
     if (/HTTP 429/i.test(normalized) || /RateLimitError/i.test(normalized)) {
@@ -719,10 +721,10 @@ function sanitizeExternalAssistantText(sessionId: string, text: string, lastUser
   }
 
   if (lastUserText && hasTelegramTranscriptText(lastUserText)) {
-    return sanitizeTranscribedTelegramReply(text)
+    return redactSensitiveText(sanitizeTranscribedTelegramReply(safeText))
   }
 
-  return text
+  return safeText
 }
 
 const TELEGRAM_MESSAGE_LIMIT = 4096
@@ -1627,11 +1629,12 @@ export class MonolitoV2Runtime {
   }
 
   emit(event: AgentEvent) {
-    appendEvent(this.rootDir, event)
-    void this.mirrorTelegramEvent(event)
+    const safeEvent = redactSensitiveValue(event) as AgentEvent
+    appendEvent(this.rootDir, safeEvent)
+    void this.mirrorTelegramEvent(safeEvent)
     for (const listener of this.listeners) {
       try {
-        listener(event)
+        listener(safeEvent)
       } catch (err) {
         console.error("Runtime event listener error:", err)
       }
