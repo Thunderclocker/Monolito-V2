@@ -3,23 +3,6 @@ import { createLogger } from "../logging/logger.ts"
 const logger = createLogger("telegram")
 const POLLING_INTERVAL_MS = 1000
 
-/**
- * Kill other polling processes for this bot token.
- * This prevents 409 Conflict errors when multiple instances run.
- * Sketches the Telegram desktop app (MTProto) since it uses a different protocol.
- */
-async function killOtherPollers(): Promise<void> {
-  try {
-    const { execSync } = await import('child_process')
-    // Find processes running the Telegram plugin polling (excluding our parent)
-    // Kill processes that have the Telegram plugin path or getUpdates pattern
-    const cmd = `ps aux | grep -E 'telegram.*(start|getUpdates|polling)' | grep -v grep | grep -v $$ | awk '{print $2}' | xargs -r kill 2>/dev/null; pkill -f 'getUpdates.*api.telegram.org' 2>/dev/null || true`
-    execSync(cmd, { timeout: 5000 })
-    logger.debug('[Telegram] Killed other polling processes')
-  } catch {
-    // Non-fatal - just continue
-  }
-}
 const MAX_RECONNECT_ATTEMPTS = 5
 const INITIAL_BACKOFF_MS = 1000
 const MAX_BACKOFF_MS = 30000
@@ -258,33 +241,42 @@ export function createTelegramPoller(
     stopped = false
     reconnectAttempts = 0
     logger.debug(`[Telegram] Starting polling`)
-    // Kill other pollers first to prevent 409 Conflict
-    void killOtherPollers()
     // Sequential polling - each poll completes before the next starts
     // This prevents duplicate messages from overlapping requests
     async function sequentialPoll(): Promise<void> {
       let networkBackoffMs = POLLING_INTERVAL_MS
-      while (!stopped) {
-        let nextDelay = POLLING_INTERVAL_MS
-        try {
-          nextDelay = await pollOnce()
-          networkBackoffMs = POLLING_INTERVAL_MS
-        } catch (error) {
-          const err = error as Error
-          if (isRetriableTelegramNetworkError(err)) {
-            callbacks.onError(err)
-            networkBackoffMs = Math.min(
-              networkBackoffMs <= 0 ? POLLING_INTERVAL_MS : networkBackoffMs * 2,
-              MAX_BACKOFF_MS,
-            )
-            logger.debug(`[Telegram] Retriable network error: ${err.message}. Backing off for ${networkBackoffMs}ms`)
-            nextDelay = networkBackoffMs
-          } else {
-            throw err
+      try {
+        while (!stopped) {
+          let nextDelay = POLLING_INTERVAL_MS
+          try {
+            nextDelay = await pollOnce()
+            networkBackoffMs = POLLING_INTERVAL_MS
+          } catch (error) {
+            const err = error as Error
+            if (isRetriableTelegramNetworkError(err)) {
+              callbacks.onError(err)
+              networkBackoffMs = Math.min(
+                networkBackoffMs <= 0 ? POLLING_INTERVAL_MS : networkBackoffMs * 2,
+                MAX_BACKOFF_MS,
+              )
+              logger.debug(`[Telegram] Retriable network error: ${err.message}. Backing off for ${networkBackoffMs}ms`)
+              nextDelay = networkBackoffMs
+            } else {
+              logger.error("Error no manejado en Telegram poller", err)
+              callbacks.onError(err)
+              reconnectAttempts++
+              nextDelay = Math.min(
+                INITIAL_BACKOFF_MS * Math.pow(2, Math.max(reconnectAttempts - 1, 0)),
+                MAX_BACKOFF_MS,
+              )
+            }
           }
+          if (stopped) break
+          await new Promise(resolve => setTimeout(resolve, typeof nextDelay === "number" ? nextDelay : POLLING_INTERVAL_MS))
         }
-        if (stopped) break
-        await new Promise(resolve => setTimeout(resolve, typeof nextDelay === "number" ? nextDelay : POLLING_INTERVAL_MS))
+      } catch (error) {
+        logger.error("Error no manejado en Telegram poller", error)
+        callbacks.onError(error instanceof Error ? error : new Error(String(error)))
       }
     }
     void sequentialPoll()
