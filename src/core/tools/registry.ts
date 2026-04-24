@@ -6,7 +6,7 @@ import { dirname, join, relative, resolve, sep } from "node:path"
 import { pathToFileURL } from "node:url"
 import { ensureDirs, getPaths } from "../ipc/protocol.ts"
 import { MONOLITO_ROOT } from "../system/root.ts"
-import { type StdioMcpClient, getDefaultMcpServers } from "../mcp/client.ts"
+import { type McpClient, createMcpClient, getDefaultMcpServers } from "../mcp/client.ts"
 import { getSharedLspClient } from "../lsp/client.ts"
 import { normalizeChannelsConfigForWrite, readChannelsConfig } from "../channels/config.ts"
 import {
@@ -71,7 +71,7 @@ export type ToolContext = {
   cwd: string
   traceId?: string
   profileId?: string
-  getMcpClient?: (serverName: string) => Promise<StdioMcpClient>
+  getMcpClient?: (serverName: string) => Promise<McpClient>
   orchestrator?: AgentOrchestrator
   logger?: Logger
   sessionId?: string
@@ -401,10 +401,9 @@ async function runRg(args: string[], cwd: string) {
 
 async function getMcpClient(context: ToolContext, serverName: string) {
   if (context.getMcpClient) return context.getMcpClient(serverName)
-  const server = getDefaultMcpServers(context.rootDir)[serverName as keyof ReturnType<typeof getDefaultMcpServers>]
+  const server = getDefaultMcpServers(context.rootDir)[serverName]
   if (!server) throw new Error(`Unknown MCP server: ${serverName}`)
-  const { StdioMcpClient } = await import("../mcp/client.ts")
-  const client = new StdioMcpClient(server.command, server.cwd)
+  const client = createMcpClient(server)
   await client.initialize()
   return client
 }
