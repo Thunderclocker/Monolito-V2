@@ -84,6 +84,25 @@ function stringifyToolResult(value: unknown) {
   }
 }
 
+async function executeToolCall(
+  toolCall: ToolCall,
+  executeTool: (tool: string, input: Record<string, unknown>, context: ToolContext, toolUseId?: string) => Promise<unknown>,
+  context: ToolContext,
+) {
+  try {
+    const output = await executeTool(toolCall.name, toolCall.input, context, toolCall.id)
+    return {
+      toolCall,
+      content: stringifyToolResult(output),
+    }
+  } catch (error) {
+    return {
+      toolCall,
+      content: stringifyToolResult({ error: error instanceof Error ? error.message : String(error) }),
+    }
+  }
+}
+
 function sumUsage(total: TurnUsage | undefined, next: TurnUsage | undefined): TurnUsage | undefined {
   if (!total && !next) return undefined
   return {
@@ -312,17 +331,44 @@ export async function runAssistantTurn(
       messages.push(assistantMessage)
       for (const toolCall of response.toolCalls) {
         steps.push({ type: "tool", id: toolCall.id, tool: toolCall.name, input: toolCall.input })
-        try {
-          const output = await executeTool(toolCall.name, toolCall.input, context, toolCall.id)
-          messages.push({ role: "tool", toolCallId: toolCall.id, toolName: toolCall.name, content: stringifyToolResult(output) })
-        } catch (error) {
-          messages.push({
-            role: "tool",
-            toolCallId: toolCall.id,
-            toolName: toolCall.name,
-            content: stringifyToolResult({ error: error instanceof Error ? error.message : String(error) }),
-          })
+      }
+
+      const indexedToolCalls = response.toolCalls.map((toolCall, index) => ({ toolCall, index }))
+      const safeToolCalls = indexedToolCalls.filter(({ toolCall }) => isToolConcurrencySafe(toolCall.name, toolCall.input))
+      const unsafeToolCalls = indexedToolCalls.filter(({ toolCall }) => !isToolConcurrencySafe(toolCall.name, toolCall.input))
+      const toolResults = new Array<{ role: "tool"; toolCallId: string; toolName: string; content: string }>(response.toolCalls.length)
+
+      const safeResults = await Promise.all(
+        safeToolCalls.map(async ({ toolCall, index }) => {
+          const result = await executeToolCall(toolCall, executeTool, context)
+          return {
+            index,
+            message: {
+              role: "tool" as const,
+              toolCallId: result.toolCall.id,
+              toolName: result.toolCall.name,
+              content: result.content,
+            },
+          }
+        }),
+      )
+      for (const result of safeResults) {
+        toolResults[result.index] = result.message
+      }
+
+      for (const { toolCall, index } of unsafeToolCalls) {
+        const result = await executeToolCall(toolCall, executeTool, context)
+        toolResults[index] = {
+          role: "tool",
+          toolCallId: result.toolCall.id,
+          toolName: result.toolCall.name,
+          content: result.content,
         }
+      }
+
+      for (const toolResult of toolResults) {
+        if (!toolResult) continue
+        messages.push(toolResult)
       }
     } catch (error) {
       if (options?.abortSignal?.aborted) return finalize("", steps, startedAt, Math.max(0, steps.length), usage, undefined, "aborted")
