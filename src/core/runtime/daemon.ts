@@ -254,7 +254,7 @@ export class MonolitoV2Daemon {
           "if [ -n \"$6\" ]; then stash_ref=$(git -C \"$5\" stash list --format='%gd\t%s' | awk -F '\t' -v label=\"$6\" '$2==label { print $1; exit }'); if [ -n \"$stash_ref\" ]; then git -C \"$5\" stash apply --index \"$stash_ref\" || exit 1; git -C \"$5\" stash drop \"$stash_ref\" || exit 1; fi; fi",
           "rm -f \"$7\"",
           "exec \"$2\" --experimental-strip-types \"$3\" --foreground",
-        ].join("; ")
+        ].join("\n")
         const child = spawn("sh", [
           "-lc",
           restartScript,
