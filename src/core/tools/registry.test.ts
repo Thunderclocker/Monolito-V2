@@ -51,6 +51,13 @@ test("tool_manage_config writes CONF_CHANNELS when value is a JSON string with v
     assert.equal((result as { effect: string }).effect, "daemon_restart_required")
     assert.deepEqual(readConfigWing(rootDir, "CONF_CHANNELS"), {
       telegram: { token: "abc", enabled: true, allowedChats: [] },
+      vision: {
+        managed: false,
+        autoDeploy: true,
+        port: 11435,
+        containerName: "monolito-vision-moondream",
+        model: "moondream",
+      },
     })
   } finally {
     cleanupRootDir(rootDir)
@@ -79,6 +86,45 @@ test("tool_manage_config normalizes legacy CONF_CHANNELS telegram aliases", asyn
         token: "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabc",
         enabled: true,
         allowedChats: [1515784684],
+      },
+      vision: {
+        managed: false,
+        autoDeploy: true,
+        port: 11435,
+        containerName: "monolito-vision-moondream",
+        model: "moondream",
+      },
+    })
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("tool_manage_config writes CONF_CHANNELS with vision config", async () => {
+  const rootDir = createRootDir()
+  try {
+    const tool = getTool("tool_manage_config")
+    assert.ok(tool)
+
+    const result = await tool.run({
+      action: "write",
+      wing: "CONF_CHANNELS",
+      value: "{\"telegram\":{\"token\":\"abc\",\"enabled\":true,\"allowedChats\":[]},\"vision\":{\"managed\":true,\"autoDeploy\":true,\"port\":11435,\"containerName\":\"monolito-vision-moondream\",\"model\":\"moondream\"}}",
+    }, {
+      rootDir,
+      cwd: rootDir,
+    })
+
+    assert.equal((result as { wing: string }).wing, "CONF_CHANNELS")
+    assert.equal((result as { ok: boolean }).ok, true)
+    assert.deepEqual(readConfigWing(rootDir, "CONF_CHANNELS"), {
+      telegram: { token: "abc", enabled: true, allowedChats: [] },
+      vision: {
+        managed: true,
+        autoDeploy: true,
+        port: 11435,
+        containerName: "monolito-vision-moondream",
+        model: "moondream",
       },
     })
   } finally {
@@ -115,12 +161,26 @@ test("tool_manage_config redacts CONF_CHANNELS secrets when reading config", asy
         enabled: true,
         allowedChats: [1515784684],
       },
+      vision: {
+        managed: false,
+        autoDeploy: true,
+        port: 11435,
+        containerName: "monolito-vision-moondream",
+        model: "moondream",
+      },
     })
     assert.deepEqual(readConfigWing(rootDir, "CONF_CHANNELS"), {
       telegram: {
         token: "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabc",
         enabled: true,
         allowedChats: [1515784684],
+      },
+      vision: {
+        managed: false,
+        autoDeploy: true,
+        port: 11435,
+        containerName: "monolito-vision-moondream",
+        model: "moondream",
       },
     })
   } finally {

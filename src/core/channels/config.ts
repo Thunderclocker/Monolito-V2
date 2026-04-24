@@ -33,10 +33,19 @@ export type SttConfig = {
   vadFilter: boolean
 }
 
+export type VisionConfig = {
+  managed: boolean
+  autoDeploy: boolean
+  port: number
+  containerName: string
+  model: string
+}
+
 export type ChannelsConfig = {
   telegram?: TelegramConfig
   tts?: Partial<TtsConfig>
   stt?: Partial<SttConfig>
+  vision?: Partial<VisionConfig>
 }
 
 type LooseTelegramConfig = {
@@ -53,8 +62,9 @@ type LooseChannelsConfig = ChannelsConfig & {
   telegram?: LooseTelegramConfig
 }
 
-const CHANNELS_TOP_LEVEL_KEYS = new Set(["telegram", "tts", "stt"])
+const CHANNELS_TOP_LEVEL_KEYS = new Set(["telegram", "tts", "stt", "vision"])
 const TELEGRAM_KEYS = new Set(["token", "enabled", "allowedChats"])
+const VISION_KEYS = new Set(["managed", "autoDeploy", "port", "containerName", "model"])
 
 function hasOwn(object: Record<string, unknown>, key: string) {
   return Object.prototype.hasOwnProperty.call(object, key)
@@ -97,6 +107,17 @@ function assertValidChannelsConfigForWrite(config: unknown) {
       throw new Error(`CONF_CHANNELS.telegram contains unsupported keys: ${unknownTelegramKeys.join(", ")}`)
     }
   }
+
+  if (record.vision !== undefined) {
+    if (!record.vision || typeof record.vision !== "object" || Array.isArray(record.vision)) {
+      throw new Error("CONF_CHANNELS.vision must be an object.")
+    }
+    const vision = record.vision as Record<string, unknown>
+    const unknownVisionKeys = Object.keys(vision).filter(key => !VISION_KEYS.has(key))
+    if (unknownVisionKeys.length > 0) {
+      throw new Error(`CONF_CHANNELS.vision contains unsupported keys: ${unknownVisionKeys.join(", ")}`)
+    }
+  }
 }
 
 function toIntegerArray(value: unknown) {
@@ -123,6 +144,23 @@ function normalizeTelegramConfig(value: unknown): TelegramConfig | undefined {
   }
 }
 
+function normalizeVisionConfig(value: unknown): VisionConfig | undefined {
+  if (value !== undefined && (!value || typeof value !== "object" || Array.isArray(value))) return undefined
+  const vision = (value ?? {}) as Partial<VisionConfig>
+  const port = typeof vision.port === "number" && Number.isFinite(vision.port) && vision.port > 0 && vision.port <= 65535
+    ? Math.trunc(vision.port)
+    : 11435
+  return {
+    managed: typeof vision.managed === "boolean" ? vision.managed : false,
+    autoDeploy: typeof vision.autoDeploy === "boolean" ? vision.autoDeploy : true,
+    port,
+    containerName: typeof vision.containerName === "string" && vision.containerName.trim()
+      ? vision.containerName.trim()
+      : "monolito-vision-moondream",
+    model: typeof vision.model === "string" && vision.model.trim() ? vision.model.trim() : "moondream",
+  }
+}
+
 export function normalizeChannelsConfig(config: unknown): ChannelsConfig {
   if (!config || typeof config !== "object" || Array.isArray(config)) return {}
   const loose = config as LooseChannelsConfig
@@ -135,6 +173,7 @@ export function normalizeChannelsConfig(config: unknown): ChannelsConfig {
   if (loose.stt && typeof loose.stt === "object" && !Array.isArray(loose.stt)) {
     normalized.stt = { ...loose.stt }
   }
+  normalized.vision = normalizeVisionConfig(loose.vision)
   return normalized
 }
 

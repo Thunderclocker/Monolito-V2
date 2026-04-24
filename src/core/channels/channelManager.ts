@@ -7,6 +7,7 @@ import { createTelegramPoller, type TelegramCallbackQuery, type TelegramMessage,
 import type { MonolitoV2Runtime } from "../runtime/runtime.ts"
 import { ensureDirs } from "../ipc/protocol.ts"
 import { deployManagedSttContainer, normalizeSttConfig, transcribeManagedAudioFile } from "../stt/managed.ts"
+import { analyzeManagedImage, deployManagedVisionContainer, normalizeVisionConfig } from "../vision/managed.ts"
 
 const logger = createLogger("channels")
 let activePoller: TelegramPoller | null = null
@@ -237,6 +238,26 @@ async function maybeTranscribeTelegramAudio(token: string, rootDir: string, msg:
   return await transcribeManagedAudioFile(localPath, stt)
 }
 
+function getLargestTelegramPhoto(msg: TelegramMessage | undefined) {
+  if (!msg?.photo?.length) return null
+  return [...msg.photo].sort((a, b) => (b.file_size ?? 0) - (a.file_size ?? 0))[0] ?? null
+}
+
+async function maybeAnalyzeTelegramPhoto(token: string, rootDir: string, msg: TelegramMessage | undefined) {
+  if (!msg) return null
+  const photo = getLargestTelegramPhoto(msg)
+  if (!photo) return null
+  const config = readChannelsConfig()
+  const vision = normalizeVisionConfig(config.vision)
+  if (!vision.managed) return null
+  if (vision.autoDeploy) {
+    const deploy = await deployManagedVisionContainer(vision)
+    if (!deploy.ok) throw new Error(deploy.message)
+  }
+  const localPath = await downloadTelegramFile(token, photo.file_id, rootDir, `telegram-photo-${msg.chat.id}-${photo.file_id.slice(0, 8)}`)
+  return await analyzeManagedImage(localPath, vision)
+}
+
 function shouldShortCircuitAudioFailure(msg: TelegramMessage | undefined, transcript: { text: string; language?: string } | null) {
   if (!msg) return false
   const hasAudioLikeAttachment = Boolean(msg.audio || msg.voice)
@@ -244,7 +265,11 @@ function shouldShortCircuitAudioFailure(msg: TelegramMessage | undefined, transc
   return hasAudioLikeAttachment && !hasUserText && !transcript?.text
 }
 
-function buildTelegramInboundText(msg: TelegramMessage | undefined, transcript?: { text: string; language?: string } | null) {
+function buildTelegramInboundText(
+  msg: TelegramMessage | undefined,
+  transcript?: { text: string; language?: string } | null,
+  visionTranscript?: string | null,
+) {
   if (!msg) return null
   const text = msg.text?.trim() || msg.caption?.trim() || ""
   const hasAudioLikeAttachment = Boolean(msg.audio || msg.voice)
@@ -263,9 +288,12 @@ function buildTelegramInboundText(msg: TelegramMessage | undefined, transcript?:
   } else if (hasAudioLikeAttachment) {
     parts.push(`<transcript source="stt" status="unavailable" />`)
   }
+  if (visionTranscript?.trim()) {
+    parts.push(`<transcript source="vision_fallback">Descripción visual: ${escapeXml(visionTranscript.trim())}</transcript>`)
+  }
 
-  if (msg.photo?.length) {
-    const largest = [...msg.photo].sort((a, b) => (b.file_size ?? 0) - (a.file_size ?? 0))[0]
+  if (msg.photo?.length && !visionTranscript?.trim()) {
+    const largest = getLargestTelegramPhoto(msg)
     if (largest) {
       parts.push(`<attachment kind="photo" file_id="${largest.file_id}" width="${largest.width}" height="${largest.height}" />`)
     }
@@ -553,6 +581,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
         }
 
         let transcript: { text: string; language?: string } | null = null
+        let visionTranscript: string | null = null
         try {
           const result = await maybeTranscribeTelegramAudio(config.telegram.token, runtime.rootDir, msg)
           if (result) {
@@ -564,6 +593,12 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
           const message = error instanceof Error ? error.message : String(error)
           logger.warn(`STT failed for Telegram chat ${chatId}: ${message}`)
         }
+        try {
+          visionTranscript = await maybeAnalyzeTelegramPhoto(config.telegram.token, runtime.rootDir, msg)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          logger.warn(`Vision failed for Telegram chat ${chatId}: ${message}`)
+        }
 
         if (shouldShortCircuitAudioFailure(msg, transcript)) {
           await sendTelegramText(
@@ -574,7 +609,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
           return
         }
 
-        const inboundText = buildTelegramInboundText(msg, transcript)
+        const inboundText = buildTelegramInboundText(msg, transcript, visionTranscript)
         if (!inboundText) return
         
         logger.debug(`Received Telegram message [${chatId}]`)
