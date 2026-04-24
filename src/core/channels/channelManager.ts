@@ -34,11 +34,7 @@ function scheduleTelegramBusyRetry(
 
 const TELEGRAM_BOT_COMMANDS = [
   { command: "help", description: "Show available commands" },
-  { command: "status", description: "Show current session status" },
   { command: "sessions", description: "List active sessions" },
-  { command: "history", description: "Show recent session history" },
-  { command: "cost", description: "Show token and cost summary" },
-  { command: "compact", description: "Compact current session" },
   { command: "model", description: "Show current model configuration" },
   { command: "channels", description: "Configure Telegram channel settings" },
   { command: "config", description: "Show or set configuration" },

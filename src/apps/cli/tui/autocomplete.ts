@@ -3,11 +3,10 @@ import { listTools } from "../../../core/tools/registry.ts"
 import type { CompletionMatch } from "./types.ts"
 
 export const INTERACTIVE_COMMANDS = [
-  "/help", "/new", "/status", "/sessions", "/tool", "/mcp", "/model", "/channels", "/history",
-  "/cost", "/compact", "/stats", "/doctor", "/update", "/websearch", "/config", "/dashboard", "/quit", "/exit", "/stop",
+  "/help", "/new", "/sessions", "/tool", "/mcp", "/model", "/channels",
+  "/doctor", "/update", "/websearch", "/config", "/dashboard", "/quit", "/exit", "/stop",
 ]
 export const MCP_SUBCOMMANDS = ["tools", "resources", "read", "call"]
-export const COMPACT_SUBCOMMANDS: string[] = []
 export const CONFIG_SUBCOMMANDS = ["show", "set"]
 
 export function getTokensForCompletion(line: string) {
@@ -73,19 +72,14 @@ export function createInteractiveCompleter(rootDir: string) {
         return [[], line]
       case "/model":
         return [[], line]
-      case "/compact":
-        if (tokens.length === 2) return [["(max-messages)"], subcommand]
-        return [[], line]
       case "/config":
         if (tokens.length === 2) return completeToken(subcommand, CONFIG_SUBCOMMANDS)
         if (tokens.length === 3 && subcommand === "set") return [["(field)"], third]
         return [[], line]
       case "/new":
-      case "/stats":
       case "/doctor":
       case "/update":
       case "/websearch":
-      case "/cost":
       case "/sessions":
       case "/help":
       case "/quit":

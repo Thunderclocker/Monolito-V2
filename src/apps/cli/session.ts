@@ -20,14 +20,11 @@ import { commitPromptHistory, createPromptHistory, historyDown, historyUp } from
 import { readModelSettings } from "../../core/runtime/modelConfig.ts"
 import { getActiveProfile } from "../../core/runtime/modelRegistry.ts"
 import {
-  formatCompact,
   formatConfig,
-  formatCostSummary,
   formatDoctor,
   formatHelp,
   formatModelInfo,
   formatSessionsTable,
-  formatStats,
   type FormattedBlock,
 } from "./tui/formatters.ts"
 import {
@@ -704,12 +701,6 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       if (cmd === "/sessions") {
         const sessions = await client.listSessions() as SessionSummary[]
         return formatSessionsTable(sessions)
-      }
-      if (cmd === "/cost") return formatCostSummary(await client.queryCost() as string)
-      if (cmd === "/stats") return formatStats(await client.queryStats(activeSessionId ?? undefined) as string)
-      if (cmd === "/compact") {
-        const max = args[0] ? Number.parseInt(args[0], 10) : undefined
-        return formatCompact(await client.queryCompact(activeSessionId ?? undefined, max) as string)
       }
       if (cmd === "/doctor") return formatDoctor(await client.queryDoctor() as string)
       if (cmd === "/update") {
