@@ -243,6 +243,19 @@ function optionalBoolean(input: Record<string, unknown>, key: string) {
   return typeof value === "boolean" ? value : undefined
 }
 
+function findStringOccurrences(content: string, needle: string) {
+  const matches: Array<{ index: number; line: number }> = []
+  let fromIndex = 0
+  while (true) {
+    const index = content.indexOf(needle, fromIndex)
+    if (index === -1) break
+    const line = content.slice(0, index).split("\n").length
+    matches.push({ index, line })
+    fromIndex = index + needle.length
+  }
+  return matches
+}
+
 function normalizeConfigWingValue(wing: ConfigWingName, value: unknown) {
   if (wing === "CONF_CHANNELS") {
     return normalizeChannelsConfigForWrite(value)
@@ -504,6 +517,7 @@ const tools: ToolDefinition[] = [
         old_string: { type: "string" },
         new_string: { type: "string" },
         replace_all: { type: "boolean" },
+        match_index: { type: "number", description: "Optional 0-based match index to replace when old_string appears multiple times." },
       },
       required: ["path", "old_string", "new_string"],
       additionalProperties: false,
@@ -513,6 +527,12 @@ const tools: ToolDefinition[] = [
       if (typeof input.path !== "string" || input.path.length === 0) return "path must be a non-empty string"
       if (typeof input.old_string !== "string" || input.old_string.length === 0) return "old_string must be a non-empty string"
       if (typeof input.new_string !== "string") return "new_string must be a string"
+      if (input.match_index !== undefined && (typeof input.match_index !== "number" || !Number.isInteger(input.match_index) || input.match_index < 0)) {
+        return "match_index must be a non-negative integer"
+      }
+      if (input.match_index !== undefined && input.replace_all === true) {
+        return "match_index cannot be combined with replace_all=true"
+      }
       return null
     },
     async run(input, context) {
@@ -520,16 +540,40 @@ const tools: ToolDefinition[] = [
       const oldString = requireString(input, "old_string")
       const newString = requireString(input, "new_string")
       const replaceAll = optionalBoolean(input, "replace_all") ?? false
+      const matchIndex = optionalNumber(input, "match_index")
       const file = resolveWorkspacePath(context.rootDir, context.cwd, path)
       const original = readFileSync(file, "utf8")
-      const occurrences = original.split(oldString).length - 1
+      const matches = findStringOccurrences(original, oldString)
+      const occurrences = matches.length
       if (occurrences === 0) throw new Error(`old_string not found in ${path}`)
-      if (!replaceAll && occurrences > 1) {
-        throw new Error(`old_string matched ${occurrences} times in ${path}; set replace_all=true`)
+      if (replaceAll && matchIndex !== undefined) {
+        throw new Error("match_index cannot be combined with replace_all=true")
       }
-      const updated = replaceAll ? original.split(oldString).join(newString) : original.replace(oldString, newString)
+      if (!replaceAll && occurrences > 1) {
+        if (matchIndex === undefined) {
+          const lineSummary = matches.map((match, index) => `${index}:${match.line}`).join(", ")
+          throw new Error(`old_string matched ${occurrences} times in ${path} at match_index:line ${lineSummary}; retry with match_index or set replace_all=true`)
+        }
+        if (!Number.isInteger(matchIndex) || matchIndex < 0 || matchIndex >= occurrences) {
+          throw new Error(`match_index ${matchIndex} is out of range for ${occurrences} matches in ${path}`)
+        }
+      }
+      let updated = original
+      let replaced = 0
+      if (replaceAll) {
+        updated = original.split(oldString).join(newString)
+        replaced = occurrences
+      } else if (matchIndex !== undefined) {
+        const match = matches[matchIndex]
+        if (!match) throw new Error(`match_index ${matchIndex} is out of range for ${occurrences} matches in ${path}`)
+        updated = `${original.slice(0, match.index)}${newString}${original.slice(match.index + oldString.length)}`
+        replaced = 1
+      } else {
+        updated = original.replace(oldString, newString)
+        replaced = 1
+      }
       writeFileSync(file, updated, "utf8")
-      return { path, replaced: replaceAll ? occurrences : 1, bytes: Buffer.byteLength(updated) }
+      return { path, replaced, bytes: Buffer.byteLength(updated) }
     },
   },
   {
