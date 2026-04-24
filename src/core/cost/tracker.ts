@@ -69,6 +69,19 @@ function calculateCost(usage: ModelUsage, model: string): number {
   )
 }
 
+export function estimateTurnCostUSD(model: string, usage: TurnUsage): number {
+  return calculateCost(
+    {
+      inputTokens: usage.inputTokens ?? 0,
+      outputTokens: usage.outputTokens ?? 0,
+      cacheReadInputTokens: usage.cacheReadInputTokens ?? 0,
+      cacheCreationInputTokens: usage.cacheCreationInputTokens ?? 0,
+      apiCalls: 1,
+    },
+    model,
+  )
+}
+
 export function createCostState(): CostState {
   const now = new Date().toISOString()
   return {
