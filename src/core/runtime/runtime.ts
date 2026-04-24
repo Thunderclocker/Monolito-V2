@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, wr
 import { join } from "node:path"
 import { promisify } from "node:util"
 import { getPaths, type AgentEvent, type SessionRecord } from "../ipc/protocol.ts"
-import { StdioMcpClient, getDefaultMcpServers } from "../mcp/client.ts"
+import { createMcpClient, getDefaultMcpServers, type McpClient } from "../mcp/client.ts"
 import {
   appendActionLog,
   appendEvent,
@@ -798,7 +798,7 @@ function startTelegramTypingIndicator(sessionId: string): TelegramTypingIndicato
 export class MonolitoV2Runtime {
   readonly rootDir: string
   private listeners = new Set<EventListener>()
-  private mcpClients = new Map<string, StdioMcpClient>()
+  private mcpClients = new Map<string, McpClient>()
   private activeSessions = new Set<string>()
   private recentResumeAt = new Map<string, number>()
   private abortControllers = new Map<string, AbortController>()
@@ -1642,11 +1642,11 @@ export class MonolitoV2Runtime {
   }
 
   private async ensureMcpClient(serverName: string, sessionId: string) {
-    const server = getDefaultMcpServers(this.rootDir)[serverName as "demo"]
+    const server = getDefaultMcpServers(this.rootDir)[serverName]
     if (!server) throw new Error(`Unknown MCP server: ${serverName}`)
     let client = this.mcpClients.get(serverName)
     if (!client) {
-      client = new StdioMcpClient(server.command, server.cwd)
+      client = createMcpClient(server)
       await client.initialize()
       this.mcpClients.set(serverName, client)
       this.emit({ type: "mcp.connected", sessionId, server: serverName })
