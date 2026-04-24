@@ -3,12 +3,14 @@ import type { ModelSettings } from "../runtime/modelConfig.ts"
 import type { ModelRegistry } from "../runtime/modelRegistry.ts"
 import type { WebSearchConfig } from "../websearch/config.ts"
 import { MODEL_PROTOCOL } from "../runtime/modelConstants.ts"
+import type { ResolvedMcpServerConfig } from "../mcp/client.ts"
 
 export const CONFIG_WING_ORDER = [
   "CONF_MODELS",
   "CONF_SYSTEM",
   "CONF_CHANNELS",
   "CONF_WEBSEARCH",
+  "CONF_MCP",
 ] as const
 
 export type ConfigWingName = (typeof CONFIG_WING_ORDER)[number]
@@ -18,6 +20,7 @@ export type ConfigWingValueMap = {
   CONF_SYSTEM: ModelSettings
   CONF_CHANNELS: ChannelsConfig
   CONF_WEBSEARCH: WebSearchConfig
+  CONF_MCP: Record<string, ResolvedMcpServerConfig>
 }
 
 export function createDefaultSystemConfig(): ModelSettings {
@@ -44,4 +47,5 @@ export const DEFAULT_CONFIG_WING_VALUES: ConfigWingValueMap = {
   CONF_WEBSEARCH: {
     provider: "default",
   },
+  CONF_MCP: {},
 }
