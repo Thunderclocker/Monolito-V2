@@ -171,6 +171,107 @@ function stringifyValue(value: unknown, max = 220) {
   }
 }
 
+function decodeBasicHtmlEntities(value: string) {
+  return value
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&#(\d+);/g, (match, code: string) => {
+      const parsed = Number(code)
+      return Number.isFinite(parsed) ? String.fromCodePoint(parsed) : match
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (match, code: string) => {
+      const parsed = Number.parseInt(code, 16)
+      return Number.isFinite(parsed) ? String.fromCodePoint(parsed) : match
+    })
+}
+
+function htmlToReadableText(html: string) {
+  return decodeBasicHtmlEntities(html
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, " ")
+    .replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/gi, " ")
+    .replace(/<(br|hr)\b[^>]*>/gi, "\n")
+    .replace(/<\/(p|div|section|article|header|footer|li|tr|h[1-6])>/gi, "\n")
+    .replace(/<[^>]*>/g, " "))
+    .replace(/[ \t\f\v]+/g, " ")
+    .replace(/\s*\n\s*/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+}
+
+function promptTerms(prompt: string) {
+  const stopwords = new Set([
+    "para", "por", "con", "una", "uno", "unos", "unas", "del", "las", "los", "the",
+    "and", "for", "from", "that", "this", "especially", "sobre", "como", "cual", "cuál",
+  ])
+  return Array.from(new Set(prompt
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .match(/[a-z0-9]{4,}/g) ?? []))
+    .filter(term => !stopwords.has(term))
+}
+
+function selectRelevantText(content: string, prompt: string, maxChars: number) {
+  if (content.length <= maxChars) return content
+
+  const normalizedContent = content
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+  const terms = promptTerms(prompt)
+  const anchors = terms
+    .flatMap(term => {
+      const positions: number[] = []
+      let from = 0
+      while (positions.length < 20) {
+        const index = normalizedContent.indexOf(term, from)
+        if (index === -1) break
+        positions.push(index)
+        from = index + term.length
+      }
+      return positions
+    })
+    .sort((a, b) => a - b)
+
+  if (anchors.length === 0) return `${content.slice(0, maxChars).trimEnd()}\n...[truncated]`
+
+  const windowSize = Math.min(1800, Math.max(700, Math.floor(maxChars / 3)))
+  const scored = anchors.map(anchor => {
+    const start = Math.max(0, anchor - Math.floor(windowSize / 3))
+    const end = Math.min(content.length, start + windowSize)
+    const windowText = normalizedContent.slice(start, end)
+    const score = terms.reduce((sum, term) => sum + (windowText.includes(term) ? 1 : 0), 0)
+    return { start, end, score }
+  })
+    .sort((a, b) => b.score - a.score || a.start - b.start)
+
+  const selected: Array<{ start: number; end: number }> = []
+  for (const candidate of scored) {
+    if (selected.some(range => candidate.start < range.end && candidate.end > range.start)) continue
+    selected.push({ start: candidate.start, end: candidate.end })
+    const used = selected.reduce((sum, range) => sum + range.end - range.start, 0)
+    if (used >= maxChars) break
+  }
+
+  return selected
+    .sort((a, b) => a.start - b.start)
+    .map(range => {
+      const prefix = range.start > 0 ? "... " : ""
+      const suffix = range.end < content.length ? " ..." : ""
+      return `${prefix}${content.slice(range.start, range.end).trim()}${suffix}`
+    })
+    .join("\n\n---\n\n")
+    .slice(0, maxChars)
+    .trimEnd()
+}
+
 type ForensicsIntent = "auto" | "history" | "actions" | "delegation" | "origin"
 
 function resolveForensicsIntent(raw: string | undefined): ForensicsIntent {
@@ -998,11 +1099,14 @@ const tools: ToolDefinition[] = [
       const looksLikeJson = (trimmedContent.startsWith("{") || trimmedContent.startsWith("["))
       const isJson = /(^|[/+])json\b/.test(normalizedContentType) || (looksLikeJson && isValidJson(trimmedContent))
       if (!isJson) {
-        // Strip HTML tags for plain text while keeping non-HTML text readable.
-        content = content.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim()
+        content = /<\/?[a-z][\s\S]*>/i.test(content)
+          ? htmlToReadableText(content)
+          : content.replace(/\s+/g, " ").trim()
       }
       const maxChars = isJson ? 50_000 : 5_000
-      const truncated = content.length > maxChars ? content.slice(0, maxChars) + "..." : content
+      const truncated = isJson
+        ? content.length > maxChars ? content.slice(0, maxChars) + "..." : content
+        : selectRelevantText(content, prompt, maxChars)
       const relevant = isJson
         ? truncated
         : truncated.toLowerCase().includes(prompt.toLowerCase())
