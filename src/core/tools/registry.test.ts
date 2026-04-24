@@ -40,23 +40,72 @@ test("tool_manage_config writes CONF_CHANNELS when value is a JSON string with v
   }
 })
 
-test("tool_manage_config rejects JSON string CONF_CHANNELS values that use bot_token", async () => {
+test("tool_manage_config normalizes legacy CONF_CHANNELS telegram aliases", async () => {
   const rootDir = createRootDir()
   try {
     const tool = getTool("tool_manage_config")
     assert.ok(tool)
 
-    await assert.rejects(
-      () => tool.run({
-        action: "write",
-        wing: "CONF_CHANNELS",
-        value: "{\"telegram\":{\"bot_token\":\"abc\",\"enabled\":true,\"allowedChats\":[]}}",
-      }, {
-        rootDir,
-        cwd: rootDir,
-      }),
-      /must not use 'bot_token'/,
-    )
+    const result = await tool.run({
+      action: "write",
+      wing: "CONF_CHANNELS",
+      value: "{\"telegram\":{\"bot_token\":\"123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabc\",\"enabled\":true,\"authorized_chats\":[\"1515784684\"]}}",
+    }, {
+      rootDir,
+      cwd: rootDir,
+    })
+
+    assert.equal((result as { wing: string }).wing, "CONF_CHANNELS")
+    assert.equal((result as { ok: boolean }).ok, true)
+    assert.deepEqual(readConfigWing(rootDir, "CONF_CHANNELS"), {
+      telegram: {
+        token: "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabc",
+        enabled: true,
+        allowedChats: [1515784684],
+      },
+    })
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("tool_manage_config redacts CONF_CHANNELS secrets when reading config", async () => {
+  const rootDir = createRootDir()
+  try {
+    const tool = getTool("tool_manage_config")
+    assert.ok(tool)
+
+    await tool.run({
+      action: "write",
+      wing: "CONF_CHANNELS",
+      value: "{\"telegram\":{\"token\":\"123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabc\",\"enabled\":true,\"allowedChats\":[1515784684]}}",
+    }, {
+      rootDir,
+      cwd: rootDir,
+    })
+
+    const result = await tool.run({
+      action: "read",
+      wing: "CONF_CHANNELS",
+    }, {
+      rootDir,
+      cwd: rootDir,
+    })
+
+    assert.deepEqual((result as { value: unknown }).value, {
+      telegram: {
+        token: "[REDACTED]",
+        enabled: true,
+        allowedChats: [1515784684],
+      },
+    })
+    assert.deepEqual(readConfigWing(rootDir, "CONF_CHANNELS"), {
+      telegram: {
+        token: "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabc",
+        enabled: true,
+        allowedChats: [1515784684],
+      },
+    })
   } finally {
     cleanupRootDir(rootDir)
   }
