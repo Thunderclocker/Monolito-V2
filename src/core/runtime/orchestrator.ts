@@ -95,6 +95,7 @@ export type TaskSnapshot = {
 const IMMEDIATE_AGENT_SETTLE_MS = 1_500
 const MAX_CONCURRENT_WORKERS = 6
 const TASK_RETENTION_MS = 5 * 60 * 1000
+const SUBAGENT_TOKEN_BUDGET = 30_000
 
 
 export class AgentOrchestrator {
@@ -272,6 +273,19 @@ export class AgentOrchestrator {
           cwd: task.cwd,
           traceId: task.traceId,
         })
+        task.usage ??= {
+          total_tokens: 0,
+          tool_uses: 0,
+          duration_ms: 0,
+        }
+        task.usage.total_tokens += turn.usage?.totalTokens ?? 0
+        task.usage.duration_ms = Date.now() - turnStartedAt
+
+        if (task.usage.total_tokens > SUBAGENT_TOKEN_BUDGET) {
+          task.error = `Budget exceeded (${SUBAGENT_TOKEN_BUDGET / 1000}k tokens limit)`
+          await this.stopAgent(task.id)
+          break
+        }
 
         if (turn.error) {
           partialResult = turn.finalText || partialResult
@@ -311,13 +325,17 @@ export class AgentOrchestrator {
         break
       }
 
+      if (task.status !== "running") {
+        return
+      }
+
       task.status = "completed"
       task.result = turn.finalText
       task.error = undefined
       task.usage = {
-        total_tokens: turn.usage?.totalTokens ?? 0,
-        tool_uses: 0,
-        duration_ms: Date.now() - turnStartedAt
+        total_tokens: task.usage?.total_tokens ?? 0,
+        tool_uses: task.usage?.tool_uses ?? 0,
+        duration_ms: Date.now() - turnStartedAt,
       }
       // 3. Notify parent session with XML
       await this.notifyParent(task)
