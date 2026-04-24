@@ -890,6 +890,7 @@ const tools: ToolDefinition[] = [
       const startedAt = Date.now()
       let code = 0
       let codeText = ""
+      let contentType = ""
       let bytes = 0
       let content = ""
       try {
@@ -897,12 +898,13 @@ const tools: ToolDefinition[] = [
           const response = await fetch(url, {
             headers: {
               "User-Agent": "MonolitoV2/1.0",
-              "Accept": "text/html,application/xhtml+xml,text/plain,*/*",
+              "Accept": "application/json,text/html,application/xhtml+xml,text/plain,*/*",
             },
             signal: AbortSignal.timeout(15000),
           })
           code = response.status
           codeText = response.statusText
+          contentType = response.headers.get("content-type") ?? ""
           const buffer = await response.arrayBuffer()
           bytes = buffer.byteLength
           const decoder = new TextDecoder("utf-8", { fatal: false })
@@ -914,8 +916,6 @@ const tools: ToolDefinition[] = [
           bytes = fallback.bytes
           content = fallback.content
         }
-        // Strip HTML tags for plain text
-        content = content.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim()
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)
         return {
@@ -925,8 +925,19 @@ const tools: ToolDefinition[] = [
           durationMs: Date.now() - startedAt,
         }
       }
-      const truncated = content.length > 5000 ? content.slice(0, 5000) + "..." : content
-      const relevant = truncated.toLowerCase().includes(prompt.toLowerCase())
+      const normalizedContentType = contentType.toLowerCase()
+      const trimmedContent = content.trim()
+      const looksLikeJson = (trimmedContent.startsWith("{") || trimmedContent.startsWith("["))
+      const isJson = /(^|[/+])json\b/.test(normalizedContentType) || (looksLikeJson && isValidJson(trimmedContent))
+      if (!isJson) {
+        // Strip HTML tags for plain text while keeping non-HTML text readable.
+        content = content.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim()
+      }
+      const maxChars = isJson ? 50_000 : 5_000
+      const truncated = content.length > maxChars ? content.slice(0, maxChars) + "..." : content
+      const relevant = isJson
+        ? truncated
+        : truncated.toLowerCase().includes(prompt.toLowerCase())
         ? `[Content relevant to "${prompt}"]\n${truncated}`
         : truncated
       return {
@@ -934,6 +945,7 @@ const tools: ToolDefinition[] = [
         bytes,
         code,
         codeText,
+        contentType,
         result: relevant,
         durationMs: Date.now() - startedAt,
       }
@@ -2543,6 +2555,15 @@ const tools: ToolDefinition[] = [
     },
   },
 ]
+
+function isValidJson(value: string) {
+  try {
+    JSON.parse(value)
+    return true
+  } catch {
+    return false
+  }
+}
 
 export function listTools() {
   return tools
