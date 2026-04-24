@@ -60,7 +60,7 @@ The runtime does not rely on workspace markdown files for identity or memory. Th
 - Monolito runs a background `Memory Agent` that reviews recent conversation and proposes updates for `USER` and `MEMORY` without interrupting the main reply flow.
 - The same review pass also stores the last conversation turn verbatim into SQLite, without asking the LLM to invent summaries for the Memory Palace.
 - Stable profile facts can also be promoted into canonical memory.
-- It is triggered after normal turns, before `/compact`, and before session resets such as `/new`.
+- It is triggered after normal turns, before `/compact`, and before session-only resets such as `/new`.
 - Operational logging is emitted through the daemon log under the `memory-agent` logger category.
 - Memory Agent updates are also summarized into the session worklog when something is applied.
 - See `docs/memory-agent.md` for routing and behavior details.
@@ -170,6 +170,9 @@ The runtime does not rely on workspace markdown files for identity or memory. Th
 - `/websearch`
 - `/adult`
 - `/new`
+- `/reset`
+
+`/new` starts a fresh session without clearing Memory Palace. `/reset` starts over and clears profile-scoped Memory Palace data while preserving runtime configuration.
 
 `/update` fetches from `origin`, applies a fast-forward pull on the current branch, and restarts the daemon automatically. If the working tree has local changes, Monolito backs them up to a git stash automatically before updating.
 

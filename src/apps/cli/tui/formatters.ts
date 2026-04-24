@@ -138,6 +138,7 @@ export function formatHelp(): FormattedBlock {
   const commands = [
     ["/help", "Show this help"],
     ["/new", "Start a fresh session"],
+    ["/reset", "Reset session and clear Memory Palace for this profile"],
     ["/sessions", "List all sessions"],
     ["/doctor", "Run system health check"],
     ["/update", "Fetch and fast-forward from origin"],
