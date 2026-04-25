@@ -240,6 +240,7 @@ function buildUserPrompt(session: SessionRecord, rootDir: string, profileId: str
     "", "CANONICAL_MEMORY:", canonicalLines.length > 0 ? canonicalLines.join("\n") : "(empty)",
     "", "Conversation:", formatRecentConversation(session),
     "", "Return JSON only. No markdown. No newlines inside strings.",
+    "CRITICAL INSTRUCTION: DO NOT reply to the user. DO NOT act as a conversational assistant. ONLY analyze the text and return the requested JSON object.",
   ].join("\n")
 }
 

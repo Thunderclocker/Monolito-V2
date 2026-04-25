@@ -14,6 +14,7 @@ export async function callAnthropicApi(
   const client = new Anthropic({
     apiKey: config.apiKey || "not-needed",
     baseURL: config.baseUrl || undefined,
+    timeout: 600_000,
     dangerouslyAllowBrowser: true,
   })
   const anthropicTools = buildToolDefinitions(isSubAgent).map(tool => ({
@@ -30,11 +31,13 @@ export async function callAnthropicApi(
     ],
     messages: buildAnthropicMessages(messages),
     tools: anthropicTools,
-    abortSignal,
+  }, {
+    signal: abortSignal,
   })
+  const content = response.content || []
   return {
-    text: response.content.filter(block => block.type === "text").map(block => block.text).join("\n").trim(),
-    toolCalls: response.content
+    text: content.filter(block => block.type === "text").map(block => block.text).join("\n").trim(),
+    toolCalls: content
       .filter(block => block.type === "tool_use")
       .map(block => ({ id: block.id, name: block.name, input: normalizeAnthropicToolInput(block.input) })),
     usage: {
