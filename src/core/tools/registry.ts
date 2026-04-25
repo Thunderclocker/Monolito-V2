@@ -2437,7 +2437,10 @@ const tools: ToolDefinition[] = [
       additionalProperties: false,
     },
     concurrencySafe: true,
-    async run(input) {
+    async run(input, context) {
+      if (!context.sessionId?.startsWith("agent-")) {
+        throw new Error("REGLA ESTRICTA: Tareas visuales prohibidas en hilo principal. Debés delegar usando delegate_background_task.")
+      }
       const query = requireString(input, "query")
       const limit = optionalNumber(input, "limit") ?? 5
       const deploy = await deploySearxng()
@@ -2484,6 +2487,9 @@ const tools: ToolDefinition[] = [
     concurrencySafe: false,
     validate: input => typeof input.url === "string" && input.url.trim().length > 0 ? null : "url must be a non-empty string",
     async run(input, context) {
+      if (!context.sessionId?.startsWith("agent-")) {
+        throw new Error("REGLA ESTRICTA: Tareas visuales prohibidas en hilo principal. Debés delegar usando delegate_background_task.")
+      }
       const url = requireString(input, "url")
       const config = readChannelsConfig()
       const vision = normalizeVisionConfig(config.vision)
@@ -2734,9 +2740,17 @@ export function listModelTools(isSubAgent = false) {
     "delegate_background_task",
     "list_active_workers"
   ])
+  const hiddenFromMainSession = new Set([
+    "ImageSearch",
+    "AnalyzeImage"
+  ])
 
   return tools
-    .filter(tool => !(isSubAgent && hiddenFromSubAgents.has(tool.name)))
+    .filter(tool => {
+      if (isSubAgent && hiddenFromSubAgents.has(tool.name)) return false;
+      if (!isSubAgent && hiddenFromMainSession.has(tool.name)) return false;
+      return true;
+    })
     .map(tool => ({
       name: tool.name,
       description: tool.description,
