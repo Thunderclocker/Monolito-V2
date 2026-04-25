@@ -391,6 +391,15 @@ function parseJsonStringValue(value: unknown) {
   }
 }
 
+function objectArrayField(value: unknown, key: string): Record<string, unknown>[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return []
+  const candidate = (value as Record<string, unknown>)[key]
+  if (!Array.isArray(candidate)) return []
+  return candidate.filter((item): item is Record<string, unknown> =>
+    Boolean(item) && typeof item === "object" && !Array.isArray(item),
+  )
+}
+
 function inferExtensionFromFormat(format: string) {
   if (format === "opus") return "ogg"
   return format
@@ -2442,11 +2451,16 @@ const tools: ToolDefinition[] = [
         if (!res.ok) {
           return { ok: false, error: `SearxNG returned HTTP ${res.status}` }
         }
-        const data = await res.json() as { results?: Array<{ img_src?: string; title?: string; source?: string; thumbnail_src?: string }> }
-        const results = (data.results ?? [])
-          .filter(r => r.img_src)
+        const data = await res.json()
+        const results = objectArrayField(data, "results")
+          .filter(r => typeof r.img_src === "string" && r.img_src.length > 0)
           .slice(0, limit)
-          .map(r => ({ url: r.img_src, title: r.title, source: r.source, thumbnail: r.thumbnail_src }))
+          .map(r => ({
+            url: r.img_src,
+            title: typeof r.title === "string" ? r.title : undefined,
+            source: typeof r.source === "string" ? r.source : undefined,
+            thumbnail: typeof r.thumbnail_src === "string" ? r.thumbnail_src : undefined,
+          }))
 
         return { ok: true, query, count: results.length, results }
       } catch (searchErr) {
@@ -2519,16 +2533,14 @@ const tools: ToolDefinition[] = [
           return { ok: false, error: `SearxNG returned HTTP ${response.status}` }
         }
 
-        const data = await response.json() as {
-          results?: Array<{ title?: string; url?: string; content?: string }>
-        }
-        const results = (data.results ?? [])
+        const data = await response.json()
+        const results = objectArrayField(data, "results")
           .filter(result => typeof result.url === "string" && result.url.length > 0)
           .slice(0, 8)
           .map(result => ({
-            title: compactWhitespace(result.title ?? "Untitled result"),
+            title: compactWhitespace(typeof result.title === "string" ? result.title : "Untitled result"),
             url: result.url ?? "",
-            snippet: compactWhitespace(result.content ?? ""),
+            snippet: compactWhitespace(typeof result.content === "string" ? result.content : ""),
           }))
 
         const formatted = results.length === 0
@@ -2644,7 +2656,7 @@ const tools: ToolDefinition[] = [
   {
     name: "tool_manage_config",
     permissionTier: "edit",
-    description: "Read or update technical configuration stored in SQLite CONF_* wings. Use this instead of reading or writing JSON config files manually.",
+    description: "Read or update technical configuration stored in SQLite CONF_* wings. Use this instead of reading or writing JSON config files manually. IMPORTANTE al actualizar CONF_CHANNELS: No colocar las credenciales en la raíz. Anidar siempre bajo la clave del canal correspondiente, por ejemplo: { 'telegram': { 'bot_token': '...' } }.",
     inputSchema: {
       type: "object",
       properties: {
