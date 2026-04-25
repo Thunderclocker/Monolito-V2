@@ -1222,9 +1222,8 @@ export class MonolitoV2Runtime {
       await this.transitionState(sessionId, "running")
 
       await this.runTurn(sessionId, text, profileId)
-    } catch (error) {
+    } finally {
       this.releaseSessionLock(sessionId)
-      throw error
     }
   }
 
