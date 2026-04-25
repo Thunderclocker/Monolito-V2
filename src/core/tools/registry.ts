@@ -2417,7 +2417,7 @@ const tools: ToolDefinition[] = [
   {
     name: "ImageSearch",
     permissionTier: "read",
-    description: "Search for images on the internet via SearxNG. Auto-deploys SearxNG Docker container if not running (localhost only). Returns image URLs.",
+    description: "Search for images on the internet via SearxNG. Auto-deploys SearxNG Docker container if not running (localhost only). Returns image URLs. ATENCIÓN: Si el flujo implica buscar imágenes Y luego analizarlas visualmente con AnalyzeImage (validación, filtrado, múltiples resultados), ese trabajo combinado supera el límite de tiempo del turno principal. En ese caso DEBÉS delegar todo el flujo a un sub-agente usando delegate_background_task y avisarle al usuario que estás procesando en background.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2458,7 +2458,7 @@ const tools: ToolDefinition[] = [
   {
     name: "AnalyzeImage",
     permissionTier: "read",
-    description: "Descarga una imagen de una URL, la analiza con visión local y devuelve la descripción visual junto con la ruta local del archivo (local_path). Ideal para validar empíricamente resultados de ImageSearch y obtener el archivo local para enviarlo vía TelegramSendPhoto.",
+    description: "Descarga una imagen de una URL, la analiza con visión local y devuelve la descripción visual junto con la ruta local del archivo (local_path). Ideal para validar empíricamente resultados de ImageSearch y obtener el archivo local para enviarlo vía TelegramSendPhoto. ATENCIÓN: Herramienta computacionalmente pesada (~60s por imagen). REGLA ESTRICTA: Si el usuario pide analizar múltiples fotos, buscar y filtrar visualmente, o cualquier uso iterativo, NO uses esta herramienta en la sesión principal. DEBÉS invocar delegate_background_task para hacer este trabajo en background y avisarle al usuario inmediatamente.",
     inputSchema: {
       type: "object",
       properties: {
