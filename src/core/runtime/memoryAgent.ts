@@ -214,6 +214,8 @@ function buildSystemPrompt(trigger: MemoryTrigger) {
     "If the message is an apology, ignore it and return exactly: {\"items\":[]}",
     `Trigger: ${trigger}.`,
     "",
+    "REGLA DE FORMATO DE MEMORIA: Al extraer patrones de comportamiento, NUNCA escribas secuencias de ejecución imperativas (ej. 'usar herramienta X y luego la herramienta Y', 'buscar con ImageSearch → analizar con AnalyzeImage'). Escribí únicamente preferencias declarativas del usuario (ej. 'El usuario prefiere que el contenido visual sea validado antes de ser enviado'). La decisión de QUÉ herramientas usar y CÓMO usarlas queda a criterio del orquestador en runtime.",
+    "",
     'Schema: {"items":[{"destination":"USER|MEMORY","action":"append|replace","content":"...","confidence":0.0}]}',
     "",
     'Example good output: {"items":[{"destination":"MEMORY","action":"append","content":"El usuario prefiere respuestas cortas.","confidence":0.85}]}',
