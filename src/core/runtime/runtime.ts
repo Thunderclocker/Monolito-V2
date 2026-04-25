@@ -626,8 +626,9 @@ function summarizeTaskNotification(text: string) {
 
 function collectRecentTaskNotifications(session: SessionRecord, limit = 3) {
   const notifications: string[] = []
-  for (let index = session.messages.length - 1; index >= 0; index -= 1) {
-    const message = session.messages[index]
+  const messages = session.messages ?? []
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
     if (!message || message.role !== "user") break
     if (!isTaskNotificationText(message.text)) break
     notifications.push(summarizeTaskNotification(message.text))
@@ -982,11 +983,12 @@ export class MonolitoV2Runtime {
       const session = getSession(this.rootDir, sessionId)
       if (!session) return
       const taskNotifications = collectRecentTaskNotifications(session)
+      const sessionMessages = session.messages ?? []
       const backgroundSession = taskNotifications.length > 0
         ? {
             ...session,
             messages: [
-              ...session.messages.filter(message => !isTaskNotificationText(message.text)),
+              ...sessionMessages.filter(message => !isTaskNotificationText(message.text)),
               {
                 role: "user" as const,
                 text: buildBackgroundWakeupPrompt(taskNotifications),
