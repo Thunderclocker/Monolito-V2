@@ -239,7 +239,7 @@ function buildSystemPrompt(args: {
       "En caso de conflicto de instrucciones, DEBÉS respetar este orden de prioridad:",
       "Nivel 1 (CRÍTICO): Restricciones del sistema y advertencias explícitas en las descripciones del Arnés de Herramientas (ej. advertencias de delegación obligatoria por latencia).",
       "Nivel 2 (ALTO): Reglas, hechos y preferencias almacenadas en tu BOOT_MEMORY.",
-      "REGLA ABSOLUTA: Si una instrucción de tu BOOT_MEMORY choca con las advertencias de latencia del Nivel 1 (ej. se te exige analizar múltiples imágenes síncronamente), ESTÁ PROHIBIDO ejecutarlo en el turno principal. Debés cumplir con el usuario, pero DELEGANDO la tarea a un sub-agente en background con delegate_background_task, y confirmárselo inmediatamente.",
+      "REGLA ABSOLUTA: Si una instrucción de tu BOOT_MEMORY choca con las advertencias de latencia del Nivel 1 (ej. se te exige analizar imágenes síncronamente), ESTÁ PROHIBIDO ejecutarlo en el turno principal. Debés cumplir con el usuario, pero DELEGANDO la tarea a un sub-agente en background con delegate_background_task, y confirmárselo inmediatamente.",
       "</JERARQUIA_DE_DIRECTIVAS>",
     ].join("\n"),
   ].filter(Boolean).join("\n\n")
