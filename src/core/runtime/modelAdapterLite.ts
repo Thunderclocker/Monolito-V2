@@ -50,6 +50,7 @@ type ContextExtras = {
   adultMode?: boolean
   webSearchProvider?: string
   taskNotifications?: string[]
+  stallAlert?: string
 }
 
 function normalizeBaseUrl(value: string) {
@@ -65,10 +66,16 @@ function shouldSkipMessage(text: string) {
   return normalized.startsWith("/") || normalized.startsWith("<task-notification>")
 }
 
+function isConversationRole(role: SessionRecord["messages"][number]["role"]): role is "user" | "assistant" {
+  return role === "user" || role === "assistant"
+}
+
 function sessionToMessages(session: SessionRecord): ConversationMessage[] {
   return session.messages
-    .filter(message => (message.role === "user" || message.role === "assistant") && !shouldSkipMessage(message.text))
-    .map(message => ({ role: message.role, content: message.text }))
+    .filter((message): message is SessionRecord["messages"][number] & { role: "user" | "assistant" } =>
+      isConversationRole(message.role) && !shouldSkipMessage(message.text),
+    )
+    .map(message => ({ role: message.role, content: message.text } as ConversationMessage))
 }
 
 function getLastUserMessage(session: SessionRecord) {
