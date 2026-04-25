@@ -25,6 +25,7 @@ import {
   type ConfigWingValueMap,
 } from "../config/configWings.ts"
 import { createLogger } from "../logging/logger.ts"
+import type { WorkerJob, WorkerJobStatus } from "../db/schema.ts"
 
 let dbInstance: Database.Database | null = null
 let dbPathCache: string | null = null
@@ -210,6 +211,26 @@ export function getDb(rootDir: string): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_bg_groups_session
       ON background_task_groups(parent_session_id);
 
+    CREATE TABLE IF NOT EXISTS worker_jobs (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      profile_id TEXT,
+      tool_name TEXT NOT NULL,
+      tool_args TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      result_text TEXT,
+      error_text TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_worker_jobs_status
+      ON worker_jobs(status);
+
+    CREATE INDEX IF NOT EXISTS idx_worker_jobs_session
+      ON worker_jobs(session_id);
+
     CREATE TABLE IF NOT EXISTS knowledge_graph (
       id TEXT PRIMARY KEY,
       profile_id TEXT,
@@ -254,6 +275,23 @@ export function getDb(rootDir: string): Database.Database {
   }
 
   db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_drawers_key ON memory_drawers(memory_key)`)
+
+  const workerInfo = db.prepare(`PRAGMA table_info(worker_jobs)`).all() as any[]
+  for (const column of [
+    { name: "profile_id", sql: `ALTER TABLE worker_jobs ADD COLUMN profile_id TEXT` },
+    { name: "result_text", sql: `ALTER TABLE worker_jobs ADD COLUMN result_text TEXT` },
+    { name: "error_text", sql: `ALTER TABLE worker_jobs ADD COLUMN error_text TEXT` },
+  ]) {
+    if (!workerInfo.find(c => c.name === column.name)) {
+      try {
+        db.exec(column.sql)
+      } catch (e) {
+        if (!String(e).includes("duplicate column")) throw e
+      }
+    }
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_worker_jobs_status ON worker_jobs(status)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_worker_jobs_session ON worker_jobs(session_id)`)
 
   // Shared memories are represented by a NULL profile_id.
   db.exec(`UPDATE memory_drawers SET profile_id = NULL WHERE wing = 'SHARED'`)
@@ -1205,6 +1243,57 @@ export function deleteBackgroundTaskGroup(rootDir: string, jobGroupId: string): 
   getDb(rootDir)
     .prepare(`DELETE FROM background_task_groups WHERE job_group_id = ?`)
     .run(jobGroupId)
+}
+
+export function upsertWorkerJob(
+  rootDir: string,
+  job: {
+    id: string
+    sessionId: string
+    profileId?: string | null
+    toolName: string
+    toolArgs: string
+    status?: WorkerJobStatus
+  },
+): void {
+  const db = getDb(rootDir)
+  db.prepare(`
+    INSERT INTO worker_jobs (id, session_id, profile_id, tool_name, tool_args, status, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(id) DO UPDATE SET
+      session_id = excluded.session_id,
+      profile_id = excluded.profile_id,
+      tool_name = excluded.tool_name,
+      tool_args = excluded.tool_args,
+      status = excluded.status,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(job.id, job.sessionId, job.profileId ?? null, job.toolName, job.toolArgs, job.status ?? "pending")
+}
+
+export function updateWorkerJobStatus(
+  rootDir: string,
+  id: string,
+  status: WorkerJobStatus,
+  details?: { resultText?: string | null; errorText?: string | null },
+): void {
+  const db = getDb(rootDir)
+  db.prepare(`
+    UPDATE worker_jobs
+    SET status = ?,
+      result_text = COALESCE(?, result_text),
+      error_text = COALESCE(?, error_text),
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(status, details?.resultText ?? null, details?.errorText ?? null, id)
+}
+
+export function listRecoverableWorkerJobs(rootDir: string): WorkerJob[] {
+  return getDb(rootDir).prepare(`
+    SELECT id, session_id, profile_id, tool_name, tool_args, status, result_text, error_text, created_at, updated_at
+    FROM worker_jobs
+    WHERE status IN ('pending', 'running')
+    ORDER BY created_at ASC
+  `).all() as WorkerJob[]
 }
 
 export function addGraphTriple(

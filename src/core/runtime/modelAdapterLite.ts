@@ -10,7 +10,7 @@ import { AbortError, ApiError, ContextOverflowError, HttpError, ProviderOverload
 import { createLogger, type Logger } from "../logging/logger.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider } from "./modelRegistry.ts"
-import { compactSession, getSession, listCanonicalMemoryEntries } from "../session/store.ts"
+import { compactSession, getSession, listCanonicalMemoryEntries, updateWorkerJobStatus, upsertWorkerJob } from "../session/store.ts"
 import { callProvider, type ConversationMessage, type ProviderConfig, type ProviderResponse, type ToolCall } from "./providers/index.ts"
 import { ensureMonolitoRoot } from "../system/root.ts"
 import { redactSensitiveText } from "../security/redact.ts"
@@ -149,16 +149,35 @@ async function executeToolCall(
   executeTool: (tool: string, input: Record<string, unknown>, context: ToolContext, toolUseId?: string) => Promise<unknown>,
   context: ToolContext,
 ) {
+  if (context.sessionId) {
+    upsertWorkerJob(context.rootDir, {
+      id: toolCall.id,
+      sessionId: context.sessionId,
+      profileId: context.profileId,
+      toolName: toolCall.name,
+      toolArgs: JSON.stringify(toolCall.input),
+      status: "pending",
+    })
+  }
   try {
+    if (context.sessionId) updateWorkerJobStatus(context.rootDir, toolCall.id, "running")
     const output = await executeTool(toolCall.name, toolCall.input, context, toolCall.id)
+    const content = formatToolEvidenceResult(toolCall, "success", output)
+    if (context.sessionId) {
+      updateWorkerJobStatus(context.rootDir, toolCall.id, "completed", { resultText: content })
+    }
     return {
       toolCall,
-      content: formatToolEvidenceResult(toolCall, "success", output),
+      content,
     }
   } catch (error) {
+    const content = formatToolEvidenceResult(toolCall, "error", { error: error instanceof Error ? error.message : String(error) })
+    if (context.sessionId) {
+      updateWorkerJobStatus(context.rootDir, toolCall.id, "failed", { errorText: content })
+    }
     return {
       toolCall,
-      content: formatToolEvidenceResult(toolCall, "error", { error: error instanceof Error ? error.message : String(error) }),
+      content,
     }
   }
 }

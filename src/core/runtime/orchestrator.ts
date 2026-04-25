@@ -1,7 +1,17 @@
 import { randomUUID } from "node:crypto"
 import { type MonolitoV2Runtime } from "./runtime.ts"
 import { ensureDirs } from "../ipc/protocol.ts"
-import { appendMessage, appendWorklog, createProfile, createSession, getSession, listProfiles } from "../session/store.ts"
+import {
+  appendMessage,
+  appendWorklog,
+  createProfile,
+  createSession,
+  getSession,
+  listProfiles,
+  listRecoverableWorkerJobs,
+  updateWorkerJobStatus,
+  upsertWorkerJob,
+} from "../session/store.ts"
 import { createInstanceLogger, type Logger } from "../logging/logger.ts"
 import { createAgentWorktree, removeAgentWorktree } from "../context/gitContext.ts"
 
@@ -189,6 +199,25 @@ export class AgentOrchestrator {
       logger: createInstanceLogger(subSessionId, options.type, traceId),
     }
 
+    upsertWorkerJob(rootDir, {
+      id: delegationTask.id,
+      sessionId: delegationTask.parentSessionId,
+      profileId: delegationTask.profileId,
+      toolName: "background_worker",
+      toolArgs: JSON.stringify({
+        parentSessionId: delegationTask.parentSessionId,
+        subSessionId: delegationTask.subSessionId,
+        traceId: delegationTask.traceId,
+        profileId: delegationTask.profileId,
+        type: delegationTask.type,
+        mode: delegationTask.mode,
+        description: delegationTask.description,
+        task: delegationTask.task,
+        jobGroupId: delegationTask.jobGroupId,
+      }),
+      status: "pending",
+    })
+
     if (options.isolation === "worktree") {
       const branchName = `monolito-worker-${randomUUID()}`
       delegationTask.cwd = await createAgentWorktree(rootDir, branchName)
@@ -198,6 +227,7 @@ export class AgentOrchestrator {
       if (delegationTask.cwd) {
         await removeAgentWorktree(rootDir, delegationTask.cwd).catch(() => {})
       }
+      updateWorkerJobStatus(rootDir, delegationTask.id, "failed", { errorText: `Concurrency limit reached (${MAX_CONCURRENT_WORKERS} workers running).` })
       return {
         agentId: "",
         status: "failed" as const,
@@ -256,12 +286,14 @@ export class AgentOrchestrator {
     
     this.runtime.abortSession(task.subSessionId)
     task.status = "killed"
+    updateWorkerJobStatus(this.runtime.rootDir, task.id, "failed", { errorText: "Agent was stopped by coordinator." })
     await this.notifyParent(task, "Agent was stopped by coordinator.")
   }
 
   private async executeTurn(task: DelegationTask, text: string) {
     const turnStartedAt = Date.now()
     task.status = "running"
+    updateWorkerJobStatus(this.runtime.rootDir, task.id, "running")
     this.runningWorkerCount++
     const { runtime } = this
     try {
@@ -343,6 +375,7 @@ export class AgentOrchestrator {
         tool_uses: task.usage?.tool_uses ?? 0,
         duration_ms: Date.now() - turnStartedAt,
       }
+      updateWorkerJobStatus(this.runtime.rootDir, task.id, "completed", { resultText: task.result })
       // 3. Notify parent session with XML
       await this.notifyParent(task)
 
@@ -350,6 +383,7 @@ export class AgentOrchestrator {
       task.status = "failed"
       const errorMsg = error instanceof Error ? error.message : String(error)
       task.error = errorMsg
+      updateWorkerJobStatus(this.runtime.rootDir, task.id, "failed", { errorText: errorMsg })
       await this.notifyParent(task, errorMsg)
     } finally {
       this.runningWorkerCount--
@@ -406,6 +440,48 @@ ${usageXml}
       text: notification
     })
     // Coordinator handles the response; no direct Telegram delivery needed here
+  }
+
+  recoverPersistedTasks(): number {
+    let recovered = 0
+    for (const job of listRecoverableWorkerJobs(this.runtime.rootDir)) {
+      if (job.tool_name !== "background_worker") continue
+      if (this.activeTasks.has(job.id)) continue
+      let payload: Partial<DelegationTask>
+      try {
+        payload = JSON.parse(job.tool_args) as Partial<DelegationTask>
+      } catch (error) {
+        updateWorkerJobStatus(this.runtime.rootDir, job.id, "failed", {
+          errorText: `Could not recover worker payload: ${error instanceof Error ? error.message : String(error)}`,
+        })
+        continue
+      }
+      if (!payload.parentSessionId || !payload.subSessionId || !payload.profileId || !payload.task) {
+        updateWorkerJobStatus(this.runtime.rootDir, job.id, "failed", { errorText: "Could not recover worker payload: missing required fields" })
+        continue
+      }
+      const task: DelegationTask = {
+        id: job.id,
+        parentSessionId: payload.parentSessionId,
+        subSessionId: payload.subSessionId,
+        traceId: payload.traceId,
+        profileId: payload.profileId,
+        type: payload.type ?? "worker",
+        mode: payload.mode ?? "background",
+        description: payload.description ?? "Recovered worker",
+        task: payload.task,
+        status: "pending",
+        jobGroupId: payload.jobGroupId,
+        logger: createInstanceLogger(payload.subSessionId, payload.type ?? "worker", payload.traceId),
+      }
+      this.activeTasks.set(task.id, task)
+      const prompt = buildSubagentRetryPrompt(task.task, "Daemon restarted while this worker was pending or running.")
+      this.executeTurn(task, prompt).catch(err => {
+        console.error(`Recovered delegation task ${task.id} failed:`, err)
+      })
+      recovered++
+    }
+    return recovered
   }
 
   listTasks() {

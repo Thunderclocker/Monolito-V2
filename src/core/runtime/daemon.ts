@@ -51,6 +51,10 @@ export class MonolitoV2Daemon {
     if (recoveredOnStart.length > 0) {
       this.writeDaemonLog(`recovered ${recoveredOnStart.length} running session(s) after daemon restart`)
     }
+    const recoveredWorkerJobs = this.runtime.recoverWorkerJobs()
+    if (recoveredWorkerJobs > 0) {
+      this.writeDaemonLog(`re-injected ${recoveredWorkerJobs} worker job(s) after daemon restart`)
+    }
 
     try {
       this.server = await this.listenUnix(paths.socketPath)
@@ -382,10 +386,11 @@ export class MonolitoV2Daemon {
         case "session.ensure":
           return { id: request.id, ok: true as const, data: this.runtime.ensureSession(request.sessionId, request.title) }
         case "session.startup":
-          await this.runtime.processSessionStartup(request.sessionId, request.prompt)
-          if (this.runtime.consumeRestartRequest()) {
-            this.scheduleSelfRestart()
-          }
+          void this.runtime.processSessionStartup(request.sessionId, request.prompt)
+            .then(() => {
+              if (this.runtime.consumeRestartRequest()) this.scheduleSelfRestart()
+            })
+            .catch(error => this.writeDaemonLog(`async session.startup failed: ${error instanceof Error ? error.message : String(error)}`))
           return { id: request.id, ok: true as const, data: { accepted: true } }
         case "session.list":
           return { id: request.id, ok: true as const, data: this.runtime.listSessions() }
@@ -413,10 +418,11 @@ export class MonolitoV2Daemon {
         case "logs.tail":
           return { id: request.id, ok: true as const, data: this.runtime.tailEvents(request.sessionId, request.lines) }
         case "message.send":
-          await this.runtime.processMessage(request.sessionId, request.text)
-          if (this.runtime.consumeRestartRequest()) {
-            this.scheduleSelfRestart()
-          }
+          void this.runtime.processMessage(request.sessionId, request.text)
+            .then(() => {
+              if (this.runtime.consumeRestartRequest()) this.scheduleSelfRestart()
+            })
+            .catch(error => this.writeDaemonLog(`async message.send failed: ${error instanceof Error ? error.message : String(error)}`))
           return { id: request.id, ok: true as const, data: { accepted: true } }
         case "session.abort":
           this.runtime.abortSession(request.sessionId)

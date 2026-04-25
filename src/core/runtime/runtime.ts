@@ -32,6 +32,8 @@ import {
   deleteBackgroundTaskGroup,
   readConfigWing,
   writeConfigWing,
+  listRecoverableWorkerJobs,
+  updateWorkerJobStatus,
 } from "../session/store.ts"
 import { getTool, listTools, type ToolContext } from "../tools/registry.ts"
 import { getEffectiveModelConfig, runAssistantTurn, runBackgroundTextTask } from "./modelAdapterLite.ts"
@@ -843,6 +845,72 @@ export class MonolitoV2Runtime {
     getDb(this.rootDir)
     ensureConfigWings(this.rootDir)
     loadAndApplyModelSettings(process.env)
+  }
+
+  recoverWorkerJobs() {
+    let recovered = this.orchestrator.recoverPersistedTasks()
+    for (const job of listRecoverableWorkerJobs(this.rootDir)) {
+      if (job.tool_name === "background_worker") continue
+      const session = getSession(this.rootDir, job.session_id)
+      if (!session) {
+        updateWorkerJobStatus(this.rootDir, job.id, "failed", { errorText: "Session not found during daemon recovery." })
+        continue
+      }
+      let input: Record<string, unknown>
+      try {
+        input = normalizeToolInputPayload(JSON.parse(job.tool_args)) as Record<string, unknown>
+      } catch (error) {
+        updateWorkerJobStatus(this.rootDir, job.id, "failed", {
+          errorText: `Could not parse persisted tool args: ${error instanceof Error ? error.message : String(error)}`,
+        })
+        continue
+      }
+      const profileId = job.profile_id ?? session.profileId ?? "default"
+      const abortController = new AbortController()
+      const context: ToolContext = {
+        rootDir: this.rootDir,
+        cwd: this.rootDir,
+        abortSignal: abortController.signal,
+        sessionId: job.session_id,
+        profileId,
+        orchestrator: this.orchestrator,
+        runtime: this,
+        getMcpClient: async serverName => this.ensureMcpClient(serverName, job.session_id),
+      }
+      recovered++
+      void (async () => {
+        updateWorkerJobStatus(this.rootDir, job.id, "running")
+        try {
+          const output = await this.executeTool(job.session_id, job.tool_name, input, context, job.id, profileId)
+          const resultText = typeof output === "string" ? output : JSON.stringify(output, null, 2)
+          updateWorkerJobStatus(this.rootDir, job.id, "completed", { resultText })
+          appendMessage(this.rootDir, job.session_id, "user", [
+            "<tool-recovery-result>",
+            `tool_use_id: ${job.id}`,
+            `tool_name: ${job.tool_name}`,
+            "status: completed",
+            resultText,
+            "</tool-recovery-result>",
+          ].join("\n"))
+          this.enqueueBackgroundWakeup(job.session_id, profileId)
+          this.flushPendingBackgroundWakeup(job.session_id)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          updateWorkerJobStatus(this.rootDir, job.id, "failed", { errorText: message })
+          appendMessage(this.rootDir, job.session_id, "user", [
+            "<tool-recovery-result>",
+            `tool_use_id: ${job.id}`,
+            `tool_name: ${job.tool_name}`,
+            "status: failed",
+            message,
+            "</tool-recovery-result>",
+          ].join("\n"))
+          this.enqueueBackgroundWakeup(job.session_id, profileId)
+          this.flushPendingBackgroundWakeup(job.session_id)
+        }
+      })()
+    }
+    return recovered
   }
 
   private recordToolFailureStall(sessionId: string, toolName: string, message: string) {
