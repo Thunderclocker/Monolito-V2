@@ -7,10 +7,11 @@ import { createTelegramPoller, type TelegramCallbackQuery, type TelegramMessage,
 import type { MonolitoV2Runtime } from "../runtime/runtime.ts"
 import { ensureDirs } from "../ipc/protocol.ts"
 import { deployManagedSttContainer, normalizeSttConfig, transcribeManagedAudioFile } from "../stt/managed.ts"
-import { analyzeManagedImage, deployManagedVisionContainer, normalizeVisionConfig } from "../vision/managed.ts"
+import { monolitoEvents, type WorkerCompletedEvent } from "../events/bus.ts"
 
 const logger = createLogger("channels")
 let activePoller: TelegramPoller | null = null
+let unsubscribeWorkerCompleted: (() => void) | null = null
 const pendingTelegramInputs = new Map<number, { kind: "channels-token" | "channels-chats" | "websearch-test" }>()
 const pendingTelegramRetries = new Map<string, { attempts: number; timer: ReturnType<typeof setTimeout> }>()
 const MAX_TELEGRAM_BUSY_RETRIES = 3
@@ -119,10 +120,54 @@ async function answerTelegramCallback(token: string, callbackId: string, text?: 
   }).catch(() => {})
 }
 
+function chunkTelegramText(text: string, maxLength = 4096) {
+  const normalized = text.replace(/\r\n/g, "\n")
+  if (normalized.length <= maxLength) return [normalized]
+  const chunks: string[] = []
+  let remaining = normalized
+  while (remaining.length > maxLength) {
+    const candidate = remaining.slice(0, maxLength)
+    const splitAt = Math.max(candidate.lastIndexOf("\n\n"), candidate.lastIndexOf("\n"), candidate.lastIndexOf(" "))
+    const boundary = splitAt > maxLength * 0.5 ? splitAt : maxLength
+    chunks.push(remaining.slice(0, boundary).trim())
+    remaining = remaining.slice(boundary).trimStart()
+  }
+  if (remaining.trim()) chunks.push(remaining.trim())
+  return chunks.filter(Boolean)
+}
+
 async function sendTelegramText(token: string, chatId: number, text: string) {
-  await telegramApi(token, "sendMessage", {
-    chat_id: chatId,
-    text,
+  for (const chunk of chunkTelegramText(text)) {
+    await telegramApi(token, "sendMessage", {
+      chat_id: chatId,
+      text: chunk,
+    })
+  }
+}
+
+function stripWorkerVerificationTag(text: string) {
+  return text.replace(/<verified>SUCCESS<\/verified>/gi, "").trim()
+}
+
+function formatWorkerPush(event: WorkerCompletedEvent) {
+  if (event.status === "completed" && event.result?.trim()) {
+    return stripWorkerVerificationTag(event.result)
+  }
+  if (event.status === "completed") {
+    return "La tarea en background termino sin texto de resultado."
+  }
+  if (event.status === "killed") {
+    return "La tarea en background fue detenida."
+  }
+  return `La tarea en background fallo: ${event.error?.trim() || "error desconocido"}`
+}
+
+function dispatchRuntimeMessage(runtime: MonolitoV2Runtime, sessionId: string, title: string, text: string, detail: string) {
+  runtime.ensureSession(sessionId, title)
+  void runtime.processMessage(sessionId, text).catch(error => {
+    const typed = error as Error & { code?: string }
+    const code = typed.code ? ` code=${typed.code}` : ""
+    logger.error(`Async Telegram dispatch failed (${detail})${code}: ${typed.message}`)
   })
 }
 
@@ -241,21 +286,6 @@ async function maybeTranscribeTelegramAudio(token: string, rootDir: string, msg:
 function getLargestTelegramPhoto(msg: TelegramMessage | undefined) {
   if (!msg?.photo?.length) return null
   return [...msg.photo].sort((a, b) => (b.file_size ?? 0) - (a.file_size ?? 0))[0] ?? null
-}
-
-async function maybeAnalyzeTelegramPhoto(token: string, rootDir: string, msg: TelegramMessage | undefined) {
-  if (!msg) return null
-  const photo = getLargestTelegramPhoto(msg)
-  if (!photo) return null
-  const config = readChannelsConfig()
-  const vision = normalizeVisionConfig(config.vision)
-  if (!vision.managed) return null
-  if (vision.autoDeploy) {
-    const deploy = await deployManagedVisionContainer(vision)
-    if (!deploy.ok) throw new Error(deploy.message)
-  }
-  const localPath = await downloadTelegramFile(token, photo.file_id, rootDir, `telegram-photo-${msg.chat.id}-${photo.file_id.slice(0, 8)}`)
-  return await analyzeManagedImage(localPath, vision)
 }
 
 function shouldShortCircuitAudioFailure(msg: TelegramMessage | undefined, transcript: { text: string; language?: string } | null) {
@@ -450,6 +480,25 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
 
   if (config.telegram?.enabled && config.telegram.token) {
     logger.info("Starting Telegram integration...")
+    if (unsubscribeWorkerCompleted) {
+      unsubscribeWorkerCompleted()
+      unsubscribeWorkerCompleted = null
+    }
+    const handleWorkerCompleted = (event: WorkerCompletedEvent) => {
+      if (!event.chatId) return
+      const chatId = Number(event.chatId)
+      if (!Number.isFinite(chatId)) return
+      const latestConfig = readChannelsConfig()
+      if (!latestConfig.telegram?.enabled || !latestConfig.telegram.token) return
+      if (latestConfig.telegram.allowedChats.length > 0 && !latestConfig.telegram.allowedChats.includes(chatId)) return
+      void sendTelegramText(latestConfig.telegram.token, chatId, formatWorkerPush(event)).catch(error => {
+        const message = error instanceof Error ? error.message : String(error)
+        logger.error(`Error sending worker completion push to Telegram chat ${chatId}: ${message}`)
+      })
+    }
+    monolitoEvents.on("worker:completed", handleWorkerCompleted)
+    unsubscribeWorkerCompleted = () => monolitoEvents.off("worker:completed", handleWorkerCompleted)
+
     void registerTelegramCommands(config.telegram.token)
       .then(() => {
         logger.info("Comandos de Telegram registrados")
@@ -479,8 +528,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
             if (websearchResult) {
               if (typeof websearchResult === "string") {
                 const sessionId = `telegram-${chatId}`
-                runtime.ensureSession(sessionId, `Telegram ${chatId}`)
-                await runtime.processMessage(sessionId, websearchResult)
+                dispatchRuntimeMessage(runtime, sessionId, `Telegram ${chatId}`, websearchResult, `callback ${callback.id}`)
               }
               return
             }
@@ -559,8 +607,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
                 return
               }
               const sessionId = `telegram-${chatId}`
-              runtime.ensureSession(sessionId, `Telegram ${chatId}`)
-              await runtime.processMessage(sessionId, `/websearch searxng test ${query}`)
+              dispatchRuntimeMessage(runtime, sessionId, `Telegram ${chatId}`, `/websearch searxng test ${query}`, `websearch-test ${chatId}`)
               return
             }
           } catch (error) {
@@ -581,7 +628,6 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
         }
 
         let transcript: { text: string; language?: string } | null = null
-        let visionTranscript: string | null = null
         try {
           const result = await maybeTranscribeTelegramAudio(config.telegram.token, runtime.rootDir, msg)
           if (result) {
@@ -593,12 +639,6 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
           const message = error instanceof Error ? error.message : String(error)
           logger.warn(`STT failed for Telegram chat ${chatId}: ${message}`)
         }
-        try {
-          visionTranscript = await maybeAnalyzeTelegramPhoto(config.telegram.token, runtime.rootDir, msg)
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          logger.warn(`Vision failed for Telegram chat ${chatId}: ${message}`)
-        }
 
         if (shouldShortCircuitAudioFailure(msg, transcript)) {
           await sendTelegramText(
@@ -609,15 +649,14 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
           return
         }
 
-        const inboundText = buildTelegramInboundText(msg, transcript, visionTranscript)
+        const inboundText = buildTelegramInboundText(msg, transcript)
         if (!inboundText) return
         
         logger.debug(`Received Telegram message [${chatId}]`)
 
         // Ensure the session exists before sending the message
         try {
-          runtime.ensureSession(sessionId, `Telegram ${chatId}`)
-          await runtime.processMessage(sessionId, inboundText)
+          dispatchRuntimeMessage(runtime, sessionId, `Telegram ${chatId}`, inboundText, `message ${chatId}:${msg.message_id}`)
           if (msg.message_id) {
             const retryKey = `${chatId}:${msg.message_id}`
             const existing = pendingTelegramRetries.get(retryKey)
@@ -663,6 +702,10 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
 }
 
 export function stopChannels() {
+  if (unsubscribeWorkerCompleted) {
+    unsubscribeWorkerCompleted()
+    unsubscribeWorkerCompleted = null
+  }
   if (activePoller) {
     logger.info("Stopping Telegram integration...")
     activePoller.stop()

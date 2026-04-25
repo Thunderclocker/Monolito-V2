@@ -1028,6 +1028,10 @@ export class MonolitoV2Runtime {
       }
     }
 
+    if (getTelegramChatId(sessionId)) {
+      return
+    }
+
     this.enqueueBackgroundWakeup(sessionId, profileId)
     this.flushPendingBackgroundWakeup(sessionId)
   }

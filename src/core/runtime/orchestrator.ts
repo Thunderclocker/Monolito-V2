@@ -14,6 +14,7 @@ import {
 } from "../session/store.ts"
 import { createInstanceLogger, type Logger } from "../logging/logger.ts"
 import { createAgentWorktree, removeAgentWorktree } from "../context/gitContext.ts"
+import { monolitoEvents } from "../events/bus.ts"
 
 const SUBAGENT_VERIFICATION_TAG = "<verified>SUCCESS</verified>"
 
@@ -414,7 +415,16 @@ export class AgentOrchestrator {
         result: task.result,
         error,
       })
-      void this.runtime.handleBackgroundDelegationResult(task, error)
+      void this.runtime.handleBackgroundDelegationResult(task, error).finally(() => {
+        monolitoEvents.emit("worker:completed", {
+          jobId: task.id,
+          sessionId: task.parentSessionId,
+          chatId: task.parentSessionId.startsWith("telegram-") ? task.parentSessionId.slice("telegram-".length) : undefined,
+          status: task.status === "completed" ? "completed" : task.status === "killed" ? "killed" : "failed",
+          result: task.result,
+          error,
+        })
+      })
       return
     }
 
