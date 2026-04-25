@@ -1227,7 +1227,7 @@ export class MonolitoV2Runtime {
     }
   }
 
-  async processSessionStartup(sessionId: string, prompt: string, options?: { logger?: Logger }) {
+  async processSessionStartup(sessionId: string, prompt: string, options?: { logger?: Logger; maxTokens?: number }) {
     const session = getSession(this.rootDir, sessionId)
     if (!session) throw new Error(`Session ${sessionId} not found`)
     const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
@@ -1511,7 +1511,7 @@ export class MonolitoV2Runtime {
     }
   }
 
-  private async runStartupTurn(sessionId: string, prompt: string, profileId = "default", turnStartedAtIso?: string, options?: { logger?: Logger }) {
+  private async runStartupTurn(sessionId: string, prompt: string, profileId = "default", turnStartedAtIso?: string, options?: { logger?: Logger; maxTokens?: number }) {
     const turnStartedAt = turnStartedAtIso ? Date.parse(turnStartedAtIso) : Date.now()
     const abortController = new AbortController()
     this.abortControllers.set(sessionId, abortController)

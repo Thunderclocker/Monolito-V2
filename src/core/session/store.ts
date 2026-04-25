@@ -542,7 +542,7 @@ export async function writeCanonicalMemory(
     return { changed: false, bytes: Buffer.byteLength(normalized), slot, value: normalized }
   }
 
-  let embedding: number[] | null = null
+  let embedding: Float32Array | null = null
   try {
     embedding = await generateEmbedding(rootDir, normalized)
   } catch (error) {
@@ -560,7 +560,7 @@ export async function writeCanonicalMemory(
       `).run(normalized, now, meta.room, slot, existingRows[0]!.id)
       db.prepare(`DELETE FROM vec_drawers WHERE id = ?`).run(existingRows[0]!.id)
       if (embedding) {
-        db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(existingRows[0]!.id, embedding)
+        db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(existingRows[0]!.id, Array.from(embedding))
       }
       const deleteMemory = db.prepare(`DELETE FROM memory_drawers WHERE id = ?`)
       const deleteVec = db.prepare(`DELETE FROM vec_drawers WHERE id = ?`)
