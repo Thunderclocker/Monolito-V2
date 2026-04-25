@@ -166,7 +166,12 @@ export class AgentOrchestrator {
     }
     ensureDirs(rootDir, options.profileId)
     
-    // Create the session for the sub-agent
+    // Append verified-tag requirement so the Ralph Loop can complete on first successful attempt
+    const taskWithVerification = [
+      options.task.trim(),
+      "",
+      `When your task is fully done, end your final response with exactly: ${SUBAGENT_VERIFICATION_TAG}`,
+    ].join("\n")
     createSession(rootDir, options.description || `Task: ${options.task.slice(0, 30)}...`, subSessionId, options.profileId)
     
     const delegationTask: DelegationTask = {
@@ -202,7 +207,7 @@ export class AgentOrchestrator {
 
     this.activeTasks.set(delegationTask.id, delegationTask)
 
-    const runPromise = this.executeTurn(delegationTask, options.task).catch(err => {
+    const runPromise = this.executeTurn(delegationTask, taskWithVerification).catch(err => {
       console.error(`Delegation task ${delegationTask.id} failed:`, err)
     })
 
