@@ -2296,7 +2296,7 @@ const tools: ToolDefinition[] = [
   {
     name: "delegate_background_task",
     permissionTier: "edit",
-    description: "Use this tool autonomously and proactively for high cognitive load tasks (multiple web searches, deep reading, long analysis, multi-step research) to avoid blocking the chat. You do not need to specify an output file: when the worker finishes, its raw result is injected directly into your volatile memory as a system message and the runtime will force a new inference turn so you can synthesize and respond to the user. Return a short natural acknowledgement to the user immediately (e.g. 'Ahí me pongo, dame un rato') after calling this tool. IMPORTANT: Only the primary coordinator may call this tool. Sub-agents running as background workers must NEVER call delegate_background_task — they must execute their task directly and return results.",
+    description: "Use this tool autonomously and proactively for high cognitive load tasks (multiple web searches, deep reading, long analysis, multi-step research) to avoid blocking the chat. You do not need to specify an output file: when the worker finishes, its raw result is injected directly into your volatile memory as a system message and the runtime will force a new inference turn so you can synthesize and respond to the user. Return a short natural acknowledgement to the user immediately (e.g. 'Ahí me pongo, dame un rato') after calling this tool. IMPORTANT: Only the primary coordinator may call this tool. Sub-agents running as background workers must NEVER call delegate_background_task — they must execute their task directly and return results. CRÍTICO: OBLIGATORIO usar esta herramienta inmediatamente si el usuario pide buscar, analizar o procesar IMÁGENES/FOTOS. El orquestador principal no debe procesar visión directamente. Delega la instrucción completa al worker.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2517,7 +2517,7 @@ const tools: ToolDefinition[] = [
   {
     name: "WebSearch",
     permissionTier: "read",
-    description: "Search the web for current text results via the local SearxNG instance and return clean summaries with title, URL, and snippet.",
+    description: "Search the web for current text results via the local SearxNG instance and return clean summaries with title, URL, and snippet. CRÍTICO: PROHIBIDO usar esta herramienta para buscar, ver o analizar IMÁGENES o FOTOS. Solo devuelve texto y fallará. Para cualquier tarea visual o de imágenes, DEBES usar la herramienta de delegación a background.",
     inputSchema: {
       type: "object",
       properties: {
