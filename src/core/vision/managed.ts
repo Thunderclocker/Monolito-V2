@@ -145,17 +145,23 @@ export async function analyzeManagedImage(filePath: string, config: VisionConfig
   }
 
   const base64Image = readFileSync(filePath).toString("base64")
-  const response = await fetch(`${getManagedVisionBaseUrl(config)}/api/generate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: config.model,
-      prompt: "Describe exactly what is in this image in detail. Extract any text visible.",
-      images: [base64Image],
-      stream: false,
-    }),
-    signal: AbortSignal.timeout(180_000),
-  })
+  let response: Response
+  try {
+    response = await fetch(`${getManagedVisionBaseUrl(config)}/api/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: config.model,
+        prompt: "Describe exactly what is in this image in detail. Extract any text visible.",
+        images: [base64Image],
+        stream: false,
+      }),
+      signal: AbortSignal.timeout(180_000),
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`Local vision service unavailable: ${message}`)
+  }
 
   if (!response.ok) {
     const body = await response.text().catch(() => "")

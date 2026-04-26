@@ -763,6 +763,22 @@ function chunkTelegramMessage(text: string, maxLength = TELEGRAM_MESSAGE_LIMIT) 
   return chunks.filter(Boolean)
 }
 
+function sanitizeWorkerFailureNote(rawResult: string, status: string) {
+  const normalized = rawResult.replace(/\s+/g, " ").trim()
+  if (/local vision service unavailable|vision request failed|vision no respondió|auto-deploy failed|econnrefused|fetch failed|timeout/i.test(normalized)) {
+    return "Note: Worker failed because the local vision service was unavailable or did not respond. Inform the user plainly and suggest checking logs or waiting for auto-deploy."
+  }
+  if (/image download failed/i.test(normalized)) {
+    return "Note: Worker failed because the image could not be downloaded. Inform the user plainly."
+  }
+  if (/model\/provider failed|rate.?limit|http 5\d\d|provider overloaded/i.test(normalized)) {
+    return "Note: Worker failed because the model provider was unavailable. Inform the user plainly."
+  }
+  return status === "killed"
+    ? "Note: Worker was stopped before it could finish. Inform the user plainly."
+    : "Note: Worker failed. Inform the user plainly and include the technical cause if it is clear from the evidence."
+}
+
 async function sendTelegramMessage(token: string, chatId: string, text: string) {
   for (const chunk of chunkTelegramMessage(text)) {
     await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -998,12 +1014,15 @@ export class MonolitoV2Runtime {
     const looksLikeError = ERROR_PATTERNS.some(re => re.test(rawResult))
     const effectiveStatus = looksLikeError ? "failed" : task.status
     const looksLikeAck = !looksLikeError && rawResult.length < 80 && ACK_PATTERNS.some(re => re.test(rawResult))
+    const failureNote = effectiveStatus === "failed" || effectiveStatus === "killed"
+      ? sanitizeWorkerFailureNote(rawResult, effectiveStatus)
+      : ""
     const xmlPayload = [
       "<task-notification>",
       `Agent ID: ${task.id}`,
       `Status: ${effectiveStatus}`,
       effectiveStatus === "completed" && looksLikeAck ? "Note: Worker returned only an ACK. Do not present this as a final answer." : "",
-      effectiveStatus === "failed" || effectiveStatus === "killed" ? "Note: Worker failed. Inform the user naturally without exposing internal errors." : "",
+      failureNote,
       effectiveStatus === "completed" && !looksLikeAck ? `Result: ${rawResult}` : "",
       "</task-notification>"
     ].filter(Boolean).join("\n")
