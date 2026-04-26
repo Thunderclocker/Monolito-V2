@@ -679,6 +679,59 @@ export function createSession(rootDir: string, title = "Monolito v2 Session", se
   return getSession(rootDir, id)!
 }
 
+export function createWorkerSessionAndJob(
+  rootDir: string,
+  options: {
+    sessionTitle: string
+    sessionId: string
+    profileId: string
+    job: {
+      id: string
+      sessionId: string
+      profileId?: string | null
+      toolName: string
+      toolArgs: string
+      status?: WorkerJobStatus
+    }
+  },
+): SessionRecord {
+  const db = getDb(rootDir)
+  const now = new Date().toISOString()
+  const sessionSummary = `Session created: ${truncateSummary(options.sessionTitle, 120)}`
+
+  db.exec("BEGIN TRANSACTION")
+  try {
+    db.prepare(`INSERT INTO sessions (id, profile_id, title, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(options.sessionId, options.profileId, options.sessionTitle, "idle", now, now)
+    db.prepare(`INSERT INTO worklog (session_id, type, summary, at) VALUES (?, ?, ?, ?)`)
+      .run(options.sessionId, "session", sessionSummary, now)
+    db.prepare(`
+      INSERT INTO worker_jobs (id, session_id, profile_id, tool_name, tool_args, status, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(id) DO UPDATE SET
+        session_id = excluded.session_id,
+        profile_id = excluded.profile_id,
+        tool_name = excluded.tool_name,
+        tool_args = excluded.tool_args,
+        status = excluded.status,
+        updated_at = CURRENT_TIMESTAMP
+    `).run(
+      options.job.id,
+      options.job.sessionId,
+      options.job.profileId ?? null,
+      options.job.toolName,
+      options.job.toolArgs,
+      options.job.status ?? "pending",
+    )
+    db.exec("COMMIT")
+  } catch (error) {
+    db.exec("ROLLBACK")
+    throw error
+  }
+
+  return getSession(rootDir, options.sessionId)!
+}
+
 export function updateSessionProfile(rootDir: string, sessionId: string, profileId: string) {
   const db = getDb(rootDir)
   const stmt = db.prepare(`UPDATE sessions SET profile_id = ?, updated_at = ? WHERE id = ?`)
@@ -1257,17 +1310,24 @@ export function upsertWorkerJob(
   },
 ): void {
   const db = getDb(rootDir)
-  db.prepare(`
-    INSERT INTO worker_jobs (id, session_id, profile_id, tool_name, tool_args, status, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(id) DO UPDATE SET
-      session_id = excluded.session_id,
-      profile_id = excluded.profile_id,
-      tool_name = excluded.tool_name,
-      tool_args = excluded.tool_args,
-      status = excluded.status,
-      updated_at = CURRENT_TIMESTAMP
-  `).run(job.id, job.sessionId, job.profileId ?? null, job.toolName, job.toolArgs, job.status ?? "pending")
+  db.exec("BEGIN TRANSACTION")
+  try {
+    db.prepare(`
+      INSERT INTO worker_jobs (id, session_id, profile_id, tool_name, tool_args, status, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(id) DO UPDATE SET
+        session_id = excluded.session_id,
+        profile_id = excluded.profile_id,
+        tool_name = excluded.tool_name,
+        tool_args = excluded.tool_args,
+        status = excluded.status,
+        updated_at = CURRENT_TIMESTAMP
+    `).run(job.id, job.sessionId, job.profileId ?? null, job.toolName, job.toolArgs, job.status ?? "pending")
+    db.exec("COMMIT")
+  } catch (error) {
+    db.exec("ROLLBACK")
+    throw error
+  }
 }
 
 export function updateWorkerJobStatus(
@@ -1277,14 +1337,21 @@ export function updateWorkerJobStatus(
   details?: { resultText?: string | null; errorText?: string | null },
 ): void {
   const db = getDb(rootDir)
-  db.prepare(`
-    UPDATE worker_jobs
-    SET status = ?,
-      result_text = COALESCE(?, result_text),
-      error_text = COALESCE(?, error_text),
-      updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `).run(status, details?.resultText ?? null, details?.errorText ?? null, id)
+  db.exec("BEGIN TRANSACTION")
+  try {
+    db.prepare(`
+      UPDATE worker_jobs
+      SET status = ?,
+        result_text = COALESCE(?, result_text),
+        error_text = COALESCE(?, error_text),
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(status, details?.resultText ?? null, details?.errorText ?? null, id)
+    db.exec("COMMIT")
+  } catch (error) {
+    db.exec("ROLLBACK")
+    throw error
+  }
 }
 
 export function listRecoverableWorkerJobs(rootDir: string): WorkerJob[] {
