@@ -8,6 +8,10 @@ function parsePartialJson(value: string): Record<string, unknown> {
   return normalizeAnthropicToolInput(JSON.parse(value))
 }
 
+function sanitizeAnthropicBaseUrl(baseUrl: string) {
+  return baseUrl.trim().replace(/\/v1\/messages\/?$/, "")
+}
+
 export async function callAnthropicApi(
   config: ProviderConfig,
   system: string,
@@ -17,9 +21,10 @@ export async function callAnthropicApi(
   maxTokens: number | undefined,
   isSubAgent: boolean,
 ): Promise<ProviderResponse> {
+  const cleanBaseUrl = config.baseUrl ? sanitizeAnthropicBaseUrl(config.baseUrl) : undefined
   const client = new Anthropic({
     apiKey: config.apiKey || "not-needed",
-    baseURL: config.baseUrl || undefined,
+    baseURL: cleanBaseUrl || undefined,
     timeout: 600_000,
     dangerouslyAllowBrowser: true,
   })
