@@ -17,6 +17,14 @@ import { createAgentWorktree, removeAgentWorktree } from "../context/gitContext.
 import { monolitoEvents } from "../events/bus.ts"
 
 const SUBAGENT_VERIFICATION_TAG = "<verified>SUCCESS</verified>"
+const WORKER_IMAGE_EXECUTION_POLICY = [
+  "Image-search execution policy:",
+  "- Para tareas de busqueda de imagenes, esta PROHIBIDO usar WebFetch sobre la URL de la pagina fuente (`source_url`).",
+  "- Usa directamente la herramienta de descarga/vision sobre la `image_url` que devuelve el buscador.",
+  "- Despues de descargar la imagen al scratchpad, DEBES invocar AnalyzeImage para confirmar si el contenido coincide con el pedido del usuario antes de enviarla por Telegram o darla por valida.",
+  "- Si AnalyzeImage confirma que la imagen no coincide, descarta ese archivo local y proba la siguiente `image_url` de la lista.",
+  "- No intentes scrapear la web ni visitar paginas fuente para rescatar la imagen.",
+].join("\n")
 
 function compactWhitespace(value: string) {
   return value.replace(/\s+/g, " ").trim()
@@ -31,6 +39,8 @@ function buildSubagentRetryPrompt(task: string, error: unknown, partialResult?: 
   const message = error instanceof Error ? error.message : String(error)
   return [
     task.trim(),
+    "",
+    WORKER_IMAGE_EXECUTION_POLICY,
     "",
     "Retry the same task with a smaller, more direct execution path.",
     `Technical error: ${clip(message, 240)}`,
@@ -180,6 +190,8 @@ export class AgentOrchestrator {
     // Append verified-tag requirement so the Ralph Loop can complete on first successful attempt
     const taskWithVerification = [
       options.task.trim(),
+      "",
+      WORKER_IMAGE_EXECUTION_POLICY,
       "",
       `When your task is fully done, end your final response with exactly: ${SUBAGENT_VERIFICATION_TAG}`,
     ].join("\n")
