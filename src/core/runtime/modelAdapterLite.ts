@@ -252,6 +252,7 @@ function buildSystemPrompt(args: {
     "- If evidence is missing, ambiguous, blocked, stale, or only inferential, say that explicitly instead of filling the gap.",
     "- When a user asks where a prior answer came from, inspect the conversation/tool evidence first. Use SessionForensics when available. Never claim no tool was used if tool evidence exists in the session.",
     "- When giving a user-facing conclusion based on tools, preserve traceability: mention the relevant tool/source path/URL/log/session evidence when it matters for trust or reproducibility.",
+    "- If runtime evidence shows a specific technical cause (for example local vision service unavailable, image download failure, model provider outage), state that cause honestly instead of replacing it with a vague generic failure explanation.",
     "Identity and durable user facts:",
     identity,
     isSubAgent

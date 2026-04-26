@@ -58,7 +58,7 @@ import {
   stopManagedSttContainer,
   transcribeManagedAudioFile,
 } from "../stt/managed.ts"
-import { analyzeManagedImage, normalizeVisionConfig } from "../vision/managed.ts"
+import { analyzeManagedImage, deployManagedVisionContainer, normalizeVisionConfig } from "../vision/managed.ts"
 import { deploySearxng, SEARXNG_URL } from "../websearch/managed.ts"
 
 const execFileAsync = promisify(execFile)
@@ -167,6 +167,11 @@ function optionalNumber(input: Record<string, unknown>, key: string) {
 
 function compactWhitespace(value: string) {
   return value.replace(/\s+/g, " ").trim()
+}
+
+function isVisionConnectionFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error)
+  return /\b(fetch failed|econnrefused|local vision service unavailable|connect|timed? out|timeout)\b/i.test(message)
 }
 
 function truncateText(value: string, max = 220) {
@@ -2522,7 +2527,17 @@ const tools: ToolDefinition[] = [
       const buffer = Buffer.from(await response.arrayBuffer())
       writeFileSync(tmpPath, buffer)
 
-      const description = await analyzeManagedImage(tmpPath, vision)
+      let description: string
+      try {
+        description = await analyzeManagedImage(tmpPath, vision)
+      } catch (error) {
+        if (!vision.autoDeploy || !isVisionConnectionFailure(error)) throw error
+        const deploy = await deployManagedVisionContainer(vision)
+        if (!deploy.ok) {
+          throw new Error(`Local vision service unavailable and auto-deploy failed: ${deploy.message}`)
+        }
+        description = await analyzeManagedImage(tmpPath, vision)
+      }
       return { ok: true, description, local_path: tmpPath }
     },
   },
