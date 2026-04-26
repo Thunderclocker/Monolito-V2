@@ -4,8 +4,8 @@ import { ensureDirs } from "../ipc/protocol.ts"
 import {
   appendMessage,
   appendWorklog,
+  createWorkerSessionAndJob,
   createProfile,
-  createSession,
   getSession,
   listProfiles,
   listRecoverableWorkerJobs,
@@ -183,7 +183,6 @@ export class AgentOrchestrator {
       "",
       `When your task is fully done, end your final response with exactly: ${SUBAGENT_VERIFICATION_TAG}`,
     ].join("\n")
-    createSession(rootDir, options.description || `Task: ${options.task.slice(0, 30)}...`, subSessionId, options.profileId)
     
     const delegationTask: DelegationTask = {
       id: subSessionId, // Use subSessionId as the taskId for simplicity and SendMessage correlation
@@ -200,23 +199,28 @@ export class AgentOrchestrator {
       logger: createInstanceLogger(subSessionId, options.type, traceId),
     }
 
-    upsertWorkerJob(rootDir, {
-      id: delegationTask.id,
-      sessionId: delegationTask.parentSessionId,
-      profileId: delegationTask.profileId,
-      toolName: "background_worker",
-      toolArgs: JSON.stringify({
-        parentSessionId: delegationTask.parentSessionId,
-        subSessionId: delegationTask.subSessionId,
-        traceId: delegationTask.traceId,
+    createWorkerSessionAndJob(rootDir, {
+      sessionTitle: options.description || `Task: ${options.task.slice(0, 30)}...`,
+      sessionId: subSessionId,
+      profileId: options.profileId,
+      job: {
+        id: delegationTask.id,
+        sessionId: delegationTask.parentSessionId,
         profileId: delegationTask.profileId,
-        type: delegationTask.type,
-        mode: delegationTask.mode,
-        description: delegationTask.description,
-        task: delegationTask.task,
-        jobGroupId: delegationTask.jobGroupId,
-      }),
-      status: "pending",
+        toolName: "background_worker",
+        toolArgs: JSON.stringify({
+          parentSessionId: delegationTask.parentSessionId,
+          subSessionId: delegationTask.subSessionId,
+          traceId: delegationTask.traceId,
+          profileId: delegationTask.profileId,
+          type: delegationTask.type,
+          mode: delegationTask.mode,
+          description: delegationTask.description,
+          task: delegationTask.task,
+          jobGroupId: delegationTask.jobGroupId,
+        }),
+        status: "pending",
+      },
     })
 
     if (options.isolation === "worktree") {
@@ -484,6 +488,14 @@ ${usageXml}
         jobGroupId: payload.jobGroupId,
         logger: createInstanceLogger(payload.subSessionId, payload.type ?? "worker", payload.traceId),
       }
+      appendWorklog(this.runtime.rootDir, task.parentSessionId, {
+        type: "note",
+        summary: `Recovered worker ${task.id} after daemon restart with persisted status ${job.status}.`,
+      })
+      appendWorklog(this.runtime.rootDir, task.subSessionId, {
+        type: "note",
+        summary: `Recovered after daemon restart from persisted worker job ${task.id} with status ${job.status}.`,
+      })
       this.activeTasks.set(task.id, task)
       const prompt = buildSubagentRetryPrompt(task.task, "Daemon restarted while this worker was pending or running.")
       this.executeTurn(task, prompt).catch(err => {
