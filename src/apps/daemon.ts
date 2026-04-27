@@ -2,6 +2,8 @@ import { spawn } from "node:child_process"
 import { openSync } from "node:fs"
 import { MonolitoV2Daemon } from "../core/runtime/daemon.ts"
 import { ensureDirs, readDaemonLock } from "../core/ipc/protocol.ts"
+import { ensureSystemdService } from "../core/runtime/systemd.ts"
+import { createLogger } from "../core/logging/logger.ts"
 
 function isProcessRunning(pid: number) {
   try {
@@ -14,6 +16,7 @@ function isProcessRunning(pid: number) {
 
 async function runDaemon() {
   const rootDir = process.cwd()
+  ensureSystemdService(createLogger("systemd"))
   const daemon = new MonolitoV2Daemon(rootDir)
   try {
     await daemon.start()
