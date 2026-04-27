@@ -1363,6 +1363,15 @@ export function listRecoverableWorkerJobs(rootDir: string): WorkerJob[] {
   `).all() as WorkerJob[]
 }
 
+export function hasActiveWorkersForSession(rootDir: string, sessionId: string): boolean {
+  const row = getDb(rootDir).prepare(`
+    SELECT 1 FROM worker_jobs
+    WHERE session_id = ? AND status IN ('pending', 'running')
+    LIMIT 1
+  `).get(sessionId)
+  return !!row
+}
+
 export function addGraphTriple(
   rootDir: string,
   profileId: string,
