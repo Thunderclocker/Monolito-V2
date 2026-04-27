@@ -16,7 +16,7 @@ export async function callOllamaApi(
       model: config.model,
       stream: false,
       messages: buildOpenAiMessages(system, messages),
-      tools: buildToolDefinitions(isSubAgent).map(tool => ({ type: tool.type, function: tool.function })),
+      tools: buildToolDefinitions(isSubAgent, messages.slice().reverse().find(m => m.role === "user")?.content || "").map(tool => ({ type: tool.type, function: tool.function })),
     }),
     signal: abortSignal,
   })
