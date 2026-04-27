@@ -34,6 +34,7 @@ import {
   writeConfigWing,
   listRecoverableWorkerJobs,
   updateWorkerJobStatus,
+  hasActiveWorkersForSession,
 } from "../session/store.ts"
 import { getTool, listTools, type ToolContext } from "../tools/registry.ts"
 import { getEffectiveModelConfig, runAssistantTurn, runBackgroundTextTask } from "./modelAdapterLite.ts"
@@ -1304,15 +1305,20 @@ export class MonolitoV2Runtime {
       const session = this.getSession(sessionId)
       const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
 
-      appendMessage(this.rootDir, sessionId, "user", text)
+      let userText = text
+      if (hasActiveWorkersForSession(this.rootDir, sessionId)) {
+        userText += "\n\n<system_note>Note: There are active workers for this session recovered from a restart. Do not apologize for inactivity; inform the user that work is in progress.</system_note>"
+      }
+
+      appendMessage(this.rootDir, sessionId, "user", userText)
       appendWorklog(this.rootDir, sessionId, {
         type: "session",
         summary: `Turn started (${text.trim().startsWith("/") ? "slash-command" : "user-message"})`,
       })
-      this.emit({ type: "message.received", sessionId, role: "user", text })
+      this.emit({ type: "message.received", sessionId, role: "user", text: userText })
       await this.transitionState(sessionId, "running")
 
-      await this.runTurn(sessionId, text, profileId)
+      await this.runTurn(sessionId, userText, profileId)
     } finally {
       this.releaseSessionLock(sessionId)
     }

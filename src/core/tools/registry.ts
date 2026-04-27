@@ -2521,6 +2521,10 @@ const tools: ToolDefinition[] = [
       const buffer = Buffer.from(await response.arrayBuffer())
       writeFileSync(tmpPath, buffer)
 
+      if (!existsSync(tmpPath) || statSync(tmpPath).size === 0) {
+        throw new Error("File validation failed: image could not be written or size is 0 bytes.")
+      }
+
       let description: string
       try {
         description = await analyzeManagedImage(tmpPath, vision)
@@ -2530,7 +2534,20 @@ const tools: ToolDefinition[] = [
         if (!deploy.ok) {
           throw new Error(`Local vision service unavailable and auto-deploy failed: ${deploy.message}`)
         }
-        description = await analyzeManagedImage(tmpPath, vision)
+        
+        let attempts = 0
+        while (true) {
+          try {
+            description = await analyzeManagedImage(tmpPath, vision)
+            break
+          } catch (retryError) {
+            attempts++
+            if (attempts >= 10 || !isVisionConnectionFailure(retryError)) {
+              throw new Error(`Local vision service failed to become ready after deploy: ${retryError instanceof Error ? retryError.message : String(retryError)}`)
+            }
+            await new Promise(resolve => setTimeout(resolve, 3000))
+          }
+        }
       }
       return { ok: true, description, local_path: tmpPath }
     },
@@ -2683,7 +2700,7 @@ const tools: ToolDefinition[] = [
   {
     name: "tool_manage_config",
     permissionTier: "edit",
-    description: "Read or update technical configuration stored in SQLite CONF_* wings. Use this instead of reading or writing JSON config files manually. IMPORTANTE al actualizar CONF_CHANNELS: No colocar las credenciales en la raíz. Anidar siempre bajo la clave del canal correspondiente, por ejemplo: { 'telegram': { 'bot_token': '...' } }.",
+    description: "Read or update technical configuration stored in SQLite CONF_* wings. Use this instead of reading or writing JSON config files manually. ALWAYS wrap channel settings inside their provider key (e.g., { 'telegram': { 'enabled': true } }).",
     inputSchema: {
       type: "object",
       properties: {

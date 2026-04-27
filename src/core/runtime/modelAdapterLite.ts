@@ -18,7 +18,7 @@ import { redactSensitiveText } from "../security/redact.ts"
 const defaultLogger = createLogger("modelAdapterLite")
 const MAX_TURN_ITERATIONS = 16
 const DEFAULT_MAX_TURN_DURATION_MS = 120_000
-const MAX_BACKGROUND_TOKENS = 2_000
+const MAX_BACKGROUND_TOKENS = 3_000
 const MAX_TOOL_RESULT_CHARS = 20_000
 const MAX_RATE_LIMIT_RETRIES = 5
 const MAX_OVERLOAD_RETRIES = 3
