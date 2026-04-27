@@ -776,7 +776,7 @@ function sanitizeWorkerFailureNote(rawResult: string, status: string) {
   }
   return status === "killed"
     ? "Note: Worker was stopped before it could finish. Inform the user plainly."
-    : "Note: Worker failed. Inform the user plainly and include the technical cause if it is clear from the evidence."
+    : `Note: Worker failed. Reason: ${normalized.slice(0, 300)}. Report this clearly to the user.`
 }
 
 async function sendTelegramMessage(token: string, chatId: string, text: string) {
