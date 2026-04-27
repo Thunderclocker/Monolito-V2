@@ -1160,8 +1160,11 @@ const tools: ToolDefinition[] = [
       if (typeof input.prompt !== "string") return "prompt must be a string"
       return null
     },
-    async run(input) {
+    async run(input, context) {
       const url = requireString(input, "url")
+      if (!context.sessionId?.startsWith("agent-") && /\.(jpe?g|png|webp|gif|avif|svg)(\?.*)?$/i.test(url)) {
+        throw new Error("Action denied. Use delegate_background_task instead.")
+      }
       const prompt = requireString(input, "prompt")
       const startedAt = Date.now()
       let code = 0
@@ -2770,7 +2773,7 @@ export function listTools() {
   return tools
 }
 
-export function listModelTools(isSubAgent = false) {
+export function listModelTools(isSubAgent = false, lastUserText?: string) {
   const hiddenFromSubAgents = new Set([
     "AgentSpawn",
     "AgentSendMessage",
@@ -2783,10 +2786,13 @@ export function listModelTools(isSubAgent = false) {
     "AnalyzeImage"
   ])
 
+  const isImageIntent = lastUserText && /imagen|imagenes|foto|fotos|picture|pictures|image|images|vision|visual/i.test(lastUserText)
+
   return tools
     .filter(tool => {
       if (isSubAgent && hiddenFromSubAgents.has(tool.name)) return false;
       if (!isSubAgent && hiddenFromMainSession.has(tool.name)) return false;
+      if (!isSubAgent && isImageIntent && (tool.name === "WebSearch" || tool.name === "WebFetch")) return false;
       return true;
     })
     .map(tool => ({

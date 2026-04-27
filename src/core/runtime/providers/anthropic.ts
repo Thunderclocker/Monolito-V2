@@ -28,7 +28,8 @@ export async function callAnthropicApi(
     timeout: 600_000,
     dangerouslyAllowBrowser: true,
   })
-  const anthropicTools = buildToolDefinitions(isSubAgent).map(tool => ({
+  const lastUserText = messages.slice().reverse().find(m => m.role === "user")?.content || ""
+  const anthropicTools = buildToolDefinitions(isSubAgent, lastUserText).map(tool => ({
     name: tool.name,
     description: tool.description,
     input_schema: tool.input_schema,

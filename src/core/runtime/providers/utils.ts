@@ -52,8 +52,8 @@ export function buildOpenAiMessages(system: string, messages: ConversationMessag
   return output
 }
 
-export function buildToolDefinitions(isSubAgent: boolean) {
-  return listModelTools(isSubAgent).map(tool => ({
+export function buildToolDefinitions(isSubAgent: boolean, lastUserText?: string) {
+  return listModelTools(isSubAgent, lastUserText).map(tool => ({
     name: tool.name,
     description: tool.description,
     input_schema: tool.input_schema,
