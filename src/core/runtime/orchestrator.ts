@@ -299,8 +299,14 @@ export class AgentOrchestrator {
 
   async stopAgent(agentId: string): Promise<void> {
     const task = this.activeTasks.get(agentId)
-    if (!task) throw new Error(`Agent ${agentId} not found.`)
-    
+    if (!task) return // Task already removed from activeTasks (completed or cleaned up)
+
+    // Guard: do not kill a task that is already finishing or completed
+    if (task.status === "completed" || task.status === "failed" || task.status === "killed") {
+      task.logger?.warn(`stopAgent called on ${task.status} task ${agentId} — ignoring.`)
+      return
+    }
+
     this.runtime.abortSession(task.subSessionId)
     task.status = "killed"
     updateWorkerJobStatus(this.runtime.rootDir, task.id, "failed", { errorText: "Agent was stopped by coordinator." })
