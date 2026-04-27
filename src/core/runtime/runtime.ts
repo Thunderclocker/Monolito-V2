@@ -1307,7 +1307,7 @@ export class MonolitoV2Runtime {
 
       let userText = text
       if (hasActiveWorkersForSession(this.rootDir, sessionId)) {
-        userText += "\n\n<system_note>Note: There are active workers for this session recovered from a restart. Do not apologize for inactivity; inform the user that work is in progress.</system_note>"
+        userText += "\n\n<system_note>Note: There are active workers for this session in SQLite. Work is in progress. Do not apologize for inactivity.</system_note>"
       }
 
       appendMessage(this.rootDir, sessionId, "user", userText)
