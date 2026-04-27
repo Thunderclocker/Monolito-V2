@@ -58,13 +58,15 @@ function clip(value: string, maxChars: number) {
 }
 
 function sanitizeJsonString(candidate: string) {
-  // Remove control characters that break JSON parsing
-  let sanitized = candidate.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "")
+  // Remove control characters and invisible formatting characters that break JSON parsing
+  let sanitized = candidate.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u200B-\u200D\uFEFF]/g, "")
   // Fix unescaped newlines/tabs inside JSON string values:
   // Walk through and escape literal newlines that appear between quotes
   sanitized = sanitized.replace(/"(?:[^"\\]|\\.)*"/g, match =>
     match.replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t"),
   )
+  // Strip trailing commas before closing brackets/braces
+  sanitized = sanitized.replace(/,\s*([\]}])/g, "$1")
   return sanitized
 }
 
@@ -203,6 +205,7 @@ function buildSystemPrompt(trigger: MemoryTrigger) {
     "CRITICAL JSON RULES:",
     "- Return ONLY a single-line JSON object. No markdown, no code fences, no explanation.",
     "- All string values must be on ONE line. Never put literal newlines inside a JSON string.",
+    "- Avoid using double quotes (\") inside string values. Use single quotes (') instead.",
     "- If nothing to save, return exactly: {\"items\":[]}",
     "",
     "Destinations: USER (stable profile), MEMORY (durable context).",
@@ -344,7 +347,7 @@ export async function runMemoryAgentReview(
 
   let parsed: MemoryReviewResult | null = null
   let currentPrompt = buildUserPrompt(session, rootDir, profileId)
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
     let text = ""
     try {
       const result = await runBackgroundTextTaskWithTimeout(
@@ -382,7 +385,7 @@ export async function runMemoryAgentReview(
       break
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      if (attempt >= 2) {
+      if (attempt >= 3) {
         logMemoryAgent(rootDir, "review.error", {
           sessionId: session.id,
           trigger,
@@ -399,7 +402,11 @@ export async function runMemoryAgentReview(
         attempt,
         error: message,
       })
-      currentPrompt += `\n\nSYSTEM ALERT: Parseo falló. Error: ${message}. Corrige y devuelve JSON estricto.`
+      if (attempt === 2) {
+        currentPrompt += `\n\nSYSTEM ALERT: Último aviso. El JSON sigue roto. Genera el JSON MÁS SIMPLE POSIBLE. SIN COMILLAS DOBLES dentro de los strings, usa solo comillas simples. TERMINA tu respuesta inmediatamente. FORMATO ESTRICTO: {"items":[{"destination":"MEMORY","action":"append","content":"texto simple","confidence":0.9}]}`
+      } else {
+        currentPrompt += `\n\nSYSTEM ALERT: Parseo falló. Error: ${message}. Corrige y devuelve JSON estricto.`
+      }
     }
   }
 
