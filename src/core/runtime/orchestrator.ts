@@ -116,7 +116,7 @@ export type TaskSnapshot = {
 const IMMEDIATE_AGENT_SETTLE_MS = 1_500
 const MAX_CONCURRENT_WORKERS = 6
 const TASK_RETENTION_MS = 5 * 60 * 1000
-const SUBAGENT_TOKEN_BUDGET = 30_000
+const SUBAGENT_TOKEN_BUDGET = 80_000
 
 
 export class AgentOrchestrator {
