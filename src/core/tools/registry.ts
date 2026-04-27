@@ -2431,7 +2431,7 @@ const tools: ToolDefinition[] = [
   {
     name: "ImageSearch",
     permissionTier: "read",
-    description: "Search for images on the internet via SearxNG. Auto-deploys SearxNG Docker container if not running (localhost only). Returns clean image candidates with `image_url` (direct download URL) and `source_url` (page URL). Usá `image_url` como descarga recomendada; no scrapees la `source_url` para rescatar la imagen. ATENCIÓN: Si el flujo implica buscar imágenes Y luego analizarlas visualmente con AnalyzeImage (validación, filtrado, procesamiento de una o más imágenes), ese trabajo combinado supera el límite de tiempo del turno principal. En ese caso DEBÉS delegar todo el flujo a un sub-agente usando delegate_background_task y avisarle al usuario que estás procesando en background.",
+    description: "Search for images on the internet via SearxNG. Auto-deploys SearxNG Docker container if not running (localhost only). Returns clean image candidates with `image_url` (direct download URL). REGLA ESTRICTA: El worker DEBE descargar y analizar `image_url` directamente. ESTÁ PROHIBIDO usar `WebFetch` sobre la página fuente para evitar bloqueos por JavaScript o lazy-loading. Simplemente usá AnalyzeImage pasándole `image_url`. ATENCIÓN: Si el flujo implica buscar imágenes Y luego analizarlas visualmente con AnalyzeImage (validación, filtrado, procesamiento de una o más imágenes), ese trabajo combinado supera el límite de tiempo del turno principal. En ese caso DEBÉS delegar todo el flujo a un sub-agente usando delegate_background_task y avisarle al usuario que estás procesando en background.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2465,14 +2465,8 @@ const tools: ToolDefinition[] = [
           .slice(0, limit)
           .map(r => {
             const imageUrl = r.img_src
-            const sourceUrl = typeof r.url === "string" && r.url.length > 0
-              ? r.url
-              : typeof r.source_url === "string" && r.source_url.length > 0
-                ? r.source_url
-                : undefined
             return {
               image_url: imageUrl,
-              source_url: sourceUrl,
               recommended_download_url: imageUrl,
               recommended_download_field: "image_url" as const,
               fetch_strategy: "download_image_url_directly" as const,
