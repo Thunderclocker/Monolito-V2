@@ -195,6 +195,11 @@ export class AgentOrchestrator {
     const subSessionId = `agent-${options.profileId}-${randomUUID().slice(0, 8)}`
     const traceId = createTraceparent()
 
+    // Inherit adult mode from parent session
+    if (this.runtime.hasAdultMode(options.parentSessionId)) {
+      this.runtime.enableAdultMode(subSessionId)
+    }
+
     const profiles = listProfiles(rootDir)
     if (!profiles.find(profile => profile.id === options.profileId)) {
       createProfile(rootDir, options.profileId, options.profileId, `Auto-generated profile for ${options.profileId}`)

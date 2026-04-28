@@ -844,6 +844,14 @@ export class MonolitoV2Runtime {
   private abortControllers = new Map<string, AbortController>()
   private costState = createCostState()
   private adultModeSessions = new Set<string>()
+
+  public hasAdultMode(sessionId: string): boolean {
+    return this.adultModeSessions.has(sessionId)
+  }
+
+  public enableAdultMode(sessionId: string): void {
+    this.adultModeSessions.add(sessionId)
+  }
   private restartRequested = false
   private toolStallState = new Map<string, { key: string; count: number }>()
   private stallAlerts = new Map<string, string>()
