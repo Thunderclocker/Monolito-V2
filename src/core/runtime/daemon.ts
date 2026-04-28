@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from "node:child_process"
 import { appendFileSync, closeSync, existsSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
-import { createServer, type Server, type Socket } from "node:net"
+import { createConnection, createServer, type Server, type Socket } from "node:net"
 import {
   type DaemonLock,
   type Request,
@@ -43,7 +43,7 @@ export class MonolitoV2Daemon {
 
   async start() {
     const paths = ensureDirs(this.rootDir)
-    this.acquireOwnership(paths)
+    await this.acquireOwnership(paths)
     cleanupScratchpad()
     if (existsSync(paths.socketPath)) unlinkSync(paths.socketPath)
     writeFileSync(paths.pidFile, String(process.pid))
@@ -117,7 +117,7 @@ export class MonolitoV2Daemon {
     } catch {}
   }
 
-  private acquireOwnership(paths: ReturnType<typeof getPaths>) {
+  private async acquireOwnership(paths: ReturnType<typeof getPaths>) {
     const claim = {
       pid: process.pid,
       claimedAt: new Date().toISOString(),
@@ -141,11 +141,32 @@ export class MonolitoV2Daemon {
 
     const existing = this.readOwnerClaim(paths.ownerFile)
     if (existing?.pid && this.isProcessRunning(existing.pid)) {
-      throw new Error(`monolitod-v2 already running (pid ${existing.pid})`)
+      // PID is alive — probe the socket to distinguish a healthy daemon from a zombie
+      // (e.g. a self-restarted daemon whose socket file was orphaned after a crash)
+      const socketAlive = await this.probeSocketAlive(paths.socketPath)
+      if (socketAlive) {
+        throw new Error(`monolitod-v2 already running (pid ${existing.pid})`)
+      }
+      // Socket is unresponsive: zombie daemon. Kill it and take over.
+      this.writeDaemonLog(`zombie daemon detected (pid ${existing.pid}, socket unresponsive) — forcing takeover`)
+      try { process.kill(existing.pid, "SIGKILL") } catch {}
+      await new Promise<void>(resolve => setTimeout(resolve, 500))
     }
 
     rmSync(paths.ownerFile, { force: true })
+    try { if (existsSync(paths.socketPath)) unlinkSync(paths.socketPath) } catch {}
     tryClaim()
+  }
+
+  /** Returns true if a daemon is actively listening on the Unix socket. */
+  private probeSocketAlive(socketPath: string): Promise<boolean> {
+    if (!existsSync(socketPath)) return Promise.resolve(false)
+    return new Promise(resolve => {
+      const sock = createConnection(socketPath)
+      const timer = setTimeout(() => { sock.destroy(); resolve(false) }, 1_000)
+      sock.once("connect", () => { clearTimeout(timer); sock.destroy(); resolve(true) })
+      sock.once("error", () => { clearTimeout(timer); resolve(false) })
+    })
   }
 
   private readOwnerClaim(path: string): { pid?: number } | null {
@@ -247,8 +268,24 @@ export class MonolitoV2Daemon {
         const daemonPath = `${this.rootDir}/src/apps/daemon.ts`
         const restartState = readUpdateRestartState(this.rootDir)
         const restartStatePath = `${paths.runDir}/update-restart.json`
+        // Prefer restarting via systemd so the new daemon PID stays tracked by the
+        // service manager. Fall back to direct spawn when systemd is unavailable
+        // (e.g. local dev, Docker, non-systemd environments).
         const restartScript = [
           "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done",
+          // --- systemd path ---
+          "if systemctl --user is-enabled monolito.service > /dev/null 2>&1; then",
+          "  systemctl --user start monolito.service",
+          "  sleep 3",
+          "  if systemctl --user is-active monolito.service > /dev/null 2>&1; then rm -f \"$7\"; exit 0; fi",
+          "  # systemd start failed — rollback if this was an /update",
+          "  if [ -n \"$4\" ]; then git -C \"$5\" reset --hard \"$4\" || true; git -C \"$5\" clean -fd || true; fi",
+          "  if [ -n \"$6\" ]; then stash_ref=$(git -C \"$5\" stash list --format='%gd\t%s' | awk -F '\t' -v label=\"$6\" '$2==label { print $1; exit }'); if [ -n \"$stash_ref\" ]; then git -C \"$5\" stash apply --index \"$stash_ref\" || true; git -C \"$5\" stash drop \"$stash_ref\" || true; fi; fi",
+          "  rm -f \"$7\"",
+          "  systemctl --user start monolito.service",
+          "  exit $?",
+          "fi",
+          // --- fallback: direct spawn (no systemd) ---
           "\"$2\" --experimental-strip-types \"$3\" --foreground &",
           "child=$!",
           "sleep 2",
