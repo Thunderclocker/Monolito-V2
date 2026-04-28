@@ -32,7 +32,18 @@ discriminara su uso, eligió el camino hallucinated.
 2. **`src/core/tools/registry.ts`**: Agregada restricción `PROHIBIDO` en la `description` del
    tool `Bash` para bloquear el patrón a nivel de selección de herramienta (doble barrera).
 
-### Verificación
+### Verificación Estática
 - `npm run build` → 0 errores TypeScript.
-- Sistema estable al momento del diagnóstico: sin crashes de daemon, memoria funcionando
-  correctamente, Telegram activo.
+
+### Despliegue Autónomo (2026-04-28T01:18Z)
+- `git pull` en VPS: 3 archivos actualizados (`17cd7e9..4a54b83`).
+- Daemon tenía proceso huérfano (pid 3105212, self-restart de sesión anterior) bloqueando el arranque.
+  Se limpió el socket `/tmp/monolitod-v2-ec87887abb3d.sock` y se reinició vía `systemctl --user start monolito.service`.
+- Daemon levantó correctamente con PID 3114307, Telegram activo.
+
+### Test E2E: VERDE ✅
+- Estímulo inyectado vía Telegram API: `"mandame 2 fotos de tanques de guerra rosas"` (msg_id 3290).
+- Worker `agent-default-33d13481` spawneado a las 01:20:52, completado en ~4 min.
+- Resultado: ambas imágenes descargadas, analizadas con `AnalyzeImage` (Moondream local), enviadas vía `TelegramSendPhoto` (msg_ids 3293 y 3294).
+- **Sin `client.beta.vision.analyze()`. Sin `AttributeError`. Sin script Python hallucinated.**
+- El patrón de falla fue eliminado. El worker usó el arnés correctamente.
