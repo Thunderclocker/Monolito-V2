@@ -179,11 +179,27 @@ function isAdHocSpeechProcessingBash(command: string) {
   )
 }
 
+function isAdHocVisionOrLlmBash(command: string) {
+  const normalized = command.replace(/\s+/g, " ").trim().toLowerCase()
+  if (!normalized) return false
+  return (
+    /client\.beta\.vision/.test(normalized) ||
+    /\bopenai\.vision\b/.test(normalized) ||
+    /\banthropic\.messages\b/.test(normalized) ||
+    /\/v1\/(?:chat\/completions|responses)\b/.test(normalized) ||
+    /\/api\/generate\b/.test(normalized) ||
+    /\/api\/chat\b/.test(normalized) ||
+    /\b(import|from) +openai\b/.test(normalized) ||
+    /\b(import|from) +anthropic\b/.test(normalized)
+  )
+}
+
 function isSafeReadOnlyBash(command: string) {
   const normalized = command.replace(/\s+/g, " ").trim()
   if (!normalized) return false
   if (isDangerousBash(normalized)) return false
   if (isAdHocSpeechProcessingBash(normalized)) return false
+  if (isAdHocVisionOrLlmBash(normalized)) return false
   return DEFAULT_SAFE_BASH_PREFIXES.some(prefix => normalized === prefix || normalized.startsWith(`${prefix} `))
 }
 
@@ -198,6 +214,13 @@ function evaluateMode(mode: PermissionMode, toolName: string, input: Record<stri
         behavior: "deny",
         source: "mode",
         message: "Ad-hoc Bash speech processing is denied. Use GenerateSpeech, TranscribeAudio, TtsService*, or SttService* instead.",
+      }
+    }
+    if (isAdHocVisionOrLlmBash(command)) {
+      return {
+        behavior: "deny",
+        source: "mode",
+        message: "Ad-hoc Bash LLM/vision calls are denied. Use AnalyzeImage or the dedicated runtime tools instead.",
       }
     }
     if (mode === "default") {

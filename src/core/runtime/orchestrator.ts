@@ -26,6 +26,25 @@ const WORKER_IMAGE_EXECUTION_POLICY = [
   "- No intentes scrapear la web ni visitar paginas fuente para rescatar la imagen.",
 ].join("\n")
 
+function normalizeForIntent(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase()
+}
+
+function isImageTaskIntent(...values: Array<string | undefined>) {
+  const normalized = normalizeForIntent(values.filter(Boolean).join(" "))
+  return /\b(imagen(?:es)?|foto(?:s)?|picture(?:s)?|photo(?:s)?|image(?:s)?|vision|visual)\b/.test(normalized)
+}
+
+function hasSuccessfulAnalyzeImage(session: ReturnType<typeof getSession>) {
+  return session?.worklog?.some(w =>
+    w.type === "tool" &&
+    /^Tool AnalyzeImage finished successfully\b/.test(w.summary)
+  ) ?? false
+}
+
 function compactWhitespace(value: string) {
   return value.replace(/\s+/g, " ").trim()
 }
@@ -404,10 +423,8 @@ export class AgentOrchestrator {
         }
 
         // Image verification check
-        const isImageTask = /imagen|foto|picture|photo|image/i.test(task.task) || /imagen|foto|picture|photo|image/i.test(task.description)
-        if (isImageTask) {
-          const hasAnalyzeImage = session?.worklog?.some(w => w.type === "tool" && w.summary.includes("AnalyzeImage finished successfully"))
-          if (!hasAnalyzeImage) {
+        if (isImageTaskIntent(task.task, task.description)) {
+          if (!hasSuccessfulAnalyzeImage(session)) {
             appendWorklog(runtime.rootDir, task.subSessionId, {
               type: "note",
               summary: `[Ralph Loop] Blocked premature completion on attempt ${attempt}: Image task must execute AnalyzeImage for verification.`,
