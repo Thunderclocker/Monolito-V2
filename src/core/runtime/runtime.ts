@@ -640,6 +640,20 @@ function collectRecentTaskNotifications(session: SessionRecord, limit = 3) {
   return notifications.reverse()
 }
 
+function collectAllRecentTaskNotifications(session: SessionRecord, limit = 5) {
+  const notifications: string[] = []
+  const messages = session.messages ?? []
+  const scanLimit = Math.min(messages.length, 30)
+  for (let index = messages.length - 1; index >= messages.length - scanLimit; index -= 1) {
+    const message = messages[index]
+    if (message && isTaskNotificationText(message.text)) {
+      notifications.push(summarizeTaskNotification(message.text))
+      if (notifications.length >= limit) break
+    }
+  }
+  return notifications.reverse()
+}
+
 function buildBackgroundWakeupPrompt(notifications: string[]) {
   return [
     "Background worker updates arrived.",
@@ -1480,6 +1494,7 @@ export class MonolitoV2Runtime {
               webSearchProvider: webSearchConfig.provider,
               stallAlert: this.consumeStallAlert(sessionId),
               activeTasks: this.orchestrator.getTaskSnapshot(sessionId).filter(t => t.status === "pending" || t.status === "running"),
+              taskNotifications: collectAllRecentTaskNotifications(preparedSession),
             },
             costState: this.costState,
             abortSignal: abortController.signal,
@@ -1659,6 +1674,7 @@ export class MonolitoV2Runtime {
             webSearchProvider: webSearchConfig.provider,
             stallAlert: this.consumeStallAlert(sessionId),
             activeTasks: this.orchestrator.getTaskSnapshot(sessionId).filter(t => t.status === "pending" || t.status === "running"),
+            taskNotifications: collectAllRecentTaskNotifications(syntheticSession),
           },
           costState: this.costState,
           abortSignal: abortController.signal,
