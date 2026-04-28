@@ -922,7 +922,7 @@ const tools: ToolDefinition[] = [
     name: "Bash",
     aliases: ["bash"],
     permissionTier: "edit",
-    description: "Execute a shell command locally from the workspace. Optional: run_in_background=true for long-running commands.",
+    description: "Execute a shell command locally from the workspace. Optional: run_in_background=true for long-running commands. PROHIBIDO: No uses esta herramienta para invocar APIs externas de LLM o visión (openai, anthropic, client.beta.vision, etc.) desde un script Python o shell. Para análisis visual de imágenes usá la herramienta AnalyzeImage.",
     inputSchema: {
       type: "object",
       properties: {

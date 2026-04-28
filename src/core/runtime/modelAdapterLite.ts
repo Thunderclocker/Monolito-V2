@@ -257,7 +257,13 @@ function buildSystemPrompt(args: {
     "Identity and durable user facts:",
     identity,
     isSubAgent
-      ? "You are a worker. Complete the task directly with the tools available to you."
+      ? [
+          "You are a worker. Complete the task directly with the tools available to you.",
+          "REGLAS CRÍTICAS PARA WORKERS:",
+          "- PROHIBIDO usar Bash para invocar APIs externas de LLM, visión o procesamiento de imágenes (ej. openai.vision, anthropic.messages, client.beta.vision, llamadas HTTP a providers de IA). El Bash es solo para operaciones de sistema (archivos, proceso, red básica).",
+          "- Para analizar o describir el contenido visual de una imagen, DEBÉS usar la herramienta AnalyzeImage con la URL o ruta local. Nunca escribas un script Python que llame a una API de visión externa.",
+          "- Si AnalyzeImage falla (servicio caído, timeout), reportá el error explícitamente. No intentes workarounds via Bash.",
+        ].join("\n")
       : "You may delegate only when it materially helps and the corresponding tool is available.",
     "Available tools:",
     buildToolSummary(isSubAgent, lastUserMessage),
