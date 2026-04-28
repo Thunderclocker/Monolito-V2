@@ -209,6 +209,7 @@ function buildSystemPrompt(trigger: MemoryTrigger) {
     "- If nothing to save, return exactly: {\"items\":[]}",
     "",
     "Destinations: USER (stable profile), MEMORY (durable context).",
+    "STRICT RULE: NEVER output 'CANONICAL_MEMORY' as a destination. The system automatically extracts canonical info from USER/MEMORY updates.",
     "Prefer saving nothing over saving weak info. Max " + MAX_ITEMS_PER_REVIEW + " items.",
     "Write memory in the same language as the user. Keep content short and atomic.",
     "Confidence: 0 to 1. To update existing memory, use action='replace' with old_text.",
@@ -427,6 +428,9 @@ export async function runMemoryAgentReview(
   const appliedSummaries: string[] = []
   const canonicalBefore = readCanonicalMemory(rootDir, profileId)
   for (const proposal of proposals) {
+    if (proposal.destination === "CANONICAL_MEMORY" as any || proposal.destination === "CANONICAL" as any) {
+      proposal.destination = "USER"
+    }
     if (!validateProposal(proposal)) {
       logMemoryAgent(rootDir, "proposal.skip", {
         sessionId: session.id,
