@@ -104,7 +104,7 @@ function buildTelegramPhotoWorkerTask(task: string, parentSessionId: string, lat
   const chatId = parentSessionId.startsWith("telegram-") ? parentSessionId.slice("telegram-".length) : ""
   if (!chatId) return task
   return [
-    "Tarea de entrega de fotos por Telegram.",
+    "Tarea interna de obtención y verificación de fotos para entrega por Telegram.",
     "",
     "Pedido original del usuario:",
     latestUserText.trim() || task.trim(),
@@ -112,10 +112,10 @@ function buildTelegramPhotoWorkerTask(task: string, parentSessionId: string, lat
     "Contrato obligatorio:",
     "1. Usá ImageSearch para buscar candidatos directos de imagen (`image_url`).",
     "2. Validá cada candidato con AnalyzeImage. Descartá cualquier resultado sin descripción útil o que no coincida con el pedido.",
-    `3. Enviá cada imagen validada al chat Telegram ${chatId} usando TelegramSendPhoto con el local_path devuelto por AnalyzeImage.`,
-    "4. No devuelvas solo URLs si el usuario pidió que le pases o mandes fotos.",
-    "5. La respuesta final debe incluir cuántas fotos fueron enviadas, los message_id de Telegram si la tool los devuelve, y los local_path usados.",
-    "6. Si no lográs enviar ninguna foto validada, respondé claramente que no se envió nada y por qué.",
+    "3. NO envíes mensajes ni archivos al usuario. Tu salida es solo para el coordinador.",
+    "4. Devolvé los local_path validados por AnalyzeImage y una descripción breve de cada imagen.",
+    "5. No devuelvas solo URLs si el usuario pidió que le pasen o manden fotos; el coordinador necesita local_path.",
+    "6. Si no lográs validar ninguna foto, respondé claramente que no hay local_path validado y por qué.",
     "",
     "Instrucción generada originalmente por el coordinador:",
     task.trim(),
@@ -2337,7 +2337,7 @@ const tools: ToolDefinition[] = [
   {
     name: "list_active_workers",
     permissionTier: "read",
-    description: "List worker/sub-agent state for the current parent session so the coordinator can verify whether they are still running or already finished.",
+    description: "Inspect internal work state for the current session, including partial progress from tool events. This is for coordinator awareness only; do not expose worker/agent mechanics to the user unless they explicitly ask.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -2350,14 +2350,14 @@ const tools: ToolDefinition[] = [
       if (!parentSessionId) throw new Error("Parent Session ID not found.")
       return {
         ok: true,
-        workers: context.orchestrator.getTaskSnapshot(parentSessionId),
+        internal_tasks: context.orchestrator.getTaskSnapshot(parentSessionId),
       }
     },
   },
   {
     name: "delegate_background_task",
     permissionTier: "edit",
-    description: "Use this tool autonomously and proactively for high cognitive load tasks (multiple web searches, deep reading, long analysis, multi-step research) to avoid blocking the chat. You do not need to specify an output file: when the worker finishes, its raw result is injected directly into your volatile memory as a system message and the runtime will force a new inference turn so you can synthesize and respond to the user. Return a short natural acknowledgement to the user immediately (e.g. 'Ahí me pongo, dame un rato') after calling this tool. IMPORTANT: Only the primary coordinator may call this tool. Sub-agents running as background workers must NEVER call delegate_background_task — they must execute their task directly and return results. CRÍTICO: OBLIGATORIO usar esta herramienta inmediatamente si el usuario pide buscar, analizar o procesar IMÁGENES/FOTOS. El orquestador principal no debe procesar visión directamente. Delega la instrucción completa al worker.",
+    description: "Start internal asynchronous work for high cognitive load tasks (multiple web searches, deep reading, long analysis, multi-step research) to avoid blocking the chat. The internal executor reports back to the coordinator; it must not speak to the user. After calling this tool, acknowledge as your own ongoing action (for example: 'Me pongo con eso, dame un momento') and do not mention workers, agents, delegation, or background tasks unless the user explicitly asks how the work is coordinated. IMPORTANT: Only the primary coordinator may call this tool. Sub-agents must NEVER call delegate_background_task — they must execute their task directly and return results. CRÍTICO: OBLIGATORIO usar esta herramienta inmediatamente si el usuario pide buscar, analizar o procesar IMÁGENES/FOTOS. El orquestador principal no debe procesar visión directamente. La instrucción completa se ejecuta internamente y luego el coordinador presenta el resultado al usuario.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2408,8 +2408,8 @@ const tools: ToolDefinition[] = [
         result: spawned.result ?? "",
         error: spawned.error,
         message: spawned.status === "spawned"
-          ? "Background worker started. You will be notified when it completes."
-          : "Background worker finished immediately.",
+          ? "Internal task started. Do not mention internal workers or agents to the user unless explicitly asked."
+          : "Internal task finished immediately.",
       }
     },
   },
@@ -2841,7 +2841,12 @@ export function listModelTools(isSubAgent = false, lastUserText?: string) {
     "AgentSendMessage",
     "AgentStop",
     "delegate_background_task",
-    "list_active_workers"
+    "list_active_workers",
+    "TelegramSend",
+    "TelegramSendAudio",
+    "TelegramSendVoice",
+    "TelegramSendPhoto",
+    "TelegramSendDocument",
   ])
   const hiddenFromMainSession = new Set([
     "ImageSearch",

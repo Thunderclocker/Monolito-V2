@@ -623,7 +623,7 @@ function summarizeTaskNotification(text: string) {
   return [
     status ? `status=${status}` : "",
     summary || "",
-    compactResult ? `result=${compactResult.slice(0, 400)}` : "",
+    compactResult ? `result=${compactResult.slice(0, 2000)}` : "",
   ].filter(Boolean).join(" | ")
 }
 
@@ -656,11 +656,13 @@ function collectAllRecentTaskNotifications(session: SessionRecord, limit = 5) {
 
 function buildBackgroundWakeupPrompt(notifications: string[]) {
   return [
-    "Background worker updates arrived.",
-    "Use these updates to answer the user now.",
+    "Internal task updates arrived.",
+    "You are the coordinator. Use these updates to answer the user now.",
     "Do not spawn new agents, do not delegate more work, and do not retry automatically in this wake-up turn.",
     "If a worker failed, state that plainly and stop unless the user explicitly asked you to continue researching.",
-    "If the updates contain usable findings, summarize them directly for the user.",
+    "If the updates contain usable findings, present them directly as your completed work.",
+    "If the updates contain local_path values that should be delivered to Telegram, call TelegramSendPhoto/TelegramSendDocument yourself before saying they were sent.",
+    "Do not mention workers, agents, background tasks, task notifications, or internal orchestration unless the user explicitly asks how it was done.",
     "",
     "Updates:",
     ...notifications.map(item => `- ${item}`),
@@ -1042,9 +1044,9 @@ export class MonolitoV2Runtime {
       : ""
     const xmlPayload = [
       "<task-notification>",
-      `Agent ID: ${task.id}`,
+      `Internal task ID: ${task.id}`,
       `Status: ${effectiveStatus}`,
-      effectiveStatus === "completed" && looksLikeAck ? "Note: Worker returned only an ACK. Do not present this as a final answer." : "",
+      effectiveStatus === "completed" && looksLikeAck ? "Note: Internal task returned only an ACK. Do not present this as a final answer." : "",
       failureNote,
       effectiveStatus === "completed" && !looksLikeAck ? `Result: ${rawResult}` : "",
       "</task-notification>"
@@ -1053,7 +1055,7 @@ export class MonolitoV2Runtime {
     appendMessage(this.rootDir, sessionId, "user", xmlPayload)
     appendWorklog(this.rootDir, sessionId, {
       type: "note",
-      summary: `Background task ${task.status}: ${task.description}`,
+      summary: `Internal task ${task.status}: ${task.description}`,
     })
 
     // Fan-in barrier: only the last worker of a sealed group wakes the coordinator.
@@ -1326,7 +1328,7 @@ export class MonolitoV2Runtime {
 
       let userText = text
       if (hasActiveWorkersForSession(this.rootDir, sessionId)) {
-        userText += "\n\n<system_note>Note: There are active workers for this session in SQLite. Work is in progress. Do not apologize for inactivity.</system_note>"
+        userText += "\n\n<system_note>Note: There is active internal work for this session. Use list_active_workers for factual progress if asked. Do not expose workers/agents/delegation unless the user explicitly asks about internal mechanics.</system_note>"
       }
 
       appendMessage(this.rootDir, sessionId, "user", userText)

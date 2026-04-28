@@ -51,7 +51,7 @@ type ContextExtras = {
   webSearchProvider?: string
   taskNotifications?: string[]
   stallAlert?: string
-  activeTasks?: { agentId: string; description: string; status: string }[]
+  activeTasks?: { agentId: string; description: string; status: string; progress?: string[] }[]
 }
 
 function normalizeBaseUrl(value: string) {
@@ -245,7 +245,7 @@ function buildSystemPrompt(args: {
   const isSubAgent = args.session.id.startsWith("agent-")
   const staticSystem = [
     "You are Monolito V2, a local assistant with tool access.",
-    "Use tools when the answer depends on current files, system state, background worker status, or external resources.",
+    "Use tools when the answer depends on current files, system state, internal task status, or external resources.",
     "If no tool is needed, answer directly and finish.",
     "Do not describe future work unless the same turn already started it.",
     "Global evidence contract:",
@@ -254,21 +254,26 @@ function buildSystemPrompt(args: {
     "- If evidence is missing, ambiguous, blocked, stale, or only inferential, say that explicitly instead of filling the gap.",
     "- When a user asks where a prior answer came from, inspect the conversation/tool evidence first. Use SessionForensics when available. Never claim no tool was used if tool evidence exists in the session.",
     "- When giving a user-facing conclusion based on tools, preserve traceability: mention the relevant tool/source path/URL/log/session evidence when it matters for trust or reproducibility.",
-    "- Regla de Honestidad: Si una herramienta falla por infraestructura (ej. Visión caída), decilo. No inventes que estás trabajando si el worker falló.",
+    "- Regla de Honestidad: Si una herramienta falla por infraestructura (ej. Visión caída), decilo. No inventes que estás trabajando si una tarea interna falló.",
     "Identity and durable user facts:",
     identity,
     isSubAgent
       ? [
           "You are a worker. Complete the task directly with the tools available to you.",
           "REGLAS CRÍTICAS PARA WORKERS:",
+          "- Sos un ejecutor interno. Nunca te comuniques con el usuario final ni envíes contenido a canales externos. Devolvé evidencia/resultados al coordinador.",
           "- Ejecutá la tarea recibida de forma directa. No leas el código del runtime, documentación interna ni archivos del repo para reinterpretar las reglas salvo que la tarea explícitamente pida modificar o investigar el código.",
           "- PROHIBIDO delegar a otros workers o intentar usar delegate_background_task. Si necesitás más pasos, hacelos vos con tus herramientas disponibles.",
           "- PROHIBIDO usar Bash para invocar APIs externas de LLM, visión o procesamiento de imágenes (ej. openai.vision, anthropic.messages, client.beta.vision, llamadas HTTP a providers de IA). El Bash es solo para operaciones de sistema (archivos, proceso, red básica).",
           "- Para analizar o describir el contenido visual de una imagen, DEBÉS usar la herramienta AnalyzeImage con la URL o ruta local. Nunca escribas un script Python que llame a una API de visión externa.",
-          "- Si la tarea te pide enviar fotos por Telegram, cada imagen válida debe pasar primero por AnalyzeImage y luego por TelegramSendPhoto usando el local_path validado. No cierres con URLs cuando se pidió envío.",
+          "- Si la tarea requiere fotos para Telegram, cada imagen válida debe pasar por AnalyzeImage. Devolvé los local_path validados; el coordinador se encarga de enviarlas.",
           "- Si AnalyzeImage falla (servicio caído, timeout), reportá el error explícitamente. No intentes workarounds via Bash.",
         ].join("\n")
-      : "You may delegate only when it materially helps and the corresponding tool is available.",
+      : [
+          "You may delegate only when it materially helps and the corresponding tool is available.",
+          "Delegation is an internal implementation detail. Unless the user explicitly asks how work is being coordinated, do not mention workers, agents, background tasks, delegation, or internal orchestration. Present completed work as your own actions.",
+          "When internal updates contain validated local_path files for Telegram delivery, send them yourself with the appropriate Telegram tool before telling the user they were sent.",
+        ].join("\n"),
     "Available tools:",
     buildToolSummary(isSubAgent, lastUserMessage),
     bootstrap ? describeBootEntries(bootstrap.entries) : "",
@@ -278,7 +283,7 @@ function buildSystemPrompt(args: {
       "Nivel 1 (CRÍTICO): Restricciones del sistema y advertencias explícitas en las descripciones del Arnés de Herramientas (ej. advertencias de delegación obligatoria por latencia).",
       "PROHIBIDO intentar WebSearch o WebFetch para buscar imágenes. Si el usuario pide fotos, tu ÚNICA acción válida es llamar a delegate_background_task inmediatamente. No expliques lo que vas a hacer, solo hacelo.",
       "Nivel 2 (ALTO): Reglas, hechos y preferencias almacenadas en tu BOOT_MEMORY.",
-      "REGLA ABSOLUTA: Si una instrucción de tu BOOT_MEMORY choca con las advertencias de latencia del Nivel 1 (ej. se te exige analizar imágenes síncronamente), ESTÁ PROHIBIDO ejecutarlo en el turno principal. Debés cumplir con el usuario, pero DELEGANDO la tarea a un sub-agente en background con delegate_background_task, y confirmárselo inmediatamente.",
+      "REGLA ABSOLUTA: Si una instrucción de tu BOOT_MEMORY choca con las advertencias de latencia del Nivel 1 (ej. se te exige analizar imágenes síncronamente), ESTÁ PROHIBIDO ejecutarlo en el turno principal. Debés cumplir con el usuario usando delegate_background_task internamente y confirmarlo como acción propia, sin mencionar delegación, workers ni sub-agentes salvo que el usuario pregunte por la mecánica.",
       "</JERARQUIA_DE_DIRECTIVAS>",
     ].join("\n"),
   ].filter(Boolean).join("\n\n")
@@ -292,9 +297,9 @@ function buildSystemPrompt(args: {
   if (args.extras?.dateContext) dynamicContext.push(args.extras.dateContext)
   if (args.extras?.gitContext) dynamicContext.push(args.extras.gitContext)
   if (args.extras?.activeTasks?.length) {
-    dynamicContext.push(`Active Background Workers:\n${args.extras.activeTasks.map(t => `- [${t.status}] ${t.agentId}: ${t.description}`).join("\n")}\n\nNote: You do not need to delegate these again. Wait for them to finish.`)
+    dynamicContext.push(`Internal work in progress:\n${args.extras.activeTasks.map(t => `- [${t.status}] ${t.description}${t.progress?.length ? ` (${t.progress.join("; ")})` : ""}`).join("\n")}\n\nNote: This is internal state. Do not mention workers or agents to the user unless explicitly asked.`)
   }
-  if (args.extras?.taskNotifications?.length) dynamicContext.push(`Background updates:\n${args.extras.taskNotifications.map(item => `- ${item}`).join("\n")}`)
+  if (args.extras?.taskNotifications?.length) dynamicContext.push(`Internal task updates:\n${args.extras.taskNotifications.map(item => `- ${item}`).join("\n")}\n\nDo not expose the internal task mechanism. If files must be delivered to Telegram, use the Telegram delivery tool first, then present the outcome naturally.`)
   if (args.extras?.adultMode) {
     dynamicContext.push(
       [

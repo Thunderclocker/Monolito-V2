@@ -46,20 +46,6 @@ function hasSuccessfulAnalyzeImage(session: ReturnType<typeof getSession>) {
   ) ?? false
 }
 
-function hasSuccessfulTelegramSendPhoto(session: ReturnType<typeof getSession>) {
-  return session?.worklog?.some(w =>
-    w.type === "tool" &&
-    /^Tool TelegramSendPhoto finished successfully\b/.test(w.summary)
-  ) ?? false
-}
-
-function requiresTelegramPhotoDelivery(task: DelegationTask) {
-  if (!task.parentSessionId.startsWith("telegram-")) return false
-  const normalized = normalizeForIntent(`${task.task} ${task.description}`)
-  return isImageTaskIntent(task.task, task.description) &&
-    /\b(telegramsendphoto|telegram|enviar|envia|mandar|manda|pasar|pasa|send)\b/.test(normalized)
-}
-
 function extractPartialImageEvidence(rootDir: string, sessionId: string) {
   const events = tailEvents(rootDir, sessionId, 80)
   const imageRows: string[] = []
@@ -84,6 +70,33 @@ function extractPartialImageEvidence(rootDir: string, sessionId: string) {
     ...imageRows.slice(-6),
     ...sentRows.slice(-6),
   ].join("\n")
+}
+
+function getTaskProgress(rootDir: string, sessionId: string) {
+  const events = tailEvents(rootDir, sessionId, 80)
+  let imageSearches = 0
+  let analyzed = 0
+  let telegramSends = 0
+  const localPaths: string[] = []
+
+  for (const event of events) {
+    if (event.type !== "tool.finish" || !event.ok) continue
+    if (event.tool === "ImageSearch") imageSearches += 1
+    if (event.tool === "AnalyzeImage") {
+      analyzed += 1
+      const output = event.output as Record<string, unknown> | undefined
+      const localPath = typeof output?.local_path === "string" ? output.local_path : ""
+      if (localPath) localPaths.push(localPath)
+    }
+    if (event.tool === "TelegramSendPhoto") telegramSends += 1
+  }
+
+  return [
+    imageSearches > 0 ? `${imageSearches} image search${imageSearches === 1 ? "" : "es"}` : "",
+    analyzed > 0 ? `${analyzed} image${analyzed === 1 ? "" : "s"} analyzed` : "",
+    localPaths.length > 0 ? `${localPaths.length} validated local_path${localPaths.length === 1 ? "" : "s"}` : "",
+    telegramSends > 0 ? `${telegramSends} Telegram photo send${telegramSends === 1 ? "" : "s"}` : "",
+  ].filter(Boolean)
 }
 
 function compactWhitespace(value: string) {
@@ -184,6 +197,7 @@ export type TaskSnapshot = {
   description: string
   status: DelegationTask["status"]
   hasResult: boolean
+  progress?: string[]
   error?: string
 }
 
@@ -482,29 +496,6 @@ export class AgentOrchestrator {
           }
         }
 
-        if (requiresTelegramPhotoDelivery(task) && !hasSuccessfulTelegramSendPhoto(session)) {
-          appendWorklog(runtime.rootDir, task.subSessionId, {
-            type: "note",
-            summary: `[Ralph Loop] Blocked premature completion on attempt ${attempt}: Telegram photo delivery requires TelegramSendPhoto.`,
-          })
-          partialResult = assistantReply || partialResult
-          if (attempt >= maxAttempts) {
-            throw new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts without executing TelegramSendPhoto`)
-          }
-          currentText = [
-            task.task.trim(),
-            "",
-            "[Ralph Loop] SYSTEM ALERT",
-            "Validaste o encontraste imágenes, pero la tarea exige entrega por Telegram.",
-            "Debés enviar cada imagen validada con TelegramSendPhoto usando el local_path devuelto por AnalyzeImage.",
-            "No cierres con URLs o rutas solamente.",
-            "",
-            `Último intento rechazado: ${clip(assistantReply, 500)}`,
-          ].join("\n")
-          attempt++
-          continue
-        }
-
         break
       }
 
@@ -660,6 +651,7 @@ ${usageXml}
         description: task.description,
         status: task.status,
         hasResult: Boolean(task.result?.trim()),
+        progress: getTaskProgress(this.runtime.rootDir, task.subSessionId),
         ...(task.error ? { error: task.error } : {}),
       }))
   }

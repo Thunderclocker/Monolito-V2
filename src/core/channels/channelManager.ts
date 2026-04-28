@@ -7,11 +7,9 @@ import { createTelegramPoller, type TelegramCallbackQuery, type TelegramMessage,
 import type { MonolitoV2Runtime } from "../runtime/runtime.ts"
 import { ensureDirs } from "../ipc/protocol.ts"
 import { deployManagedSttContainer, normalizeSttConfig, transcribeManagedAudioFile } from "../stt/managed.ts"
-import { monolitoEvents, type WorkerCompletedEvent } from "../events/bus.ts"
 
 const logger = createLogger("channels")
 let activePoller: TelegramPoller | null = null
-let unsubscribeWorkerCompleted: (() => void) | null = null
 const pendingTelegramInputs = new Map<number, { kind: "channels-token" | "channels-chats" | "websearch-test" }>()
 const pendingTelegramRetries = new Map<string, { attempts: number; timer: ReturnType<typeof setTimeout> }>()
 const MAX_TELEGRAM_BUSY_RETRIES = 3
@@ -143,23 +141,6 @@ async function sendTelegramText(token: string, chatId: number, text: string) {
       text: chunk,
     })
   }
-}
-
-function stripWorkerVerificationTag(text: string) {
-  return text.replace(/<verified>SUCCESS<\/verified>/gi, "").trim()
-}
-
-function formatWorkerPush(event: WorkerCompletedEvent) {
-  if (event.status === "completed" && event.result?.trim()) {
-    return stripWorkerVerificationTag(event.result)
-  }
-  if (event.status === "completed") {
-    return "La tarea en background termino sin texto de resultado."
-  }
-  if (event.status === "killed") {
-    return "La tarea en background fue detenida."
-  }
-  return `La tarea en background fallo: ${event.error?.trim() || "error desconocido"}`
 }
 
 function dispatchRuntimeMessage(runtime: MonolitoV2Runtime, sessionId: string, title: string, text: string, detail: string) {
@@ -480,24 +461,9 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
 
   if (config.telegram?.enabled && config.telegram.token) {
     logger.info("Starting Telegram integration...")
-    if (unsubscribeWorkerCompleted) {
-      unsubscribeWorkerCompleted()
-      unsubscribeWorkerCompleted = null
-    }
-    const handleWorkerCompleted = (event: WorkerCompletedEvent) => {
-      if (!event.chatId) return
-      const chatId = Number(event.chatId)
-      if (!Number.isFinite(chatId)) return
-      const latestConfig = readChannelsConfig()
-      if (!latestConfig.telegram?.enabled || !latestConfig.telegram.token) return
-      if (latestConfig.telegram.allowedChats.length > 0 && !latestConfig.telegram.allowedChats.includes(chatId)) return
-      void sendTelegramText(latestConfig.telegram.token, chatId, formatWorkerPush(event)).catch(error => {
-        const message = error instanceof Error ? error.message : String(error)
-        logger.error(`Error sending worker completion push to Telegram chat ${chatId}: ${message}`)
-      })
-    }
-    monolitoEvents.on("worker:completed", handleWorkerCompleted)
-    unsubscribeWorkerCompleted = () => monolitoEvents.off("worker:completed", handleWorkerCompleted)
+    // Worker completion is routed back through the runtime coordinator. The
+    // coordinator owns all user-facing Telegram replies so internal workers do
+    // not speak directly to chats or leak orchestration details.
 
     void registerTelegramCommands(config.telegram.token)
       .then(() => {
@@ -702,10 +668,6 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
 }
 
 export function stopChannels() {
-  if (unsubscribeWorkerCompleted) {
-    unsubscribeWorkerCompleted()
-    unsubscribeWorkerCompleted = null
-  }
   if (activePoller) {
     logger.info("Stopping Telegram integration...")
     activePoller.stop()
