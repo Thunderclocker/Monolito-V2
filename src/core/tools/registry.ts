@@ -69,6 +69,59 @@ const TELEGRAM_AUDIO_FORMATS = new Set(["mp3", "m4a", "aac"])
 const TELEGRAM_VOICE_FORMATS = new Set(["ogg", "opus"])
 const TTS_RESPONSE_FORMATS = new Set(["mp3", "opus", "aac", "flac", "wav", "pcm"])
 
+function normalizeIntentText(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+}
+
+function isImageIntentText(value: string) {
+  return /\b(imagen(?:es)?|foto(?:s)?|picture(?:s)?|photo(?:s)?|image(?:s)?|vision|visual)\b/.test(normalizeIntentText(value))
+}
+
+function isTelegramPhotoDeliveryRequest(value: string) {
+  const normalized = normalizeIntentText(value)
+  return isImageIntentText(value) && /\b(pasame|pasa(?:me)?|mandame|manda(?:me)?|enviame|envia(?:me)?|send|send me|pasar|mandar|enviar)\b/.test(normalized)
+}
+
+function latestActionableUserText(rootDir: string, sessionId: string) {
+  const session = getSession(rootDir, sessionId)
+  const message = session?.messages
+    .filter(entry => entry.role === "user")
+    .slice()
+    .reverse()
+    .find(entry => {
+      const text = entry.text.trim()
+      return text && !text.startsWith("<task-notification>") && !text.startsWith("/")
+    })
+  return message?.text ?? ""
+}
+
+function buildTelegramPhotoWorkerTask(task: string, parentSessionId: string, latestUserText: string) {
+  const chatId = parentSessionId.startsWith("telegram-") ? parentSessionId.slice("telegram-".length) : ""
+  if (!chatId) return task
+  return [
+    "Tarea de entrega de fotos por Telegram.",
+    "",
+    "Pedido original del usuario:",
+    latestUserText.trim() || task.trim(),
+    "",
+    "Contrato obligatorio:",
+    "1. Usá ImageSearch para buscar candidatos directos de imagen (`image_url`).",
+    "2. Validá cada candidato con AnalyzeImage. Descartá cualquier resultado sin descripción útil o que no coincida con el pedido.",
+    `3. Enviá cada imagen validada al chat Telegram ${chatId} usando TelegramSendPhoto con el local_path devuelto por AnalyzeImage.`,
+    "4. No devuelvas solo URLs si el usuario pidió que le pases o mandes fotos.",
+    "5. La respuesta final debe incluir cuántas fotos fueron enviadas, los message_id de Telegram si la tool los devuelve, y los local_path usados.",
+    "6. Si no lográs enviar ninguna foto validada, respondé claramente que no se envió nada y por qué.",
+    "",
+    "Instrucción generada originalmente por el coordinador:",
+    task.trim(),
+  ].join("\n")
+}
+
 export type ToolContext = {
   rootDir: string
   cwd: string
@@ -2337,8 +2390,17 @@ const tools: ToolDefinition[] = [
         }
       }
 
+      const latestUserText = parentSessionId.startsWith("telegram-")
+        ? latestActionableUserText(context.rootDir, parentSessionId)
+        : ""
+      const effectiveTask = parentSessionId.startsWith("telegram-") &&
+        isImageIntentText(task) &&
+        isTelegramPhotoDeliveryRequest(latestUserText)
+        ? buildTelegramPhotoWorkerTask(task, parentSessionId, latestUserText)
+        : task
+
       const jobGroupId = context.runtime?.acquireJobGroupForBatch(parentSessionId)
-      const spawned = await context.orchestrator.spawnBackgroundTask(parentSessionId, profileId, task, description, jobGroupId)
+      const spawned = await context.orchestrator.spawnBackgroundTask(parentSessionId, profileId, effectiveTask, description, jobGroupId)
       return {
         ok: spawned.status !== "failed" && spawned.status !== "killed",
         job_id: spawned.agentId,

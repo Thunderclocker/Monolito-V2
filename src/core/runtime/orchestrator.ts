@@ -9,6 +9,7 @@ import {
   getSession,
   listProfiles,
   listRecoverableWorkerJobs,
+  tailEvents,
   updateWorkerJobStatus,
   upsertWorkerJob,
 } from "../session/store.ts"
@@ -43,6 +44,46 @@ function hasSuccessfulAnalyzeImage(session: ReturnType<typeof getSession>) {
     w.type === "tool" &&
     /^Tool AnalyzeImage finished successfully\b/.test(w.summary)
   ) ?? false
+}
+
+function hasSuccessfulTelegramSendPhoto(session: ReturnType<typeof getSession>) {
+  return session?.worklog?.some(w =>
+    w.type === "tool" &&
+    /^Tool TelegramSendPhoto finished successfully\b/.test(w.summary)
+  ) ?? false
+}
+
+function requiresTelegramPhotoDelivery(task: DelegationTask) {
+  if (!task.parentSessionId.startsWith("telegram-")) return false
+  const normalized = normalizeForIntent(`${task.task} ${task.description}`)
+  return isImageTaskIntent(task.task, task.description) &&
+    /\b(telegramsendphoto|telegram|enviar|envia|mandar|manda|pasar|pasa|send)\b/.test(normalized)
+}
+
+function extractPartialImageEvidence(rootDir: string, sessionId: string) {
+  const events = tailEvents(rootDir, sessionId, 80)
+  const imageRows: string[] = []
+  const sentRows: string[] = []
+
+  for (const event of events) {
+    if (event.type !== "tool.finish" || !event.ok) continue
+    const output = event.output as Record<string, unknown> | undefined
+    if (event.tool === "AnalyzeImage") {
+      const localPath = typeof output?.local_path === "string" ? output.local_path : ""
+      const description = typeof output?.description === "string" ? clip(output.description, 220) : ""
+      if (localPath) imageRows.push(`- AnalyzeImage ok: ${localPath}${description ? ` | ${description}` : ""}`)
+    }
+    if (event.tool === "TelegramSendPhoto") {
+      sentRows.push(`- TelegramSendPhoto ok: ${clip(JSON.stringify(output ?? {}), 220)}`)
+    }
+  }
+
+  if (imageRows.length === 0 && sentRows.length === 0) return ""
+  return [
+    "Partial worker evidence before failure:",
+    ...imageRows.slice(-6),
+    ...sentRows.slice(-6),
+  ].join("\n")
 }
 
 function compactWhitespace(value: string) {
@@ -335,7 +376,7 @@ export class AgentOrchestrator {
     })
   }
 
-  async stopAgent(agentId: string): Promise<void> {
+  async stopAgent(agentId: string, reason = "Agent was stopped by coordinator."): Promise<void> {
     const task = this.activeTasks.get(agentId)
     if (!task) return // Task already removed from activeTasks (completed or cleaned up)
 
@@ -347,8 +388,10 @@ export class AgentOrchestrator {
 
     this.runtime.abortSession(task.subSessionId)
     task.status = "killed"
-    updateWorkerJobStatus(this.runtime.rootDir, task.id, "failed", { errorText: "Agent was stopped by coordinator." })
-    await this.notifyParent(task, "Agent was stopped by coordinator.")
+    const partialEvidence = extractPartialImageEvidence(this.runtime.rootDir, task.subSessionId)
+    if (partialEvidence) task.result = partialEvidence
+    updateWorkerJobStatus(this.runtime.rootDir, task.id, "failed", { errorText: reason, resultText: task.result })
+    await this.notifyParent(task, partialEvidence ? `${reason}\n\n${partialEvidence}` : reason)
   }
 
   private async executeTurn(task: DelegationTask, text: string) {
@@ -382,7 +425,7 @@ export class AgentOrchestrator {
 
         if (task.usage.total_tokens > SUBAGENT_TOKEN_BUDGET) {
           task.error = `Budget exceeded (${SUBAGENT_TOKEN_BUDGET / 1000}k tokens limit)`
-          await this.stopAgent(task.id)
+          await this.stopAgent(task.id, task.error)
           break
         }
 
@@ -439,6 +482,29 @@ export class AgentOrchestrator {
           }
         }
 
+        if (requiresTelegramPhotoDelivery(task) && !hasSuccessfulTelegramSendPhoto(session)) {
+          appendWorklog(runtime.rootDir, task.subSessionId, {
+            type: "note",
+            summary: `[Ralph Loop] Blocked premature completion on attempt ${attempt}: Telegram photo delivery requires TelegramSendPhoto.`,
+          })
+          partialResult = assistantReply || partialResult
+          if (attempt >= maxAttempts) {
+            throw new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts without executing TelegramSendPhoto`)
+          }
+          currentText = [
+            task.task.trim(),
+            "",
+            "[Ralph Loop] SYSTEM ALERT",
+            "Validaste o encontraste imágenes, pero la tarea exige entrega por Telegram.",
+            "Debés enviar cada imagen validada con TelegramSendPhoto usando el local_path devuelto por AnalyzeImage.",
+            "No cierres con URLs o rutas solamente.",
+            "",
+            `Último intento rechazado: ${clip(assistantReply, 500)}`,
+          ].join("\n")
+          attempt++
+          continue
+        }
+
         break
       }
 
@@ -461,9 +527,11 @@ export class AgentOrchestrator {
     } catch (error) {
       task.status = "failed"
       const errorMsg = error instanceof Error ? error.message : String(error)
+      const partialEvidence = extractPartialImageEvidence(this.runtime.rootDir, task.subSessionId)
       task.error = errorMsg
-      updateWorkerJobStatus(this.runtime.rootDir, task.id, "failed", { errorText: errorMsg })
-      await this.notifyParent(task, errorMsg)
+      if (partialEvidence) task.result = partialEvidence
+      updateWorkerJobStatus(this.runtime.rootDir, task.id, "failed", { errorText: errorMsg, resultText: task.result })
+      await this.notifyParent(task, partialEvidence ? `${errorMsg}\n\n${partialEvidence}` : errorMsg)
     } finally {
       this.runningWorkerCount--
     }

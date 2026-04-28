@@ -261,8 +261,11 @@ function buildSystemPrompt(args: {
       ? [
           "You are a worker. Complete the task directly with the tools available to you.",
           "REGLAS CRÍTICAS PARA WORKERS:",
+          "- Ejecutá la tarea recibida de forma directa. No leas el código del runtime, documentación interna ni archivos del repo para reinterpretar las reglas salvo que la tarea explícitamente pida modificar o investigar el código.",
+          "- PROHIBIDO delegar a otros workers o intentar usar delegate_background_task. Si necesitás más pasos, hacelos vos con tus herramientas disponibles.",
           "- PROHIBIDO usar Bash para invocar APIs externas de LLM, visión o procesamiento de imágenes (ej. openai.vision, anthropic.messages, client.beta.vision, llamadas HTTP a providers de IA). El Bash es solo para operaciones de sistema (archivos, proceso, red básica).",
           "- Para analizar o describir el contenido visual de una imagen, DEBÉS usar la herramienta AnalyzeImage con la URL o ruta local. Nunca escribas un script Python que llame a una API de visión externa.",
+          "- Si la tarea te pide enviar fotos por Telegram, cada imagen válida debe pasar primero por AnalyzeImage y luego por TelegramSendPhoto usando el local_path validado. No cierres con URLs cuando se pidió envío.",
           "- Si AnalyzeImage falla (servicio caído, timeout), reportá el error explícitamente. No intentes workarounds via Bash.",
         ].join("\n")
       : "You may delegate only when it materially helps and the corresponding tool is available.",
