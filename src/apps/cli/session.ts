@@ -1063,6 +1063,11 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       finish?.()
       return
     }
+    if (line === "/reset") {
+      transcript = { blocks: [], scrollOffset: 0 }
+      needsClear = true
+      redraw()
+    }
     composer.busy = true
     composer.thinkingFrame = 0
     composer.thinkingVisible = true
