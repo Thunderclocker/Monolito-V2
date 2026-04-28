@@ -72,7 +72,9 @@ function sanitizeCanonicalValue(value: string | null | undefined) {
   if (!value) return null
   const normalized = normalizeCanonicalValue(value)
   if (!normalized) return null
-  if (/^(desconocido|opcional|\(por definir\)|por definir)$/i.test(normalized)) return null
+  if (/^(desconocido|\(por definir\)|por definir)$/i.test(normalized)) return null
+  if (/^opcional\b/i.test(normalized)) return null
+  if (/\b(completar|pendiente|por definir|bootstrap)\b/i.test(normalized)) return null
   return normalized
 }
 
