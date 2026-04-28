@@ -51,6 +51,7 @@ type ContextExtras = {
   webSearchProvider?: string
   taskNotifications?: string[]
   stallAlert?: string
+  activeTasks?: { agentId: string; description: string; status: string }[]
 }
 
 function normalizeBaseUrl(value: string) {
@@ -287,6 +288,9 @@ function buildSystemPrompt(args: {
   }
   if (args.extras?.dateContext) dynamicContext.push(args.extras.dateContext)
   if (args.extras?.gitContext) dynamicContext.push(args.extras.gitContext)
+  if (args.extras?.activeTasks?.length) {
+    dynamicContext.push(`Active Background Workers:\n${args.extras.activeTasks.map(t => `- [${t.status}] ${t.agentId}: ${t.description}`).join("\n")}\n\nNote: You do not need to delegate these again. Wait for them to finish.`)
+  }
   if (args.extras?.taskNotifications?.length) dynamicContext.push(`Background updates:\n${args.extras.taskNotifications.map(item => `- ${item}`).join("\n")}`)
   if (args.extras?.adultMode) {
     dynamicContext.push(
