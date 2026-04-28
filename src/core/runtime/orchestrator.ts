@@ -68,6 +68,20 @@ function buildRalphLoopPrompt(task: string, assistantReply: string) {
   ].join("\n")
 }
 
+function buildRalphLoopImagePrompt(task: string, assistantReply: string) {
+  return [
+    task.trim(),
+    "",
+    "[Ralph Loop] SYSTEM ALERT",
+    "Tu respuesta incluye el tag de éxito pero NO ejecutaste la herramienta AnalyzeImage.",
+    "Para tareas de imágenes, es OBLIGATORIO descargar y validar visualmente con AnalyzeImage.",
+    "No podés cerrar la tarea diciendo que lo hiciste sin haber llamado a la tool.",
+    "Corregilo: buscá la imagen, descargala y pasale la ruta a AnalyzeImage antes de responder.",
+    "",
+    `Último intento rechazado: ${clip(assistantReply, 500)}`,
+  ].join("\n")
+}
+
 function createTraceparent() {
   const traceId = randomUUID().replace(/-/g, "")
   const spanId = randomUUID().replace(/-/g, "").slice(0, 16)
@@ -383,6 +397,26 @@ export class AgentOrchestrator {
           attempt++
           continue
         }
+
+        // Image verification check
+        const isImageTask = /imagen|foto|picture|photo|image/i.test(task.task) || /imagen|foto|picture|photo|image/i.test(task.description)
+        if (isImageTask) {
+          const hasAnalyzeImage = session?.worklog?.some(w => w.type === "tool" && w.summary.includes("AnalyzeImage finished successfully"))
+          if (!hasAnalyzeImage) {
+            appendWorklog(runtime.rootDir, task.subSessionId, {
+              type: "note",
+              summary: `[Ralph Loop] Blocked premature completion on attempt ${attempt}: Image task must execute AnalyzeImage for verification.`,
+            })
+            partialResult = assistantReply || partialResult
+            if (attempt >= maxAttempts) {
+              throw new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts without executing AnalyzeImage`)
+            }
+            currentText = buildRalphLoopImagePrompt(task.task, assistantReply)
+            attempt++
+            continue
+          }
+        }
+
         break
       }
 
