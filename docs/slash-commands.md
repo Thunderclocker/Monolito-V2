@@ -36,7 +36,7 @@ Monolito exposes runtime control commands in the CLI and, where supported, throu
 - `/sessions`: lists known sessions.
 - `/history`: shows recent worklog entries for the current session.
 - `/cost`: prints current token/cost accounting.
-- `/compact`: compacts older session messages and triggers a memory review first.
+- `/compact`: compacts older session messages to free up context window.
 - `/stats`: shows message count, character count, timestamps, and session state.
 - `/doctor`: runs a quick environment and runtime health summary.
 - `/update`: fetches from `origin`, fast-forwards the current branch, stashes local changes if needed, and schedules a daemon restart.

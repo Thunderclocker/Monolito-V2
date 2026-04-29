@@ -425,18 +425,16 @@ export class AgentOrchestrator {
           traceId: task.traceId,
           maxTokens: SUBAGENT_TOKEN_BUDGET,
         })
-        task.usage ??= {
-          total_tokens: 0,
-          tool_uses: 0,
-          duration_ms: 0,
-        }
-        task.usage.total_tokens += turn.usage?.totalTokens ?? 0
-        task.usage.duration_ms = Date.now() - turnStartedAt
+        task.usage = task.usage || { total_tokens: 0, tool_uses: 0, duration_ms: 0 };
+        task.usage.total_tokens += turn.usage?.totalTokens ?? 0;
+        task.usage.duration_ms = Date.now() - turnStartedAt;
 
         if (task.usage.total_tokens > SUBAGENT_TOKEN_BUDGET) {
-          task.error = `Budget exceeded (${SUBAGENT_TOKEN_BUDGET / 1000}k tokens limit)`
-          await this.stopAgent(task.id, task.error)
-          break
+            task.status = "failed";
+            const errorMsg = `Worker exceeded hard token budget of ${SUBAGENT_TOKEN_BUDGET} tokens.`;
+            task.logger?.error(errorMsg);
+            await this.notifyParent(task, errorMsg);
+            return;
         }
 
         if (turn.error) {
