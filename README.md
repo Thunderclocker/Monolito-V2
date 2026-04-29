@@ -140,7 +140,6 @@ The runtime does not rely on workspace markdown files for identity or memory. Th
 - Model settings are global to the runtime.
 - Channel and Telegram settings are global to the runtime.
 - Web search mode is global to the runtime.
-- Adult mode is session-scoped and can differ between conversations.
 - Telegram chats map to stable `telegram-<chatId>` sessions, so each chat keeps its own session history and state.
 
 ## Slash commands
@@ -168,7 +167,6 @@ The runtime does not rely on workspace markdown files for identity or memory. Th
 - `/tts [show|on|off|deploy|stop|remove|list|status]`
 - `/stt [show|on|off|deploy|stop|remove|list|status]`
 - `/websearch`
-- `/adult`
 - `/new`
 - `/reset`
 

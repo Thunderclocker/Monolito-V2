@@ -39,7 +39,6 @@ const TELEGRAM_BOT_COMMANDS = [
   { command: "channels", description: "Configure Telegram channel settings" },
   { command: "config", description: "Show or set configuration" },
   { command: "doctor", description: "Run a quick health check" },
-  { command: "adult", description: "Toggle adult mode" },
   { command: "update", description: "Fetch updates and restart daemon" },
   { command: "tts", description: "Manage local TTS service" },
   { command: "stt", description: "Manage local STT service" },

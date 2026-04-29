@@ -19,7 +19,7 @@ Managed SearxNG still uses:
 
 These config wings are runtime-level settings. They are not stored per session.
 
-Session-specific runtime state such as chat history, adult mode, and conversation flow is tracked separately in session storage.
+Session-specific runtime state such as chat history and conversation flow is tracked separately in session storage.
 
 ## Active runtime model settings
 

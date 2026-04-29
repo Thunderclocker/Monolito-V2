@@ -845,15 +845,7 @@ export class MonolitoV2Runtime {
   private recentResumeAt = new Map<string, number>()
   private abortControllers = new Map<string, AbortController>()
   private costState = createCostState()
-  private adultModeSessions = new Set<string>()
 
-  public hasAdultMode(sessionId: string): boolean {
-    return this.adultModeSessions.has(sessionId)
-  }
-
-  public enableAdultMode(sessionId: string): void {
-    this.adultModeSessions.add(sessionId)
-  }
   private restartRequested = false
   private toolStallState = new Map<string, { key: string; count: number }>()
   private stallAlerts = new Map<string, string>()
@@ -1135,7 +1127,6 @@ export class MonolitoV2Runtime {
             gitContext,
             dateContext,
             workspaceContext,
-            adultMode: this.adultModeSessions.has(sessionId),
             webSearchProvider: webSearchConfig.provider,
             taskNotifications,
             activeTasks: this.orchestrator.getTaskSnapshot(sessionId).filter(t => t.status === "pending" || t.status === "running"),
@@ -1500,7 +1491,6 @@ export class MonolitoV2Runtime {
               gitContext,
               dateContext,
               workspaceContext,
-              adultMode: this.adultModeSessions.has(sessionId),
               webSearchProvider: webSearchConfig.provider,
               stallAlert: this.consumeStallAlert(sessionId),
               activeTasks: this.orchestrator.getTaskSnapshot(sessionId).filter(t => t.status === "pending" || t.status === "running"),
@@ -1680,7 +1670,6 @@ export class MonolitoV2Runtime {
             gitContext,
             dateContext,
             workspaceContext,
-            adultMode: this.adultModeSessions.has(sessionId),
             webSearchProvider: webSearchConfig.provider,
             stallAlert: this.consumeStallAlert(sessionId),
             activeTasks: this.orchestrator.getTaskSnapshot(sessionId).filter(t => t.status === "pending" || t.status === "running"),
@@ -1831,7 +1820,6 @@ export class MonolitoV2Runtime {
           "/config [show|set <base_url|api_key|model|tts_base_url|tts_api_key|tts_voice|tts_model|tts_format|tts_speed|tts_managed|tts_auto_deploy|tts_port|vision_managed|vision_auto_deploy|vision_port|vision_container_name|vision_model> <value>]",
           "/tts [show|on|off|deploy|stop|remove|list|status]",
           "/stt [show|on|off|deploy|stop|remove|list|status]",
-          "/adult — Toggle adult content mode",
           "/websearch — Open web search menu",
           "/new — Reset session and restart agent",
           "/reset — Reset session, clear Memory Palace for this profile, and restart agent",
@@ -1865,15 +1853,6 @@ export class MonolitoV2Runtime {
       case "/config": {
         return this.runConfig(rest)
       }
-      case "/adult": {
-        const isActive = this.adultModeSessions.has(sessionId)
-        if (isActive) {
-          this.adultModeSessions.delete(sessionId)
-          return "Modo adulto desactivado."
-        }
-        this.adultModeSessions.add(sessionId)
-        return "Modo adulto activado."
-      }
       case "/new": {
         const session = getSession(this.rootDir, sessionId)
         const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
@@ -1892,7 +1871,6 @@ export class MonolitoV2Runtime {
           memoryRowsDeleted: cleared.memoryRowsDeleted,
           graphRowsDeleted: cleared.graphRowsDeleted,
         })
-        this.adultModeSessions.delete(sessionId)
         resetSession(this.rootDir, sessionId, { summary: "Session and Memory Palace reset via /reset" })
         return "__SESSION_RESET__"
       }

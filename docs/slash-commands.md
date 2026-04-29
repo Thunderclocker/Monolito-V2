@@ -26,7 +26,6 @@ Monolito exposes runtime control commands in the CLI and, where supported, throu
 - `/config [show|set <field> <value>]`
 - `/tts`
 - `/stt`
-- `/adult`
 - `/websearch`
 - `/new`
 - `/reset`
@@ -57,7 +56,6 @@ Monolito exposes runtime control commands in the CLI and, where supported, throu
 ## Configuration scope
 
 - `/model`, `/channels`, `/config`, and `/websearch` act on runtime-level configuration.
-- `/adult` acts on the current session only.
 - `/new` resets only the current session.
 - `/reset` resets the current session and clears profile-scoped Memory Palace data, including regular memory drawers, BOOT memory, canonical memory, and knowledge graph entries.
 - Telegram chat sessions remain isolated by `telegram-<chatId>`.
@@ -72,6 +70,5 @@ Some commands are also entry points into interactive menus in the CLI or Telegra
 
 ## Notes
 
-- `/adult` toggles adult mode for the current session only.
 - Some internal subcommands still exist behind `/channels` and `/websearch` to support callbacks and automation, but they are not the intended user-facing interface.
 - Unknown slash commands return an explicit error string rather than silently falling through.
