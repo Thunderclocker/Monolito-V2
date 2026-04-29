@@ -22,5 +22,5 @@ export function handleCliFailure(error: unknown): never {
   if (typed.code !== "REMOTE_ERROR") {
     writeLine(`error: ${typed?.message || "Unknown error"}`)
   }
-  process.exit(typed.code === "SESSION_BUSY" ? 2 : 1)
+  process.exit(1)
 }
