@@ -15,15 +15,9 @@ const pendingTelegramInputs = new Map<number, { kind: "channels-token" | "channe
 
 const TELEGRAM_BOT_COMMANDS = [
   { command: "help", description: "Show available commands" },
-  { command: "sessions", description: "List active sessions" },
   { command: "model", description: "Show current model configuration" },
   { command: "channels", description: "Configure Telegram channel settings" },
-  { command: "config", description: "Show or set configuration" },
-  { command: "doctor", description: "Run a quick health check" },
   { command: "update", description: "Fetch updates and restart daemon" },
-  { command: "tts", description: "Manage local TTS service" },
-  { command: "stt", description: "Manage local STT service" },
-  { command: "websearch", description: "Configure web search mode" },
   { command: "new", description: "Start a fresh session" },
 ] as const
 
@@ -136,36 +130,6 @@ function parseAllowedChats(raw: string) {
   const ids = raw.split(",").map(item => item.trim()).filter(Boolean).map(Number)
   const invalid = ids.filter(item => !Number.isFinite(item) || item === 0)
   return { ids, invalid }
-}
-
-function buildWebSearchMenuText() {
-  const config = readWebSearchConfig()
-  return [
-    "Web Search",
-    `Active mode: ${config.provider}`,
-    "",
-    "Choose the web search method.",
-    "If you choose SearxNG, it is deployed/started automatically when needed.",
-  ].join("\n")
-}
-
-function buildWebSearchMenuButtons(): TelegramInlineButton[][] {
-  return [
-    [
-      { text: "Default", callback_data: "ws:set:default" },
-      { text: "SearxNG", callback_data: "ws:set:searxng" },
-    ],
-    [
-      { text: "List", callback_data: "ws:act:list" },
-      { text: "Stop", callback_data: "ws:act:stop" },
-      { text: "Refresh", callback_data: "ws:show" },
-    ],
-    [
-      { text: "Remove", callback_data: "ws:act:remove" },
-      { text: "Clean", callback_data: "ws:act:clean" },
-      { text: "Test", callback_data: "ws:act:test" },
-    ],
-  ]
 }
 
 function buildChannelsMenuText() {
@@ -315,59 +279,6 @@ function buildTelegramInboundText(
   return parts.join("\n")
 }
 
-async function handleWebSearchCallback(token: string, callback: TelegramCallbackQuery) {
-  const data = (callback.data ?? "").trim()
-  const message = callback.message
-  if (!message) return false
-  const chatId = message.chat.id
-  const messageId = message.message_id
-
-  if (data === "ws:show") {
-    await editTelegramMenu(token, chatId, messageId, buildWebSearchMenuText(), buildWebSearchMenuButtons())
-    return true
-  }
-
-  if (data.startsWith("ws:set:")) {
-    const provider = data.slice("ws:set:".length)
-    if (provider === "default" || provider === "searxng") {
-      writeWebSearchConfig({ provider })
-      await editTelegramMenu(
-      token,
-      chatId,
-      messageId,
-      `${buildWebSearchMenuText()}\n\nMode changed to: ${provider}${provider === "searxng" ? "\n\nStarting SearxNG..." : ""}`,
-      buildWebSearchMenuButtons(),
-    )
-      if (provider === "searxng") {
-        return "/websearch searxng"
-      }
-      return true
-    }
-  }
-
-  if (data === "ws:act:test") {
-    pendingTelegramInputs.set(chatId, { kind: "websearch-test" })
-    await editTelegramMenu(
-      token,
-      chatId,
-      messageId,
-      `${buildWebSearchMenuText()}\n\nSend your next message with the query to test in SearxNG.`,
-      buildWebSearchMenuButtons(),
-    )
-    return true
-  }
-
-  const command =
-    data === "ws:act:list" ? "/websearch searxng list" :
-    data === "ws:act:stop" ? "/websearch searxng stop" :
-    data === "ws:act:remove" ? "/websearch searxng remove" :
-    data === "ws:act:clean" ? "/websearch searxng clean" :
-    null
-
-  if (!command) return false
-  return command
-}
-
 async function handleChannelsCallback(token: string, callback: TelegramCallbackQuery) {
   const data = (callback.data ?? "").trim()
   const message = callback.message
@@ -470,15 +381,6 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
           await answerTelegramCallback(config.telegram.token, callback.id)
 
           try {
-            const websearchResult = await handleWebSearchCallback(config.telegram.token, callback)
-            if (websearchResult) {
-              if (typeof websearchResult === "string") {
-                const sessionId = `telegram-${chatId}`
-                dispatchRuntimeMessage(runtime, sessionId, `Telegram ${chatId}`, websearchResult, `callback ${callback.id}`)
-              }
-              return
-            }
-
             const channelResult = await handleChannelsCallback(config.telegram.token, callback)
             if (channelResult) {
               if (channelResult === "RESTART") {
@@ -511,7 +413,6 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
         }
         
         const sessionId = `telegram-${chatId}`
-        const normalized = normalizeTelegramCommand(msg.text?.trim() || msg.caption?.trim() || "")
 
         const pending = pendingTelegramInputs.get(chatId)
         if (pending) {
@@ -546,16 +447,6 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
               options?.onRestartRequested?.()
               return
             }
-            if (pending.kind === "websearch-test") {
-              const query = (msg.text ?? msg.caption ?? "").trim()
-              if (!query) {
-                await sendTelegramMenu(config.telegram.token, chatId, "Empty query. Try /websearch again.", buildWebSearchMenuButtons())
-                return
-              }
-              const sessionId = `telegram-${chatId}`
-              dispatchRuntimeMessage(runtime, sessionId, `Telegram ${chatId}`, `/websearch searxng test ${query}`, `websearch-test ${chatId}`)
-              return
-            }
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
             logger.error(`Error handling pending Telegram input in chat ${chatId}: ${message}`)
@@ -563,10 +454,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
           }
         }
 
-        if (normalized === "/websearch") {
-          await sendTelegramMenu(config.telegram.token, chatId, buildWebSearchMenuText(), buildWebSearchMenuButtons())
-          return
-        }
+        const normalized = normalizeTelegramCommand(msg.text?.trim() || msg.caption?.trim() || "")
 
         if (normalized === "/channels") {
           await sendTelegramMenu(config.telegram.token, chatId, buildChannelsMenuText(), buildChannelsMenuButtons())
@@ -610,6 +498,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
           if (err.stack) logger.debug(`Stack: ${err.stack}`)
         }
       },
+
       onError: (error) => {
         logger.error("Telegram poller error", error)
       }
