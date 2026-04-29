@@ -1170,19 +1170,27 @@ export async function recallMemory(rootDir: string, wing?: string, room?: string
   
   if (query && query.trim().length > 0) {
     const floatArray = await generateEmbedding(rootDir, query)
-    let sql = `
-      SELECT m.id, m.profile_id, m.wing, m.room, m.memory_key, m.content, m.created_at, v.distance
-      FROM vec_drawers v
-      JOIN memory_drawers m ON m.id = v.id
-      WHERE v.embedding MATCH ? AND k = 15
-    `
+    // Normalizar para Full-Text Search (solo letras, números y espacios)
+    const ftsTerms = query.replace(/[^\p{L}\p{N}\s]/gu, " ").trim().split(/\s+/).filter(Boolean)
+    // Usamos OR y wildcard para dar flexibilidad al match de keywords
+    const ftsQuery = ftsTerms.length > 0 ? ftsTerms.map(w => `"${w}"*`).join(" OR ") : '""'
+
+    let sql = `SELECT m.id, m.profile_id, m.wing, m.room, m.memory_key, m.content, m.created_at, 
+                      v.distance, f.rank as fts_rank
+               FROM vec_drawers v
+               JOIN memory_drawers m ON m.id = v.id
+               LEFT JOIN (SELECT id, rank FROM fts_drawers WHERE fts_drawers MATCH ?) f ON m.id = f.id
+               WHERE v.embedding MATCH ? AND k = 50`
+
     if (conditions.length > 0) {
       sql += ` AND ` + conditions.join(" AND ")
     }
-    sql += ` ORDER BY v.distance ASC LIMIT 15`
-    
+
+    // Boost: rank de fts5 es negativo. Al sumarlo a la distancia, un buen match exacto baja la distancia total.
+    sql += ` ORDER BY v.distance + (IFNULL(f.rank, 0) * 0.05) ASC LIMIT 15`
+
     const stmt = db.prepare(sql)
-    return stmt.all(floatArray, ...params) as any[]
+    return stmt.all(ftsQuery, floatArray, ...params) as any[]
   } else {
     // Non-semantic pure recall
     let sql = `SELECT id, profile_id, wing, room, memory_key, content, created_at FROM memory_drawers m`
