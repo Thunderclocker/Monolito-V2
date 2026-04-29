@@ -40,7 +40,7 @@ export async function callAnthropicApi(
     stream: true,
     system: [
       { type: "text", text: system, cache_control: { type: "ephemeral" } },
-      ...(bootBlock ? [{ type: "text" as const, text: bootBlock, cache_control: { type: "ephemeral" as const } }] : []),
+      ...(bootBlock ? [{ type: "text" as const, text: bootBlock }] : []),
     ],
     messages: buildAnthropicMessages(messages),
     tools: anthropicTools,
