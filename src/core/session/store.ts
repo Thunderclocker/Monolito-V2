@@ -326,6 +326,7 @@ export function ensureBootWings(rootDir: string, profileId = "default") {
   const deleteVecStmt = db.prepare(`DELETE FROM vec_drawers WHERE id = ?`)
 
   const legacyBootBootstrapTemplate = "# BOOT_BOOTSTRAP - First Run Ritual\n\nHello. You just came online in a brand new workspace.\n\n## Goal\nStart a short, natural onboarding conversation and learn:\n- Who are you?\n- What should the user call you?\n- What kind of agent are you?\n- What tone or vibe should you have?\n- Who is the user?\n- How should you address them?\n- Any optional notes like timezone, pronouns, or preferences?\n\n## Style\n- Do not interrogate.\n- Ask one short question at a time.\n- Offer 3-5 suggestions when the user is unsure.\n- Keep the exchange warm, concise, and practical.\n\n## Persist what you learn\nOnce details are confirmed, update:\n- BOOT_IDENTITY with your name, creature, vibe, and emoji.\n- BOOT_USER with the user's profile and preferred address.\n- BOOT_SOUL with any durable behavior preferences that came out of onboarding.\n\n## Completion\nWhen onboarding is finished, replace this content with a one-line completion note such as:\nBootstrap completed.\n"
+  const legacyBootToolsImagePolicy = "# BOOT_TOOLS - Convenciones de Herramientas\n\n- Usa herramientas BOOT para el contexto determinista de arranque.\n- Usa herramientas de memoria para memoria estructurada durable.\n- Usa Bash para estado local actual fuera del contexto bootstrap protegido.\n- Para búsquedas de imágenes: 1) Usá ImageSearch. 2) Validá empíricamente la URL ganadora con AnalyzeImage. 3) Usá QuerySessionStatus para verificar tu ID de sesión actual. Si tu sesión empieza con 'telegram-', extraé el número de chat y enviá la imagen nativamente usando TelegramSendPhoto pasándole el 'local_path' devuelto por AnalyzeImage. NUNCA respondas con la URL cruda en Telegram.\n- CUALQUIER procesamiento o análisis de imágenes (incluso una sola) DEBE delegarse incondicionalmente usando delegate_background_task.\n"
 
   db.exec("BEGIN TRANSACTION")
   try {
@@ -338,6 +339,14 @@ export function ensureBootWings(rootDir: string, profileId = "default") {
       if (wing === "BOOT_BOOTSTRAP") {
         const latest = latestStmt.get(wing, profileId) as { id: string; content: string } | undefined
         if (latest && latest.content === legacyBootBootstrapTemplate) {
+          deleteVecStmt.run(latest.id)
+          deleteStmt.run(latest.id)
+          insertStmt.run(randomUUID(), profileId, wing, BOOTSTRAP_SOURCE_ROOM, wing, DEFAULT_BOOT_WING_CONTENT[wing], now)
+        }
+      }
+      if (wing === "BOOT_TOOLS") {
+        const latest = latestStmt.get(wing, profileId) as { id: string; content: string } | undefined
+        if (latest && latest.content === legacyBootToolsImagePolicy) {
           deleteVecStmt.run(latest.id)
           deleteStmt.run(latest.id)
           insertStmt.run(randomUUID(), profileId, wing, BOOTSTRAP_SOURCE_ROOM, wing, DEFAULT_BOOT_WING_CONTENT[wing], now)

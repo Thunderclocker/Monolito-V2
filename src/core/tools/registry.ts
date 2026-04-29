@@ -87,6 +87,11 @@ function isTelegramPhotoDeliveryRequest(value: string) {
   return isImageIntentText(value) && /\b(pasame|pasa(?:me)?|mandame|manda(?:me)?|enviame|envia(?:me)?|send|send me|pasar|mandar|enviar)\b/.test(normalized)
 }
 
+function requiresImageVerificationText(value: string) {
+  const normalized = normalizeIntentText(value)
+  return /\b(verifica(?:r|me|las|los)?|valid(?:a|ar|ame|alas|alos)|analiza(?:r|me|las|los)?|describe(?:me|las|los)?|confirm(?:a|ar|ame)|vision|visual|coincid(?:e|an)|contenido|real(?:es)?|correct(?:a|as|o|os))\b/.test(normalized)
+}
+
 function latestActionableUserText(rootDir: string, sessionId: string) {
   const session = getSession(rootDir, sessionId)
   const message = session?.messages
@@ -103,6 +108,22 @@ function latestActionableUserText(rootDir: string, sessionId: string) {
 function buildTelegramPhotoWorkerTask(task: string, parentSessionId: string, latestUserText: string) {
   const chatId = parentSessionId.startsWith("telegram-") ? parentSessionId.slice("telegram-".length) : ""
   if (!chatId) return task
+  const shouldVerify = requiresImageVerificationText(`${latestUserText}\n${task}`)
+  const imageHandlingSteps = shouldVerify
+    ? [
+        "2. Como el pedido exige verificacion visual, validá cada candidato con AnalyzeImage. Descartá cualquier resultado sin descripción útil o que no coincida con el pedido.",
+        "3. NO envíes mensajes ni archivos al usuario. Tu salida es solo para el coordinador.",
+        "4. Devolvé los local_path validados por AnalyzeImage y una descripción breve de cada imagen.",
+        "5. No devuelvas solo URLs si el usuario pidió verificación; el coordinador necesita local_path validado.",
+        "6. Si no lográs validar ninguna foto, respondé claramente que no hay local_path validado y por qué.",
+      ]
+    : [
+        "2. NO uses AnalyzeImage salvo que el pedido original solicite verificacion/analisis visual.",
+        "3. NO uses WebFetch ni scraping de paginas fuente. Usá directamente los `image_url` que devuelve ImageSearch.",
+        "4. NO envíes mensajes ni archivos al usuario. Tu salida es solo para el coordinador.",
+        "5. Devolvé las mejores `image_url` directas, con título/fuente si están disponibles.",
+        "6. Si no lográs obtener URLs directas, respondé claramente que no hubo resultados usables y por qué.",
+      ]
   return [
     "Tarea interna de obtención y verificación de fotos para entrega por Telegram.",
     "",
@@ -111,11 +132,7 @@ function buildTelegramPhotoWorkerTask(task: string, parentSessionId: string, lat
     "",
     "Contrato obligatorio:",
     "1. Usá ImageSearch para buscar candidatos directos de imagen (`image_url`).",
-    "2. Validá cada candidato con AnalyzeImage. Descartá cualquier resultado sin descripción útil o que no coincida con el pedido.",
-    "3. NO envíes mensajes ni archivos al usuario. Tu salida es solo para el coordinador.",
-    "4. Devolvé los local_path validados por AnalyzeImage y una descripción breve de cada imagen.",
-    "5. No devuelvas solo URLs si el usuario pidió que le pasen o manden fotos; el coordinador necesita local_path.",
-    "6. Si no lográs validar ninguna foto, respondé claramente que no hay local_path validado y por qué.",
+    ...imageHandlingSteps,
     "",
     "Instrucción generada originalmente por el coordinador:",
     task.trim(),
@@ -2357,7 +2374,7 @@ const tools: ToolDefinition[] = [
   {
     name: "delegate_background_task",
     permissionTier: "edit",
-    description: "Start internal asynchronous work for high cognitive load tasks (multiple web searches, deep reading, long analysis, multi-step research) to avoid blocking the chat. The internal executor reports back to the coordinator; it must not speak to the user. After calling this tool, acknowledge as your own ongoing action (for example: 'Me pongo con eso, dame un momento') and do not mention workers, agents, delegation, or background tasks unless the user explicitly asks how the work is coordinated. IMPORTANT: Only the primary coordinator may call this tool. Sub-agents must NEVER call delegate_background_task — they must execute their task directly and return results. CRÍTICO: OBLIGATORIO usar esta herramienta inmediatamente si el usuario pide buscar, analizar o procesar IMÁGENES/FOTOS. El orquestador principal no debe procesar visión directamente. La instrucción completa se ejecuta internamente y luego el coordinador presenta el resultado al usuario.",
+    description: "Start internal asynchronous work for high cognitive load tasks (multiple web searches, deep reading, long analysis, multi-step research) to avoid blocking the chat. The internal executor reports back to the coordinator; it must not speak to the user. After calling this tool, acknowledge as your own ongoing action (for example: 'Me pongo con eso, dame un momento') and do not mention workers, agents, delegation, or background tasks unless the user explicitly asks how the work is coordinated. IMPORTANT: Only the primary coordinator may call this tool. Sub-agents must NEVER call delegate_background_task — they must execute their task directly and return results. For image requests, delegate only when the user explicitly asks to verify/analyze/describe visual content or when the task is otherwise long-running. Simple image search/delivery should use ImageSearch directly.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2496,7 +2513,7 @@ const tools: ToolDefinition[] = [
   {
     name: "ImageSearch",
     permissionTier: "read",
-    description: "Search for images on the internet via SearxNG. Auto-deploys SearxNG Docker container if not running (localhost only). Returns clean image candidates with `image_url` (direct download URL). REGLA ESTRICTA: El worker DEBE descargar y analizar `image_url` directamente. ESTÁ PROHIBIDO usar `WebFetch` sobre la página fuente para evitar bloqueos por JavaScript o lazy-loading. Simplemente usá AnalyzeImage pasándole `image_url`. ATENCIÓN: Si el flujo implica buscar imágenes Y luego analizarlas visualmente con AnalyzeImage (validación, filtrado, procesamiento de una o más imágenes), ese trabajo combinado supera el límite de tiempo del turno principal. En ese caso DEBÉS delegar todo el flujo a un sub-agente usando delegate_background_task y avisarle al usuario que estás procesando en background.",
+    description: "Search for images on the internet via SearxNG. Auto-deploys SearxNG Docker container if not running (localhost only). Returns clean image candidates with `image_url` (direct download URL). For simple image requests, use these direct image_url values; do not use WebFetch or scrape source pages. Use AnalyzeImage only if the user explicitly asks to verify/analyze/describe the image content.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2508,9 +2525,6 @@ const tools: ToolDefinition[] = [
     },
     concurrencySafe: true,
     async run(input, context) {
-      if (!context.sessionId?.startsWith("agent-")) {
-        throw new Error("REGLA ESTRICTA: Tareas visuales prohibidas en hilo principal. Debés delegar usando delegate_background_task.")
-      }
       const query = requireString(input, "query")
       const limit = optionalNumber(input, "limit") ?? 5
       const deploy = await deploySearxng()
@@ -2849,15 +2863,26 @@ export function listModelTools(isSubAgent = false, lastUserText?: string) {
     "TelegramSendDocument",
   ])
   const hiddenFromMainSession = new Set([
-    "ImageSearch",
     "AnalyzeImage"
   ])
 
   const isImageIntent = lastUserText && /imagen|imagenes|foto|fotos|picture|pictures|image|images|vision|visual/i.test(lastUserText)
+  const imageWorkerBlockedTools = new Set([
+    "AgentList",
+    "ProfileCreate",
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "WebFetch",
+    "WebSearch",
+    "Bash",
+    "TodoWrite",
+  ])
 
   return tools
     .filter(tool => {
       if (isSubAgent && hiddenFromSubAgents.has(tool.name)) return false;
+      if (isSubAgent && isImageIntent && imageWorkerBlockedTools.has(tool.name)) return false;
       if (!isSubAgent && hiddenFromMainSession.has(tool.name)) return false;
       if (!isSubAgent && isImageIntent && (tool.name === "WebSearch" || tool.name === "WebFetch")) return false;
       return true;

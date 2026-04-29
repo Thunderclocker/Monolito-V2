@@ -20,11 +20,10 @@ import { monolitoEvents } from "../events/bus.ts"
 const SUBAGENT_VERIFICATION_TAG = "<verified>SUCCESS</verified>"
 const WORKER_IMAGE_EXECUTION_POLICY = [
   "Image-search execution policy:",
-  "- Para tareas de busqueda de imagenes, esta PROHIBIDO usar WebFetch sobre la URL de la pagina fuente (`source_url`).",
-  "- Usa directamente la herramienta de descarga/vision sobre la `image_url` que devuelve el buscador.",
-  "- Despues de descargar la imagen al scratchpad, DEBES invocar AnalyzeImage para confirmar si el contenido coincide con el pedido del usuario antes de enviarla por Telegram o darla por valida.",
-  "- Si AnalyzeImage confirma que la imagen no coincide, descarta ese archivo local y proba la siguiente `image_url` de la lista.",
-  "- No intentes scrapear la web ni visitar paginas fuente para rescatar la imagen.",
+  "- Para busquedas simples de imagenes, usa ImageSearch y devuelve `image_url` directas. No uses WebFetch ni scraping de paginas fuente.",
+  "- Solo usa AnalyzeImage cuando la tarea pida explicitamente verificar, validar, analizar o describir el contenido visual.",
+  "- Si AnalyzeImage confirma que la imagen no coincide, descarta ese resultado y proba la siguiente `image_url` de la lista.",
+  "- No crees perfiles, archivos de plan ni tareas auxiliares para buscar imagenes. Ejecuta el camino mas corto.",
 ].join("\n")
 
 function normalizeForIntent(value: string) {
@@ -37,6 +36,11 @@ function normalizeForIntent(value: string) {
 function isImageTaskIntent(...values: Array<string | undefined>) {
   const normalized = normalizeForIntent(values.filter(Boolean).join(" "))
   return /\b(imagen(?:es)?|foto(?:s)?|picture(?:s)?|photo(?:s)?|image(?:s)?|vision|visual)\b/.test(normalized)
+}
+
+function requiresImageVerification(...values: Array<string | undefined>) {
+  const normalized = normalizeForIntent(values.filter(Boolean).join(" "))
+  return /\b(verifica(?:r|me|las|los)?|valid(?:a|ar|ame|alas|alos)|analiza(?:r|me|las|los)?|describe(?:me|las|los)?|confirm(?:a|ar|ame)|vision|visual|coincid(?:e|an)|contenido|real(?:es)?|correct(?:a|as|o|os))\b/.test(normalized)
 }
 
 function hasSuccessfulAnalyzeImage(session: ReturnType<typeof getSession>) {
@@ -481,7 +485,7 @@ export class AgentOrchestrator {
         }
 
         // Image verification check
-        if (isImageTaskIntent(task.task, task.description)) {
+        if (isImageTaskIntent(task.task, task.description) && requiresImageVerification(task.task, task.description)) {
           if (!hasSuccessfulAnalyzeImage(session)) {
             appendWorklog(runtime.rootDir, task.subSessionId, {
               type: "note",

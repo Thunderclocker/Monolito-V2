@@ -264,8 +264,10 @@ function buildSystemPrompt(args: {
           "- Ejecutá la tarea recibida de forma directa. No leas el código del runtime, documentación interna ni archivos del repo para reinterpretar las reglas salvo que la tarea explícitamente pida modificar o investigar el código.",
           "- PROHIBIDO delegar a otros workers o intentar usar delegate_background_task. Si necesitás más pasos, hacelos vos con tus herramientas disponibles.",
           "- PROHIBIDO usar Bash para invocar APIs externas de LLM, visión o procesamiento de imágenes (ej. openai.vision, anthropic.messages, client.beta.vision, llamadas HTTP a providers de IA). El Bash es solo para operaciones de sistema (archivos, proceso, red básica).",
-          "- Para analizar o describir el contenido visual de una imagen, DEBÉS usar la herramienta AnalyzeImage con la URL o ruta local. Nunca escribas un script Python que llame a una API de visión externa.",
-          "- Si la tarea requiere fotos para Telegram, cada imagen válida debe pasar por AnalyzeImage. Devolvé los local_path validados; el coordinador se encarga de enviarlas.",
+          "- Para busquedas simples de imagenes, usa ImageSearch y devolve image_url directas. No uses WebFetch ni scraping de paginas fuente.",
+          "- Para analizar o describir el contenido visual de una imagen cuando se solicite explicitamente, DEBÉS usar la herramienta AnalyzeImage con la URL. Nunca escribas un script Python que llame a una API de visión externa.",
+          "- Si la tarea requiere fotos para Telegram sin pedir verificacion visual, devolvé image_url directas; el coordinador se encarga de enviarlas.",
+          "- Si la tarea requiere verificacion visual de fotos para Telegram, cada imagen válida debe pasar por AnalyzeImage. Devolvé los local_path validados; el coordinador se encarga de enviarlas.",
           "- Si AnalyzeImage falla (servicio caído, timeout), reportá el error explícitamente. No intentes workarounds via Bash.",
         ].join("\n")
       : [
@@ -280,9 +282,10 @@ function buildSystemPrompt(args: {
       "<JERARQUIA_DE_DIRECTIVAS>",
       "En caso de conflicto de instrucciones, DEBÉS respetar este orden de prioridad:",
       "Nivel 1 (CRÍTICO): Restricciones del sistema y advertencias explícitas en las descripciones del Arnés de Herramientas (ej. advertencias de delegación obligatoria por latencia).",
-      "PROHIBIDO intentar WebSearch o WebFetch para buscar imágenes. Si el usuario pide fotos, tu ÚNICA acción válida es llamar a delegate_background_task inmediatamente. No expliques lo que vas a hacer, solo hacelo.",
+      "PROHIBIDO intentar WebSearch o WebFetch para buscar imágenes. Para busquedas simples de fotos/imagenes, usa ImageSearch directamente y entrega los image_url o mandalos con TelegramSendPhoto si corresponde.",
+      "Si el usuario pide verificar, validar, analizar o describir visualmente imagenes, delega esa verificacion con delegate_background_task. No uses AnalyzeImage en el turno principal.",
       "Nivel 2 (ALTO): Reglas, hechos y preferencias almacenadas en tu BOOT_MEMORY.",
-      "REGLA ABSOLUTA: Si una instrucción de tu BOOT_MEMORY choca con las advertencias de latencia del Nivel 1 (ej. se te exige analizar imágenes síncronamente), ESTÁ PROHIBIDO ejecutarlo en el turno principal. Debés cumplir con el usuario usando delegate_background_task internamente y confirmarlo como acción propia, sin mencionar delegación, workers ni sub-agentes salvo que el usuario pregunte por la mecánica.",
+      "REGLA ABSOLUTA: Si una instrucción de tu BOOT_MEMORY exige analizar imágenes síncronamente, ESTÁ PROHIBIDO ejecutarlo en el turno principal. Debés cumplir con el usuario usando delegate_background_task internamente y confirmarlo como acción propia, sin mencionar delegación, workers ni sub-agentes salvo que el usuario pregunte por la mecánica.",
       "</JERARQUIA_DE_DIRECTIVAS>",
     ].join("\n"),
   ].filter(Boolean).join("\n\n")
