@@ -3,11 +3,8 @@ import { listTools } from "../../../core/tools/registry.ts"
 import type { CompletionMatch } from "./types.ts"
 
 export const INTERACTIVE_COMMANDS = [
-  "/help", "/new", "/reset", "/sessions", "/tool", "/mcp", "/model", "/channels",
-  "/doctor", "/update", "/websearch", "/config", "/dashboard", "/quit", "/exit", "/stop",
+  "/help", "/new", "/reset", "/model", "/channels", "/update", "/dashboard", "/quit", "/exit", "/stop",
 ]
-export const MCP_SUBCOMMANDS = ["tools", "resources", "read", "call"]
-export const CONFIG_SUBCOMMANDS = ["show", "set"]
 
 export function getTokensForCompletion(line: string) {
   const endsWithSpace = /\s$/.test(line)
@@ -46,14 +43,11 @@ export function applyCompletion(input: string, cursor: number, token: string, re
 }
 
 export function createInteractiveCompleter(rootDir: string) {
-  const toolNames = listTools().map(tool => tool.name).sort()
-  const mcpServers = Object.keys(getDefaultMcpServers(rootDir)).sort()
-
   return (line: string): CompletionMatch => {
     const tokens = getTokensForCompletion(line)
     if (tokens.length === 0) return [INTERACTIVE_COMMANDS, ""]
 
-    const [command, subcommand = "", third = ""] = tokens
+    const [command] = tokens
 
     // Typing just "/" shows all commands
     if (command === "/") return [INTERACTIVE_COMMANDS, "/"]
@@ -61,28 +55,13 @@ export function createInteractiveCompleter(rootDir: string) {
     if (tokens.length === 1) return completeToken(command, INTERACTIVE_COMMANDS)
 
     switch (command) {
-      case "/tool":
-        if (tokens.length === 2) return completeToken(subcommand, toolNames)
-        return [[], line]
-      case "/mcp":
-        if (tokens.length === 2) return completeToken(subcommand, MCP_SUBCOMMANDS)
-        if (tokens.length === 3 && MCP_SUBCOMMANDS.includes(subcommand)) {
-          return completeToken(third, mcpServers)
-        }
-        return [[], line]
       case "/model":
-        return [[], line]
-      case "/config":
-        if (tokens.length === 2) return completeToken(subcommand, CONFIG_SUBCOMMANDS)
-        if (tokens.length === 3 && subcommand === "set") return [["(field)"], third]
-        return [[], line]
       case "/new":
       case "/reset":
-      case "/doctor":
-      case "/update":
-      case "/websearch":
-      case "/sessions":
+      case "/channels":
       case "/help":
+      case "/update":
+      case "/dashboard":
       case "/quit":
       case "/exit":
       case "/stop":

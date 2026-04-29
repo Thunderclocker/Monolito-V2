@@ -1747,60 +1747,19 @@ export class MonolitoV2Runtime {
         return [
           "Commands:",
           "/help",
-          "/sessions",
-          "/tool <name> <json>",
-          "/mcp list-servers",
-          "/mcp add <server> <json>",
-          "/mcp remove <server>",
-          "/mcp tools <server>",
-          "/mcp resources <server>",
-          "/mcp read <server> <uri>",
-          "/mcp call <server> <tool> <json>",
+          "/new",
+          "/reset",
           "/model",
-          "/model info",
-          "/model set <base_url|api_key|model> <value>",
-          "/model reset",
-          "/doctor",
+          "/channels",
           "/update",
-          "/channels [show|on|off|token <token>|chats <id,id,...>|clear]",
-          "/config [show|set <base_url|api_key|model|tts_base_url|tts_api_key|tts_voice|tts_model|tts_format|tts_speed|tts_managed|tts_auto_deploy|tts_port|vision_managed|vision_auto_deploy|vision_port|vision_container_name|vision_model> <value>]",
-          "/tts [show|on|off|deploy|stop|remove|list|status]",
-          "/stt [show|on|off|deploy|stop|remove|list|status]",
-          "/websearch — Open web search menu",
-          "/new — Reset session and restart agent",
-          "/reset — Reset session, clear Memory Palace for this profile, and restart agent",
         ].join("\n")
-      case "/sessions":
-        return listSessions(this.rootDir).map(item => `${item.id} ${item.state} ${item.title}`).join("\n")
-      case "/tool":
-        return this.runToolCommand(sessionId, rest)
-      case "/mcp":
-        return this.runMcpCommand(sessionId, rest)
       case "/model":
         return this.runModelCommand(rest)
-      case "/doctor": {
-        return this.runDoctor()
-      }
       case "/update": {
         return this.runUpdate()
       }
       case "/channels": {
         return this.runChannelsCommand(rest)
-      }
-      case "/tts": {
-        return this.runTtsCommand(rest)
-      }
-      case "/stt": {
-        return this.runSttCommand(rest)
-      }
-      case "/websearch": {
-        return this.runWebSearchCommand(rest)
-      }
-      case "/config": {
-        return this.runConfig(rest)
-      }
-      case "/compact": {
-        return this.queryCompact(sessionId)
       }
       case "/new": {
         const session = getSession(this.rootDir, sessionId)
