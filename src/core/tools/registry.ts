@@ -38,7 +38,8 @@ import { type Logger } from "../logging/logger.ts"
 import { BOOT_WING_ORDER, isBootWingName } from "../bootstrap/bootWings.ts"
 import { CONFIG_WING_ORDER, type ConfigWingName } from "../config/configWings.ts"
 import { coerceConfigRecord } from "../config/wingValue.ts"
-import { loadAndApplyModelSettings } from "../runtime/modelConfig.ts"
+import { loadAndApplyModelSettings, readModelSettings } from "../runtime/modelConfig.ts"
+import { getActiveProfile } from "../runtime/modelRegistry.ts"
 import {
   deployManagedTtsContainer,
   getManagedTtsBaseUrl,
@@ -2632,6 +2633,165 @@ const tools: ToolDefinition[] = [
     },
   },
   {
+    name: "VisionAnalyze",
+    permissionTier: "read",
+    description: "Analiza una imagen desde una URL o un path local utilizando el modelo de visión del proveedor configurado.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "URL de la imagen a descargar y analizar." },
+        path: { type: "string", description: "Ruta local del archivo de imagen a analizar." },
+      },
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    validate: input => {
+      if (typeof input.url !== "string" && typeof input.path !== "string") {
+        return "Debes proporcionar 'url' o 'path' como string."
+      }
+      return null
+    },
+    async run(input, context) {
+      if (!context.sessionId?.startsWith("agent-")) {
+        throw new Error("REGLA ESTRICTA: Tareas visuales prohibidas en hilo principal. Debés delegar usando delegate_background_task.")
+      }
+      const url = optionalString(input, "url")
+      const pathArg = optionalString(input, "path")
+      
+      let buffer: Buffer
+      let mediaType = "image/jpeg"
+      
+      if (url) {
+        if (url.toLowerCase().endsWith(".png")) mediaType = "image/png"
+        else if (url.toLowerCase().endsWith(".webp")) mediaType = "image/webp"
+        else if (url.toLowerCase().endsWith(".gif")) mediaType = "image/gif"
+        
+        const response = await fetch(url, { signal: context.abortSignal })
+        if (!response.ok) throw new Error(`Error descargando imagen desde URL: HTTP ${response.status}`)
+        buffer = Buffer.from(await response.arrayBuffer())
+      } else if (pathArg) {
+        if (pathArg.toLowerCase().endsWith(".png")) mediaType = "image/png"
+        else if (pathArg.toLowerCase().endsWith(".webp")) mediaType = "image/webp"
+        else if (pathArg.toLowerCase().endsWith(".gif")) mediaType = "image/gif"
+        
+        const absolutePath = resolve(context.cwd, pathArg)
+        if (!existsSync(absolutePath)) throw new Error(`Archivo no encontrado: ${absolutePath}`)
+        buffer = readFileSync(absolutePath)
+      } else {
+        throw new Error("Debes proporcionar 'url' o 'path'.")
+      }
+
+      const base64Image = buffer.toString("base64")
+      
+      const activeProfile = getActiveProfile()
+      let provider = "anthropic_compatible"
+      let baseUrl = ""
+      let apiKey = ""
+      let model = ""
+
+      if (activeProfile) {
+        provider = activeProfile.provider
+        baseUrl = activeProfile.baseUrl.trim().replace(/\/+$/, "")
+        apiKey = activeProfile.apiKey.trim()
+        model = activeProfile.model.trim()
+      } else {
+        const settings = readModelSettings()
+        provider = "anthropic_compatible"
+        baseUrl = settings.env.ANTHROPIC_BASE_URL.trim().replace(/\/+$/, "")
+        apiKey = settings.env.ANTHROPIC_AUTH_TOKEN.trim()
+        model = settings.env.ANTHROPIC_MODEL.trim()
+      }
+
+      if (provider === "anthropic_compatible" || provider === "minimax") {
+        const cleanBaseUrl = baseUrl.replace(/\/v1\/messages\/?$/, "")
+        const endpoint = cleanBaseUrl ? `${cleanBaseUrl}/v1/messages` : "https://api.anthropic.com/v1/messages"
+        
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-api-key": apiKey || "not-needed",
+            "anthropic-version": "2023-06-01"
+          },
+          body: JSON.stringify({
+            model: model,
+            max_tokens: 1000,
+            messages: [
+              {
+                role: "user",
+                content: [
+                  {
+                    type: "image",
+                    source: {
+                      type: "base64",
+                      media_type: mediaType,
+                      data: base64Image
+                    }
+                  },
+                  {
+                    type: "text",
+                    text: "Describe exactly what is in this image in detail."
+                  }
+                ]
+              }
+            ]
+          }),
+          signal: context.abortSignal
+        })
+
+        if (!response.ok) {
+          const text = await response.text()
+          throw new Error(`Anthropic Vision API failed (${response.status}): ${text}`)
+        }
+
+        const data = await response.json() as any
+        const description = data.content?.[0]?.text || ""
+        return { ok: true, description }
+      } else {
+        const endpoint = baseUrl ? `${baseUrl}/v1/chat/completions` : "https://api.openai.com/v1/chat/completions"
+        
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "authorization": `Bearer ${apiKey}`
+          },
+          body: JSON.stringify({
+            model: model,
+            max_tokens: 1000,
+            messages: [
+              {
+                role: "user",
+                content: [
+                  {
+                    type: "image_url",
+                    image_url: {
+                      url: `data:${mediaType};base64,${base64Image}`
+                    }
+                  },
+                  {
+                    type: "text",
+                    text: "Describe exactly what is in this image in detail."
+                  }
+                ]
+              }
+            ]
+          }),
+          signal: context.abortSignal
+        })
+
+        if (!response.ok) {
+          const text = await response.text()
+          throw new Error(`OpenAI Vision API failed (${response.status}): ${text}`)
+        }
+
+        const data = await response.json() as any
+        const description = data.choices?.[0]?.message?.content || ""
+        return { ok: true, description }
+      }
+    },
+  },
+  {
     name: "WebSearch",
     permissionTier: "read",
     description: "Search the web for current text results via the local SearxNG instance and return clean summaries with title, URL, and snippet. CRÍTICO: PROHIBIDO usar esta herramienta para buscar, ver o analizar IMÁGENES o FOTOS. Solo devuelve texto y fallará. Para cualquier tarea visual o de imágenes, DEBES usar la herramienta de delegación a background.",
@@ -2873,8 +3033,6 @@ export function listModelTools(isSubAgent = false, lastUserText?: string) {
     "Write",
     "Edit",
     "MultiEdit",
-    "WebFetch",
-    "WebSearch",
     "Bash",
     "TodoWrite",
   ])

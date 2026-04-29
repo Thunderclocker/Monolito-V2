@@ -242,6 +242,7 @@ function buildSystemPrompt(args: {
   const identity = canonical.length > 0 ? canonical.map(entry => `- ${entry.label}: ${entry.value}`).join("\n") : "- No canonical identity facts recorded yet."
   const lastUserMessage = getLastUserMessage(args.session)
   const isSubAgent = args.session.id.startsWith("agent-")
+  const isImageIntent = lastUserMessage && /imagen|imagenes|foto|fotos|picture|pictures|image|images|vision|visual/i.test(lastUserMessage)
   const staticSystem = [
     "You are Monolito V2, a local assistant with tool access.",
     "Use tools when the answer depends on current files, system state, internal task status, or external resources.",
@@ -264,7 +265,9 @@ function buildSystemPrompt(args: {
           "- Ejecutá la tarea recibida de forma directa. No leas el código del runtime, documentación interna ni archivos del repo para reinterpretar las reglas salvo que la tarea explícitamente pida modificar o investigar el código.",
           "- PROHIBIDO delegar a otros workers o intentar usar delegate_background_task. Si necesitás más pasos, hacelos vos con tus herramientas disponibles.",
           "- PROHIBIDO usar Bash para invocar APIs externas de LLM, visión o procesamiento de imágenes (ej. openai.vision, anthropic.messages, client.beta.vision, llamadas HTTP a providers de IA). El Bash es solo para operaciones de sistema (archivos, proceso, red básica).",
-          "- Para busquedas simples de imagenes, usa ImageSearch y devolve image_url directas. No uses WebFetch ni scraping de paginas fuente.",
+          isImageIntent
+            ? "- Para analizar imágenes, usa PRIMERO WebSearch/WebFetch para obtenerla y LUEGO invoca la herramienta VisionAnalyze. NUNCA uses Bash."
+            : "- Para busquedas simples de imagenes, usa ImageSearch y devolve image_url directas. No uses WebFetch ni scraping de paginas fuente.",
           "- Para analizar o describir el contenido visual de una imagen cuando se solicite explicitamente, DEBÉS usar la herramienta AnalyzeImage con la URL. Nunca escribas un script Python que llame a una API de visión externa.",
           "- Si la tarea requiere fotos para Telegram sin pedir verificacion visual, devolvé image_url directas; el coordinador se encarga de enviarlas.",
           "- Si la tarea requiere verificacion visual de fotos para Telegram, cada imagen válida debe pasar por AnalyzeImage. Devolvé los local_path validados; el coordinador se encarga de enviarlas.",
