@@ -59,7 +59,7 @@ import { normalizeToolInputPayload } from "./toolInput.ts"
 import { AgentOrchestrator } from "./orchestrator.ts"
 import { renderToolFinish, renderToolStart, renderToolStartText } from "../renderer/toolRenderer.ts"
 import { checkToolPermission, runLifecycleHooks, runPostToolHooks } from "./permissions.ts"
-import { runMemoryAgentReview } from "./memoryAgent.ts"
+
 import type { Logger } from "../logging/logger.ts"
 import type { DelegationTask } from "./orchestrator.ts"
 import {
@@ -92,7 +92,7 @@ type TelegramTypingIndicator = {
   stop(): void
 }
 
-type MemoryReviewTrigger = "post-turn" | "pre-compact" | "session-end"
+
 type PendingSessionInput =
   | { kind: "message"; text: string }
   | { kind: "startup"; prompt: string; logger?: Logger }
@@ -111,7 +111,7 @@ const SEARXNG_SETTINGS_FILE = join(SEARXNG_SETTINGS_DIR, "settings.yml")
 const TELEGRAM_TYPING_REFRESH_MS = 4_000
 const TURN_HARD_TIMEOUT_MS = 95_000
 const COMMAND_REPAIR_MAX_ATTEMPTS = 3
-const MEMORY_REVIEW_POST_TURN_DEBOUNCE_MS = 45_000
+
 const STALL_ALERT_MESSAGE = "SYSTEM ALERT: STALL DETECTED. You have hit the exact same tool execution error twice. Evaluate your remaining viable strategies. If you have a logically distinct path, execute it now. If you have EXHAUSTED ALL viable paths, you MUST format your response to yield control back to the user, summarizing what you tried and why it failed."
 const UPDATE_RESTART_STATE_FILE = "update-restart.json"
 
@@ -844,9 +844,7 @@ export class MonolitoV2Runtime {
   private currentBatchGroups = new Map<string, string>()
   private pendingBackgroundWakeups = new Map<string, { profileId: string }>()
   private pendingUserMessages = new Map<string, PendingSessionInput[]>()
-  private memoryReviewInFlight = new Map<string, Promise<void>>()
-  private pendingMemoryReviews = new Map<string, { profileId: string; trigger: MemoryReviewTrigger; sessionSnapshot?: SessionRecord | null }>()
-  private lastMemoryReviewAt = new Map<string, number>()
+
   readonly orchestrator: AgentOrchestrator
 
   private describeResumeReason(session: SessionRecord) {
@@ -1244,51 +1242,7 @@ export class MonolitoV2Runtime {
     return getSession(this.rootDir, sessionId)
   }
 
-  private scheduleMemoryReview(
-    sessionId: string,
-    profileId: string,
-    trigger: MemoryReviewTrigger,
-    sessionSnapshot?: SessionRecord | null,
-  ) {
-    const snapshot = sessionSnapshot ?? getSession(this.rootDir, sessionId)
-    if (!snapshot || snapshot.id.startsWith("agent-")) return
 
-    if (this.memoryReviewInFlight.has(sessionId)) {
-      const pending = this.pendingMemoryReviews.get(sessionId)
-      this.pendingMemoryReviews.set(sessionId, {
-        profileId,
-        trigger: pickMemoryReviewTrigger(pending?.trigger, trigger),
-        sessionSnapshot: snapshot,
-      })
-      return
-    }
-
-    const lastStartedAt = this.lastMemoryReviewAt.get(sessionId) ?? 0
-    if (trigger === "post-turn" && Date.now() - lastStartedAt < MEMORY_REVIEW_POST_TURN_DEBOUNCE_MS) {
-      return
-    }
-
-    const reviewTask = (async () => {
-      this.lastMemoryReviewAt.set(sessionId, Date.now())
-      try {
-        await runMemoryAgentReview(this.rootDir, snapshot, profileId, trigger)
-      } catch (error) {
-        console.error(`Memory agent failed (${trigger}) for ${sessionId}:`, error)
-      } finally {
-        this.memoryReviewInFlight.delete(sessionId)
-        const pending = this.pendingMemoryReviews.get(sessionId)
-        if (!pending) return
-        this.pendingMemoryReviews.delete(sessionId)
-        this.scheduleMemoryReview(
-          sessionId,
-          pending.profileId,
-          pending.trigger,
-          pending.sessionSnapshot,
-        )
-      }
-    })()
-    this.memoryReviewInFlight.set(sessionId, reviewTask)
-  }
 
   tailEvents(sessionId: string, lines?: number) {
     return tailEvents(this.rootDir, sessionId, lines)
@@ -1408,7 +1362,7 @@ export class MonolitoV2Runtime {
           } catch {}
         }
         await this.transitionState(sessionId, "idle")
-        this.scheduleMemoryReview(sessionId, profileId, "post-turn")
+
         return { finalText: reply, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } }
       } else {
         const session = getSession(this.rootDir, sessionId)
@@ -1554,7 +1508,7 @@ export class MonolitoV2Runtime {
           }
         }
         await this.transitionState(sessionId, turn.error ? "error" : "idle")
-        this.scheduleMemoryReview(sessionId, profileId, "post-turn")
+
         return turn
       }
     } catch (error) {
@@ -1845,11 +1799,14 @@ export class MonolitoV2Runtime {
       case "/config": {
         return this.runConfig(rest)
       }
+      case "/compact": {
+        return this.queryCompact(sessionId)
+      }
       case "/new": {
         const session = getSession(this.rootDir, sessionId)
         const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
         await runLifecycleHooks("SessionEnd", { rootDir: this.rootDir, sessionId, profileId })
-        this.scheduleMemoryReview(sessionId, profileId, "session-end", session)
+
         resetSession(this.rootDir, sessionId)
         return "__SESSION_RESET__"
       }
@@ -2727,7 +2684,7 @@ export class MonolitoV2Runtime {
   queryCompact(sessionId: string, maxMessages?: number) {
     const session = getSession(this.rootDir, sessionId)
     const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
-    this.scheduleMemoryReview(sessionId, profileId, "pre-compact", session)
+
     const result = compactSession(this.rootDir, sessionId, maxMessages ? { maxMessages } : {})
     return `Compacted ${result.compacted} message${result.compacted !== 1 ? "s" : ""}. ${result.remaining} remaining.`
   }
@@ -2758,12 +2715,4 @@ function clipForWorklog(value: string, maxChars = 180) {
   return `${trimmed.slice(0, maxChars).trimEnd()}...`
 }
 
-function pickMemoryReviewTrigger(current: MemoryReviewTrigger | undefined, incoming: MemoryReviewTrigger): MemoryReviewTrigger {
-  const priority: Record<MemoryReviewTrigger, number> = {
-    "post-turn": 1,
-    "pre-compact": 2,
-    "session-end": 3,
-  }
-  if (!current) return incoming
-  return priority[incoming] >= priority[current] ? incoming : current
-}
+
