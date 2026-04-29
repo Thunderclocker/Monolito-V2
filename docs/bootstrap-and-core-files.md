@@ -41,7 +41,7 @@ Canonical memory is stored in SQLite and currently tracks stable slots such as:
 
 The main assistant can read and write these facts explicitly through `CanonicalMemoryRead` and `CanonicalMemoryWrite`.
 
-The background memory reviewer can also promote facts into canonical memory after a turn, so confirmed information does not depend on BOOT-only routing.
+The main assistant MUST proactively use CanonicalMemoryWrite and WorkspaceMemoryFiling to persist confirmed facts. There is no background memory extraction process.
 
 ## Temporal Knowledge Graph
 
