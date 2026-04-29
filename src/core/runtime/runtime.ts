@@ -87,9 +87,6 @@ import { redactSensitiveText, redactSensitiveValue } from "../security/redact.ts
 
 type EventListener = (event: AgentEvent) => void
 
-type SessionBusyError = Error & {
-  code: "SESSION_BUSY"
-}
 
 type TelegramTypingIndicator = {
   stop(): void
@@ -133,11 +130,6 @@ type SearxngContainerInfo = {
   isOurs: boolean
 }
 
-function createSessionBusyError(sessionId: string): SessionBusyError {
-  const error = new Error(`Session ${sessionId} is already busy with another running turn.`) as SessionBusyError
-  error.code = "SESSION_BUSY"
-  return error
-}
 
 function asRecord(value: unknown) {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null

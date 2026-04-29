@@ -21,13 +21,6 @@ export function isAbortError(error: unknown): boolean {
   return error instanceof AbortError || (error instanceof Error && error.name === "AbortError")
 }
 
-export class SessionBusyError extends MonolitoError {
-  readonly code = "SESSION_BUSY"
-  constructor(sessionId: string) {
-    super(`La sesión ${sessionId} ya está ocupada por otro turno en ejecución.`)
-    this.name = "SessionBusyError"
-  }
-}
 
 export function getRetryAfterMsFromHeaders(headers?: Headers | null): number | null {
   const retryAfter = headers?.get("retry-after")
