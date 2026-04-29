@@ -430,11 +430,18 @@ export class AgentOrchestrator {
         task.usage.duration_ms = Date.now() - turnStartedAt;
 
         if (task.usage.total_tokens > SUBAGENT_TOKEN_BUDGET) {
-            task.status = "failed";
-            const errorMsg = `Worker exceeded hard token budget of ${SUBAGENT_TOKEN_BUDGET} tokens.`;
-            task.logger?.error(errorMsg);
-            await this.notifyParent(task, errorMsg);
-            return;
+          task.status = "failed"
+          const errorMsg = `Worker exceeded hard token budget of ${SUBAGENT_TOKEN_BUDGET} tokens.`
+          const partialEvidence = extractPartialImageEvidence(this.runtime.rootDir, task.subSessionId)
+          task.error = errorMsg
+          if (partialEvidence) task.result = partialEvidence
+          task.logger?.error(errorMsg)
+          updateWorkerJobStatus(this.runtime.rootDir, task.id, "failed", {
+            errorText: errorMsg,
+            resultText: task.result,
+          })
+          await this.notifyParent(task, partialEvidence ? `${errorMsg}\n\n${partialEvidence}` : errorMsg)
+          return
         }
 
         if (turn.error) {
