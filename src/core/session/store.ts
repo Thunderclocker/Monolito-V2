@@ -25,7 +25,7 @@ import {
   type ConfigWingValueMap,
 } from "../config/configWings.ts"
 import { createLogger } from "../logging/logger.ts"
-import type { WorkerJob, WorkerJobStatus } from "../db/schema.ts"
+import { PALACE_NAMESPACE, PALACE_SCHEMA_SQL, type PalaceContentType, type PalaceNamespace, type WorkerJob, type WorkerJobStatus } from "../db/schema.ts"
 
 let dbInstance: Database.Database | null = null
 let dbPathCache: string | null = null
@@ -34,6 +34,7 @@ const BOOTSTRAP_SOURCE_ROOM = "__bootstrap__"
 const CONFIG_SOURCE_ROOM = "__config__"
 const ACTION_LOG_ROOM = "agent-actions"
 const CANONICAL_WING = "CANONICAL"
+const GLOBAL_PROFILE_SCOPE = "__global__"
 
 export type CanonicalMemorySlot =
   | "assistant_name"
@@ -123,6 +124,243 @@ function extractPreferredNameFallback(...sources: string[]) {
   return null
 }
 
+function palaceProfileScope(profileId: string | null | undefined) {
+  return profileId ?? GLOBAL_PROFILE_SCOPE
+}
+
+function ensurePalaceSchema(db: Database.Database) {
+  db.exec(PALACE_SCHEMA_SQL)
+}
+
+function readLatestPalaceContent(
+  db: Database.Database,
+  options: {
+    namespace: PalaceNamespace
+    wing: string
+    room: string
+    nodeKey: string
+    profileId?: string | null
+    includeGlobalFallback?: boolean
+  },
+) {
+  const profileScope = palaceProfileScope(options.profileId)
+  const rows = options.includeGlobalFallback
+    ? db.prepare(`
+      SELECT content
+      FROM palace_nodes
+      WHERE namespace = ?
+        AND wing = ?
+        AND room = ?
+        AND node_key = ?
+        AND superseded_at IS NULL
+        AND profile_scope IN (?, ?)
+      ORDER BY CASE WHEN profile_scope = ? THEN 0 ELSE 1 END ASC, updated_at DESC, created_at DESC, id DESC
+      LIMIT 1
+    `).all(options.namespace, options.wing, options.room, options.nodeKey, profileScope, GLOBAL_PROFILE_SCOPE, profileScope) as { content: string }[]
+    : db.prepare(`
+      SELECT content
+      FROM palace_nodes
+      WHERE namespace = ?
+        AND wing = ?
+        AND room = ?
+        AND node_key = ?
+        AND profile_scope = ?
+        AND superseded_at IS NULL
+      ORDER BY updated_at DESC, created_at DESC, id DESC
+      LIMIT 1
+    `).all(options.namespace, options.wing, options.room, options.nodeKey, profileScope) as { content: string }[]
+  return rows[0]?.content ?? null
+}
+
+function upsertMutablePalaceNode(
+  db: Database.Database,
+  options: {
+    namespace: PalaceNamespace
+    wing: string
+    room: string
+    nodeKey: string
+    profileId?: string | null
+    subjectType?: string | null
+    subjectId?: string | null
+    contentType: PalaceContentType
+    content: string
+    now: string
+  },
+) {
+  const profileId = options.profileId ?? null
+  const profileScope = palaceProfileScope(profileId)
+  const existing = db.prepare(`
+    SELECT id, content
+    FROM palace_nodes
+    WHERE namespace = ?
+      AND wing = ?
+      AND room = ?
+      AND node_key = ?
+      AND profile_scope = ?
+      AND mutable = 1
+      AND superseded_at IS NULL
+    ORDER BY updated_at DESC, created_at DESC, id DESC
+    LIMIT 1
+  `).get(options.namespace, options.wing, options.room, options.nodeKey, profileScope) as { id: string; content: string } | undefined
+
+  if (existing) {
+    if (existing.content === options.content) return { changed: false, id: existing.id }
+    db.prepare(`
+      UPDATE palace_nodes
+      SET content = ?,
+          content_type = ?,
+          updated_at = ?,
+          subject_type = ?,
+          subject_id = ?
+      WHERE id = ?
+    `).run(options.content, options.contentType, options.now, options.subjectType ?? null, options.subjectId ?? null, existing.id)
+    return { changed: true, id: existing.id }
+  }
+
+  const id = randomUUID()
+  db.prepare(`
+    INSERT INTO palace_nodes (
+      id, namespace, wing, room, node_key, profile_id, profile_scope,
+      subject_type, subject_id, content_type, content, mutable, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+  `).run(
+    id,
+    options.namespace,
+    options.wing,
+    options.room,
+    options.nodeKey,
+    profileId,
+    profileScope,
+    options.subjectType ?? null,
+    options.subjectId ?? null,
+    options.contentType,
+    options.content,
+    options.now,
+    options.now,
+  )
+  return { changed: true, id }
+}
+
+function appendPalaceNode(
+  db: Database.Database,
+  options: {
+    namespace: PalaceNamespace
+    wing: string
+    room: string
+    nodeKey?: string | null
+    profileId?: string | null
+    subjectType?: string | null
+    subjectId?: string | null
+    contentType: PalaceContentType
+    content: string
+    now: string
+  },
+) {
+  const id = randomUUID()
+  const profileId = options.profileId ?? null
+  db.prepare(`
+    INSERT INTO palace_nodes (
+      id, namespace, wing, room, node_key, profile_id, profile_scope,
+      subject_type, subject_id, content_type, content, mutable, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+  `).run(
+    id,
+    options.namespace,
+    options.wing,
+    options.room,
+    options.nodeKey ?? null,
+    profileId,
+    palaceProfileScope(profileId),
+    options.subjectType ?? null,
+    options.subjectId ?? null,
+    options.contentType,
+    options.content,
+    options.now,
+    options.now,
+  )
+  return id
+}
+
+function ensureKernelSeededDb(db: Database.Database, profileId = "default") {
+  ensurePalaceSchema(db)
+  const now = new Date().toISOString()
+  const profileScope = palaceProfileScope(profileId)
+  const existingStmt = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM palace_nodes
+    WHERE namespace = ?
+      AND profile_scope = ?
+      AND wing = ?
+      AND node_key = ?
+      AND superseded_at IS NULL
+  `)
+
+  db.exec("BEGIN TRANSACTION")
+  try {
+    for (const wing of BOOT_WING_ORDER) {
+      const existing = existingStmt.get(PALACE_NAMESPACE.boot, profileScope, wing, wing) as { count: number }
+      if (existing.count === 0) {
+        const legacy = db.prepare(`
+          SELECT content
+          FROM memory_drawers
+          WHERE wing = ? AND profile_id = ?
+          ORDER BY created_at DESC, id DESC
+          LIMIT 1
+        `).get(wing, profileId) as { content: string } | undefined
+        upsertMutablePalaceNode(db, {
+          namespace: PALACE_NAMESPACE.boot,
+          wing,
+          room: BOOTSTRAP_SOURCE_ROOM,
+          nodeKey: wing,
+          profileId,
+          subjectType: "boot_wing",
+          subjectId: wing,
+          contentType: "text/markdown",
+          content: legacy?.content ?? DEFAULT_BOOT_WING_CONTENT[wing],
+          now,
+        })
+      }
+    }
+    for (const wing of CONFIG_WING_ORDER) {
+      const existing = existingStmt.get(PALACE_NAMESPACE.config, GLOBAL_PROFILE_SCOPE, wing, wing) as { count: number }
+      if (existing.count === 0) {
+        const legacy = db.prepare(`
+          SELECT content
+          FROM memory_drawers
+          WHERE wing = ? AND profile_id IS NULL
+          ORDER BY created_at DESC, id DESC
+          LIMIT 1
+        `).get(wing) as { content: string } | undefined
+        upsertMutablePalaceNode(db, {
+          namespace: PALACE_NAMESPACE.config,
+          wing,
+          room: CONFIG_SOURCE_ROOM,
+          nodeKey: wing,
+          profileId: null,
+          subjectType: "config_wing",
+          subjectId: wing,
+          contentType: "application/json",
+          content: legacy?.content ?? JSON.stringify(DEFAULT_CONFIG_WING_VALUES[wing], null, 2),
+          now,
+        })
+      }
+    }
+    db.exec("COMMIT")
+  } catch (error) {
+    db.exec("ROLLBACK")
+    throw error
+  }
+}
+
+function hardCrashKernel(error: unknown): never {
+  logger.error("FATAL: SQLite kernel failed during startup. Monolito cannot boot without the Palace.", error)
+  console.error("[monolito] FATAL: SQLite kernel failed during startup.")
+  console.error(error instanceof Error ? error.stack ?? error.message : String(error))
+  process.exit(1)
+}
+
 export function getDb(rootDir: string): Database.Database {
   const path = join(getPaths(rootDir).stateDir, "memory.sqlite")
   if (dbInstance && dbPathCache === path) return dbInstance
@@ -130,14 +368,16 @@ export function getDb(rootDir: string): Database.Database {
   if (dbInstance) dbInstance.close()
   ensureDirs(rootDir)
 
-  const db = new Database(path)
-  sqliteVec.load(db)
+  let db: Database.Database
+  try {
+    db = new Database(path)
+    sqliteVec.load(db)
   
-  db.pragma(`journal_mode = WAL`);
-  db.pragma(`synchronous = NORMAL`);
-  db.pragma(`foreign_keys = ON`);
+    db.pragma(`journal_mode = WAL`);
+    db.pragma(`synchronous = NORMAL`);
+    db.pragma(`foreign_keys = ON`);
 
-  db.exec(`
+    db.exec(`
     CREATE TABLE IF NOT EXISTS profiles (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -256,56 +496,74 @@ export function getDb(rootDir: string): Database.Database {
     INSERT OR IGNORE INTO profiles (id, name, description, created_at)
     VALUES ('default', 'Default Agent', 'El agente Monolito principal por defecto.', CURRENT_TIMESTAMP);
   `)
+    ensurePalaceSchema(db)
 
-  // Migration: Add profile_id to sessions if missing (better-sqlite3)
-  const sessionInfo = db.prepare(`PRAGMA table_info(sessions)`).all() as any[]
-  if (!sessionInfo.find(c => c.name === "profile_id")) {
-    try {
-      db.exec(`ALTER TABLE sessions ADD COLUMN profile_id TEXT DEFAULT 'default'`)
-    } catch (e) {
-      if (!String(e).includes("duplicate column")) throw e
-    }
-  }
-
-  const memoryInfo = db.prepare(`PRAGMA table_info(memory_drawers)`).all() as any[]
-  if (!memoryInfo.find(c => c.name === "memory_key")) {
-    try {
-      db.exec(`ALTER TABLE memory_drawers ADD COLUMN memory_key TEXT`)
-    } catch (e) {
-      if (!String(e).includes("duplicate column")) throw e
-    }
-  }
-
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_drawers_key ON memory_drawers(memory_key)`)
-
-  const workerInfo = db.prepare(`PRAGMA table_info(worker_jobs)`).all() as any[]
-  for (const column of [
-    { name: "profile_id", sql: `ALTER TABLE worker_jobs ADD COLUMN profile_id TEXT` },
-    { name: "result_text", sql: `ALTER TABLE worker_jobs ADD COLUMN result_text TEXT` },
-    { name: "error_text", sql: `ALTER TABLE worker_jobs ADD COLUMN error_text TEXT` },
-  ]) {
-    if (!workerInfo.find(c => c.name === column.name)) {
+    // Migration: Add profile_id to sessions if missing (better-sqlite3)
+    const sessionInfo = db.prepare(`PRAGMA table_info(sessions)`).all() as any[]
+    if (!sessionInfo.find(c => c.name === "profile_id")) {
       try {
-        db.exec(column.sql)
+        db.exec(`ALTER TABLE sessions ADD COLUMN profile_id TEXT DEFAULT 'default'`)
       } catch (e) {
         if (!String(e).includes("duplicate column")) throw e
       }
     }
-  }
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_worker_jobs_status ON worker_jobs(status)`)
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_worker_jobs_session ON worker_jobs(session_id)`)
 
-  // Shared memories are represented by a NULL profile_id.
-  db.exec(`UPDATE memory_drawers SET profile_id = NULL WHERE wing = 'SHARED'`)
+    const memoryInfo = db.prepare(`PRAGMA table_info(memory_drawers)`).all() as any[]
+    if (!memoryInfo.find(c => c.name === "memory_key")) {
+      try {
+        db.exec(`ALTER TABLE memory_drawers ADD COLUMN memory_key TEXT`)
+      } catch (e) {
+        if (!String(e).includes("duplicate column")) throw e
+      }
+    }
+
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_drawers_key ON memory_drawers(memory_key)`)
+
+    const workerInfo = db.prepare(`PRAGMA table_info(worker_jobs)`).all() as any[]
+    for (const column of [
+      { name: "profile_id", sql: `ALTER TABLE worker_jobs ADD COLUMN profile_id TEXT` },
+      { name: "result_text", sql: `ALTER TABLE worker_jobs ADD COLUMN result_text TEXT` },
+      { name: "error_text", sql: `ALTER TABLE worker_jobs ADD COLUMN error_text TEXT` },
+    ]) {
+      if (!workerInfo.find(c => c.name === column.name)) {
+        try {
+          db.exec(column.sql)
+        } catch (e) {
+          if (!String(e).includes("duplicate column")) throw e
+        }
+      }
+    }
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_worker_jobs_status ON worker_jobs(status)`)
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_worker_jobs_session ON worker_jobs(session_id)`)
+
+    // Shared memories are represented by a NULL profile_id.
+    db.exec(`UPDATE memory_drawers SET profile_id = NULL WHERE wing = 'SHARED'`)
+    ensureKernelSeededDb(db, "default")
+  } catch (error) {
+    try {
+      db!?.close()
+    } catch {}
+    hardCrashKernel(error)
+  }
 
   dbInstance = db
   dbPathCache = path
   return db
 }
 
+export function ensureKernelSeeded(rootDir: string, profileId = "default") {
+  const db = getDb(rootDir)
+  try {
+    ensureKernelSeededDb(db, profileId)
+  } catch (error) {
+    hardCrashKernel(error)
+  }
+}
+
 export function ensureBootWings(rootDir: string, profileId = "default") {
   const db = getDb(rootDir)
   const now = new Date().toISOString()
+  ensureKernelSeededDb(db, profileId)
   const countStmt = db.prepare(`
     SELECT COUNT(*) as count
     FROM memory_drawers
@@ -334,6 +592,18 @@ export function ensureBootWings(rootDir: string, profileId = "default") {
       const existing = countStmt.get(wing, profileId) as { count: number }
       if (existing.count === 0) {
         insertStmt.run(randomUUID(), profileId, wing, BOOTSTRAP_SOURCE_ROOM, wing, DEFAULT_BOOT_WING_CONTENT[wing], now)
+        upsertMutablePalaceNode(db, {
+          namespace: PALACE_NAMESPACE.boot,
+          wing,
+          room: BOOTSTRAP_SOURCE_ROOM,
+          nodeKey: wing,
+          profileId,
+          subjectType: "boot_wing",
+          subjectId: wing,
+          contentType: "text/markdown",
+          content: DEFAULT_BOOT_WING_CONTENT[wing],
+          now,
+        })
         continue
       }
       if (wing === "BOOT_BOOTSTRAP") {
@@ -363,6 +633,7 @@ export function ensureBootWings(rootDir: string, profileId = "default") {
 export function ensureConfigWings(rootDir: string) {
   const db = getDb(rootDir)
   const now = new Date().toISOString()
+  ensureKernelSeededDb(db, "default")
   const countStmt = db.prepare(`
     SELECT COUNT(*) as count
     FROM memory_drawers
@@ -379,6 +650,18 @@ export function ensureConfigWings(rootDir: string) {
       const existing = countStmt.get(wing) as { count: number }
       if (existing.count > 0) continue
       insertStmt.run(randomUUID(), wing, CONFIG_SOURCE_ROOM, wing, JSON.stringify(DEFAULT_CONFIG_WING_VALUES[wing], null, 2), now)
+      upsertMutablePalaceNode(db, {
+        namespace: PALACE_NAMESPACE.config,
+        wing,
+        room: CONFIG_SOURCE_ROOM,
+        nodeKey: wing,
+        profileId: null,
+        subjectType: "config_wing",
+        subjectId: wing,
+        contentType: "application/json",
+        content: JSON.stringify(DEFAULT_CONFIG_WING_VALUES[wing], null, 2),
+        now,
+      })
     }
     db.exec("COMMIT")
   } catch (error) {
@@ -390,6 +673,20 @@ export function ensureConfigWings(rootDir: string) {
 export function readConfigWing<T extends ConfigWingName>(rootDir: string, wing: T): ConfigWingValueMap[T] {
   ensureConfigWings(rootDir)
   const db = getDb(rootDir)
+  const palaceContent = readLatestPalaceContent(db, {
+    namespace: PALACE_NAMESPACE.config,
+    wing,
+    room: CONFIG_SOURCE_ROOM,
+    nodeKey: wing,
+    profileId: null,
+  })
+  if (palaceContent) {
+    try {
+      return JSON.parse(palaceContent) as ConfigWingValueMap[T]
+    } catch {
+      return DEFAULT_CONFIG_WING_VALUES[wing]
+    }
+  }
   const row = db.prepare(`
     SELECT content
     FROM memory_drawers
@@ -410,18 +707,37 @@ export function writeConfigWing<T extends ConfigWingName>(rootDir: string, wing:
   const db = getDb(rootDir)
   const now = new Date().toISOString()
   const content = JSON.stringify(value, null, 2)
+  const currentPalace = readLatestPalaceContent(db, {
+    namespace: PALACE_NAMESPACE.config,
+    wing,
+    room: CONFIG_SOURCE_ROOM,
+    nodeKey: wing,
+    profileId: null,
+  })
   const rows = db.prepare(`
     SELECT id, content
     FROM memory_drawers
     WHERE wing = ? AND profile_id IS NULL
     ORDER BY created_at DESC, id DESC
   `).all(wing) as { id: string; content: string }[]
-  if ((rows[0]?.content ?? "") === content) {
+  if ((currentPalace ?? rows[0]?.content ?? "") === content) {
     return { changed: false, bytes: Buffer.byteLength(content) }
   }
 
   db.exec("BEGIN TRANSACTION")
   try {
+    upsertMutablePalaceNode(db, {
+      namespace: PALACE_NAMESPACE.config,
+      wing,
+      room: CONFIG_SOURCE_ROOM,
+      nodeKey: wing,
+      profileId: null,
+      subjectType: "config_wing",
+      subjectId: wing,
+      contentType: "application/json",
+      content,
+      now,
+    })
     if (rows.length > 0) {
       db.prepare(`
         UPDATE memory_drawers
@@ -460,11 +776,32 @@ export function appendActionLog(rootDir: string, action: string, details?: Recor
     INSERT INTO memory_drawers (id, profile_id, wing, room, memory_key, content, created_at)
     VALUES (?, NULL, 'LOG_ACTIONS', ?, ?, ?, ?)
   `).run(randomUUID(), ACTION_LOG_ROOM, "action", JSON.stringify(payload), now)
+  appendPalaceNode(db, {
+    namespace: PALACE_NAMESPACE.projectFacts,
+    wing: "LOG_ACTIONS",
+    room: ACTION_LOG_ROOM,
+    nodeKey: "action",
+    profileId: null,
+    subjectType: "action_log",
+    subjectId: action,
+    contentType: "application/json",
+    content: JSON.stringify(payload),
+    now,
+  })
 }
 
 export function readBootWing(rootDir: string, wing: BootWingName, profileId = "default"): string | null {
   ensureBootWings(rootDir, profileId)
   const db = getDb(rootDir)
+  const palaceContent = readLatestPalaceContent(db, {
+    namespace: PALACE_NAMESPACE.boot,
+    wing,
+    room: BOOTSTRAP_SOURCE_ROOM,
+    nodeKey: wing,
+    profileId,
+    includeGlobalFallback: true,
+  })
+  if (palaceContent !== null) return palaceContent
   const stmt = db.prepare(`
     SELECT content
     FROM memory_drawers
@@ -481,6 +818,13 @@ export function writeBootWing(rootDir: string, wing: BootWingName, content: stri
   ensureBootWings(rootDir, profileId)
   const db = getDb(rootDir)
   const now = new Date().toISOString()
+  const currentPalace = readLatestPalaceContent(db, {
+    namespace: PALACE_NAMESPACE.boot,
+    wing,
+    room: BOOTSTRAP_SOURCE_ROOM,
+    nodeKey: wing,
+    profileId,
+  })
   const rows = db.prepare(`
     SELECT id
     FROM memory_drawers
@@ -490,12 +834,24 @@ export function writeBootWing(rootDir: string, wing: BootWingName, content: stri
   const current = rows.length > 0
     ? db.prepare(`SELECT content FROM memory_drawers WHERE id = ?`).get(rows[0]!.id) as { content: string }
     : null
-  if ((current?.content ?? "") === content) {
+  if ((currentPalace ?? current?.content ?? "") === content) {
     return { changed: false, bytes: Buffer.byteLength(content) }
   }
 
   db.exec("BEGIN TRANSACTION")
   try {
+    upsertMutablePalaceNode(db, {
+      namespace: PALACE_NAMESPACE.boot,
+      wing,
+      room: BOOTSTRAP_SOURCE_ROOM,
+      nodeKey: wing,
+      profileId,
+      subjectType: "boot_wing",
+      subjectId: wing,
+      contentType: "text/markdown",
+      content,
+      now,
+    })
     if (rows.length > 0) {
       const deleteMemory = db.prepare(`DELETE FROM memory_drawers WHERE id = ?`)
       const deleteVec = db.prepare(`DELETE FROM vec_drawers WHERE id = ?`)
@@ -824,7 +1180,26 @@ export function appendMessage(rootDir: string, sessionId: string, role: "user" |
   db.exec("BEGIN TRANSACTION")
   try {
     const stmtMsg = db.prepare(`INSERT INTO messages (session_id, role, text, at) VALUES (?, ?, ?, ?)`)
-    stmtMsg.run(sessionId, role, text, now)
+    const messageResult = stmtMsg.run(sessionId, role, text, now)
+    const sessionRow = db.prepare(`SELECT profile_id FROM sessions WHERE id = ?`).get(sessionId) as { profile_id: string | null } | undefined
+    appendPalaceNode(db, {
+      namespace: PALACE_NAMESPACE.chatHistory,
+      wing: "messages",
+      room: sessionId,
+      nodeKey: String(messageResult.lastInsertRowid),
+      profileId: sessionRow?.profile_id ?? "default",
+      subjectType: "session_message",
+      subjectId: sessionId,
+      contentType: "application/json",
+      content: JSON.stringify({
+        legacyMessageId: messageResult.lastInsertRowid,
+        sessionId,
+        role,
+        text,
+        at: now,
+      }),
+      now,
+    })
 
     const stmtWorklog = db.prepare(`INSERT INTO worklog (session_id, type, summary, at) VALUES (?, ?, ?, ?)`)
     stmtWorklog.run(sessionId, "message", buildMessageSummary(role, text), now)
@@ -1138,6 +1513,18 @@ export async function fileMemory(rootDir: string, wing: string, room: string, co
   try {
     const stmt = db.prepare(`INSERT INTO memory_drawers (id, profile_id, wing, room, memory_key, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
     stmt.run(id, storedProfileId, normalizedWing, normalizedRoom, normalizedKey, content, now)
+    appendPalaceNode(db, {
+      namespace: PALACE_NAMESPACE.projectFacts,
+      wing: normalizedWing,
+      room: normalizedRoom,
+      nodeKey: normalizedKey,
+      profileId: storedProfileId,
+      subjectType: "memory_drawer",
+      subjectId: normalizedKey ?? normalizedRoom,
+      contentType: "text/plain",
+      content,
+      now,
+    })
     
     // Guardar vector matematico
     if (floatArray) {
