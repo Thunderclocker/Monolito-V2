@@ -11,6 +11,7 @@ export const CONFIG_WING_ORDER = [
   "CONF_CHANNELS",
   "CONF_WEBSEARCH",
   "CONF_MCP",
+  "CONF_POLICY",
 ] as const
 
 export type ConfigWingName = (typeof CONFIG_WING_ORDER)[number]
@@ -21,6 +22,44 @@ export type ConfigWingValueMap = {
   CONF_CHANNELS: ChannelsConfig
   CONF_WEBSEARCH: WebSearchConfig
   CONF_MCP: Record<string, ResolvedMcpServerConfig>
+  CONF_POLICY: PolicyConfig
+}
+
+export type PermissionMode = "default" | "acceptEdits" | "bypassPermissions"
+
+export type PermissionRule = {
+  tool?: string
+  action: "allow" | "deny" | "ask"
+  input?: string
+}
+
+export type HookMatcher = {
+  tool?: string
+  input?: string
+  session?: string
+  profile?: string
+}
+
+export type HookCommand = {
+  cmd: string
+}
+
+export type HookDefinition = {
+  matcher?: HookMatcher
+  commands: HookCommand[]
+}
+
+export type PolicyConfig = {
+  permissions: {
+    mode: PermissionMode
+    rules: PermissionRule[]
+  }
+  hooks: {
+    PreToolUse: HookDefinition[]
+    PostToolUse: HookDefinition[]
+    SessionStart: HookDefinition[]
+    SessionEnd: HookDefinition[]
+  }
 }
 
 export function createDefaultSystemConfig(): ModelSettings {
@@ -49,4 +88,19 @@ export const DEFAULT_CONFIG_WING_VALUES: ConfigWingValueMap = {
     provider: "default",
   },
   CONF_MCP: {},
+  CONF_POLICY: {
+    permissions: {
+      mode: "acceptEdits",
+      rules: [
+        { tool: "Bash", action: "allow", input: "git status*" },
+        { tool: "Bash", action: "allow", input: "npm test*" },
+      ],
+    },
+    hooks: {
+      PreToolUse: [],
+      PostToolUse: [],
+      SessionStart: [],
+      SessionEnd: [],
+    },
+  },
 }

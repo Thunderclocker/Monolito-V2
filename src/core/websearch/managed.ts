@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process"
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import { MONOLITO_ROOT } from "../system/root.ts"
@@ -11,6 +11,15 @@ export const SEARXNG_PORT = 8888
 export const SEARXNG_URL = `http://127.0.0.1:${SEARXNG_PORT}`
 export const SEARXNG_SETTINGS_DIR = join(MONOLITO_ROOT, "searxng")
 export const SEARXNG_SETTINGS_FILE = join(SEARXNG_SETTINGS_DIR, "settings.yml")
+const MANAGED_SEARXNG_SETTINGS = [
+  "use_default_settings: true",
+  "search:",
+  "  safe_search: 0",
+  "  formats:",
+  "    - html",
+  "    - json",
+  "",
+].join("\n")
 
 export type SearxngContainerInfo = {
   id: string
@@ -130,36 +139,9 @@ export function withManagedSearxngSettings(content: string) {
 
 export async function ensureSearxngSettingsFile(): Promise<{ ok: boolean; message?: string }> {
   mkdirSync(SEARXNG_SETTINGS_DIR, { recursive: true })
-  if (existsSync(SEARXNG_SETTINGS_FILE)) {
-    const current = readFileSync(SEARXNG_SETTINGS_FILE, "utf8")
-    const updated = withManagedSearxngSettings(current)
-    if (updated !== current) writeFileSync(SEARXNG_SETTINGS_FILE, updated, "utf8")
-    if (/^\s*-\s*json\s*$/m.test(updated) && /^\s*safe_search:\s*0\s*$/m.test(updated)) return { ok: true }
-  }
+  writeFileSync(SEARXNG_SETTINGS_FILE, MANAGED_SEARXNG_SETTINGS, "utf8")
+  return { ok: true }
 
-  const bootstrapContainer = `${SEARXNG_CONTAINER}-bootstrap`
-  let createdBootstrap = false
-  try {
-    const status = await getOurContainerStatus()
-    if (status === "not_found") {
-      await execFileAsync("docker", ["run", "-d", "--name", bootstrapContainer, "searxng/searxng:latest"], { timeout: 60_000 })
-      createdBootstrap = true
-      await new Promise(resolve => setTimeout(resolve, 3000))
-      await execFileAsync("docker", ["cp", `${bootstrapContainer}:/etc/searxng/settings.yml`, SEARXNG_SETTINGS_FILE], { timeout: 15_000 })
-    } else {
-      await execFileAsync("docker", ["cp", `${SEARXNG_CONTAINER}:/etc/searxng/settings.yml`, SEARXNG_SETTINGS_FILE], { timeout: 15_000 })
-    }
-    const updated = withManagedSearxngSettings(readFileSync(SEARXNG_SETTINGS_FILE, "utf8"))
-    writeFileSync(SEARXNG_SETTINGS_FILE, updated, "utf8")
-    return { ok: true }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    return { ok: false, message: `Could not prepare SearxNG settings.yml: ${msg}` }
-  } finally {
-    if (createdBootstrap) {
-      await execFileAsync("docker", ["rm", "-f", bootstrapContainer], { timeout: 15_000 }).catch(() => {})
-    }
-  }
 }
 
 export async function probeSearxngJsonApi() {

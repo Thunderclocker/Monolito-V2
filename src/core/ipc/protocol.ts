@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, existsSync, writeFileSync } from "node:fs"
+import { mkdirSync, readFileSync, existsSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { dirname, join } from "node:path"
 import { MONOLITO_ROOT } from "../system/root.ts"
@@ -169,32 +169,7 @@ export function ensureDirs(rootDir: string, profileId: string = "default") {
     }
   }
 
-  initDefaultFiles(paths)
-
   return paths
-}
-
-function initDefaultFiles(paths: ReturnType<typeof getPaths>) {
-  if (!existsSync(paths.envFile)) {
-    writeFileSync(paths.envFile, "# Monolito V2 Environment Secrets\n", "utf8")
-  }
-  const permissionsFile = join(paths.baseDir, "permissions.json")
-  if (!existsSync(permissionsFile)) {
-    writeFileSync(permissionsFile, `${JSON.stringify({
-      mode: "acceptEdits",
-      rules: [
-        { tool: "Bash", action: "allow", input: "git status*" },
-        { tool: "Bash", action: "allow", input: "npm test*" },
-      ],
-    }, null, 2)}\n`, "utf8")
-  }
-  const hooksFile = join(paths.baseDir, "hooks.json")
-  if (!existsSync(hooksFile)) {
-    writeFileSync(hooksFile, `${JSON.stringify({
-      PreToolUse: [],
-      PostToolUse: [],
-    }, null, 2)}\n`, "utf8")
-  }
 }
 
 export function readDaemonLock(rootDir: string): DaemonLock | null {

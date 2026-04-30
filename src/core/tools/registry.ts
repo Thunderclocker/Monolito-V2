@@ -4,6 +4,7 @@ import { promisify } from "node:util"
 import { createWriteStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { dirname, join, relative, resolve, sep } from "node:path"
 import { pathToFileURL } from "node:url"
+import { z, type ZodType } from "zod"
 import { ensureDirs, getPaths } from "../ipc/protocol.ts"
 import { MONOLITO_ROOT } from "../system/root.ts"
 import { type McpClient, createMcpClient, getDefaultMcpServers } from "../mcp/client.ts"
@@ -69,6 +70,81 @@ const MAX_EXEC_BUFFER = 4 * 1024 * 1024
 const TELEGRAM_AUDIO_FORMATS = new Set(["mp3", "m4a", "aac"])
 const TELEGRAM_VOICE_FORMATS = new Set(["ogg", "opus"])
 const TTS_RESPONSE_FORMATS = new Set(["mp3", "opus", "aac", "flac", "wav", "pcm"])
+
+const configWingZod = z.enum([...CONFIG_WING_ORDER] as [ConfigWingName, ...ConfigWingName[]])
+const bootWingZod = z.enum([...BOOT_WING_ORDER] as [string, ...string[]])
+const strictRecordZod = z.record(z.string(), z.unknown())
+const modelProfileZod = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  provider: z.enum(["minimax", "ollama", "openai_compatible", "anthropic_compatible"]),
+  baseUrl: z.string(),
+  apiKey: z.string(),
+  model: z.string().min(1),
+  active: z.boolean(),
+}).strict()
+const modelRegistryZod = z.object({
+  version: z.literal(1),
+  profiles: z.array(modelProfileZod),
+}).strict()
+const systemConfigZod = z.object({
+  modelConfig: z.object({
+    protocol: z.string().min(1),
+  }).strict(),
+  env: z.object({
+    ANTHROPIC_BASE_URL: z.string(),
+    ANTHROPIC_AUTH_TOKEN: z.string(),
+    ANTHROPIC_MODEL: z.string(),
+    API_TIMEOUT_MS: z.string(),
+    MAX_BUDGET_USD: z.string(),
+  }).strict(),
+}).strict()
+const webSearchConfigZod = z.object({
+  provider: z.enum(["default", "searxng"]),
+}).strict()
+const hookMatcherZod = z.object({
+  tool: z.string().optional(),
+  input: z.string().optional(),
+  session: z.string().optional(),
+  profile: z.string().optional(),
+}).strict()
+const hookDefinitionZod = z.object({
+  matcher: hookMatcherZod.optional(),
+  commands: z.array(z.object({ cmd: z.string().min(1) }).strict()),
+}).strict()
+const policyConfigZod = z.object({
+  permissions: z.object({
+    mode: z.enum(["default", "acceptEdits", "bypassPermissions"]),
+    rules: z.array(z.object({
+      tool: z.string().optional(),
+      action: z.enum(["allow", "deny", "ask"]),
+      input: z.string().optional(),
+    }).strict()),
+  }).strict(),
+  hooks: z.object({
+    PreToolUse: z.array(hookDefinitionZod),
+    PostToolUse: z.array(hookDefinitionZod),
+    SessionStart: z.array(hookDefinitionZod),
+    SessionEnd: z.array(hookDefinitionZod),
+  }).strict(),
+}).strict()
+const bootWriteInputZod = z.object({
+  wing: bootWingZod,
+  content: z.string(),
+}).strict()
+const manageConfigInputZod = z.object({
+  action: z.enum(["read", "write"]),
+  wing: configWingZod,
+  value: z.unknown().optional(),
+}).strict().superRefine((input, ctx) => {
+  if (input.action === "write" && input.value === undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["value"],
+      message: "value is required when action='write'",
+    })
+  }
+})
 
 function normalizeIntentText(value: string) {
   return value
@@ -446,12 +522,45 @@ function findStringOccurrences(content: string, needle: string) {
   return matches
 }
 
+function zodErrorMessage(error: unknown) {
+  if (error instanceof z.ZodError) {
+    return error.issues.map(issue => `${issue.path.join(".") || "input"}: ${issue.message}`).join("; ")
+  }
+  return error instanceof Error ? error.message : String(error)
+}
+
+function parseZod<T>(schema: ZodType<T>, value: unknown, label: string): T {
+  try {
+    return schema.parse(value)
+  } catch (error) {
+    throw new Error(`${label} failed validation: ${zodErrorMessage(error)}`)
+  }
+}
+
+function validateZod<T>(schema: ZodType<T>, value: unknown) {
+  const result = schema.safeParse(value)
+  return result.success ? null : zodErrorMessage(result.error)
+}
+
 function normalizeConfigWingValue(wing: ConfigWingName, value: unknown) {
   if (wing === "CONF_CHANNELS") {
+    parseZod(strictRecordZod, value, "CONF_CHANNELS")
     return normalizeChannelsConfigForWrite(value)
   }
-  if (wing === "CONF_MODELS" || wing === "CONF_SYSTEM" || wing === "CONF_WEBSEARCH") {
-    return coerceConfigRecord(value) ?? value
+  if (wing === "CONF_MODELS") {
+    return parseZod(modelRegistryZod, coerceConfigRecord(value) ?? value, "CONF_MODELS")
+  }
+  if (wing === "CONF_SYSTEM") {
+    return parseZod(systemConfigZod, coerceConfigRecord(value) ?? value, "CONF_SYSTEM")
+  }
+  if (wing === "CONF_WEBSEARCH") {
+    return parseZod(webSearchConfigZod, coerceConfigRecord(value) ?? value, "CONF_WEBSEARCH")
+  }
+  if (wing === "CONF_MCP") {
+    return parseZod(strictRecordZod, coerceConfigRecord(value) ?? value, "CONF_MCP")
+  }
+  if (wing === "CONF_POLICY") {
+    return parseZod(policyConfigZod, coerceConfigRecord(value) ?? value, "CONF_POLICY")
   }
   return value
 }
@@ -1953,9 +2062,11 @@ const tools: ToolDefinition[] = [
       additionalProperties: false,
     },
     concurrencySafe: false,
+    validate: input => validateZod(bootWriteInputZod, input),
     async run(input, context) {
-      const wing = requireString(input, "wing")
-      const content = requireString(input, "content")
+      const parsed = parseZod(bootWriteInputZod, input, "BootWrite input")
+      const wing = parsed.wing
+      const content = parsed.content
       if (!isBootWingName(wing)) throw new Error(`Unsupported BOOT wing: ${wing}`)
       const result = writeBootWing(context.rootDir, wing, content, context.profileId ?? "default")
       return { wing, ok: true, changed: result.changed, bytes: result.bytes, profile: context.profileId ?? "default" }
@@ -2951,13 +3062,15 @@ const tools: ToolDefinition[] = [
       additionalProperties: false,
     },
     concurrencySafe: false,
+    validate: input => validateZod(manageConfigInputZod, input),
     async run(input, context) {
-      const action = requireString(input, "action") as "read" | "write"
-      const wing = requireString(input, "wing") as ConfigWingName
+      const parsed = parseZod(manageConfigInputZod, input, "tool_manage_config input")
+      const action = parsed.action
+      const wing = parsed.wing
       if (action === "read") {
         return { wing, value: redactSensitiveValue(readConfigWing(context.rootDir, wing)) }
       }
-      const value = parseJsonStringValue(input.value)
+      const value = parseJsonStringValue(parsed.value)
       if (value === undefined) throw new Error("value is required when action='write'")
       const normalizedValue = normalizeConfigWingValue(wing, value)
       const result = writeConfigWing(context.rootDir, wing, normalizedValue as never)

@@ -4,6 +4,7 @@ export const PALACE_NAMESPACE = {
   boot: "BOOT_WING",
   config: "CONFIG_WING",
   chatHistory: "chat_history",
+  identity: "identity",
   projectFacts: "project_facts",
 } as const
 

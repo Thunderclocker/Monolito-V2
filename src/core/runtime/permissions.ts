@@ -1,50 +1,13 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs"
-import { dirname, join } from "node:path"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import { MONOLITO_ROOT } from "../system/root.ts"
 import { runBackgroundTextTask } from "./modelAdapterLite.ts"
 import { getTool } from "../tools/registry.ts"
+import { DEFAULT_CONFIG_WING_VALUES, type HookDefinition, type PermissionMode, type PermissionRule, type PolicyConfig } from "../config/configWings.ts"
+import { readConfigWing } from "../session/store.ts"
 
 const execFileAsync = promisify(execFile)
 
-export type PermissionMode = "default" | "acceptEdits" | "bypassPermissions"
-
 type HookDecision = "approve" | "allow" | "block" | "deny" | "continue"
-
-type PermissionRule = {
-  tool?: string
-  action: "allow" | "deny" | "ask"
-  input?: string
-}
-
-type HookMatcher = {
-  tool?: string
-  input?: string
-  session?: string
-  profile?: string
-}
-
-type HookCommand = {
-  cmd: string
-}
-
-type HookDefinition = {
-  matcher?: HookMatcher
-  commands: HookCommand[]
-}
-
-type PermissionsFile = {
-  mode?: PermissionMode
-  rules?: PermissionRule[]
-}
-
-type HooksFile = {
-  PreToolUse?: HookDefinition[]
-  PostToolUse?: HookDefinition[]
-  SessionStart?: HookDefinition[]
-  SessionEnd?: HookDefinition[]
-}
 
 export type PermissionContext = {
   rootDir: string
@@ -96,45 +59,42 @@ const DEFAULT_SAFE_BASH_PREFIXES = [
   "journalctl -n",
 ]
 
-function getPermissionsPath(rootDir?: string) {
-  void rootDir
-  return join(MONOLITO_ROOT, "permissions.json")
-}
-
-function getHooksPath(rootDir?: string) {
-  void rootDir
-  return join(MONOLITO_ROOT, "hooks.json")
-}
-
 export function ensurePermissionFiles(rootDir?: string) {
-  for (const path of [getPermissionsPath(rootDir), getHooksPath(rootDir)]) {
-    mkdirSync(dirname(path), { recursive: true })
-  }
+  void rootDir
 }
 
-function readJsonFile<T>(path: string, fallback: T): T {
-  try {
-    return JSON.parse(readFileSync(path, "utf8")) as T
-  } catch {
-    return fallback
-  }
-}
-
-function readPermissionsConfig(rootDir?: string): Required<PermissionsFile> {
-  ensurePermissionFiles(rootDir)
-  const raw = readJsonFile<PermissionsFile>(getPermissionsPath(rootDir), {})
-  const mode: PermissionMode = raw.mode === "default" || raw.mode === "acceptEdits" || raw.mode === "bypassPermissions"
-    ? raw.mode
-    : "acceptEdits"
+function normalizePolicyConfig(raw: unknown): PolicyConfig {
+  const defaults = DEFAULT_CONFIG_WING_VALUES.CONF_POLICY
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return defaults
+  const record = raw as Partial<PolicyConfig>
+  const permissions = record.permissions && typeof record.permissions === "object" && !Array.isArray(record.permissions)
+    ? record.permissions
+    : defaults.permissions
+  const hooks = record.hooks && typeof record.hooks === "object" && !Array.isArray(record.hooks)
+    ? record.hooks
+    : defaults.hooks
+  const mode: PermissionMode = permissions.mode === "default" || permissions.mode === "acceptEdits" || permissions.mode === "bypassPermissions"
+    ? permissions.mode
+    : defaults.permissions.mode
   return {
-    mode,
-    rules: Array.isArray(raw.rules) ? raw.rules.filter(rule => rule && typeof rule.action === "string") : [],
+    permissions: {
+      mode,
+      rules: Array.isArray(permissions.rules)
+        ? permissions.rules.filter(rule => rule && typeof rule.action === "string")
+        : defaults.permissions.rules,
+    },
+    hooks: {
+      PreToolUse: Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : [],
+      PostToolUse: Array.isArray(hooks.PostToolUse) ? hooks.PostToolUse : [],
+      SessionStart: Array.isArray(hooks.SessionStart) ? hooks.SessionStart : [],
+      SessionEnd: Array.isArray(hooks.SessionEnd) ? hooks.SessionEnd : [],
+    },
   }
 }
 
-function readHooksConfig(rootDir?: string): HooksFile {
+function readPolicyConfig(rootDir: string): PolicyConfig {
   ensurePermissionFiles(rootDir)
-  return readJsonFile<HooksFile>(getHooksPath(rootDir), {})
+  return normalizePolicyConfig(readConfigWing(rootDir, "CONF_POLICY"))
 }
 
 function globToRegExp(glob: string) {
@@ -366,28 +326,27 @@ async function runHookCommands(
 }
 
 export async function checkToolPermission(toolName: string, input: Record<string, unknown>, context: PermissionContext): Promise<PermissionCheckResult> {
-  const permissions = readPermissionsConfig(context.rootDir)
-  const hooks = readHooksConfig(context.rootDir)
-  const hookDecision = await runHookCommands("PreToolUse", hooks.PreToolUse, toolName, input, context)
+  const policy = readPolicyConfig(context.rootDir)
+  const hookDecision = await runHookCommands("PreToolUse", policy.hooks.PreToolUse, toolName, input, context)
   if (hookDecision) return hookDecision
 
-  const ruleDecision = evaluateRules(toolName, input, permissions.rules)
+  const ruleDecision = evaluateRules(toolName, input, policy.permissions.rules)
   if (ruleDecision?.behavior === "ask") {
     return await evaluateSemanticPermission(toolName, input, context)
   }
   if (ruleDecision) return ruleDecision
 
-  return evaluateMode(permissions.mode, toolName, input)
+  return evaluateMode(policy.permissions.mode, toolName, input)
 }
 
 export async function runPostToolHooks(toolName: string, input: Record<string, unknown>, context: PermissionContext, output: unknown) {
-  const hooks = readHooksConfig(context.rootDir)
-  await runHookCommands("PostToolUse", hooks.PostToolUse, toolName, input, context, output)
+  const policy = readPolicyConfig(context.rootDir)
+  await runHookCommands("PostToolUse", policy.hooks.PostToolUse, toolName, input, context, output)
 }
 
 export async function runLifecycleHooks(event: "SessionStart" | "SessionEnd", context: PermissionContext) {
-  const hooks = readHooksConfig(context.rootDir)
-  const targetHooks = hooks[event]
+  const policy = readPolicyConfig(context.rootDir)
+  const targetHooks = policy.hooks[event]
   if (!targetHooks || targetHooks.length === 0) return
   await runHookCommands(event, targetHooks, "System", {}, context)
 }

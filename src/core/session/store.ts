@@ -302,13 +302,6 @@ function ensureKernelSeededDb(db: Database.Database, profileId = "default") {
     for (const wing of BOOT_WING_ORDER) {
       const existing = existingStmt.get(PALACE_NAMESPACE.boot, profileScope, wing, wing) as { count: number }
       if (existing.count === 0) {
-        const legacy = db.prepare(`
-          SELECT content
-          FROM memory_drawers
-          WHERE wing = ? AND profile_id = ?
-          ORDER BY created_at DESC, id DESC
-          LIMIT 1
-        `).get(wing, profileId) as { content: string } | undefined
         upsertMutablePalaceNode(db, {
           namespace: PALACE_NAMESPACE.boot,
           wing,
@@ -318,7 +311,7 @@ function ensureKernelSeededDb(db: Database.Database, profileId = "default") {
           subjectType: "boot_wing",
           subjectId: wing,
           contentType: "text/markdown",
-          content: legacy?.content ?? DEFAULT_BOOT_WING_CONTENT[wing],
+          content: DEFAULT_BOOT_WING_CONTENT[wing],
           now,
         })
       }
@@ -326,13 +319,6 @@ function ensureKernelSeededDb(db: Database.Database, profileId = "default") {
     for (const wing of CONFIG_WING_ORDER) {
       const existing = existingStmt.get(PALACE_NAMESPACE.config, GLOBAL_PROFILE_SCOPE, wing, wing) as { count: number }
       if (existing.count === 0) {
-        const legacy = db.prepare(`
-          SELECT content
-          FROM memory_drawers
-          WHERE wing = ? AND profile_id IS NULL
-          ORDER BY created_at DESC, id DESC
-          LIMIT 1
-        `).get(wing) as { content: string } | undefined
         upsertMutablePalaceNode(db, {
           namespace: PALACE_NAMESPACE.config,
           wing,
@@ -342,7 +328,7 @@ function ensureKernelSeededDb(db: Database.Database, profileId = "default") {
           subjectType: "config_wing",
           subjectId: wing,
           contentType: "application/json",
-          content: legacy?.content ?? JSON.stringify(DEFAULT_CONFIG_WING_VALUES[wing], null, 2),
+          content: JSON.stringify(DEFAULT_CONFIG_WING_VALUES[wing], null, 2),
           now,
         })
       }
@@ -562,112 +548,12 @@ export function ensureKernelSeeded(rootDir: string, profileId = "default") {
 
 export function ensureBootWings(rootDir: string, profileId = "default") {
   const db = getDb(rootDir)
-  const now = new Date().toISOString()
   ensureKernelSeededDb(db, profileId)
-  const countStmt = db.prepare(`
-    SELECT COUNT(*) as count
-    FROM memory_drawers
-    WHERE wing = ? AND profile_id = ?
-  `)
-  const insertStmt = db.prepare(`
-    INSERT INTO memory_drawers (id, profile_id, wing, room, memory_key, content, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `)
-  const latestStmt = db.prepare(`
-    SELECT id, content
-    FROM memory_drawers
-    WHERE wing = ? AND profile_id = ?
-    ORDER BY created_at DESC, id DESC
-    LIMIT 1
-  `)
-  const deleteStmt = db.prepare(`DELETE FROM memory_drawers WHERE id = ?`)
-  const deleteVecStmt = db.prepare(`DELETE FROM vec_drawers WHERE id = ?`)
-
-  const legacyBootBootstrapTemplate = "# BOOT_BOOTSTRAP - First Run Ritual\n\nHello. You just came online in a brand new workspace.\n\n## Goal\nStart a short, natural onboarding conversation and learn:\n- Who are you?\n- What should the user call you?\n- What kind of agent are you?\n- What tone or vibe should you have?\n- Who is the user?\n- How should you address them?\n- Any optional notes like timezone, pronouns, or preferences?\n\n## Style\n- Do not interrogate.\n- Ask one short question at a time.\n- Offer 3-5 suggestions when the user is unsure.\n- Keep the exchange warm, concise, and practical.\n\n## Persist what you learn\nOnce details are confirmed, update:\n- BOOT_IDENTITY with your name, creature, vibe, and emoji.\n- BOOT_USER with the user's profile and preferred address.\n- BOOT_SOUL with any durable behavior preferences that came out of onboarding.\n\n## Completion\nWhen onboarding is finished, replace this content with a one-line completion note such as:\nBootstrap completed.\n"
-  const legacyBootToolsImagePolicy = "# BOOT_TOOLS - Convenciones de Herramientas\n\n- Usa herramientas BOOT para el contexto determinista de arranque.\n- Usa herramientas de memoria para memoria estructurada durable.\n- Usa Bash para estado local actual fuera del contexto bootstrap protegido.\n- Para búsquedas de imágenes: 1) Usá ImageSearch. 2) Validá empíricamente la URL ganadora con AnalyzeImage. 3) Usá QuerySessionStatus para verificar tu ID de sesión actual. Si tu sesión empieza con 'telegram-', extraé el número de chat y enviá la imagen nativamente usando TelegramSendPhoto pasándole el 'local_path' devuelto por AnalyzeImage. NUNCA respondas con la URL cruda en Telegram.\n- CUALQUIER procesamiento o análisis de imágenes (incluso una sola) DEBE delegarse incondicionalmente usando delegate_background_task.\n"
-
-  db.exec("BEGIN TRANSACTION")
-  try {
-    for (const wing of BOOT_WING_ORDER) {
-      const existing = countStmt.get(wing, profileId) as { count: number }
-      if (existing.count === 0) {
-        insertStmt.run(randomUUID(), profileId, wing, BOOTSTRAP_SOURCE_ROOM, wing, DEFAULT_BOOT_WING_CONTENT[wing], now)
-        upsertMutablePalaceNode(db, {
-          namespace: PALACE_NAMESPACE.boot,
-          wing,
-          room: BOOTSTRAP_SOURCE_ROOM,
-          nodeKey: wing,
-          profileId,
-          subjectType: "boot_wing",
-          subjectId: wing,
-          contentType: "text/markdown",
-          content: DEFAULT_BOOT_WING_CONTENT[wing],
-          now,
-        })
-        continue
-      }
-      if (wing === "BOOT_BOOTSTRAP") {
-        const latest = latestStmt.get(wing, profileId) as { id: string; content: string } | undefined
-        if (latest && latest.content === legacyBootBootstrapTemplate) {
-          deleteVecStmt.run(latest.id)
-          deleteStmt.run(latest.id)
-          insertStmt.run(randomUUID(), profileId, wing, BOOTSTRAP_SOURCE_ROOM, wing, DEFAULT_BOOT_WING_CONTENT[wing], now)
-        }
-      }
-      if (wing === "BOOT_TOOLS") {
-        const latest = latestStmt.get(wing, profileId) as { id: string; content: string } | undefined
-        if (latest && latest.content === legacyBootToolsImagePolicy) {
-          deleteVecStmt.run(latest.id)
-          deleteStmt.run(latest.id)
-          insertStmt.run(randomUUID(), profileId, wing, BOOTSTRAP_SOURCE_ROOM, wing, DEFAULT_BOOT_WING_CONTENT[wing], now)
-        }
-      }
-    }
-    db.exec("COMMIT")
-  } catch (error) {
-    db.exec("ROLLBACK")
-    throw error
-  }
 }
 
 export function ensureConfigWings(rootDir: string) {
   const db = getDb(rootDir)
-  const now = new Date().toISOString()
   ensureKernelSeededDb(db, "default")
-  const countStmt = db.prepare(`
-    SELECT COUNT(*) as count
-    FROM memory_drawers
-    WHERE wing = ? AND profile_id IS NULL
-  `)
-  const insertStmt = db.prepare(`
-    INSERT INTO memory_drawers (id, profile_id, wing, room, memory_key, content, created_at)
-    VALUES (?, NULL, ?, ?, ?, ?, ?)
-  `)
-
-  db.exec("BEGIN TRANSACTION")
-  try {
-    for (const wing of CONFIG_WING_ORDER) {
-      const existing = countStmt.get(wing) as { count: number }
-      if (existing.count > 0) continue
-      insertStmt.run(randomUUID(), wing, CONFIG_SOURCE_ROOM, wing, JSON.stringify(DEFAULT_CONFIG_WING_VALUES[wing], null, 2), now)
-      upsertMutablePalaceNode(db, {
-        namespace: PALACE_NAMESPACE.config,
-        wing,
-        room: CONFIG_SOURCE_ROOM,
-        nodeKey: wing,
-        profileId: null,
-        subjectType: "config_wing",
-        subjectId: wing,
-        contentType: "application/json",
-        content: JSON.stringify(DEFAULT_CONFIG_WING_VALUES[wing], null, 2),
-        now,
-      })
-    }
-    db.exec("COMMIT")
-  } catch (error) {
-    db.exec("ROLLBACK")
-    throw error
-  }
 }
 
 export function readConfigWing<T extends ConfigWingName>(rootDir: string, wing: T): ConfigWingValueMap[T] {
@@ -680,25 +566,11 @@ export function readConfigWing<T extends ConfigWingName>(rootDir: string, wing: 
     nodeKey: wing,
     profileId: null,
   })
-  if (palaceContent) {
-    try {
-      return JSON.parse(palaceContent) as ConfigWingValueMap[T]
-    } catch {
-      return DEFAULT_CONFIG_WING_VALUES[wing]
-    }
-  }
-  const row = db.prepare(`
-    SELECT content
-    FROM memory_drawers
-    WHERE wing = ? AND profile_id IS NULL
-    ORDER BY created_at DESC, id DESC
-    LIMIT 1
-  `).get(wing) as { content: string } | undefined
-  if (!row?.content) return DEFAULT_CONFIG_WING_VALUES[wing]
+  if (palaceContent === null) throw new Error(`CONFIG wing ${wing} not found in SQLite Palace kernel`)
   try {
-    return JSON.parse(row.content) as ConfigWingValueMap[T]
-  } catch {
-    return DEFAULT_CONFIG_WING_VALUES[wing]
+    return JSON.parse(palaceContent) as ConfigWingValueMap[T]
+  } catch (error) {
+    throw new Error(`CONFIG wing ${wing} contains invalid JSON in SQLite Palace kernel: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
 
@@ -714,13 +586,7 @@ export function writeConfigWing<T extends ConfigWingName>(rootDir: string, wing:
     nodeKey: wing,
     profileId: null,
   })
-  const rows = db.prepare(`
-    SELECT id, content
-    FROM memory_drawers
-    WHERE wing = ? AND profile_id IS NULL
-    ORDER BY created_at DESC, id DESC
-  `).all(wing) as { id: string; content: string }[]
-  if ((currentPalace ?? rows[0]?.content ?? "") === content) {
+  if ((currentPalace ?? "") === content) {
     return { changed: false, bytes: Buffer.byteLength(content) }
   }
 
@@ -738,24 +604,6 @@ export function writeConfigWing<T extends ConfigWingName>(rootDir: string, wing:
       content,
       now,
     })
-    if (rows.length > 0) {
-      db.prepare(`
-        UPDATE memory_drawers
-        SET content = ?, created_at = ?, room = ?, memory_key = ?
-        WHERE id = ?
-      `).run(content, now, CONFIG_SOURCE_ROOM, wing, rows[0]!.id)
-      const deleteMemory = db.prepare(`DELETE FROM memory_drawers WHERE id = ?`)
-      const deleteVec = db.prepare(`DELETE FROM vec_drawers WHERE id = ?`)
-      for (const row of rows.slice(1)) {
-        deleteVec.run(row.id)
-        deleteMemory.run(row.id)
-      }
-    } else {
-      db.prepare(`
-        INSERT INTO memory_drawers (id, profile_id, wing, room, memory_key, content, created_at)
-        VALUES (?, NULL, ?, ?, ?, ?, ?)
-      `).run(randomUUID(), wing, CONFIG_SOURCE_ROOM, wing, content, now)
-    }
     db.exec("COMMIT")
   } catch (error) {
     db.exec("ROLLBACK")
@@ -802,16 +650,7 @@ export function readBootWing(rootDir: string, wing: BootWingName, profileId = "d
     includeGlobalFallback: true,
   })
   if (palaceContent !== null) return palaceContent
-  const stmt = db.prepare(`
-    SELECT content
-    FROM memory_drawers
-    WHERE wing = ?
-      AND (profile_id = ? OR profile_id IS NULL)
-    ORDER BY CASE WHEN profile_id = ? THEN 0 ELSE 1 END ASC, created_at DESC, id DESC
-    LIMIT 1
-  `)
-  const row = stmt.get(wing, profileId, profileId) as { content: string } | undefined
-  return row?.content ?? null
+  throw new Error(`BOOT wing ${wing} not found in SQLite Palace kernel for profile ${profileId}`)
 }
 
 export function writeBootWing(rootDir: string, wing: BootWingName, content: string, profileId = "default") {
@@ -825,16 +664,7 @@ export function writeBootWing(rootDir: string, wing: BootWingName, content: stri
     nodeKey: wing,
     profileId,
   })
-  const rows = db.prepare(`
-    SELECT id
-    FROM memory_drawers
-    WHERE wing = ? AND profile_id = ?
-    ORDER BY created_at DESC, id DESC
-  `).all(wing, profileId) as { id: string }[]
-  const current = rows.length > 0
-    ? db.prepare(`SELECT content FROM memory_drawers WHERE id = ?`).get(rows[0]!.id) as { content: string }
-    : null
-  if ((currentPalace ?? current?.content ?? "") === content) {
+  if ((currentPalace ?? "") === content) {
     return { changed: false, bytes: Buffer.byteLength(content) }
   }
 
@@ -852,18 +682,6 @@ export function writeBootWing(rootDir: string, wing: BootWingName, content: stri
       content,
       now,
     })
-    if (rows.length > 0) {
-      const deleteMemory = db.prepare(`DELETE FROM memory_drawers WHERE id = ?`)
-      const deleteVec = db.prepare(`DELETE FROM vec_drawers WHERE id = ?`)
-      for (const row of rows) {
-        deleteVec.run(row.id)
-        deleteMemory.run(row.id)
-      }
-    }
-    db.prepare(`
-      INSERT INTO memory_drawers (id, profile_id, wing, room, memory_key, content, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(randomUUID(), profileId, wing, BOOTSTRAP_SOURCE_ROOM, wing, content, now)
     db.exec("COMMIT")
   } catch (error) {
     db.exec("ROLLBACK")
@@ -874,6 +692,25 @@ export function writeBootWing(rootDir: string, wing: BootWingName, content: stri
 
 export function readCanonicalMemory(rootDir: string, profileId = "default"): CanonicalMemoryState {
   const db = getDb(rootDir)
+  const palaceRows = db.prepare(`
+    SELECT node_key, content
+    FROM palace_nodes
+    WHERE namespace = ?
+      AND profile_scope IN (?, ?)
+      AND superseded_at IS NULL
+      AND node_key IS NOT NULL
+    ORDER BY CASE WHEN profile_scope = ? THEN 0 ELSE 1 END ASC, updated_at DESC, created_at DESC, id DESC
+  `).all(PALACE_NAMESPACE.identity, palaceProfileScope(profileId), GLOBAL_PROFILE_SCOPE, palaceProfileScope(profileId)) as Array<{ node_key: string; content: string }>
+
+  const state: CanonicalMemoryState = {}
+  for (const row of palaceRows) {
+    const key = row.node_key as CanonicalMemorySlot
+    if (!(key in CANONICAL_SLOT_META)) continue
+    if (state[key]) continue
+    const value = sanitizeCanonicalValue(row.content)
+    if (value) state[key] = value
+  }
+
   const rows = db.prepare(`
     SELECT memory_key, content
     FROM memory_drawers
@@ -883,7 +720,6 @@ export function readCanonicalMemory(rootDir: string, profileId = "default"): Can
     ORDER BY CASE WHEN profile_id = ? THEN 0 ELSE 1 END ASC, created_at DESC, id DESC
   `).all(CANONICAL_WING, profileId, profileId) as Array<{ memory_key: string; content: string }>
 
-  const state: CanonicalMemoryState = {}
   for (const row of rows) {
     const key = row.memory_key as CanonicalMemorySlot
     if (!(key in CANONICAL_SLOT_META)) continue
@@ -942,8 +778,15 @@ export async function writeCanonicalMemory(
     WHERE wing = ? AND room = ? AND memory_key = ? AND profile_id = ?
     ORDER BY created_at DESC, id DESC
   `).all(CANONICAL_WING, meta.room, slot, profileId) as Array<{ id: string; content: string }>
+  const currentPalace = readLatestPalaceContent(db, {
+    namespace: PALACE_NAMESPACE.identity,
+    wing: CANONICAL_WING,
+    room: meta.room,
+    nodeKey: slot,
+    profileId,
+  })
 
-  if (sanitizeCanonicalValue(existingRows[0]?.content ?? null) === normalized) {
+  if (sanitizeCanonicalValue(currentPalace ?? existingRows[0]?.content ?? null) === normalized) {
     return { changed: false, bytes: Buffer.byteLength(normalized), slot, value: normalized }
   }
 
@@ -957,6 +800,18 @@ export async function writeCanonicalMemory(
 
   db.exec("BEGIN TRANSACTION")
   try {
+    upsertMutablePalaceNode(db, {
+      namespace: PALACE_NAMESPACE.identity,
+      wing: CANONICAL_WING,
+      room: meta.room,
+      nodeKey: slot,
+      profileId,
+      subjectType: "canonical_memory",
+      subjectId: slot,
+      contentType: "text/plain",
+      content: normalized,
+      now,
+    })
     if (existingRows.length > 0) {
       db.prepare(`
         UPDATE memory_drawers
@@ -1253,6 +1108,7 @@ export function resetSession(rootDir: string, sessionId: string, options?: { sum
 
 export function clearMemoryPalace(rootDir: string, profileId = "default") {
   const db = getDb(rootDir)
+  const now = new Date().toISOString()
   const rows = db.prepare(`
     SELECT id
     FROM memory_drawers
@@ -1264,6 +1120,12 @@ export function clearMemoryPalace(rootDir: string, profileId = "default") {
     FROM knowledge_graph
     WHERE profile_id = ?
   `).get(profileId) as { count: number }
+  const palaceRows = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM palace_nodes
+    WHERE profile_scope = ?
+      AND namespace NOT IN (?, ?, ?)
+  `).get(palaceProfileScope(profileId), PALACE_NAMESPACE.config, PALACE_NAMESPACE.chatHistory, PALACE_NAMESPACE.boot) as { count: number }
 
   db.exec("BEGIN TRANSACTION")
   try {
@@ -1277,6 +1139,25 @@ export function clearMemoryPalace(rootDir: string, profileId = "default") {
         AND wing NOT LIKE 'CONF\\_%' ESCAPE '\\'
     `).run(profileId)
     db.prepare(`DELETE FROM knowledge_graph WHERE profile_id = ?`).run(profileId)
+    db.prepare(`
+      DELETE FROM palace_nodes
+      WHERE profile_scope = ?
+        AND namespace NOT IN (?, ?, ?)
+    `).run(palaceProfileScope(profileId), PALACE_NAMESPACE.config, PALACE_NAMESPACE.chatHistory, PALACE_NAMESPACE.boot)
+    for (const wing of BOOT_WING_ORDER) {
+      upsertMutablePalaceNode(db, {
+        namespace: PALACE_NAMESPACE.boot,
+        wing,
+        room: BOOTSTRAP_SOURCE_ROOM,
+        nodeKey: wing,
+        profileId,
+        subjectType: "boot_wing",
+        subjectId: wing,
+        contentType: "text/markdown",
+        content: DEFAULT_BOOT_WING_CONTENT[wing],
+        now,
+      })
+    }
     db.exec("COMMIT")
   } catch (err) {
     db.exec("ROLLBACK")
@@ -1287,6 +1168,7 @@ export function clearMemoryPalace(rootDir: string, profileId = "default") {
   return {
     memoryRowsDeleted: rows.length,
     graphRowsDeleted: graphRows.count,
+    palaceRowsDeleted: palaceRows.count,
   }
 }
 

@@ -108,6 +108,15 @@ const SEARXNG_PORT = 8888
 const SEARXNG_URL = `http://127.0.0.1:${SEARXNG_PORT}`
 const SEARXNG_SETTINGS_DIR = join(MONOLITO_ROOT, "searxng")
 const SEARXNG_SETTINGS_FILE = join(SEARXNG_SETTINGS_DIR, "settings.yml")
+const MANAGED_SEARXNG_SETTINGS = [
+  "use_default_settings: true",
+  "search:",
+  "  safe_search: 0",
+  "  formats:",
+  "    - html",
+  "    - json",
+  "",
+].join("\n")
 const TELEGRAM_TYPING_REFRESH_MS = 4_000
 const TURN_HARD_TIMEOUT_MS = 95_000
 const COMMAND_REPAIR_MAX_ATTEMPTS = 3
@@ -216,36 +225,8 @@ function withManagedSearxngSettings(content: string) {
 
 async function ensureSearxngSettingsFile(): Promise<{ ok: boolean; message?: string }> {
   mkdirSync(SEARXNG_SETTINGS_DIR, { recursive: true })
-  if (existsSync(SEARXNG_SETTINGS_FILE)) {
-    const current = readFileSync(SEARXNG_SETTINGS_FILE, "utf8")
-    const updated = withManagedSearxngSettings(current)
-    if (updated !== current) writeFileSync(SEARXNG_SETTINGS_FILE, updated, "utf8")
-    if (/^\s*-\s*json\s*$/m.test(updated) && /^\s*safe_search:\s*0\s*$/m.test(updated)) return { ok: true }
-  }
-
-  const bootstrapContainer = `${SEARXNG_CONTAINER}-bootstrap`
-  let createdBootstrap = false
-  try {
-    const status = await getSearxngStatus()
-    if (status === "not_found") {
-      await execFileAsync("docker", ["run", "-d", "--name", bootstrapContainer, "searxng/searxng:latest"], { timeout: 60_000 })
-      createdBootstrap = true
-      await new Promise(resolve => setTimeout(resolve, 3000))
-      await execFileAsync("docker", ["cp", `${bootstrapContainer}:/etc/searxng/settings.yml`, SEARXNG_SETTINGS_FILE], { timeout: 15_000 })
-    } else {
-      await execFileAsync("docker", ["cp", `${SEARXNG_CONTAINER}:/etc/searxng/settings.yml`, SEARXNG_SETTINGS_FILE], { timeout: 15_000 })
-    }
-    const updated = withManagedSearxngSettings(readFileSync(SEARXNG_SETTINGS_FILE, "utf8"))
-    writeFileSync(SEARXNG_SETTINGS_FILE, updated, "utf8")
-    return { ok: true }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    return { ok: false, message: `Could not prepare SearxNG settings.yml: ${message}` }
-  } finally {
-    if (createdBootstrap) {
-      await execFileAsync("docker", ["rm", "-f", bootstrapContainer], { timeout: 15_000 }).catch(() => {})
-    }
-  }
+  writeFileSync(SEARXNG_SETTINGS_FILE, MANAGED_SEARXNG_SETTINGS, "utf8")
+  return { ok: true }
 }
 
 async function probeSearxngJsonApi() {
@@ -2504,5 +2485,3 @@ function clipForWorklog(value: string, maxChars = 180) {
   if (trimmed.length <= maxChars) return trimmed
   return `${trimmed.slice(0, maxChars).trimEnd()}...`
 }
-
-
