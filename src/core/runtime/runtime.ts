@@ -37,7 +37,7 @@ import {
   hasActiveWorkersForSession,
 } from "../session/store.ts"
 import { getTool, listTools, type ToolContext } from "../tools/registry.ts"
-import { getEffectiveModelConfig, runAssistantTurn, runBackgroundTextTask } from "./modelAdapterLite.ts"
+import { getEffectiveModelConfig, runAgentLoop, runAssistantTurn, runBackgroundTextTask, type AgentLoopEvent, type AssistantTurnResult } from "./modelAdapterLite.ts"
 import {
   applyModelSettingsToEnv,
   draftToSettings,
@@ -100,6 +100,57 @@ type PendingSessionInput =
 type UpdateRestartState = {
   currentHead: string
   stashLabel: string
+}
+
+type AgentLoopEventQueue = {
+  push: (event: AgentLoopEvent) => void
+  close: () => void
+  fail: (error: unknown) => void
+  iterator: AsyncGenerator<AgentLoopEvent>
+}
+
+function createAgentLoopEventQueue(): AgentLoopEventQueue {
+  const events: AgentLoopEvent[] = []
+  let closed = false
+  let failure: unknown = null
+  let notify: (() => void) | null = null
+
+  async function* iterator() {
+    while (true) {
+      if (events.length > 0) {
+        yield events.shift()!
+        continue
+      }
+      if (failure) throw failure
+      if (closed) return
+      await new Promise<void>(resolve => {
+        notify = resolve
+      })
+      notify = null
+    }
+  }
+
+  const wake = () => {
+    notify?.()
+  }
+
+  return {
+    push(event) {
+      if (closed) return
+      events.push(event)
+      wake()
+    },
+    close() {
+      closed = true
+      wake()
+    },
+    fail(error) {
+      failure = error
+      closed = true
+      wake()
+    },
+    iterator: iterator(),
+  }
 }
 
 const execFileAsync = promisify(execFile)
@@ -1229,7 +1280,21 @@ export class MonolitoV2Runtime {
     return tailEvents(this.rootDir, sessionId, lines)
   }
 
-  async processMessage(sessionId: string, text: string) {
+  processMessageEvents(sessionId: string, text: string): AsyncGenerator<AgentLoopEvent> {
+    const queue = createAgentLoopEventQueue()
+    void this.processMessage(sessionId, text, { onAgentLoopEvent: event => queue.push(event) })
+      .then(() => queue.close())
+      .catch(error => {
+        if (error instanceof Error && error.name === "AbortError") {
+          queue.close()
+          return
+        }
+        queue.fail(error)
+      })
+    return queue.iterator
+  }
+
+  async processMessage(sessionId: string, text: string, options?: { onAgentLoopEvent?: (event: AgentLoopEvent) => void }) {
     if (this.activeSessions.has(sessionId)) {
       const queue = this.pendingUserMessages.get(sessionId) ?? []
       queue.push({ kind: "message", text })
@@ -1257,7 +1322,7 @@ export class MonolitoV2Runtime {
       this.emit({ type: "message.received", sessionId, role: "user", text: userText })
       await this.transitionState(sessionId, "running")
 
-      await this.runTurn(sessionId, userText, profileId)
+      await this.runTurn(sessionId, userText, profileId, { onAgentLoopEvent: options?.onAgentLoopEvent })
     } finally {
       this.releaseSessionLock(sessionId)
     }
@@ -1289,7 +1354,26 @@ export class MonolitoV2Runtime {
     }
   }
 
-  async runTurn(sessionId: string, lastUserText: string, profileId = "default", options?: { logger?: Logger; cwd?: string; traceId?: string; maxTokens?: number }) {
+  private async consumeAgentLoop(
+    generator: AsyncGenerator<AgentLoopEvent, AssistantTurnResult>,
+    onEvent?: (event: AgentLoopEvent) => void,
+  ) {
+    let finalResult: AssistantTurnResult | null = null
+    while (true) {
+      const next = await generator.next()
+      if (next.done) {
+        finalResult = next.value
+        break
+      }
+      const event = next.value as AgentLoopEvent
+      onEvent?.(event)
+      if (event.type === "done") finalResult = event.result
+    }
+    if (!finalResult) throw new Error("Agent loop finished without a final result")
+    return finalResult
+  }
+
+  async runTurn(sessionId: string, lastUserText: string, profileId = "default", options?: { logger?: Logger; cwd?: string; traceId?: string; maxTokens?: number; onAgentLoopEvent?: (event: AgentLoopEvent) => void }) {
     const turnStartedAt = Date.now()
     const instanceLogger = options?.logger
     const effectiveCwd = options?.cwd ?? this.rootDir
@@ -1399,36 +1483,39 @@ export class MonolitoV2Runtime {
           Promise.resolve(getWorkspaceContext(this.rootDir, profileId, { isMainSession })),
         ])
         const webSearchConfig = readWebSearchConfig()
-        const turn = await runAssistantTurn(
-          preparedSession,
-          this.rootDir,
-          async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, abortSignal: abortController.signal, sessionId, orchestrator: this.orchestrator, runtime: this }, toolUseId, profileId),
-          {
-            rootDir: this.rootDir,
-            cwd: effectiveCwd,
-            abortSignal: abortController.signal,
-            traceId,
-            getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
-            profileId,
-            orchestrator: this.orchestrator,
-            logger: instanceLogger,
-          },
-          {
-            contextExtras: {
-              gitContext,
-              dateContext,
-              workspaceContext,
-              webSearchProvider: webSearchConfig.provider,
-              stallAlert: this.consumeStallAlert(sessionId),
-              activeTasks: this.orchestrator.getTaskSnapshot(sessionId).filter(t => t.status === "pending" || t.status === "running"),
-              taskNotifications: collectAllRecentTaskNotifications(preparedSession),
+        const turn = await this.consumeAgentLoop(
+          runAgentLoop(
+            preparedSession,
+            this.rootDir,
+            async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, abortSignal: abortController.signal, sessionId, orchestrator: this.orchestrator, runtime: this }, toolUseId, profileId),
+            {
+              rootDir: this.rootDir,
+              cwd: effectiveCwd,
+              abortSignal: abortController.signal,
+              traceId,
+              getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
+              profileId,
+              orchestrator: this.orchestrator,
+              logger: instanceLogger,
             },
-            costState: this.costState,
-            abortSignal: abortController.signal,
-            maxTokens: options?.maxTokens,
-            turnStartedAt,
-            maxTurnDurationMs: timeoutMs - 5_000,
-          },
+            {
+              contextExtras: {
+                gitContext,
+                dateContext,
+                workspaceContext,
+                webSearchProvider: webSearchConfig.provider,
+                stallAlert: this.consumeStallAlert(sessionId),
+                activeTasks: this.orchestrator.getTaskSnapshot(sessionId).filter(t => t.status === "pending" || t.status === "running"),
+                taskNotifications: collectAllRecentTaskNotifications(preparedSession),
+              },
+              costState: this.costState,
+              abortSignal: abortController.signal,
+              maxTokens: options?.maxTokens,
+              turnStartedAt,
+              maxTurnDurationMs: timeoutMs - 5_000,
+            },
+          ),
+          options?.onAgentLoopEvent,
         )
         if (turn.usage) {
           recordApiCall(

@@ -43,6 +43,18 @@ export type AssistantTurnResult = {
   }
 }
 
+export type AgentLoopRecoverableAction = "backoff" | "compact_context" | "reload_auth"
+
+export type AgentLoopEvent =
+  | { type: "setup"; sessionId: string; iteration: number; model: string; maxIterations: number; maxTurnDurationMs: number }
+  | { type: "model_invoke_start"; sessionId: string; iteration: number; model: string }
+  | { type: "model_stream"; sessionId: string; iteration: number; text: string }
+  | { type: "model_invoke_end"; sessionId: string; iteration: number; usage?: AssistantTurnResult["usage"]; toolCallCount: number }
+  | { type: "tool_execute_start"; sessionId: string; iteration: number; toolUseId?: string; tool: string; input: Record<string, unknown> }
+  | { type: "tool_execute_end"; sessionId: string; iteration: number; toolUseId?: string; tool: string; ok: boolean }
+  | { type: "recoverable_error"; sessionId: string; iteration: number; action: AgentLoopRecoverableAction; error: string; retryAfterMs?: number }
+  | { type: "done"; sessionId: string; result: AssistantTurnResult }
+
 type ContextExtras = {
   gitContext?: string | null
   dateContext?: string
@@ -392,6 +404,10 @@ async function callProviderWithRetry(config: ProviderConfig, prompt: ReturnType<
   }
 }
 
+async function callProviderOnce(config: ProviderConfig, prompt: ReturnType<typeof buildSystemPrompt>, messages: ConversationMessage[], abortSignal: AbortSignal | undefined, isSubAgent: boolean, maxTokens: number | undefined) {
+  return await callProvider(config, prompt, messages, abortSignal, isSubAgent, maxTokens)
+}
+
 export function getEffectiveModelConfig() {
   const activeProfile = getActiveProfile()
   if (activeProfile) {
@@ -409,6 +425,178 @@ export function getEffectiveModelConfig() {
     model: compactWhitespace(settings.env.ANTHROPIC_MODEL),
     provider: "anthropic_compatible" as ModelProvider,
   }
+}
+
+export async function* runAgentLoop(
+  session: SessionRecord,
+  rootDir: string,
+  executeTool: (tool: string, input: Record<string, unknown>, context: ToolContext, toolUseId?: string) => Promise<unknown>,
+  context: ToolContext,
+  options?: {
+    logger?: Logger
+    abortSignal?: AbortSignal
+    bootstrap?: WorkspaceBootstrapContext
+    systemPromptOverride?: string
+    maxIterations?: number
+    maxTurnDurationMs?: number
+    maxTokens?: number
+    costState?: CostState
+    contextExtras?: ContextExtras
+    turnStartedAt?: number
+  },
+): AsyncGenerator<AgentLoopEvent, AssistantTurnResult> {
+  const logger = getLogger(context, options?.logger)
+  const startedAt = options?.turnStartedAt ?? Date.now()
+  const maxIterations = options?.maxIterations ?? MAX_TURN_ITERATIONS
+  const maxTurnDurationMs = options?.maxTurnDurationMs ?? DEFAULT_MAX_TURN_DURATION_MS
+  let config = getEffectiveModelConfig()
+  const isSubAgent = session.id.startsWith("agent-")
+  let activeSession = session
+  let compacted = false
+  let usage: TurnUsage | undefined
+  const steps: AssistantTurnStep[] = []
+  const messages = sessionToMessages(session)
+  const prompt = buildSystemPrompt({ session: activeSession, rootDir, context, bootstrap: options?.bootstrap, extras: options?.contextExtras, systemPromptOverride: options?.systemPromptOverride })
+  let rateLimitAttempts = 0
+  let overloadAttempts = 0
+  let authAttempts = 0
+
+  for (let iteration = 1; iteration <= maxIterations; iteration++) {
+    enforceBudgetLimit(options?.costState, config.model)
+    yield { type: "setup", sessionId: session.id, iteration, model: config.model, maxIterations, maxTurnDurationMs }
+    if (options?.abortSignal?.aborted) {
+      const result = finalize("", steps, startedAt, iteration - 1, usage, undefined, "aborted")
+      yield { type: "done", sessionId: session.id, result }
+      return result
+    }
+    if (Date.now() - startedAt > maxTurnDurationMs) {
+      const result = finalize("", steps, startedAt, iteration - 1, usage, "Turn duration exceeded", "max_duration")
+      yield { type: "done", sessionId: session.id, result }
+      return result
+    }
+    try {
+      yield { type: "model_invoke_start", sessionId: session.id, iteration, model: config.model }
+      const response = await callProviderOnce(config, prompt, messages, options?.abortSignal, isSubAgent, options?.maxTokens)
+      enforceBudgetLimit(options?.costState, config.model, response.usage)
+      usage = sumUsage(usage, response.usage)
+      const loopUsage = response.usage ? {
+        inputTokens: response.usage.inputTokens,
+        outputTokens: response.usage.outputTokens,
+        totalTokens: (response.usage.inputTokens ?? 0) + (response.usage.outputTokens ?? 0),
+      } : undefined
+      if (response.text) yield { type: "model_stream", sessionId: session.id, iteration, text: redactSensitiveText(response.text) }
+      yield { type: "model_invoke_end", sessionId: session.id, iteration, usage: loopUsage, toolCallCount: response.toolCalls.length }
+      rateLimitAttempts = 0
+      overloadAttempts = 0
+      if (response.toolCalls.length === 0) {
+        const result = finalize(response.text, steps, startedAt, iteration, usage)
+        yield { type: "done", sessionId: session.id, result }
+        return result
+      }
+      const assistantMessage: ConversationMessage = { role: "assistant", content: response.text, toolCalls: response.toolCalls }
+      messages.push(assistantMessage)
+      for (const toolCall of response.toolCalls) {
+        steps.push({ type: "tool", id: toolCall.id, tool: toolCall.name, input: toolCall.input })
+      }
+
+      const indexedToolCalls = response.toolCalls.map((toolCall, index) => ({ toolCall, index }))
+      const safeToolCalls = indexedToolCalls.filter(({ toolCall }) => isToolConcurrencySafe(toolCall.name, toolCall.input))
+      const unsafeToolCalls = indexedToolCalls.filter(({ toolCall }) => !isToolConcurrencySafe(toolCall.name, toolCall.input))
+      const toolResults = new Array<{ role: "tool"; toolCallId: string; toolName: string; content: string }>(response.toolCalls.length)
+
+      for (const { toolCall } of safeToolCalls) {
+        yield { type: "tool_execute_start", sessionId: session.id, iteration, toolUseId: toolCall.id, tool: toolCall.name, input: toolCall.input }
+      }
+      const safeResults = await Promise.all(
+        safeToolCalls.map(async ({ toolCall, index }) => {
+          const result = await executeToolCall(toolCall, executeTool, context)
+          return {
+            index,
+            toolCall,
+            message: {
+              role: "tool" as const,
+              toolCallId: result.toolCall.id,
+              toolName: result.toolCall.name,
+              content: result.content,
+            },
+          }
+        }),
+      )
+      for (const result of safeResults) {
+        yield { type: "tool_execute_end", sessionId: session.id, iteration, toolUseId: result.toolCall.id, tool: result.toolCall.name, ok: !result.message.content.includes('status="error"') }
+        toolResults[result.index] = result.message
+      }
+
+      for (const { toolCall, index } of unsafeToolCalls) {
+        yield { type: "tool_execute_start", sessionId: session.id, iteration, toolUseId: toolCall.id, tool: toolCall.name, input: toolCall.input }
+        const result = await executeToolCall(toolCall, executeTool, context)
+        yield { type: "tool_execute_end", sessionId: session.id, iteration, toolUseId: toolCall.id, tool: toolCall.name, ok: !result.content.includes('status="error"') }
+        toolResults[index] = {
+          role: "tool",
+          toolCallId: result.toolCall.id,
+          toolName: result.toolCall.name,
+          content: result.content,
+        }
+      }
+
+      for (const toolResult of toolResults) {
+        if (!toolResult) continue
+        messages.push(toolResult)
+      }
+    } catch (error) {
+      if (options?.abortSignal?.aborted) {
+        const result = finalize("", steps, startedAt, Math.max(0, steps.length), usage, undefined, "aborted")
+        yield { type: "done", sessionId: session.id, result }
+        return result
+      }
+      if (error instanceof ContextOverflowError && !compacted) {
+        yield { type: "recoverable_error", sessionId: session.id, iteration, action: "compact_context", error: error.message }
+        compactSession(rootDir, session.id)
+        const refreshed = getSession(rootDir, session.id)
+        if (refreshed) {
+          activeSession = refreshed
+          messages.splice(0, messages.length, ...sessionToMessages(refreshed))
+        }
+        compacted = true
+        continue
+      }
+      if (isAuthError(error) && authAttempts === 0) {
+        authAttempts++
+        yield { type: "recoverable_error", sessionId: session.id, iteration, action: "reload_auth", error: error instanceof Error ? error.message : String(error) }
+        loadAndApplyModelSettings(process.env)
+        config = getEffectiveModelConfig()
+        continue
+      }
+      if (error instanceof RateLimitError) {
+        rateLimitAttempts++
+        overloadAttempts = 0
+        if (rateLimitAttempts <= MAX_RATE_LIMIT_RETRIES) {
+          const waitMs = error.retryAfterMs ?? Math.min(30_000, 1_000 * 2 ** (rateLimitAttempts - 1))
+          yield { type: "recoverable_error", sessionId: session.id, iteration, action: "backoff", error: error.message, retryAfterMs: waitMs }
+          await sleep(waitMs, options?.abortSignal)
+          continue
+        }
+      }
+      if (error instanceof ProviderOverloadedError || isRetriableNetworkError(error)) {
+        overloadAttempts++
+        if (overloadAttempts < MAX_OVERLOAD_RETRIES) {
+          const waitMs = Math.min(5_000, 750 * 2 ** (overloadAttempts - 1))
+          yield { type: "recoverable_error", sessionId: session.id, iteration, action: "backoff", error: error instanceof Error ? error.message : String(error), retryAfterMs: waitMs }
+          await sleep(waitMs, options?.abortSignal)
+          continue
+        }
+      }
+      if (error instanceof AbortError) throw error
+      logger.error("assistant turn failed", { error: error instanceof Error ? error.message : String(error), sessionId: session.id })
+      const message = error instanceof Error ? error.message : String(error)
+      const result = finalize(message, steps, startedAt, Math.min(maxIterations, steps.length + 1), usage, message)
+      yield { type: "done", sessionId: session.id, result }
+      return result
+    }
+  }
+  const result = finalize("", steps, startedAt, maxIterations, usage, "Max iterations reached", "max_iterations")
+  yield { type: "done", sessionId: session.id, result }
+  return result
 }
 
 export async function runAssistantTurn(
@@ -429,90 +617,18 @@ export async function runAssistantTurn(
     turnStartedAt?: number
   },
 ): Promise<AssistantTurnResult> {
-  const logger = getLogger(context, options?.logger)
-  const startedAt = options?.turnStartedAt ?? Date.now()
-  const maxIterations = options?.maxIterations ?? MAX_TURN_ITERATIONS
-  const maxTurnDurationMs = options?.maxTurnDurationMs ?? DEFAULT_MAX_TURN_DURATION_MS
-  const config = getEffectiveModelConfig()
-  const isSubAgent = session.id.startsWith("agent-")
-  let activeSession = session
-  let compacted = false
-  let usage: TurnUsage | undefined
-  const steps: AssistantTurnStep[] = []
-  const messages = sessionToMessages(session)
-  const prompt = buildSystemPrompt({ session: activeSession, rootDir, context, bootstrap: options?.bootstrap, extras: options?.contextExtras, systemPromptOverride: options?.systemPromptOverride })
-
-  for (let iteration = 1; iteration <= maxIterations; iteration++) {
-    enforceBudgetLimit(options?.costState, config.model)
-    if (options?.abortSignal?.aborted) return finalize("", steps, startedAt, iteration - 1, usage, undefined, "aborted")
-    if (Date.now() - startedAt > maxTurnDurationMs) return finalize("", steps, startedAt, iteration - 1, usage, "Turn duration exceeded", "max_duration")
-    try {
-      const response = await callProviderWithRetry(config, prompt, messages, options?.abortSignal, isSubAgent, options?.maxTokens)
-      enforceBudgetLimit(options?.costState, config.model, response.usage)
-      usage = sumUsage(usage, response.usage)
-      if (response.toolCalls.length === 0) return finalize(response.text, steps, startedAt, iteration, usage)
-      const assistantMessage: ConversationMessage = { role: "assistant", content: response.text, toolCalls: response.toolCalls }
-      messages.push(assistantMessage)
-      for (const toolCall of response.toolCalls) {
-        steps.push({ type: "tool", id: toolCall.id, tool: toolCall.name, input: toolCall.input })
-      }
-
-      const indexedToolCalls = response.toolCalls.map((toolCall, index) => ({ toolCall, index }))
-      const safeToolCalls = indexedToolCalls.filter(({ toolCall }) => isToolConcurrencySafe(toolCall.name, toolCall.input))
-      const unsafeToolCalls = indexedToolCalls.filter(({ toolCall }) => !isToolConcurrencySafe(toolCall.name, toolCall.input))
-      const toolResults = new Array<{ role: "tool"; toolCallId: string; toolName: string; content: string }>(response.toolCalls.length)
-
-      const safeResults = await Promise.all(
-        safeToolCalls.map(async ({ toolCall, index }) => {
-          const result = await executeToolCall(toolCall, executeTool, context)
-          return {
-            index,
-            message: {
-              role: "tool" as const,
-              toolCallId: result.toolCall.id,
-              toolName: result.toolCall.name,
-              content: result.content,
-            },
-          }
-        }),
-      )
-      for (const result of safeResults) {
-        toolResults[result.index] = result.message
-      }
-
-      for (const { toolCall, index } of unsafeToolCalls) {
-        const result = await executeToolCall(toolCall, executeTool, context)
-        toolResults[index] = {
-          role: "tool",
-          toolCallId: result.toolCall.id,
-          toolName: result.toolCall.name,
-          content: result.content,
-        }
-      }
-
-      for (const toolResult of toolResults) {
-        if (!toolResult) continue
-        messages.push(toolResult)
-      }
-    } catch (error) {
-      if (options?.abortSignal?.aborted) return finalize("", steps, startedAt, Math.max(0, steps.length), usage, undefined, "aborted")
-      if (error instanceof ContextOverflowError && !compacted) {
-        compactSession(rootDir, session.id)
-        const refreshed = getSession(rootDir, session.id)
-        if (refreshed) {
-          activeSession = refreshed
-          messages.splice(0, messages.length, ...sessionToMessages(refreshed))
-        }
-        compacted = true
-        continue
-      }
-      if (error instanceof AbortError) throw error
-      logger.error("assistant turn failed", { error: error instanceof Error ? error.message : String(error), sessionId: session.id })
-      const message = error instanceof Error ? error.message : String(error)
-      return finalize(message, steps, startedAt, Math.min(maxIterations, steps.length + 1), usage, message)
+  let finalResult: AssistantTurnResult | null = null
+  const generator = runAgentLoop(session, rootDir, executeTool, context, options)
+  while (true) {
+    const next = await generator.next()
+    if (next.done) {
+      finalResult = next.value
+      break
     }
+    const event = next.value as AgentLoopEvent
+    if (event.type === "done") finalResult = event.result
   }
-  return finalize("", steps, startedAt, maxIterations, usage, "Max iterations reached", "max_iterations")
+  return finalResult ?? finalize("", [], options?.turnStartedAt ?? Date.now(), 0, undefined, "Agent loop finished without a result")
 }
 
 export async function runBackgroundTextTask(

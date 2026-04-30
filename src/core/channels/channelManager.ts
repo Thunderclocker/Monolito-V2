@@ -117,9 +117,19 @@ async function sendTelegramText(token: string, chatId: number, text: string) {
   }
 }
 
-function dispatchRuntimeMessage(runtime: MonolitoV2Runtime, sessionId: string, title: string, text: string, detail: string) {
+function dispatchRuntimeMessage(runtime: MonolitoV2Runtime, sessionId: string, title: string, text: string, detail: string, telegram?: { token: string; chatId: number }) {
   runtime.ensureSession(sessionId, title)
-  void runtime.processMessage(sessionId, text).catch(error => {
+  void (async () => {
+    for await (const event of runtime.processMessageEvents(sessionId, text)) {
+      if (!telegram) continue
+      if (event.type === "tool_execute_start" || event.type === "recoverable_error" || event.type === "model_invoke_start") {
+        await telegramApi(telegram.token, "sendChatAction", {
+          chat_id: telegram.chatId,
+          action: "typing",
+        }).catch(() => {})
+      }
+    }
+  })().catch(error => {
     const typed = error as Error & { code?: string }
     const code = typed.code ? ` code=${typed.code}` : ""
     logger.error(`Async Telegram dispatch failed (${detail})${code}: ${typed.message}`)
@@ -490,7 +500,10 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
 
         // Ensure the session exists before sending the message
         try {
-          dispatchRuntimeMessage(runtime, sessionId, `Telegram ${chatId}`, inboundText, `message ${chatId}:${msg.message_id}`)
+          dispatchRuntimeMessage(runtime, sessionId, `Telegram ${chatId}`, inboundText, `message ${chatId}:${msg.message_id}`, {
+            token: config.telegram.token,
+            chatId,
+          })
         } catch (error) {
           const err = error as Error & { code?: string }
           const detail = err.code ? ` code=${err.code}` : ""
