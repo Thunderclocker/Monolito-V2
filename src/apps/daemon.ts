@@ -3,7 +3,7 @@ import { openSync } from "node:fs"
 import { MonolitoV2Daemon } from "../core/runtime/daemon.ts"
 import { ensureDirs, readDaemonLock } from "../core/ipc/protocol.ts"
 import { ensureSystemdService } from "../core/runtime/systemd.ts"
-import { createLogger } from "../core/logging/logger.ts"
+import { addLogSink, createLogger, createDailyRotatingFileSink, setLogLevel, type LogEntry } from "../core/logging/logger.ts"
 
 function isProcessRunning(pid: number) {
   try {

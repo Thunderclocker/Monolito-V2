@@ -25,7 +25,7 @@ import {
   type ConfigWingValueMap,
 } from "../config/configWings.ts"
 import { createLogger } from "../logging/logger.ts"
-import { PALACE_NAMESPACE, PALACE_SCHEMA_SQL, type PalaceContentType, type PalaceNamespace, type WorkerJob, type WorkerJobStatus } from "../db/schema.ts"
+import { PALACE_NAMESPACE, PALACE_SCHEMA_SQL, BACKGROUND_TASKS_SCHEMA_SQL, type PalaceContentType, type PalaceNamespace, type WorkerJob, type WorkerJobStatus, type BackgroundTask, type BackgroundTaskStatus } from "../db/schema.ts"
 
 let dbInstance: Database.Database | null = null
 let dbPathCache: string | null = null
@@ -130,6 +130,7 @@ function palaceProfileScope(profileId: string | null | undefined) {
 
 function ensurePalaceSchema(db: Database.Database) {
   db.exec(PALACE_SCHEMA_SQL)
+  db.exec(BACKGROUND_TASKS_SCHEMA_SQL)
 }
 
 function readLatestPalaceContent(
@@ -342,8 +343,6 @@ function ensureKernelSeededDb(db: Database.Database, profileId = "default") {
 
 function hardCrashKernel(error: unknown): never {
   logger.error("FATAL: SQLite kernel failed during startup. Monolito cannot boot without the Palace.", error)
-  console.error("[monolito] FATAL: SQLite kernel failed during startup.")
-  console.error(error instanceof Error ? error.stack ?? error.message : String(error))
   process.exit(1)
 }
 
@@ -1658,6 +1657,100 @@ export function hasActiveWorkersForSession(rootDir: string, sessionId: string): 
     LIMIT 1
   `).get(sessionId)
   return !!row
+}
+
+export function createBackgroundTask(
+  rootDir: string,
+  options: {
+    id: string
+    sessionId: string
+    taskPayload: string
+    agentId?: string | null
+  },
+): BackgroundTask {
+  const db = getDb(rootDir)
+  const now = new Date().toISOString()
+  db.prepare(`
+    INSERT INTO background_tasks (id, session_id, agent_id, status, task_payload, created_at, updated_at)
+    VALUES (?, ?, ?, 'PENDING', ?, ?, ?)
+  `).run(options.id, options.sessionId, options.agentId ?? null, options.taskPayload, now, now)
+  return getBackgroundTask(rootDir, options.id)!
+}
+
+export function getBackgroundTask(rootDir: string, id: string): BackgroundTask | null {
+  const row = getDb(rootDir).prepare(`
+    SELECT id, session_id, agent_id, status, task_payload, result_diff, error_text, created_at, updated_at, handoff_at
+    FROM background_tasks WHERE id = ?
+  `).get(id) as BackgroundTask | null
+  return row ?? null
+}
+
+export function updateBackgroundTaskStatus(
+  rootDir: string,
+  id: string,
+  status: BackgroundTaskStatus,
+  details?: { resultDiff?: string | null; errorText?: string | null; agentId?: string | null },
+): void {
+  const db = getDb(rootDir)
+  const now = new Date().toISOString()
+  const isHandoff = status === "HANDOFF"
+  db.prepare(`
+    UPDATE background_tasks
+    SET status = ?,
+      agent_id = COALESCE(?, agent_id),
+      result_diff = COALESCE(?, result_diff),
+      error_text = COALESCE(?, error_text),
+      updated_at = ?,
+      handoff_at = CASE WHEN ? THEN ? ELSE handoff_at END
+    WHERE id = ?
+  `).run(
+    status,
+    details?.agentId ?? null,
+    details?.resultDiff ?? null,
+    details?.errorText ?? null,
+    now,
+    isHandoff ? 1 : 0,
+    isHandoff ? now : null,
+    id,
+  )
+}
+
+export function listBackgroundTasks(
+  rootDir: string,
+  sessionId: string,
+  filter?: { status?: BackgroundTaskStatus | BackgroundTaskStatus[] },
+): BackgroundTask[] {
+  const db = getDb(rootDir)
+  if (filter?.status) {
+    const statuses = Array.isArray(filter.status) ? filter.status : [filter.status]
+    const placeholders = statuses.map(() => "?").join(", ")
+    return db.prepare(`
+      SELECT id, session_id, agent_id, status, task_payload, result_diff, error_text, created_at, updated_at, handoff_at
+      FROM background_tasks
+      WHERE session_id = ? AND status IN (${placeholders})
+      ORDER BY created_at ASC
+    `).all(sessionId, ...statuses) as BackgroundTask[]
+  }
+  return db.prepare(`
+    SELECT id, session_id, agent_id, status, task_payload, result_diff, error_text, created_at, updated_at, handoff_at
+    FROM background_tasks
+    WHERE session_id = ?
+    ORDER BY created_at ASC
+  `).all(sessionId) as BackgroundTask[]
+}
+
+export function claimBackgroundTask(
+  rootDir: string,
+  taskId: string,
+  agentId: string,
+): boolean {
+  const db = getDb(rootDir)
+  const result = db.prepare(`
+    UPDATE background_tasks
+    SET agent_id = ?, status = 'IN_PROGRESS', updated_at = ?
+    WHERE id = ? AND status = 'PENDING'
+  `).run(agentId, new Date().toISOString(), taskId)
+  return result.changes > 0
 }
 
 export function addGraphTriple(

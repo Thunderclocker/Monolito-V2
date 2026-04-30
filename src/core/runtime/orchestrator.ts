@@ -4,20 +4,29 @@ import { ensureDirs } from "../ipc/protocol.ts"
 import {
   appendMessage,
   appendWorklog,
+  claimBackgroundTask,
+  createBackgroundTask,
   createWorkerSessionAndJob,
   createProfile,
+  getBackgroundTask,
   getSession,
+  listBackgroundTasks,
   listProfiles,
   listRecoverableWorkerJobs,
   tailEvents,
+  updateBackgroundTaskStatus,
   updateWorkerJobStatus,
   upsertWorkerJob,
 } from "../session/store.ts"
-import { createInstanceLogger, type Logger } from "../logging/logger.ts"
+import { createInstanceLogger, createLogger, type Logger } from "../logging/logger.ts"
+
+const logger = createLogger("orchestrator")
 import { createAgentWorktree, removeAgentWorktree } from "../context/gitContext.ts"
 import { monolitoEvents } from "../events/bus.ts"
 
 const SUBAGENT_VERIFICATION_TAG = "<verified>SUCCESS</verified>"
+const SUBAGENT_TIMEOUT_MS = 10 * 60 * 1000
+const SUBAGENT_HARD_TIMEOUT_MS = 15 * 60 * 1000
 const WORKER_IMAGE_EXECUTION_POLICY = [
   "Image-search execution policy:",
   "- Para busquedas simples de imagenes, usa ImageSearch y devuelve `image_url` directas. No uses WebFetch ni scraping de paginas fuente.",
@@ -328,9 +337,29 @@ export class AgentOrchestrator {
       },
     })
 
+    const bgTaskId = options.mode === "background"
+      ? `bg-${randomUUID().slice(0, 12)}`
+      : null
+
     if (options.isolation === "worktree") {
       const branchName = `monolito-worker-${randomUUID()}`
       delegationTask.cwd = await createAgentWorktree(rootDir, branchName)
+    }
+
+    if (bgTaskId) {
+      createBackgroundTask(rootDir, {
+        id: bgTaskId,
+        sessionId: delegationTask.parentSessionId,
+        taskPayload: JSON.stringify({
+          task: delegationTask.task,
+          description: delegationTask.description,
+          type: delegationTask.type,
+          cwd: delegationTask.cwd,
+          traceId: delegationTask.traceId,
+        }),
+        agentId: delegationTask.id,
+      })
+      claimBackgroundTask(rootDir, bgTaskId, delegationTask.id)
     }
 
     if (this.runningWorkerCount >= MAX_CONCURRENT_WORKERS) {
@@ -347,8 +376,22 @@ export class AgentOrchestrator {
 
     this.activeTasks.set(delegationTask.id, delegationTask)
 
-    const runPromise = this.executeTurn(delegationTask, taskWithVerification).catch(err => {
-      console.error(`Delegation task ${delegationTask.id} failed:`, err)
+    const abortController = new AbortController()
+    const softTimeoutTimer = setTimeout(() => {
+      delegationTask.logger?.warn(`Soft timeout reached (${SUBAGENT_TIMEOUT_MS}ms) for task ${delegationTask.id}. Continuing but monitoring.`)
+    }, SUBAGENT_TIMEOUT_MS).unref()
+
+    const hardTimeoutTimer = setTimeout(() => {
+      delegationTask.logger?.error(`Hard timeout reached (${SUBAGENT_HARD_TIMEOUT_MS}ms). Forcing task ${delegationTask.id} to stop.`)
+      abortController.abort()
+      this.stopAgent(delegationTask.id, `Hard timeout of ${SUBAGENT_HARD_TIMEOUT_MS}ms exceeded`).catch(() => {})
+    }, SUBAGENT_HARD_TIMEOUT_MS).unref()
+
+    const runPromise = this.executeTurn(delegationTask, taskWithVerification, abortController.signal).catch(err => {
+      logger.error(`Delegation task ${delegationTask.id} failed:`, err)
+    }).finally(() => {
+      clearTimeout(softTimeoutTimer)
+      clearTimeout(hardTimeoutTimer)
     })
 
     if (options.mode === "background") {
@@ -385,8 +428,8 @@ export class AgentOrchestrator {
     }
     
     // Continue in background
-    this.executeTurn(task, message).catch(err => {
-      console.error(`Continuing agent ${agentId} failed:`, err)
+    this.executeTurn(task, message, undefined).catch(err => {
+      logger.error(`Continuing agent ${agentId} failed:`, err)
     })
   }
 
@@ -408,7 +451,7 @@ export class AgentOrchestrator {
     await this.notifyParent(task, partialEvidence ? `${reason}\n\n${partialEvidence}` : reason)
   }
 
-  private async executeTurn(task: DelegationTask, text: string) {
+  private async executeTurn(task: DelegationTask, text: string, abortSignal?: AbortSignal) {
     const turnStartedAt = Date.now()
     task.status = "running"
     updateWorkerJobStatus(this.runtime.rootDir, task.id, "running")
@@ -422,6 +465,9 @@ export class AgentOrchestrator {
       let partialResult = ""
 
       while (attempt <= maxAttempts && task.status === "running") {
+        if (abortSignal?.aborted) {
+          throw new Error("Task aborted by supervisor")
+        }
         appendMessage(runtime.rootDir, task.subSessionId, "user", currentText)
         turn = await runtime.runTurn(task.subSessionId, currentText, task.profileId, {
           logger: task.logger,
@@ -549,6 +595,21 @@ export class AgentOrchestrator {
     setTimeout(() => this.activeTasks.delete(task.id), TASK_RETENTION_MS)
 
     if (task.mode === "background") {
+      const bgTasks = listBackgroundTasks(this.runtime.rootDir, task.parentSessionId, { status: "IN_PROGRESS" })
+      const bgTask = bgTasks.find(t => t.agent_id === task.id)
+      if (bgTask) {
+        const diff = await this.captureTaskDiff(task)
+        if (task.status === "completed") {
+          updateBackgroundTaskStatus(this.runtime.rootDir, bgTask.id, "HANDOFF", {
+            resultDiff: diff ?? task.result,
+          })
+        } else {
+          updateBackgroundTaskStatus(this.runtime.rootDir, bgTask.id, "FAILED", {
+            errorText: error ?? task.error,
+            resultDiff: diff,
+          })
+        }
+      }
       this.runtime.emit({
         type: "agent.background.completed",
         sessionId: task.parentSessionId,
@@ -636,8 +697,8 @@ ${usageXml}
       })
       this.activeTasks.set(task.id, task)
       const prompt = buildSubagentRetryPrompt(task.task, "Daemon restarted while this worker was pending or running.")
-      this.executeTurn(task, prompt).catch(err => {
-        console.error(`Recovered delegation task ${task.id} failed:`, err)
+      this.executeTurn(task, prompt, undefined).catch(err => {
+        logger.error(`Recovered delegation task ${task.id} failed:`, err)
       })
       recovered++
     }
@@ -659,5 +720,18 @@ ${usageXml}
         progress: getTaskProgress(this.runtime.rootDir, task.subSessionId),
         ...(task.error ? { error: task.error } : {}),
       }))
+  }
+
+  private async captureTaskDiff(task: DelegationTask): Promise<string | null> {
+    if (!task.cwd) return null
+    try {
+      const { execFile } = await import("node:child_process")
+      const { promisify } = await import("node:util")
+      const execAsync = promisify(execFile)
+      const diff = await execAsync("git", ["diff", "--stat"], { cwd: task.cwd, timeout: 5000 })
+      return diff.stdout.trim() || null
+    } catch {
+      return null
+    }
   }
 }

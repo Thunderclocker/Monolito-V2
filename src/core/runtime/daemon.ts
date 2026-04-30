@@ -12,7 +12,7 @@ import {
 } from "../ipc/protocol.ts"
 import { clearUpdateRestartState, MonolitoV2Runtime, readUpdateRestartState } from "./runtime.ts"
 import { startChannels, stopChannels } from "../channels/channelManager.ts"
-import { addLogSink, createFileSink } from "../logging/logger.ts"
+import { addLogSink, createDailyRotatingFileSink, createLogger, log } from "../logging/logger.ts"
 import { warmupEmbeddings } from "../session/embeddings.ts"
 import { cleanupScratchpad } from "../system/root.ts"
 
@@ -21,6 +21,8 @@ function isIgnorableSocketError(error: unknown) {
   const code = "code" in error ? String((error as NodeJS.ErrnoException).code ?? "") : ""
   return code === "EPIPE" || code === "ECONNRESET" || code === "ERR_STREAM_DESTROYED"
 }
+
+const daemonLogger = createLogger("daemon")
 
 export class MonolitoV2Daemon {
   private subscribers = new Map<string, Set<Socket>>()
@@ -35,10 +37,8 @@ export class MonolitoV2Daemon {
   constructor(rootDir: string) {
     this.rootDir = rootDir
     this.runtime = new MonolitoV2Runtime(rootDir)
-    
-    // Conectar el sistema de logger estructurado al archivo de log del daemon
     const paths = getPaths(this.rootDir)
-    addLogSink(createFileSink(paths.daemonLog))
+    addLogSink(createDailyRotatingFileSink(paths.daemonLog))
   }
 
   async start() {
@@ -346,7 +346,7 @@ export class MonolitoV2Daemon {
   }
 
   private writeDaemonLog(line: string) {
-    appendFileSync(getPaths(this.rootDir).daemonLog, `${new Date().toISOString()} ${line}\n`)
+    daemonLogger.info(line)
   }
 
   private async startEmbeddingsWarmup() {

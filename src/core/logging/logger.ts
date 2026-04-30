@@ -1,22 +1,35 @@
 /**
- * Structured logging for Monolito V2.
- * Categories, timestamps, in-memory error buffer, and file sinks.
+ * Structured JSONL logging for Monolito V2.
+ * - Pure JSONL output (one JSON object per line)
+ * - AsyncLocalStorage for automatic session_id/agent_id injection
+ * - File rotation (size-based and daily)
+ * - Separation: conversational history → SQLite, technical audit → JSONL logs
  */
 
-import { appendFileSync, createWriteStream, mkdirSync } from "node:fs"
+import { appendFileSync, createWriteStream, existsSync, mkdirSync, statSync, unlinkSync } from "node:fs"
 import { dirname, join } from "node:path"
+import { AsyncLocalStorage } from "node:async_hooks"
 import { MONOLITO_ROOT } from "../system/root.ts"
 
 export type LogLevel = "debug" | "info" | "warn" | "error"
+
+export type LogContext = {
+  sessionId?: string
+  agentId?: string
+}
 
 export type LogEntry = {
   timestamp: string
   level: LogLevel
   category: string
-  traceId?: string
   message: string
+  session_id?: string
+  agent_id?: string
   data?: Record<string, unknown>
   durationMs?: number
+  errorName?: string
+  errorMessage?: string
+  errorStack?: string
 }
 
 type LogSink = (entry: LogEntry) => void
@@ -32,10 +45,13 @@ export type Logger = {
 }
 
 const MAX_IN_MEMORY_ERRORS = 100
+const MAX_LOG_FILE_SIZE_BYTES = 50 * 1024 * 1024 // 50MB
 
 const inMemoryErrors: LogEntry[] = []
 const sinks: LogSink[] = []
 let minLevel: LogLevel = "info"
+
+const contextStorage = new AsyncLocalStorage<LogContext>()
 
 const LEVEL_ORDER: Record<LogLevel, number> = {
   debug: 0,
@@ -46,6 +62,10 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
 
 function shouldLog(level: LogLevel): boolean {
   return LEVEL_ORDER[level] >= LEVEL_ORDER[minLevel]
+}
+
+function getCurrentContext(): LogContext {
+  return contextStorage.getStore() ?? {}
 }
 
 function normalizeLogData(data: unknown): Record<string, unknown> | undefined {
@@ -64,29 +84,27 @@ function normalizeLogData(data: unknown): Record<string, unknown> | undefined {
   return { value: data }
 }
 
-function formatEntry(entry: LogEntry): string {
-  const parts = [entry.timestamp, `[${entry.level.toUpperCase()}]`, `[${entry.category}]`]
-  if (entry.traceId) parts.push(`[trace:${entry.traceId}]`)
-  parts.push(entry.message)
-  if (entry.durationMs !== undefined) parts.push(`(${entry.durationMs}ms)`)
-  if (entry.data) {
-    const data = Object.entries(entry.data)
-      .map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`)
-      .join(" ")
-    if (data) parts.push(data)
-  }
-  return parts.join(" ")
+function serializeEntry(entry: LogEntry): string {
+  return JSON.stringify(entry)
 }
 
 function emit(entry: LogEntry) {
   if (!shouldLog(entry.level)) return
-  if (entry.level === "error") {
+
+  const ctx = getCurrentContext()
+  const entryWithContext: LogEntry = {
+    ...entry,
+    session_id: entry.session_id ?? ctx.sessionId,
+    agent_id: entry.agent_id ?? ctx.agentId,
+  }
+
+  if (entryWithContext.level === "error") {
     if (inMemoryErrors.length >= MAX_IN_MEMORY_ERRORS) inMemoryErrors.shift()
-    inMemoryErrors.push(entry)
+    inMemoryErrors.push(entryWithContext)
   }
   for (const sink of sinks) {
     try {
-      sink(entry)
+      sink(entryWithContext)
     } catch {}
   }
 }
@@ -107,8 +125,60 @@ export function addLogSink(sink: LogSink) {
 
 export function createFileSink(filePath: string): LogSink {
   mkdirSync(dirname(filePath), { recursive: true })
+  let stream = createWriteStream(filePath, { flags: "a" })
+  let currentFileSize = existsSync(filePath) ? statSync(filePath).size : 0
+
+  const rotateIfNeeded = () => {
+    if (currentFileSize >= MAX_LOG_FILE_SIZE_BYTES) {
+      stream.end()
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-")
+      const rotatedPath = `${filePath}.${timestamp}`
+      try {
+        const dir = dirname(filePath)
+        const base = require("path").basename(filePath)
+        const rotatedName = `${base}.${timestamp}`
+        const rotatedFullPath = join(dir, rotatedName)
+        stream = createWriteStream(rotatedFullPath, { flags: "a" })
+        currentFileSize = 0
+      } catch {
+        stream = createWriteStream(filePath, { flags: "a" })
+        currentFileSize = 0
+      }
+    }
+  }
+
   return (entry: LogEntry) => {
-    appendFileSync(filePath, `${formatEntry(entry)}\n`)
+    const line = `${serializeEntry(entry)}\n`
+    stream.write(line)
+    currentFileSize += Buffer.byteLength(line, "utf8")
+    rotateIfNeeded()
+  }
+}
+
+export function createDailyRotatingFileSink(filePath: string): LogSink {
+  mkdirSync(dirname(filePath), { recursive: true })
+  let currentDate = new Date().toISOString().slice(0, 10)
+
+  const getDailyFilePath = (base: string, date: string) => {
+    const baseName = base.replace(/\.log$/, "")
+    return `${baseName}.${date}.log`
+  }
+
+  let stream = createWriteStream(getDailyFilePath(filePath, currentDate), { flags: "a" })
+
+  const rotateIfNeeded = () => {
+    const today = new Date().toISOString().slice(0, 10)
+    if (today !== currentDate) {
+      stream.end()
+      currentDate = today
+      stream = createWriteStream(getDailyFilePath(filePath, currentDate), { flags: "a" })
+    }
+  }
+
+  return (entry: LogEntry) => {
+    rotateIfNeeded()
+    const line = `${serializeEntry(entry)}\n`
+    stream.write(line)
   }
 }
 
@@ -121,12 +191,13 @@ export function clearRecentErrors() {
 }
 
 export function log(level: LogLevel, category: string, message: string, data?: unknown, durationMs?: number) {
+  const normalizedData = normalizeLogData(data)
   emit({
     timestamp: new Date().toISOString(),
     level,
     category,
     message,
-    data: normalizeLogData(data),
+    data: normalizedData,
     durationMs,
   })
 }
@@ -147,7 +218,6 @@ export function logError(category: string, message: string, data?: unknown) {
   log("error", category, message, data)
 }
 
-/** Log with timing: returns a function that logs the elapsed time when called. */
 export function logTimed(level: LogLevel, category: string, message: string, data?: unknown) {
   const start = Date.now()
   return (extraData?: Record<string, unknown>) => {
@@ -156,7 +226,6 @@ export function logTimed(level: LogLevel, category: string, message: string, dat
   }
 }
 
-/** Create a scoped logger for a specific category. */
 export function createLogger(category: string) {
   return {
     debug: (message: string, data?: unknown) => logDebug(category, message, data),
@@ -167,43 +236,131 @@ export function createLogger(category: string) {
   } satisfies Logger
 }
 
-export function createInstanceLogger(agentId: string, role: string, traceId?: string): Logger {
-  const logPath = join(MONOLITO_ROOT, "logs", "instances", `${role}-${agentId}.log`)
-  mkdirSync(dirname(logPath), { recursive: true })
-  const stream = createWriteStream(logPath, { flags: "a" })
-  const writeLine = (line: string) => {
-    stream.write(line.endsWith("\n") ? line : `${line}\n`)
-  }
-  const emitInstance = (entry: LogEntry) => writeLine(formatEntry(entry))
+export function createContextLogger(category: string) {
+  return {
+    debug: (message: string, data?: unknown) => {
+      const ctx = getCurrentContext()
+      log("debug", category, message, { ...ctx, ...normalizeLogData(data) })
+    },
+    info: (message: string, data?: unknown) => {
+      const ctx = getCurrentContext()
+      log("info", category, message, { ...ctx, ...normalizeLogData(data) })
+    },
+    warn: (message: string, data?: unknown) => {
+      const ctx = getCurrentContext()
+      log("warn", category, message, { ...ctx, ...normalizeLogData(data) })
+    },
+    error: (message: string, data?: unknown) => {
+      const ctx = getCurrentContext()
+      log("error", category, message, { ...ctx, ...normalizeLogData(data) })
+    },
+    timed: (level: LogLevel, message: string, data?: unknown) => {
+      const ctx = getCurrentContext()
+      const start = Date.now()
+      return (extraData?: Record<string, unknown>) => {
+        log(level, category, message, { ...ctx, ...normalizeLogData(data), ...extraData }, Date.now() - start)
+      }
+    },
+  } satisfies Logger
+}
 
-  const logInstance = (level: LogLevel, category: string, message: string, data?: unknown, durationMs?: number) => {
-    emitInstance({
-      timestamp: new Date().toISOString(),
-      level,
-      category,
-      traceId,
-      message,
-      data: normalizeLogData(data),
-      durationMs,
-    })
-  }
+export function createInstanceLogger(agentId: string, role: string, traceId?: string): Logger {
+  const logsDir = join(MONOLITO_ROOT, "logs", "instances")
+  mkdirSync(logsDir, { recursive: true })
+  const logPath = join(logsDir, `${role}-${agentId}.log`)
+  const stream = createWriteStream(logPath, { flags: "a" })
 
   return {
-    debug: (message: string, data?: unknown) => logInstance("debug", role, message, data),
-    info: (message: string, data?: unknown) => logInstance("info", role, message, data),
-    warn: (message: string, data?: unknown) => logInstance("warn", role, message, data),
-    error: (message: string, data?: unknown) => logInstance("error", role, message, data),
+    debug: (message: string, data?: unknown) => {
+      const ctx = getCurrentContext()
+      const entry: LogEntry = {
+        timestamp: new Date().toISOString(),
+        level: "debug",
+        category: role,
+        message,
+        agent_id: agentId,
+        session_id: ctx.sessionId,
+        data: normalizeLogData(data),
+      }
+      stream.write(`${serializeEntry(entry)}\n`)
+    },
+    info: (message: string, data?: unknown) => {
+      const ctx = getCurrentContext()
+      const entry: LogEntry = {
+        timestamp: new Date().toISOString(),
+        level: "info",
+        category: role,
+        message,
+        agent_id: agentId,
+        session_id: ctx.sessionId,
+        data: normalizeLogData(data),
+      }
+      stream.write(`${serializeEntry(entry)}\n`)
+    },
+    warn: (message: string, data?: unknown) => {
+      const ctx = getCurrentContext()
+      const entry: LogEntry = {
+        timestamp: new Date().toISOString(),
+        level: "warn",
+        category: role,
+        message,
+        agent_id: agentId,
+        session_id: ctx.sessionId,
+        data: normalizeLogData(data),
+      }
+      stream.write(`${serializeEntry(entry)}\n`)
+    },
+    error: (message: string, data?: unknown) => {
+      const ctx = getCurrentContext()
+      const entry: LogEntry = {
+        timestamp: new Date().toISOString(),
+        level: "error",
+        category: role,
+        message,
+        agent_id: agentId,
+        session_id: ctx.sessionId,
+        data: normalizeLogData(data),
+      }
+      stream.write(`${serializeEntry(entry)}\n`)
+    },
     timed: (level: LogLevel, message: string, data?: unknown) => {
       const start = Date.now()
       return (extraData?: Record<string, unknown>) => {
-        const base = normalizeLogData(data) ?? {}
-        logInstance(level, role, message, { ...base, ...extraData }, Date.now() - start)
+        const ctx = getCurrentContext()
+        const normalizedData = normalizeLogData(data) ?? {}
+        const entry: LogEntry = {
+          timestamp: new Date().toISOString(),
+          level,
+          category: role,
+          message,
+          agent_id: agentId,
+          session_id: ctx.sessionId,
+          data: { ...normalizedData, ...extraData },
+          durationMs: Date.now() - start,
+        }
+        stream.write(`${serializeEntry(entry)}\n`)
       }
     },
     writeRaw: (text: string) => {
       if (!text) return
-      stream.write(text)
+      stream.write(text.endsWith("\n") ? text : `${text}\n`)
     },
     logPath,
   }
+}
+
+export function runWithContext<T>(context: LogContext, fn: () => T): T {
+  return contextStorage.run(context, fn)
+}
+
+export function getContext(): LogContext {
+  return getCurrentContext()
+}
+
+export function createSessionContext(sessionId: string) {
+  return { sessionId }
+}
+
+export function createAgentContext(agentId: string, sessionId?: string) {
+  return { agentId, sessionId }
 }

@@ -60,7 +60,9 @@ import { AgentOrchestrator } from "./orchestrator.ts"
 import { renderToolFinish, renderToolStart, renderToolStartText } from "../renderer/toolRenderer.ts"
 import { checkToolPermission, runLifecycleHooks, runPostToolHooks } from "./permissions.ts"
 
-import type { Logger } from "../logging/logger.ts"
+import { createLogger, createSessionContext, runWithContext, type Logger } from "../logging/logger.ts"
+
+const logger = createLogger("runtime")
 import type { DelegationTask } from "./orchestrator.ts"
 import {
   deployManagedTtsContainer,
@@ -1018,12 +1020,12 @@ export class MonolitoV2Runtime {
     if (queue.length === 0) this.pendingUserMessages.delete(sessionId)
     if (next.kind === "startup") {
       void this.processSessionStartup(sessionId, next.prompt, { logger: next.logger }).catch(error => {
-        console.error(`Queued startup for ${sessionId} failed`, error)
+        logger.error(`Queued startup for ${sessionId} failed`, error)
       })
       return
     }
     void this.processMessage(sessionId, next.text).catch(error => {
-      console.error(`Queued message for ${sessionId} failed`, error)
+      logger.error(`Queued message for ${sessionId} failed`, error)
     })
   }
 
@@ -1201,7 +1203,7 @@ export class MonolitoV2Runtime {
               await sendTelegramMessage(config.telegram.token, telegramChatId, userFacingText)
             }
           } catch (e) {
-            console.error("Failed to send background reply to telegram", e)
+            logger.error("Failed to send background reply to telegram", e)
           }
         }
       }
@@ -1374,6 +1376,10 @@ export class MonolitoV2Runtime {
   }
 
   async runTurn(sessionId: string, lastUserText: string, profileId = "default", options?: { logger?: Logger; cwd?: string; traceId?: string; maxTokens?: number; onAgentLoopEvent?: (event: AgentLoopEvent) => void }) {
+    return runWithContext(createSessionContext(sessionId), () => this.runTurnWithContext(sessionId, lastUserText, profileId, options))
+  }
+
+  private async runTurnWithContext(sessionId: string, lastUserText: string, profileId = "default", options?: { logger?: Logger; cwd?: string; traceId?: string; maxTokens?: number; onAgentLoopEvent?: (event: AgentLoopEvent) => void }) {
     const turnStartedAt = Date.now()
     const instanceLogger = options?.logger
     const effectiveCwd = options?.cwd ?? this.rootDir
@@ -1571,7 +1577,7 @@ export class MonolitoV2Runtime {
                 await sendTelegramMessage(config.telegram.token, telegramChatId, userFacingText)
               }
             } catch (e) {
-              console.error("Failed to send reply back to telegram", e)
+              logger.error("Failed to send reply back to telegram", e)
             }
           }
         }
@@ -1776,7 +1782,7 @@ export class MonolitoV2Runtime {
       try {
         listener(safeEvent)
       } catch (err) {
-        console.error("Runtime event listener error:", err)
+        logger.error("Runtime event listener error:", err)
       }
     }
   }
