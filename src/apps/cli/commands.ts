@@ -60,13 +60,7 @@ export async function runCliCommand(client: DaemonClient, args: CliArgs) {
   if (command === "resume") {
     const sessionId = rest[0]
     if (!sessionId) throw new Error("resume requires a session id")
-if (command?.startsWith("/")) {
-    const output = await client.runDaemonCommand(command)
-    writeLine(output)
-    return
-  }
-
-  if (prompt) {
+    if (prompt) {
       await runOneShot(client, prompt, sessionId)
       return
     }
@@ -92,6 +86,12 @@ if (command?.startsWith("/")) {
     await client.sendMessage(session.id, text)
     await completion
     unsubscribe()
+    return
+  }
+
+  if (command?.startsWith("/")) {
+    const output = await client.runDaemonCommand(command)
+    writeLine(output)
     return
   }
 
