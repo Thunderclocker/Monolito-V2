@@ -37,6 +37,7 @@ import {
   listRecoverableWorkerJobs,
   updateWorkerJobStatus,
   hasActiveWorkersForSession,
+  reconcileSystemWings,
 } from "../session/store.ts"
 import { generateEmbedding, isEmbeddingsUnavailableError } from "../session/embeddings.ts"
 import { getTool, listTools, type ToolContext } from "../tools/registry.ts"
@@ -928,8 +929,9 @@ export class MonolitoV2Runtime {
   constructor(rootDir: string) {
     this.rootDir = rootDir
     this.orchestrator = new AgentOrchestrator(this)
-    getDb(this.rootDir)
+    const db = getDb(this.rootDir)
     ensureConfigWings(this.rootDir)
+    reconcileSystemWings(db, rootDir)
     loadAndApplyModelSettings(process.env)
   }
 

@@ -159,6 +159,19 @@ export async function warmupEmbeddings(_rootDir?: string) {
   }
 }
 
+export async function initEmbeddingEngine(): Promise<{ ok: boolean; state: EmbeddingWarmupState; model: string; baseUrl: string; dimensions: number; error?: string }> {
+  try {
+    await ensureEmbeddingsReady()
+    return { ok: true, ...getEmbeddingsStatus() }
+  } catch (error) {
+    return {
+      ok: false,
+      ...getEmbeddingsStatus(),
+      error: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
 export async function generateEmbedding(text: string): Promise<Float32Array> {
   try {
     await ensureEmbeddingsReady()

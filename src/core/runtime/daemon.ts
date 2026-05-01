@@ -13,7 +13,7 @@ import {
 import { clearUpdateRestartState, MonolitoV2Runtime, readUpdateRestartState } from "./runtime.ts"
 import { startChannels, stopChannels } from "../channels/channelManager.ts"
 import { addLogSink, createDailyRotatingFileSink, createLogger, log } from "../logging/logger.ts"
-import { warmupEmbeddings } from "../session/embeddings.ts"
+import { initEmbeddingEngine } from "../session/embeddings.ts"
 import { cleanupScratchpad } from "../system/root.ts"
 
 function isIgnorableSocketError(error: unknown) {
@@ -356,7 +356,7 @@ export class MonolitoV2Daemon {
       setTimeout(() => resolve({ ok: false, timeout: true }), timeoutMs).unref()
     })
     try {
-      const result = await Promise.race([warmupEmbeddings(this.rootDir), timeout])
+      const result = await Promise.race([initEmbeddingEngine(), timeout])
       if ("timeout" in result) {
         this.writeDaemonLog(`embeddings warmup timed out after ${timeoutMs}ms; continuing in lazy mode`)
         return
@@ -364,7 +364,7 @@ export class MonolitoV2Daemon {
       if ("error" in result) {
         this.writeDaemonLog(`embeddings warmup failed; continuing in lazy mode: ${result.error}`)
       } else {
-        this.writeDaemonLog(`embeddings warmup ready model=${result.model} baseUrl=${result.baseUrl} dimensions=${result.dimensions}`)
+        this.writeDaemonLog(`Embedding Engine ready. Palacio de Memoria activo. model=${result.model} baseUrl=${result.baseUrl} dimensions=${result.dimensions}`)
       }
     } catch (error) {
       this.writeDaemonLog(`embeddings warmup failed; continuing in lazy mode: ${error instanceof Error ? error.message : String(error)}`)

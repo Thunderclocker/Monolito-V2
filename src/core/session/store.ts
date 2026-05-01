@@ -575,6 +575,52 @@ export function ensureConfigWings(rootDir: string) {
   ensureKernelSeededDb(db, "default")
 }
 
+export function reconcileSystemWings(db: Database.Database, rootDir: string) {
+  const now = new Date().toISOString()
+  const embeddingsContent = JSON.stringify({
+    provider: "ollama",
+    model: "nomic-embed-text",
+    baseUrl: "http://127.0.0.1:11434",
+    dimensions: 768,
+    enabled: true,
+  }, null, 2)
+
+  const existing = db.prepare(`
+    SELECT content
+    FROM palace_nodes
+    WHERE namespace = ?
+      AND wing = ?
+      AND room = ?
+      AND node_key = ?
+      AND superseded_at IS NULL
+  `).get(PALACE_NAMESPACE.config, "CONF_EMBEDDINGS", CONFIG_SOURCE_ROOM, "ollama") as { content: string } | undefined
+
+  if (existing) {
+    try {
+      const parsed = JSON.parse(existing.content)
+      if (parsed.provider && parsed.model) return
+    } catch {}
+    db.prepare(`
+      UPDATE palace_nodes
+      SET content = ?, updated_at = ?, superseded_at = ?
+      WHERE namespace = ? AND wing = ? AND room = ? AND node_key = ? AND superseded_at IS NULL
+    `).run(existing.content, now, now, PALACE_NAMESPACE.config, "CONF_EMBEDDINGS", CONFIG_SOURCE_ROOM, "ollama")
+  }
+
+  upsertMutablePalaceNode(db, {
+    namespace: PALACE_NAMESPACE.config,
+    wing: "CONF_EMBEDDINGS",
+    room: CONFIG_SOURCE_ROOM,
+    nodeKey: "ollama",
+    profileId: null,
+    subjectType: "system_capability",
+    subjectId: "embeddings",
+    contentType: "application/json",
+    content: embeddingsContent,
+    now,
+  })
+}
+
 export function readConfigWing<T extends ConfigWingName>(rootDir: string, wing: T): ConfigWingValueMap[T] {
   ensureConfigWings(rootDir)
   const db = getDb(rootDir)
