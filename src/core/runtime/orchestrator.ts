@@ -185,6 +185,7 @@ export type DelegationTask = {
   mode: "interactive" | "background"
   description: string
   task: string
+  injected_context?: string
   status: "pending" | "running" | "completed" | "failed" | "killed"
   jobGroupId?: string
   result?: string
@@ -230,12 +231,12 @@ export class AgentOrchestrator {
   }
 
   async spawnAgent(
-    parentSessionId: string, 
-    profileId: string, 
-    task: string, 
-    description?: string, 
+    parentSessionId: string,
+    profileId: string,
+    task: string,
+    description?: string,
     type: DelegationTask["type"] = "worker",
-    options?: { isolation?: "none" | "worktree" },
+    options?: { isolation?: "none" | "worktree"; injected_context?: string },
   ): Promise<SpawnAgentResult> {
     return await this.spawnTask({
       parentSessionId,
@@ -245,6 +246,7 @@ export class AgentOrchestrator {
       type,
       mode: "interactive",
       isolation: options?.isolation,
+      injected_context: options?.injected_context,
     })
   }
 
@@ -254,7 +256,7 @@ export class AgentOrchestrator {
     task: string,
     description?: string,
     jobGroupId?: string,
-    options?: { isolation?: "none" | "worktree" },
+    options?: { isolation?: "none" | "worktree"; injected_context?: string },
   ): Promise<SpawnAgentResult> {
     return await this.spawnTask({
       parentSessionId,
@@ -265,6 +267,7 @@ export class AgentOrchestrator {
       mode: "background",
       jobGroupId,
       isolation: options?.isolation,
+      injected_context: options?.injected_context,
     })
   }
 
@@ -277,6 +280,7 @@ export class AgentOrchestrator {
     mode: DelegationTask["mode"]
     jobGroupId?: string
     isolation?: "none" | "worktree"
+    injected_context?: string
   }): Promise<SpawnAgentResult> {
     const rootDir = this.runtime.rootDir
     const subSessionId = `agent-${options.profileId}-${randomUUID().slice(0, 8)}`
@@ -289,9 +293,15 @@ export class AgentOrchestrator {
     }
     ensureDirs(rootDir, options.profileId)
     
+    // Inject project context if provided
+    const projectContextBlock = options.injected_context
+      ? [`\n<project-context>\n${options.injected_context.trim()}\n</project-context>\n`]
+      : []
+
     // Append verified-tag requirement so the Ralph Loop can complete on first successful attempt
     const taskWithVerification = [
       options.task.trim(),
+      ...projectContextBlock,
       "",
       WORKER_IMAGE_EXECUTION_POLICY,
       "",
@@ -299,7 +309,7 @@ export class AgentOrchestrator {
     ].join("\n")
     
     const delegationTask: DelegationTask = {
-      id: subSessionId, // Use subSessionId as the taskId for simplicity and SendMessage correlation
+      id: subSessionId,
       parentSessionId: options.parentSessionId,
       subSessionId,
       traceId,
@@ -308,6 +318,7 @@ export class AgentOrchestrator {
       mode: options.mode,
       description: options.description || "Untitled task",
       task: options.task,
+      injected_context: options.injected_context,
       status: "pending",
       jobGroupId: options.jobGroupId,
       logger: createInstanceLogger(subSessionId, options.type, traceId),

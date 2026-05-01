@@ -19,7 +19,7 @@ const defaultLogger = createLogger("modelAdapterLite")
 const MAX_TURN_ITERATIONS = 16
 const DEFAULT_MAX_TURN_DURATION_MS = 120_000
 const MAX_BACKGROUND_TOKENS = 3_000
-const MAX_TOOL_RESULT_CHARS = 20_000
+const MAX_TOOL_RESULT_CHARS = 10_000
 const MAX_RATE_LIMIT_RETRIES = 5
 const MAX_OVERLOAD_RETRIES = 3
 
@@ -121,12 +121,8 @@ function stringifyToolResult(value: unknown) {
   const monolitoRoot = ensureMonolitoRoot()
   const outputPath = join(monolitoRoot, "scratchpad", `tool-output-${randomUUID()}.txt`)
   writeFileSync(outputPath, serialized, "utf8")
-  try {
-    const preview = truncate(serialized, MAX_TOOL_RESULT_CHARS)
-    return `${preview}\n...[OUTPUT TRUNCATED]\nFull output saved to: ${outputPath}\nUse the Read tool with offset/line_limit to inspect the rest.`
-  } catch {
-    return `...[OUTPUT TRUNCATED]\nFull output saved to: ${outputPath}\nUse the Read tool with offset/line_limit to inspect the rest.`
-  }
+  const preview = truncate(serialized, MAX_TOOL_RESULT_CHARS)
+  return `${preview}\n\n[... TRUNCADO: La salida superó el límite de seguridad de memoria. Usa comandos más específicos (ej. grep, head) o afina tu búsqueda.]\nFull output saved to: ${outputPath}\nUse the Read tool with offset/line_limit to inspect the rest.`
 }
 
 function formatToolEvidenceResult(toolCall: ToolCall, status: "success" | "error", value: unknown) {

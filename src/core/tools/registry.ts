@@ -2398,7 +2398,7 @@ const tools: ToolDefinition[] = [
   {
     name: "AgentSpawn",
     permissionTier: "edit",
-    description: "Delegate a mission to a worker agent. Workers can run in parallel and report back autonomously. Use this for research, implementation, or verification.",
+    description: "Delegate a mission to a worker agent. Workers can run in parallel and report back autonomously. Use this for research, implementation, or verification. The orchestrator MUST provide a detailed injected_context with specific file paths, database pointers, or prior context so the worker can start immediately without exploring blindly.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2407,8 +2407,9 @@ const tools: ToolDefinition[] = [
         description: { type: "string", description: "A brief name for this task (e.g. 'Fix auth bug')." },
         type: { type: "string", enum: ["worker", "researcher", "verifier"], description: "The specialization level of the agent." },
         isolation: { type: "string", enum: ["none", "worktree"], description: "Use worktree for isolated filesystem access." },
+        injected_context: { type: "string", description: "A detailed summary with specific file paths, database pointers, or prior context the worker needs to start working immediately without guessing or exploring. This is REQUIRED for effective delegation." },
       },
-      required: ["profileId", "task"],
+      required: ["profileId", "task", "injected_context"],
       additionalProperties: false,
     },
     concurrencySafe: true,
@@ -2418,7 +2419,8 @@ const tools: ToolDefinition[] = [
       const description = optionalString(input, "description")
       const type = (optionalString(input, "type") as any) || "worker"
       const isolation = (optionalString(input, "isolation") as "none" | "worktree" | undefined) || "none"
-      
+      const injectedContext = requireString(input, "injected_context")
+
       if (!context.orchestrator) throw new Error("Agent Orchestrator not available.")
 
       const parentSessionId = (context as any).sessionId
@@ -2427,7 +2429,7 @@ const tools: ToolDefinition[] = [
         throw new Error("Los sub-agentes no pueden spawnear otros agentes. Ejecutá la tarea directamente y devolvé los resultados.")
       }
 
-      const spawned = await context.orchestrator.spawnAgent(parentSessionId, profileId, task, description, type, { isolation })
+      const spawned = await context.orchestrator.spawnAgent(parentSessionId, profileId, task, description, type, { isolation, injected_context: injectedContext })
       if (spawned.status === "failed") {
         return {
           ok: false,
@@ -2493,13 +2495,15 @@ const tools: ToolDefinition[] = [
         task_instruction: { type: "string", description: "Detailed instructions for the background worker." },
         description: { type: "string", description: "Short label for this task." },
         profileId: { type: "string", description: "Optional profile to run the worker under." },
+        injected_context: { type: "string", description: "A detailed summary with specific file paths, database pointers, or prior context the worker needs to start working immediately without guessing or exploring. This is REQUIRED for effective delegation." },
       },
-      required: ["task_instruction"],
+      required: ["task_instruction", "injected_context"],
       additionalProperties: false,
     },
     concurrencySafe: true,
     async run(input, context) {
       const task = requireString(input, "task_instruction")
+      const injectedContext = requireString(input, "injected_context")
       const description = optionalString(input, "description")
       const profileId = optionalString(input, "profileId") ?? context.profileId ?? "default"
 
@@ -2529,7 +2533,7 @@ const tools: ToolDefinition[] = [
         : task
 
       const jobGroupId = context.runtime?.acquireJobGroupForBatch(parentSessionId)
-      const spawned = await context.orchestrator.spawnBackgroundTask(parentSessionId, profileId, effectiveTask, description, jobGroupId)
+      const spawned = await context.orchestrator.spawnBackgroundTask(parentSessionId, profileId, effectiveTask, description, jobGroupId, { injected_context: injectedContext })
       return {
         ok: spawned.status !== "failed" && spawned.status !== "killed",
         job_id: spawned.agentId,
