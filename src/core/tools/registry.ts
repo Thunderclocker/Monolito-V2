@@ -9,7 +9,7 @@ import { ensureDirs, getPaths } from "../ipc/protocol.ts"
 import { MONOLITO_ROOT } from "../system/root.ts"
 import { type McpClient, createMcpClient, getDefaultMcpServers } from "../mcp/client.ts"
 import { getSharedLspClient } from "../lsp/client.ts"
-import { normalizeChannelsConfigForWrite, readChannelsConfig } from "../channels/config.ts"
+import { normalizeChannelsConfigForWrite, readChannelsConfig, writeChannelsConfig } from "../channels/config.ts"
 import {
   appendActionLog,
   addGraphTriple,
@@ -1617,13 +1617,33 @@ const tools: ToolDefinition[] = [
     name: "TtsServiceDeploy",
     aliases: ["tts_service_deploy"],
     permissionTier: "edit",
-    description: "Deploy or restart the managed local TTS service container using Docker. Cleans conflicting legacy OpenAI Edge TTS containers first.",
+    description: "Deploy or restart the managed local TTS service container using Docker. Cleans conflicting legacy OpenAI Edge TTS containers first. If this succeeds, GenerateSpeech can use the managed service without a base_url override.",
     inputSchema: emptyInputSchema,
     concurrencySafe: false,
     async run() {
       const config = readChannelsConfig()
       const tts = normalizeTtsConfig(config.tts)
-      return await deployManagedTtsContainer(tts)
+      const result = await deployManagedTtsContainer(tts)
+      if (result.ok) {
+        writeChannelsConfig({
+          ...config,
+          tts: {
+            ...config.tts,
+            managed: true,
+            autoDeploy: true,
+            baseUrl: result.baseUrl,
+            apiKey: tts.apiKey,
+            voice: tts.voice,
+            model: tts.model,
+            responseFormat: tts.responseFormat,
+            speed: tts.speed,
+            port: tts.port,
+            image: tts.image,
+            containerName: tts.containerName,
+          },
+        })
+      }
+      return result
     },
   },
   {
@@ -1669,7 +1689,7 @@ const tools: ToolDefinition[] = [
     name: "GenerateSpeech",
     aliases: ["generate_speech", "tts_generate"],
     permissionTier: "edit",
-    description: "Generate a speech audio file with the configured OpenAI-compatible TTS backend and save it to Monolito scratchpad storage.",
+    description: "Generate a speech audio file with the configured OpenAI-compatible TTS backend and save it to Monolito scratchpad storage. For Telegram audio requests, call this first, then send the returned local_path with TelegramSendAudio or TelegramSendVoice before claiming the audio was sent.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1705,6 +1725,9 @@ const tools: ToolDefinition[] = [
           const deploy = await deployManagedTtsContainer(tts)
           if (!deploy.ok) throw new Error(`TTS managed service unavailable and auto-deploy failed: ${deploy.message}`)
         }
+      }
+      if (!baseUrl && await getManagedTtsStatus(tts) === "running") {
+        baseUrl = getManagedTtsBaseUrl(tts)
       }
       if (!baseUrl) {
         throw new Error("TTS no está configurado. Usá /config set tts_base_url <url> para configurar una API TTS (como la de MiniMax) o activá managed TTS con /config set tts_managed true.")
