@@ -1,46 +1,23 @@
-import { pipeline, env } from '@xenova/transformers';
-import { join } from 'node:path';
-import { getPaths } from '../ipc/protocol.ts';
+import { execFile } from "node:child_process"
+import { promisify } from "node:util"
+import type Database from "better-sqlite3"
+
+const execFileAsync = promisify(execFile)
+
+const OLLAMA_URL = "http://127.0.0.1:11434"
+const OLLAMA_CONTAINER = "monolito-v2-ollama-embeddings"
+const OLLAMA_IMAGE = "ollama/ollama"
+const OLLAMA_MODEL = "nomic-embed-text"
+const EMBEDDING_DIMENSIONS = 768
+const OLLAMA_START_TIMEOUT_MS = 45_000
+const OLLAMA_PULL_TIMEOUT_MS = 300_000
 
 type EmbeddingWarmupState = "idle" | "warming" | "ready" | "failed"
 
-class EmbeddingsPipeline {
-  static task = 'feature-extraction' as const;
-  static model = 'Xenova/all-MiniLM-L6-v2';
-  static instance: any = null;
-  static state: EmbeddingWarmupState = "idle";
-  static lastError: string | null = null;
-  static pending: Promise<any> | null = null;
-
-  static async getInstance(rootDir: string) {
-    if (this.instance !== null) {
-      this.state = "ready";
-      return this.instance;
-    }
-    if (this.pending) return await this.pending;
-
-    // Configuramos para que el modelo IA de 22MB se guarde limpio junto al resto del proyecto
-    env.cacheDir = join(getPaths(rootDir).baseDir, "models_cache");
-    this.state = "warming";
-    this.lastError = null;
-
-    this.pending = pipeline(this.task, this.model)
-      .then(instance => {
-        this.instance = instance
-        this.state = "ready"
-        this.pending = null
-        return instance
-      })
-      .catch(error => {
-        this.state = "failed"
-        this.lastError = error instanceof Error ? error.message : String(error)
-        this.pending = null
-        throw error
-      })
-
-    return await this.pending;
-  }
-}
+let state: EmbeddingWarmupState = "idle"
+let lastError: string | null = null
+let pending: Promise<void> | null = null
+let semanticDb: Database.Database | null = null
 
 function toEmbeddingsError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error)
@@ -52,18 +29,126 @@ export function isEmbeddingsUnavailableError(error: unknown) {
   return message.startsWith("Embeddings unavailable:")
 }
 
+export function bindSemanticSearchDb(db: Database.Database) {
+  semanticDb = db
+}
+
 export function getEmbeddingsStatus() {
   return {
-    state: EmbeddingsPipeline.state,
-    model: EmbeddingsPipeline.model,
-    cacheDir: env.cacheDir,
-    lastError: EmbeddingsPipeline.lastError,
+    state,
+    model: OLLAMA_MODEL,
+    baseUrl: OLLAMA_URL,
+    dimensions: EMBEDDING_DIMENSIONS,
+    lastError,
   }
 }
 
-export async function warmupEmbeddings(rootDir: string) {
+async function ollamaFetch(path: string, init?: RequestInit) {
+  const response = await fetch(`${OLLAMA_URL}${path}`, init)
+  if (!response.ok) {
+    const text = await response.text().catch(() => "")
+    throw new Error(`Ollama ${path} failed with HTTP ${response.status}${text ? `: ${text}` : ""}`)
+  }
+  return response
+}
+
+async function waitForOllama(timeoutMs = OLLAMA_START_TIMEOUT_MS) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    try {
+      await ollamaFetch("/api/tags")
+      return
+    } catch {
+      await new Promise(resolve => setTimeout(resolve, 750))
+    }
+  }
+  throw new Error(`Ollama did not become ready on ${OLLAMA_URL} within ${timeoutMs}ms`)
+}
+
+async function isLocalOllamaReady() {
   try {
-    await EmbeddingsPipeline.getInstance(rootDir)
+    await ollamaFetch("/api/tags")
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function ensureDockerOllama() {
+  await execFileAsync("docker", ["info"], { timeout: 10_000 })
+
+  const { stdout } = await execFileAsync("docker", [
+    "ps",
+    "-a",
+    "--filter",
+    `name=^/${OLLAMA_CONTAINER}$`,
+    "--format",
+    "{{.Status}}",
+  ], { timeout: 10_000 })
+
+  if (stdout.trim()) {
+    if (!stdout.trim().toLowerCase().startsWith("up")) {
+      await execFileAsync("docker", ["start", OLLAMA_CONTAINER], { timeout: 30_000 })
+    }
+    await waitForOllama()
+    return
+  }
+
+  await execFileAsync("docker", [
+    "run",
+    "-d",
+    "--name",
+    OLLAMA_CONTAINER,
+    "-p",
+    "11434:11434",
+    "-v",
+    "monolito-v2-ollama:/root/.ollama",
+    OLLAMA_IMAGE,
+  ], { timeout: 60_000 })
+  await waitForOllama()
+}
+
+async function ensureModelPulled() {
+  const tags = await ollamaFetch("/api/tags").then(response => response.json()) as { models?: Array<{ name?: string; model?: string }> }
+  const hasModel = tags.models?.some(model => (model.name ?? model.model ?? "").split(":")[0] === OLLAMA_MODEL)
+  if (hasModel) return
+
+  await ollamaFetch("/api/pull", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: OLLAMA_MODEL, stream: false }),
+    signal: AbortSignal.timeout(OLLAMA_PULL_TIMEOUT_MS),
+  })
+}
+
+async function ensureEmbeddingsReady() {
+  if (state === "ready") return
+  if (pending) return await pending
+
+  state = "warming"
+  lastError = null
+  pending = (async () => {
+    try {
+      if (!await isLocalOllamaReady()) {
+        await ensureDockerOllama()
+      }
+      await ensureModelPulled()
+      state = "ready"
+    } catch (error) {
+      state = "failed"
+      lastError = error instanceof Error ? error.message : String(error)
+      throw error
+    } finally {
+      pending = null
+    }
+  })()
+
+  return await pending
+}
+
+export async function warmupEmbeddings(_rootDir?: string) {
+  try {
+    await ensureEmbeddingsReady()
     return { ok: true as const, ...getEmbeddingsStatus() }
   } catch (error) {
     return {
@@ -74,17 +159,35 @@ export async function warmupEmbeddings(rootDir: string) {
   }
 }
 
-/**
- * Convierte un bloque de texto en un vector RAG estandarizado de 384 dimensiones.
- * Si es la primera vez que se ejecuta, descargará el modelo optimizado (~22MB) a la caché local.
- */
-export async function generateEmbedding(rootDir: string, text: string): Promise<Float32Array> {
+export async function generateEmbedding(text: string): Promise<Float32Array> {
   try {
-    const embedder = await EmbeddingsPipeline.getInstance(rootDir);
-    // Al usar pooling: "mean" y normalize: true, obtenemos el estándar L2-normalized de 384 floats.
-    const result = await embedder(text, { pooling: 'mean', normalize: true });
-    return result.data as Float32Array;
+    await ensureEmbeddingsReady()
+    const response = await ollamaFetch("/api/embeddings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: OLLAMA_MODEL, prompt: text }),
+    })
+    const payload = await response.json() as { embedding?: number[] }
+    if (!Array.isArray(payload.embedding)) throw new Error("Ollama embedding response did not include an embedding array")
+    if (payload.embedding.length !== EMBEDDING_DIMENSIONS) {
+      throw new Error(`Expected ${EMBEDDING_DIMENSIONS} dimensions from ${OLLAMA_MODEL}, got ${payload.embedding.length}`)
+    }
+    return Float32Array.from(payload.embedding)
   } catch (error) {
     throw toEmbeddingsError(error)
   }
+}
+
+export function searchSemantically(vector: number[] | Float32Array, limit = 10): number[] {
+  if (!semanticDb) throw toEmbeddingsError(new Error("Semantic SQLite database is not bound"))
+  if (vector.length !== EMBEDDING_DIMENSIONS) {
+    throw toEmbeddingsError(new Error(`Semantic query vector must have ${EMBEDDING_DIMENSIONS} dimensions, got ${vector.length}`))
+  }
+  const rows = semanticDb.prepare(`
+    SELECT id
+    FROM vec_messages
+    WHERE embedding MATCH ? AND k = ?
+    ORDER BY distance ASC
+  `).all(vector instanceof Float32Array ? vector : Float32Array.from(vector), limit) as Array<{ id: number }>
+  return rows.map(row => row.id)
 }

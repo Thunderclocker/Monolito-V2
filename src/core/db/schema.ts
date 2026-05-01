@@ -12,6 +12,20 @@ export type PalaceNamespace = (typeof PALACE_NAMESPACE)[keyof typeof PALACE_NAME
 
 export type PalaceContentType = "text/markdown" | "application/json" | "text/plain"
 
+export const VECTOR_DIMENSIONS = 768
+
+export const VECTOR_SCHEMA_SQL = `
+  CREATE VIRTUAL TABLE IF NOT EXISTS vec_drawers USING vec0(
+    id TEXT PRIMARY KEY,
+    embedding float[768]
+  );
+
+  CREATE VIRTUAL TABLE IF NOT EXISTS vec_messages USING vec0(
+    id INTEGER PRIMARY KEY,
+    embedding float[768]
+  );
+`
+
 export interface PalaceNode {
   id: string
   namespace: string

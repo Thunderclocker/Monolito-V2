@@ -10,7 +10,7 @@ import {
   ensureDirs,
   getPaths,
 } from "../ipc/protocol.ts"
-import { generateEmbedding, isEmbeddingsUnavailableError } from "./embeddings.ts"
+import { bindSemanticSearchDb, generateEmbedding, isEmbeddingsUnavailableError, searchSemantically } from "./embeddings.ts"
 import {
   BOOT_WING_ORDER,
   DEFAULT_BOOT_WING_CONTENT,
@@ -25,7 +25,7 @@ import {
   type ConfigWingValueMap,
 } from "../config/configWings.ts"
 import { createLogger } from "../logging/logger.ts"
-import { PALACE_NAMESPACE, PALACE_SCHEMA_SQL, BACKGROUND_TASKS_SCHEMA_SQL, type PalaceContentType, type PalaceNamespace, type WorkerJob, type WorkerJobStatus, type BackgroundTask, type BackgroundTaskStatus } from "../db/schema.ts"
+import { PALACE_NAMESPACE, PALACE_SCHEMA_SQL, BACKGROUND_TASKS_SCHEMA_SQL, VECTOR_SCHEMA_SQL, type PalaceContentType, type PalaceNamespace, type WorkerJob, type WorkerJobStatus, type BackgroundTask, type BackgroundTaskStatus } from "../db/schema.ts"
 
 let dbInstance: Database.Database | null = null
 let dbPathCache: string | null = null
@@ -131,6 +131,29 @@ function palaceProfileScope(profileId: string | null | undefined) {
 function ensurePalaceSchema(db: Database.Database) {
   db.exec(PALACE_SCHEMA_SQL)
   db.exec(BACKGROUND_TASKS_SCHEMA_SQL)
+}
+
+function ensureVectorSchema(db: Database.Database) {
+  db.exec(`
+    DROP TRIGGER IF EXISTS fts_drawers_ai;
+    DROP TRIGGER IF EXISTS fts_drawers_ad;
+    DROP TRIGGER IF EXISTS fts_drawers_au;
+    DROP TABLE IF EXISTS fts_drawers;
+  `)
+
+  const vectorTables = db.prepare(`
+    SELECT name, sql
+    FROM sqlite_master
+    WHERE name IN ('vec_drawers', 'vec_messages')
+  `).all() as Array<{ name: string; sql: string | null }>
+  const hasLegacyVectorTable = vectorTables.some(row => !row.sql?.includes("float[768]"))
+  if (hasLegacyVectorTable) {
+    db.exec(`
+      DROP TABLE IF EXISTS vec_drawers;
+      DROP TABLE IF EXISTS vec_messages;
+    `)
+  }
+  db.exec(VECTOR_SCHEMA_SQL)
 }
 
 function readLatestPalaceContent(
@@ -357,6 +380,7 @@ export function getDb(rootDir: string): Database.Database {
   try {
     db = new Database(path)
     sqliteVec.load(db)
+    bindSemanticSearchDb(db)
   
     db.pragma(`journal_mode = WAL`);
     db.pragma(`synchronous = NORMAL`);
@@ -422,11 +446,6 @@ export function getDb(rootDir: string): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_memory_drawers_room ON memory_drawers(room);
     CREATE INDEX IF NOT EXISTS idx_memory_drawers_profile ON memory_drawers(profile_id);
     
-    CREATE VIRTUAL TABLE IF NOT EXISTS vec_drawers USING vec0(
-      id TEXT PRIMARY KEY,
-      embedding float[384]
-    );
-
     CREATE TABLE IF NOT EXISTS background_task_groups (
       job_group_id TEXT PRIMARY KEY,
       parent_session_id TEXT NOT NULL,
@@ -481,6 +500,7 @@ export function getDb(rootDir: string): Database.Database {
     INSERT OR IGNORE INTO profiles (id, name, description, created_at)
     VALUES ('default', 'Default Agent', 'El agente Monolito principal por defecto.', CURRENT_TIMESTAMP);
   `)
+    ensureVectorSchema(db)
     ensurePalaceSchema(db)
 
     // Migration: Add profile_id to sessions if missing (better-sqlite3)
@@ -791,7 +811,7 @@ export async function writeCanonicalMemory(
 
   let embedding: Float32Array | null = null
   try {
-    embedding = await generateEmbedding(rootDir, normalized)
+    embedding = await generateEmbedding(normalized)
   } catch (error) {
     logger.warn("Embeddings fallaron, guardando memoria sin vectores: " + (error instanceof Error ? error.message : String(error)))
     embedding = null
@@ -1027,14 +1047,33 @@ export function listSessionRecords(rootDir: string): SessionRecord[] {
   return summaries.map(s => getSession(rootDir, s.id)!)
 }
 
+export function getSemanticMessageContext(rootDir: string, vector: number[] | Float32Array, limit = 10) {
+  const db = getDb(rootDir)
+  const ids = searchSemantically(vector, limit)
+  if (ids.length === 0) return []
+  const placeholders = ids.map(() => "?").join(", ")
+  const rows = db.prepare(`
+    SELECT id, session_id, role, text, at
+    FROM messages
+    WHERE id IN (${placeholders})
+  `).all(...ids) as Array<{ id: number; session_id: string; role: string; text: string; at: string }>
+  const byId = new Map(rows.map(row => [row.id, row]))
+  return ids.flatMap(id => {
+    const row = byId.get(id)
+    return row ? [row] : []
+  })
+}
+
 export function appendMessage(rootDir: string, sessionId: string, role: "user" | "assistant" | "system", text: string) {
   const db = getDb(rootDir)
   const now = new Date().toISOString()
+  let messageId: number | null = null
   
   db.exec("BEGIN TRANSACTION")
   try {
     const stmtMsg = db.prepare(`INSERT INTO messages (session_id, role, text, at) VALUES (?, ?, ?, ?)`)
     const messageResult = stmtMsg.run(sessionId, role, text, now)
+    messageId = Number(messageResult.lastInsertRowid)
     const sessionRow = db.prepare(`SELECT profile_id FROM sessions WHERE id = ?`).get(sessionId) as { profile_id: string | null } | undefined
     appendPalaceNode(db, {
       namespace: PALACE_NAMESPACE.chatHistory,
@@ -1066,6 +1105,22 @@ export function appendMessage(rootDir: string, sessionId: string, role: "user" |
     db.exec("ROLLBACK")
     throw err
   }
+
+  if (messageId !== null && role !== "system" && text.trim()) {
+    void indexMessageEmbedding(rootDir, messageId, text)
+  }
+}
+
+async function indexMessageEmbedding(rootDir: string, messageId: number, text: string) {
+  try {
+    const embedding = await generateEmbedding(text)
+    const db = getDb(rootDir)
+    const id = BigInt(messageId)
+    db.prepare(`DELETE FROM vec_messages WHERE id = ?`).run(id)
+    db.prepare(`INSERT INTO vec_messages (id, embedding) VALUES (?, ?)`).run(id, embedding)
+  } catch (error) {
+    logger.warn("Embeddings fallaron, guardando mensaje sin vector: " + (error instanceof Error ? error.message : String(error)))
+  }
 }
 
 export function appendWorklog(rootDir: string, sessionId: string, entry: Omit<SessionWorklogEntry, "at"> & { at?: string }) {
@@ -1093,6 +1148,9 @@ export function resetSession(rootDir: string, sessionId: string, options?: { sum
   const summary = options?.summary ?? "Session reset via /new"
   db.exec("BEGIN TRANSACTION")
   try {
+    const messageRows = db.prepare(`SELECT id FROM messages WHERE session_id = ?`).all(sessionId) as Array<{ id: number }>
+    const deleteVec = db.prepare(`DELETE FROM vec_messages WHERE id = ?`)
+    for (const row of messageRows) deleteVec.run(BigInt(row.id))
     db.prepare(`DELETE FROM messages WHERE session_id = ?`).run(sessionId)
     db.prepare(`DELETE FROM worklog WHERE session_id = ?`).run(sessionId)
     db.prepare(`DELETE FROM events WHERE session_id = ?`).run(sessionId)
@@ -1275,6 +1333,7 @@ export function compactSession(rootDir: string, sessionId: string, options: Comp
     try {
       for (const candidate of snipCandidates) {
         updateSnip.run(COMPACT_SNIP_TARGET_CHARS, COMPACT_SNIP_SUFFIX, candidate.id)
+        db.prepare(`DELETE FROM vec_messages WHERE id = ?`).run(BigInt(candidate.id))
       }
       db.exec("COMMIT")
     } catch (err) {
@@ -1303,6 +1362,8 @@ export function compactSession(rootDir: string, sessionId: string, options: Comp
 
   db.exec("BEGIN TRANSACTION")
   try {
+    const deleteVec = db.prepare(`DELETE FROM vec_messages WHERE id = ?`)
+    for (const row of removed) deleteVec.run(BigInt(row.id))
     // Delete them
     const stmtDel = db.prepare(`DELETE FROM messages WHERE session_id = ? AND id <= ?`)
     stmtDel.run(sessionId, lastIdRemoved)
@@ -1384,7 +1445,7 @@ export async function fileMemory(rootDir: string, wing: string, room: string, co
   const storedProfileId = normalizedWing.toUpperCase() === "SHARED" ? null : profileId
   let floatArray: Float32Array | null = null
   try {
-    floatArray = await generateEmbedding(rootDir, content)
+    floatArray = await generateEmbedding(content)
   } catch (error) {
     logger.warn("Embeddings fallaron, guardando memoria sin vectores: " + (error instanceof Error ? error.message : String(error)))
     if (!isEmbeddingsUnavailableError(error)) throw error
@@ -1446,28 +1507,21 @@ export async function recallMemory(rootDir: string, wing?: string, room?: string
   }
   
   if (query && query.trim().length > 0) {
-    const floatArray = await generateEmbedding(rootDir, query)
-    // Normalizar para Full-Text Search (solo letras, números y espacios)
-    const ftsTerms = query.replace(/[^\p{L}\p{N}\s]/gu, " ").trim().split(/\s+/).filter(Boolean)
-    // Usamos OR y wildcard para dar flexibilidad al match de keywords
-    const ftsQuery = ftsTerms.length > 0 ? ftsTerms.map(w => `"${w}"*`).join(" OR ") : '""'
-
+    const floatArray = await generateEmbedding(query)
     let sql = `SELECT m.id, m.profile_id, m.wing, m.room, m.memory_key, m.content, m.created_at, 
-                      v.distance, f.rank as fts_rank
+                      v.distance
                FROM vec_drawers v
                JOIN memory_drawers m ON m.id = v.id
-               LEFT JOIN (SELECT id, rank FROM fts_drawers WHERE fts_drawers MATCH ?) f ON m.id = f.id
                WHERE v.embedding MATCH ? AND k = 50`
 
     if (conditions.length > 0) {
       sql += ` AND ` + conditions.join(" AND ")
     }
 
-    // Boost: rank de fts5 es negativo. Al sumarlo a la distancia, un buen match exacto baja la distancia total.
-    sql += ` ORDER BY v.distance + (IFNULL(f.rank, 0) * 0.05) ASC LIMIT 15`
+    sql += ` ORDER BY v.distance ASC LIMIT 15`
 
     const stmt = db.prepare(sql)
-    return stmt.all(ftsQuery, floatArray, ...params) as any[]
+    return stmt.all(floatArray, ...params) as any[]
   } else {
     // Non-semantic pure recall
     let sql = `SELECT id, profile_id, wing, room, memory_key, content, created_at FROM memory_drawers m`

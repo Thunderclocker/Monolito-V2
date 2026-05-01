@@ -364,7 +364,7 @@ export class MonolitoV2Daemon {
       if ("error" in result) {
         this.writeDaemonLog(`embeddings warmup failed; continuing in lazy mode: ${result.error}`)
       } else {
-        this.writeDaemonLog(`embeddings warmup ready model=${result.model} cacheDir=${result.cacheDir ?? "(default)"}`)
+        this.writeDaemonLog(`embeddings warmup ready model=${result.model} baseUrl=${result.baseUrl} dimensions=${result.dimensions}`)
       }
     } catch (error) {
       this.writeDaemonLog(`embeddings warmup failed; continuing in lazy mode: ${error instanceof Error ? error.message : String(error)}`)
