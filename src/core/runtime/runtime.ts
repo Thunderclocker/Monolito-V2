@@ -548,44 +548,13 @@ async function runGitCommand(rootDir: string, args: string[]) {
   return result.stdout.trim()
 }
 
-function makeUpdateBackupLabel(prefix: string) {
-  return `${prefix}-${new Date().toISOString().replace(/[:.]/g, "-")}`
-}
 
-async function backupCurrentHead(rootDir: string, branch: string, currentHead: string) {
-  const backupBranch = makeUpdateBackupLabel(`monolito-update-backup-${branch}`)
-  await runGitCommand(rootDir, ["branch", backupBranch, currentHead])
-  return backupBranch
-}
-
-async function findStashRefByLabel(rootDir: string, stashLabel: string) {
-  const list = await runGitCommand(rootDir, ["stash", "list", "--format=%gd%x00%s"]).catch(() => "")
-  for (const line of list.split("\n")) {
-    const [ref, subject] = line.split("\u0000")
-    if (subject === stashLabel && ref) return ref
-  }
-  return ""
-}
-
-async function restoreUpdateBackup(rootDir: string, currentHead: string, stashLabel: string) {
-  await runGitCommand(rootDir, ["reset", "--hard", currentHead])
-  await runGitCommand(rootDir, ["clean", "-fd"])
-  if (!stashLabel) return
-  const stashRef = await findStashRefByLabel(rootDir, stashLabel)
-  if (!stashRef) throw new Error(`Rollback could not find backup stash ${stashLabel}`)
-  await runGitCommand(rootDir, ["stash", "apply", "--index", stashRef])
-  await runGitCommand(rootDir, ["stash", "drop", stashRef])
-}
 
 function getUpdateRestartStatePath(rootDir: string) {
   return join(getPaths(rootDir).runDir, UPDATE_RESTART_STATE_FILE)
 }
 
-function writeUpdateRestartState(rootDir: string, state: UpdateRestartState) {
-  const paths = getPaths(rootDir)
-  mkdirSync(paths.runDir, { recursive: true })
-  writeFileSync(getUpdateRestartStatePath(rootDir), `${JSON.stringify(state)}\n`, "utf8")
-}
+
 
 export function readUpdateRestartState(rootDir: string): UpdateRestartState | null {
   const path = getUpdateRestartStatePath(rootDir)
@@ -2315,73 +2284,15 @@ export class MonolitoV2Runtime {
   private async runUpdate(): Promise<string> {
     const lock = acquireUpdateLock(this.rootDir)
     if (!lock.ok) return lock.message
-    let currentHead = ""
-    let stashLabel = ""
-    let rollbackReady = false
     try {
-      const branch = await runGitCommand(this.rootDir, ["rev-parse", "--abbrev-ref", "HEAD"])
-      if (!branch) return "Update failed: could not determine current git branch."
-
-      const remoteUrl = await runGitCommand(this.rootDir, ["remote", "get-url", "origin"]).catch(() => "")
-      if (!remoteUrl) {
-        return "Update failed: no git remote named 'origin' is configured."
-      }
-
-      currentHead = await runGitCommand(this.rootDir, ["rev-parse", "HEAD"])
-      clearUpdateRestartState(this.rootDir)
-
-      try {
-        await runGitCommand(this.rootDir, ["fetch", "--prune", "origin", branch])
-        const remoteHead = await runGitCommand(this.rootDir, ["rev-parse", `origin/${branch}`]).catch(() => "")
-        if (!remoteHead) {
-          return `Update failed: origin/${branch} was not found after fetch.`
-        }
-
-        const status = await runGitCommand(this.rootDir, ["status", "--porcelain"])
-        if (status.trim()) {
-          stashLabel = makeUpdateBackupLabel("monolito-update-stash")
-          await runGitCommand(this.rootDir, ["stash", "push", "--include-untracked", "--message", stashLabel])
-          const statusAfterStash = await runGitCommand(this.rootDir, ["status", "--porcelain"])
-          if (statusAfterStash.trim()) {
-            return buildResidualUpdateError(this.rootDir, stashLabel, statusAfterStash)
-          }
-        }
-
-        let backupBranch = ""
-        if (currentHead !== remoteHead) {
-          backupBranch = await backupCurrentHead(this.rootDir, branch, currentHead)
-        }
-
-        rollbackReady = true
-        writeUpdateRestartState(this.rootDir, { currentHead, stashLabel })
-        await runGitCommand(this.rootDir, ["reset", "--hard", `origin/${branch}`])
-        await runGitCommand(this.rootDir, ["clean", "-fd"])
-        const nextHead = await runGitCommand(this.rootDir, ["rev-parse", "--short", "HEAD"])
-        this.restartRequested = true
-        return [
-          `Synchronized successfully with origin/${branch}.`,
-          `Remote: ${remoteUrl}`,
-          `Current revision: ${nextHead}`,
-          backupBranch ? `Previous local HEAD was backed up to branch: ${backupBranch}` : "",
-          stashLabel ? `Local uncommitted changes were backed up automatically to stash: ${stashLabel}` : "",
-          "Daemon restart scheduled automatically.",
-        ].filter(Boolean).join("\n")
-      } catch (error) {
-        this.restartRequested = false
-        if (rollbackReady) {
-          try {
-            await restoreUpdateBackup(this.rootDir, currentHead, stashLabel)
-            clearUpdateRestartState(this.rootDir)
-          } catch (rollbackError) {
-            const rollbackMessage = rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
-            const originalMessage = error instanceof Error ? error.message : String(error)
-            return `Update failed: ${originalMessage}\nRollback failed: ${rollbackMessage}`
-          }
-        }
-        throw error
-      }
+      await runGitCommand(this.rootDir, ["fetch", "--all"])
+      await runGitCommand(this.rootDir, ["reset", "--hard", "origin/main"])
+      await runGitCommand(this.rootDir, ["clean", "-fd"])
+      await execFileAsync("npm", ["install"], { cwd: this.rootDir, timeout: 120_000 })
+      await execFileAsync("npm", ["run", "build"], { cwd: this.rootDir, timeout: 60_000 })
+      this.restartRequested = true
+      return "Monolito sincronizado 1:1 desde origin/main. Entorno local purgado. Reiniciando daemon..."
     } catch (error) {
-      clearUpdateRestartState(this.rootDir)
       const message = error instanceof Error ? error.message : String(error)
       return `Update failed: ${message}`
     } finally {
