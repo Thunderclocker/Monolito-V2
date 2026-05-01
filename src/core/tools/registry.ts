@@ -1703,11 +1703,16 @@ const tools: ToolDefinition[] = [
         baseUrl = getManagedTtsBaseUrl(tts)
         if (tts.autoDeploy) {
           const deploy = await deployManagedTtsContainer(tts)
-          if (!deploy.ok) throw new Error(deploy.message)
+          if (!deploy.ok) throw new Error(`TTS managed service unavailable and auto-deploy failed: ${deploy.message}`)
         }
       }
       if (!baseUrl) {
-        throw new Error("TTS base URL is not configured. Use /config set tts_base_url <value> or enable managed TTS.")
+        throw new Error("TTS no está configurado. Usá /config set tts_base_url <url> para configurar una API TTS (como la de MiniMax) o activá managed TTS con /config set tts_managed true.")
+      }
+
+      const isTtsApiConfigured = baseUrl.length > 0 && (tts.apiKey || optionalString(input, "api_key"))
+      if (!isTtsApiConfigured && !tts.managed) {
+        throw new Error("TTS no está configurado. Usá /config set tts_base_url <url> para configurar una API TTS o habilitá managed TTS.")
       }
 
       const voice = optionalString(input, "voice") ?? tts.voice
