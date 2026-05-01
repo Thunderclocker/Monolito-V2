@@ -2285,7 +2285,12 @@ export class MonolitoV2Runtime {
     const lock = acquireUpdateLock(this.rootDir)
     if (!lock.ok) return lock.message
     try {
-      await runGitCommand(this.rootDir, ["fetch", "--all"])
+      await runGitCommand(this.rootDir, ["fetch", "origin", "main"])
+      const localHash = await runGitCommand(this.rootDir, ["rev-parse", "HEAD"])
+      const remoteHash = await runGitCommand(this.rootDir, ["rev-parse", "origin/main"])
+      if (localHash === remoteHash) {
+        return "Ya estás en la última versión. No hay nada que actualizar."
+      }
       await runGitCommand(this.rootDir, ["reset", "--hard", "origin/main"])
       await runGitCommand(this.rootDir, ["clean", "-fd"])
       await execFileAsync("npm", ["install"], { cwd: this.rootDir, timeout: 120_000 })
