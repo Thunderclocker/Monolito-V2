@@ -13,6 +13,8 @@ export const SEARXNG_SETTINGS_DIR = join(MONOLITO_ROOT, "searxng")
 export const SEARXNG_SETTINGS_FILE = join(SEARXNG_SETTINGS_DIR, "settings.yml")
 const MANAGED_SEARXNG_SETTINGS = [
   "use_default_settings: true",
+  "server:",
+  "  secret_key: monolito-v2-searxng-key-2026",
   "search:",
   "  safe_search: 0",
   "  formats:",
