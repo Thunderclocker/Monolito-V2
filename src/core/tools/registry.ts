@@ -605,6 +605,33 @@ async function telegramApiCall(token: string, method: string, params: Record<str
   return await response.json() as { ok: boolean; result?: unknown; description?: string }
 }
 
+const TELEGRAM_SENT_PHOTOS_KEY = "telegram_sent_photos"
+
+function getAlreadySentPhotos(rootDir: string): Set<string> {
+  try {
+    const stateFile = join(rootDir, "run", `${TELEGRAM_SENT_PHOTOS_KEY}.json`)
+    if (existsSync(stateFile)) {
+      const data = JSON.parse(readFileSync(stateFile, "utf8")) as string[]
+      return new Set(data)
+    }
+  } catch {}
+  return new Set()
+}
+
+function markPhotoAsSent(rootDir: string, photoPath: string) {
+  try {
+    const stateFile = join(rootDir, "run", `${TELEGRAM_SENT_PHOTOS_KEY}.json`)
+    const sent = getAlreadySentPhotos(rootDir)
+    sent.add(photoPath)
+    mkdirSync(dirname(stateFile), { recursive: true })
+    writeFileSync(stateFile, JSON.stringify([...sent]), "utf8")
+  } catch {}
+}
+
+function isPhotoAlreadySent(rootDir: string, photoPath: string): boolean {
+  return getAlreadySentPhotos(rootDir).has(photoPath)
+}
+
 function isLocalPath(value: string) {
   return value.startsWith("/") || value.startsWith("./") || value.startsWith("../") || value.startsWith("~/")
 }
@@ -616,9 +643,14 @@ async function telegramApiCallWithFile(
   filePath: string,
   params: Record<string, unknown>,
 ) {
-  const resolvedPath = filePath.startsWith("~/")
+  let resolvedPath = filePath.startsWith("~/")
     ? filePath.replace("~/", `${process.env.HOME ?? ""}/`)
     : filePath
+
+  if (resolvedPath.includes(".monolito-v2")) {
+    const worktreeRoot = process.cwd()
+    resolvedPath = resolvedPath.replace(/\/\.monolito-v2\//, `/${MONOLITO_ROOT}/`)
+  }
 
   if (!existsSync(resolvedPath)) {
     return { ok: false, description: `File not found: ${resolvedPath}` }
@@ -1881,7 +1913,7 @@ const tools: ToolDefinition[] = [
       if (typeof input.photo !== "string" || input.photo.length === 0) return "photo must be a non-empty string"
       return null
     },
-    async run(input) {
+    async run(input, context) {
       const chatId = input.chat_id as number
       const photo = requireString(input, "photo")
       const caption = optionalString(input, "caption")
@@ -1890,12 +1922,25 @@ const tools: ToolDefinition[] = [
       if (!config.telegram?.enabled || !config.telegram.token) {
         throw new Error("Telegram is not configured or not enabled. Use /channels to set it up.")
       }
+
+      if (isLocalPath(photo)) {
+        const resolvedPath = photo.replace(/\/\.monolito-v2\//, `/${MONOLITO_ROOT}/`)
+        if (isPhotoAlreadySent(context.rootDir, resolvedPath)) {
+          return { ok: true, chat_id: chatId, message: "Photo already sent previously (deduplicated)", deduplicated: true }
+        }
+        const params: Record<string, unknown> = { chat_id: chatId, photo }
+        if (caption) params.caption = caption
+        if (parseMode) params.parse_mode = parseMode
+        const data = await telegramApiCallWithFile(config.telegram.token, "sendPhoto", "photo", photo, params)
+        if (data.ok) markPhotoAsSent(context.rootDir, resolvedPath)
+        if (!data.ok) throw new Error(`Telegram API error: ${data.description ?? "sendPhoto failed"}`)
+        return { ok: true, chat_id: chatId, message: data.result }
+      }
+
       const params: Record<string, unknown> = { chat_id: chatId, photo }
       if (caption) params.caption = caption
       if (parseMode) params.parse_mode = parseMode
-      const data = isLocalPath(photo)
-        ? await telegramApiCallWithFile(config.telegram.token, "sendPhoto", "photo", photo, params)
-        : await telegramApiCall(config.telegram.token, "sendPhoto", params)
+      const data = await telegramApiCall(config.telegram.token, "sendPhoto", params)
       if (!data.ok) throw new Error(`Telegram API error: ${data.description ?? "sendPhoto failed"}`)
       return { ok: true, chat_id: chatId, message: data.result }
     },
@@ -2710,7 +2755,7 @@ const tools: ToolDefinition[] = [
         throw new Error(`Image download failed: HTTP ${response.status}`)
       }
 
-      const scratchpadDir = join(context.rootDir, ".monolito-v2", "scratchpad")
+      const scratchpadDir = join(MONOLITO_ROOT, "scratchpad")
       mkdirSync(scratchpadDir, { recursive: true })
       const tmpPath = join(scratchpadDir, `vision-${randomUUID()}.jpg`)
       const buffer = Buffer.from(await response.arrayBuffer())
