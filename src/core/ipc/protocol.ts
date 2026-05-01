@@ -67,6 +67,7 @@ export type Request =
   | { id: string; type: "query.doctor" }
   | { id: string; type: "query.model" }
   | { id: string; type: "query.config"; action?: string; field?: string; value?: string }
+  | { id: string; type: "session.ask"; sessionId?: string; prompt: string; stream?: boolean }
   | { id: string; type: "session.abort"; sessionId: string }
 
 export type Response =

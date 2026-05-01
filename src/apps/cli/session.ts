@@ -380,7 +380,7 @@ class InteractiveTranscriptFormatter {
   }
 }
 
-async function waitForTurnCompletion(client: DaemonClient, sessionId: string) {
+export async function waitForTurnCompletion(client: DaemonClient, sessionId: string) {
   return await new Promise<void>(resolve => {
     let sawRunning = false
     const unsubscribeEvent = client.onEvent((event: AgentEvent) => {
@@ -401,7 +401,7 @@ async function waitForTurnCompletion(client: DaemonClient, sessionId: string) {
   })
 }
 
-async function ensureCliSession(client: DaemonClient, sessionId?: string) {
+export async function ensureCliSession(client: DaemonClient, sessionId?: string) {
   if (sessionId) {
     return (await client.ensureSession(sessionId, "Monolito v2 Resumed Session")) as SessionRecord
   }

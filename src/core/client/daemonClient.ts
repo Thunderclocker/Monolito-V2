@@ -167,6 +167,21 @@ export class DaemonClient {
     return await this.request("query.config", { action, field, value })
   }
 
+  async askAgent(prompt: string, options?: { sessionId?: string; stream?: boolean; onEvent?: (event: AgentEvent) => void }) {
+    await this.connect()
+    const id = randomUUID()
+    const request = { id, type: "session.ask", prompt, sessionId: options?.sessionId, stream: options?.stream ?? false }
+    const response = await new Promise<{ sessionId: string; accepted: boolean }>((resolve, reject) => {
+      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject })
+      this.socket!.write(encodeEnvelope({ kind: "request", payload: request as never }))
+    })
+    if (options?.stream && options?.onEvent) {
+      const unsubscribe = this.onEvent(options.onEvent)
+      return { ...response, unsubscribe }
+    }
+    return response
+  }
+
   private async request(type: ResponseRequestType, payload: Record<string, unknown>) {
     await this.connect()
     const id = randomUUID()
@@ -213,4 +228,5 @@ type ResponseRequestType =
   | "query.doctor"
   | "query.model"
   | "query.config"
+  | "session.ask"
   | "session.abort"

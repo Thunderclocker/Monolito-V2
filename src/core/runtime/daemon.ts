@@ -464,6 +464,17 @@ export class MonolitoV2Daemon {
         case "session.abort":
           this.runtime.abortSession(request.sessionId)
           return { id: request.id, ok: true as const, data: { aborted: true } }
+        case "session.ask": {
+          const req = request as { id: string; sessionId?: string; prompt: string; stream?: boolean }
+          const session = this.runtime.ensureSession(undefined, "ask")
+          const sessionId = session.id
+          void this.runtime.askAgent(sessionId, req.prompt, { stream: req.stream ?? false, socket })
+            .then(() => {
+              if (this.runtime.consumeRestartRequest()) this.scheduleSelfRestart()
+            })
+            .catch(error => this.writeDaemonLog(`async session.ask failed: ${error instanceof Error ? error.message : String(error)}`))
+          return { id: req.id, ok: true as const, data: { sessionId, accepted: true } }
+        }
         case "daemon.stop": {
           this.stop()
           const response = { id: request.id, ok: true as const, data: { stopped: true } }

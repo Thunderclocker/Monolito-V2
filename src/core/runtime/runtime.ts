@@ -1,8 +1,9 @@
+import { type Socket } from "node:net"
 import { execFile } from "node:child_process"
 import { existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { promisify } from "node:util"
-import { getPaths, type AgentEvent, type SessionRecord } from "../ipc/protocol.ts"
+import { getPaths, encodeEnvelope, type AgentEvent, type SessionRecord } from "../ipc/protocol.ts"
 import { createMcpClient, getDefaultMcpServers, type McpClient, type ResolvedMcpServerConfig } from "../mcp/client.ts"
 import {
   appendActionLog,
@@ -2570,6 +2571,25 @@ export class MonolitoV2Runtime {
 
   async queryConfig(action?: string, field?: string, value?: string) {
     return await this.runConfig(action ? [action, field, value].filter(Boolean) as string[] : [])
+  }
+
+  async askAgent(
+    sessionId: string,
+    prompt: string,
+    options?: { stream?: boolean; socket?: Socket },
+  ) {
+    const sendEvent = (event: AgentLoopEvent) => {
+      if (options?.socket && !options.socket.destroyed) {
+        options.socket.write(encodeEnvelope({ kind: "event", payload: { type: "event", sessionId, event } as any }))
+      }
+    }
+    await this.processMessage(sessionId, prompt, {
+      onAgentLoopEvent: (event) => {
+        if (options?.stream && options?.socket) {
+          sendEvent(event)
+        }
+      },
+    })
   }
 }
 

@@ -3,7 +3,8 @@ import { formatSessionRow, ToolUseRenderer } from "../../core/renderer/toolRende
 import { DaemonClient } from "../../core/client/daemonClient.ts"
 import type { CliArgs } from "./args.ts"
 import { formatHistory, writeBlock, writeLine } from "./output.ts"
-import { openInteractiveSession, runOneShot } from "./session.ts"
+import { openInteractiveSession, runOneShot, ensureCliSession, waitForTurnCompletion } from "./session.ts"
+import { stdout } from "node:process"
 
 function renderEventLog(events: AgentEvent[]) {
   const renderer = new ToolUseRenderer()
@@ -18,8 +19,9 @@ export async function runCliCommand(client: DaemonClient, args: CliArgs) {
   const { command, rest, prompt } = args
 
   if (command === "--help") {
-    writeLine("monolito [sessions|resume <id>|logs <id>|status <id>|history <id> [limit]|-p <prompt>]")
+    writeLine("monolito [sessions|resume <id>|logs <id>|status <id>|history <id>|ask <prompt> [limit]|-p <prompt>]")
     writeLine("Without arguments, opens the Monolito terminal client and starts the daemon if needed.")
+    writeLine("  ask <prompt>   Send a prompt to Monolito via Unix socket (no TUI)")
     return
   }
 
@@ -62,6 +64,27 @@ export async function runCliCommand(client: DaemonClient, args: CliArgs) {
       return
     }
     await openInteractiveSession(client, sessionId)
+    return
+  }
+
+  if (command === "ask") {
+    const text = (rest.join(" ") || prompt || "").trim()
+    if (!text) {
+      writeLine("Usage: monolito ask \"your prompt here\"")
+      return
+    }
+    const renderer = new ToolUseRenderer()
+    const session = await ensureCliSession(client, undefined)
+    await client.subscribe(session.id)
+    const unsubscribe = client.onEvent((event: AgentEvent) => {
+      if (event.sessionId !== session.id) return
+      const line = renderer.render(event)
+      if (line) stdout.write(`${line}\n`)
+    })
+    const completion = waitForTurnCompletion(client, session.id)
+    await client.sendMessage(session.id, text)
+    await completion
+    unsubscribe()
     return
   }
 
