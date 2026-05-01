@@ -1,11 +1,24 @@
 import { execFile } from "node:child_process"
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync } from "node:fs"
+import { join } from "node:path"
 import { promisify } from "node:util"
 import type { VisionConfig } from "../channels/config.ts"
+import { MONOLITO_ROOT } from "../system/root.ts"
 
 const execFileAsync = promisify(execFile)
 
 export type ManagedVisionStatus = "running" | "stopped" | "not_found" | "docker_error"
+
+export type ManagedVisionContainerInfo = {
+  id: string
+  name: string
+  image: string
+  status: string
+  ports: string
+  restartPolicy?: string
+  hasModelVolume?: boolean
+  isOurs: boolean
+}
 
 export function normalizeVisionConfig(config?: Partial<VisionConfig>): VisionConfig {
   const port = typeof config?.port === "number" && Number.isFinite(config.port) && config.port > 0 && config.port <= 65535
@@ -24,6 +37,10 @@ export function normalizeVisionConfig(config?: Partial<VisionConfig>): VisionCon
 
 export function getManagedVisionBaseUrl(config: VisionConfig) {
   return `http://127.0.0.1:${config.port}`
+}
+
+function getManagedVisionModelDir() {
+  return join(MONOLITO_ROOT, "vision-ollama")
 }
 
 async function probeManagedVision(config: VisionConfig) {
@@ -49,6 +66,72 @@ export async function getManagedVisionStatus(config: VisionConfig): Promise<Mana
     return status.startsWith("Up") ? "running" : "stopped"
   } catch {
     return "docker_error"
+  }
+}
+
+async function inspectVisionContainer(name: string): Promise<{ restartPolicy: string | null; hasModelVolume: boolean }> {
+  try {
+    const { stdout: restartStdout } = await execFileAsync("docker", [
+      "inspect",
+      "--format", "{{.HostConfig.RestartPolicy.Name}}",
+      name,
+    ], { timeout: 10_000 })
+    const { stdout: mountsStdout } = await execFileAsync("docker", [
+      "inspect",
+      "--format", "{{range .Mounts}}{{.Destination}}={{.Source}};{{end}}",
+      name,
+    ], { timeout: 10_000 })
+    return {
+      restartPolicy: restartStdout.trim() || null,
+      hasModelVolume: mountsStdout.includes("/root/.ollama="),
+    }
+  } catch {
+    return { restartPolicy: null, hasModelVolume: false }
+  }
+}
+
+async function ensureRestartPolicy(name: string) {
+  const info = await inspectVisionContainer(name)
+  if (info.restartPolicy === "unless-stopped") return false
+  await execFileAsync("docker", ["update", "--restart", "unless-stopped", name], { timeout: 15_000 })
+  return true
+}
+
+export async function findManagedVisionContainers(config: VisionConfig): Promise<ManagedVisionContainerInfo[]> {
+  try {
+    const { stdout: byImage } = await execFileAsync("docker", [
+      "ps", "-a",
+      "--filter", "ancestor=ollama/ollama",
+      "--format", "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}",
+    ], { timeout: 10_000 })
+    const { stdout: byName } = await execFileAsync("docker", [
+      "ps", "-a",
+      "--filter", `name=${config.containerName}`,
+      "--format", "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}",
+    ], { timeout: 10_000 })
+
+    const seen = new Set<string>()
+    const containers: ManagedVisionContainerInfo[] = []
+    for (const line of [...byImage.trim().split("\n"), ...byName.trim().split("\n")]) {
+      if (!line.trim()) continue
+      const [id, name, image, status, ports] = line.split("\t")
+      if (!id || seen.has(id)) continue
+      seen.add(id)
+      const inspected = await inspectVisionContainer(name ?? id)
+      containers.push({
+        id: id.slice(0, 12),
+        name: name ?? "",
+        image: image ?? "",
+        status: status ?? "",
+        ports: ports ?? "",
+        restartPolicy: inspected.restartPolicy ?? undefined,
+        hasModelVolume: inspected.hasModelVolume,
+        isOurs: name === config.containerName,
+      })
+    }
+    return containers
+  } catch {
+    return []
   }
 }
 
@@ -90,6 +173,28 @@ export async function deployManagedVisionContainer(config: VisionConfig): Promis
 
   const status = await getManagedVisionStatus(config)
   if (status === "running" && await probeManagedVision(config)) {
+    const inspected = await inspectVisionContainer(config.containerName)
+    if (!inspected.hasModelVolume) {
+      const removed = await removeManagedVisionContainer(config)
+      if (!removed.ok) return { ok: false, message: `Vision necesita recrearse con cache persistente, pero no pudo removerse: ${removed.message}`, baseUrl }
+    } else {
+      const repaired = await ensureRestartPolicy(config.containerName).catch(() => false)
+      try {
+        await execFileAsync("docker", ["exec", config.containerName, "ollama", "pull", config.model], { timeout: 300_000 })
+        return {
+          ok: true,
+          message: `Vision ya está corriendo en ${baseUrl}. Modelo ${config.model} disponible.${repaired ? " Restart policy reparada a unless-stopped." : ""}`,
+          baseUrl,
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        return { ok: false, message: `Vision está corriendo pero no pudo preparar el modelo ${config.model}: ${message}`, baseUrl }
+      }
+    }
+  }
+
+  let currentStatus = await getManagedVisionStatus(config)
+  if (currentStatus === "running" && await probeManagedVision(config)) {
     try {
       await execFileAsync("docker", ["exec", config.containerName, "ollama", "pull", config.model], { timeout: 300_000 })
       return { ok: true, message: `Vision ya está corriendo en ${baseUrl}. Modelo ${config.model} disponible.`, baseUrl }
@@ -98,28 +203,46 @@ export async function deployManagedVisionContainer(config: VisionConfig): Promis
       return { ok: false, message: `Vision está corriendo pero no pudo preparar el modelo ${config.model}: ${message}`, baseUrl }
     }
   }
+  if (currentStatus === "running") {
+    const removed = await removeManagedVisionContainer(config)
+    if (!removed.ok) return { ok: false, message: `Vision está corriendo pero no responde; no pudo recrearse: ${removed.message}`, baseUrl }
+    currentStatus = await getManagedVisionStatus(config)
+  }
 
-  if (status === "stopped") {
+  if (currentStatus === "stopped") {
+    const inspected = await inspectVisionContainer(config.containerName)
+    if (!inspected.hasModelVolume) {
+      await removeManagedVisionContainer(config)
+    } else {
+      await ensureRestartPolicy(config.containerName).catch(() => false)
+    }
+  }
+
+  const nextStatus = await getManagedVisionStatus(config)
+  if (nextStatus === "stopped") {
     try {
       await execFileAsync("docker", ["start", config.containerName], { timeout: 30_000 })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       return { ok: false, message: `No se pudo iniciar el contenedor Vision: ${message}`, baseUrl }
     }
-  } else if (status === "not_found") {
+  } else if (nextStatus === "not_found") {
+    const modelDir = getManagedVisionModelDir()
+    mkdirSync(modelDir, { recursive: true })
     try {
       await execFileAsync("docker", [
         "run", "-d",
         "--name", config.containerName,
         "-p", `127.0.0.1:${config.port}:11434`,
         "--restart", "unless-stopped",
+        "-v", `${modelDir}:/root/.ollama`,
         "ollama/ollama",
       ], { timeout: 120_000 })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       return { ok: false, message: `No se pudo crear el contenedor Vision: ${message}`, baseUrl }
     }
-  } else if (status === "docker_error") {
+  } else if (nextStatus === "docker_error") {
     return { ok: false, message: "Docker no pudo consultar el estado del contenedor Vision.", baseUrl }
   }
 

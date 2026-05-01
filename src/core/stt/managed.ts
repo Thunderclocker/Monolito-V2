@@ -14,6 +14,7 @@ export type ManagedSttContainerInfo = {
   name: string
   image: string
   status: string
+  restartPolicy?: string
   isOurs: boolean
 }
 
@@ -61,10 +62,12 @@ export function getManagedSttBaseUrl(config: SttConfig) {
 
 async function probeManagedStt(config: SttConfig) {
   try {
-    const response = await fetch(`${getManagedSttBaseUrl(config)}/docs`, {
+    const response = await fetch(`${getManagedSttBaseUrl(config)}/openapi.json`, {
       signal: AbortSignal.timeout(4_000),
     })
-    return response.ok
+    if (!response.ok) return false
+    const payload = await response.json().catch(() => null) as { paths?: Record<string, unknown> } | null
+    return Boolean(payload?.paths?.["/asr"])
   } catch {
     return false
   }
@@ -100,11 +103,13 @@ export async function findManagedSttContainers(config: SttConfig): Promise<Manag
       const [id, name, image, status] = line.split("\t")
       if (!id || seen.has(id)) continue
       seen.add(id)
+      const restartPolicy = await getContainerRestartPolicy(name ?? id)
       containers.push({
         id: id.slice(0, 12),
         name: name ?? "",
         image: image ?? "",
         status: status ?? "",
+        restartPolicy: restartPolicy ?? undefined,
         isOurs: name === config.containerName,
       })
     }
@@ -112,6 +117,26 @@ export async function findManagedSttContainers(config: SttConfig): Promise<Manag
   } catch {
     return []
   }
+}
+
+async function getContainerRestartPolicy(name: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync("docker", [
+      "inspect",
+      "--format", "{{.HostConfig.RestartPolicy.Name}}",
+      name,
+    ], { timeout: 10_000 })
+    return stdout.trim() || null
+  } catch {
+    return null
+  }
+}
+
+async function ensureRestartPolicy(name: string) {
+  const policy = await getContainerRestartPolicy(name)
+  if (policy === "unless-stopped") return false
+  await execFileAsync("docker", ["update", "--restart", "unless-stopped", name], { timeout: 15_000 })
+  return true
 }
 
 export async function getManagedSttStatus(config: SttConfig): Promise<ManagedSttStatus> {
@@ -135,7 +160,7 @@ export async function listManagedSttContainers(config: SttConfig): Promise<strin
   return [
     `Contenedores STT encontrados: ${containers.length}`,
     ...containers.map(container =>
-      `- ${container.name || "(sin nombre)"} | ${container.id} | ${container.image} | ${container.status}${container.isOurs ? " | managed" : ""}`),
+      `- ${container.name || "(sin nombre)"} | ${container.id} | ${container.image} | ${container.status} | restart=${container.restartPolicy ?? "unknown"}${container.isOurs ? " | managed" : ""}`),
   ].join("\n")
 }
 
@@ -182,7 +207,12 @@ export async function deployManagedSttContainer(config: SttConfig): Promise<{ ok
   const baseUrl = getManagedSttBaseUrl(config)
   const status = await getManagedSttStatus(config)
   if (status === "running" && await probeManagedStt(config)) {
-    return { ok: true, message: `STT ya está corriendo en ${baseUrl}.`, baseUrl }
+    const repaired = await ensureRestartPolicy(config.containerName).catch(() => false)
+    return {
+      ok: true,
+      message: `STT ya está corriendo en ${baseUrl}.${repaired ? " Restart policy reparada a unless-stopped." : ""}`,
+      baseUrl,
+    }
   }
 
   const containers = await findManagedSttContainers(config)

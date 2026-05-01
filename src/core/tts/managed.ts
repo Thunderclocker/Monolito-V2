@@ -12,6 +12,7 @@ export type ManagedTtsContainerInfo = {
   name: string
   image: string
   status: string
+  restartPolicy?: string
   isOurs: boolean
 }
 
@@ -97,11 +98,13 @@ export async function findManagedTtsContainers(config: TtsConfig): Promise<Manag
       const [id, name, image, status] = line.split("\t")
       if (!id || seen.has(id)) continue
       seen.add(id)
+      const restartPolicy = await getContainerRestartPolicy(name ?? id)
       containers.push({
         id: id.slice(0, 12),
         name: name ?? "",
         image: image ?? "",
         status: status ?? "",
+        restartPolicy: restartPolicy ?? undefined,
         isOurs: name === config.containerName,
       })
     }
@@ -109,6 +112,26 @@ export async function findManagedTtsContainers(config: TtsConfig): Promise<Manag
   } catch {
     return []
   }
+}
+
+async function getContainerRestartPolicy(name: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync("docker", [
+      "inspect",
+      "--format", "{{.HostConfig.RestartPolicy.Name}}",
+      name,
+    ], { timeout: 10_000 })
+    return stdout.trim() || null
+  } catch {
+    return null
+  }
+}
+
+async function ensureRestartPolicy(name: string) {
+  const policy = await getContainerRestartPolicy(name)
+  if (policy === "unless-stopped") return false
+  await execFileAsync("docker", ["update", "--restart", "unless-stopped", name], { timeout: 15_000 })
+  return true
 }
 
 export async function getManagedTtsStatus(config: TtsConfig): Promise<ManagedTtsStatus> {
@@ -132,7 +155,7 @@ export async function listManagedTtsContainers(config: TtsConfig): Promise<strin
   return [
     `Contenedores TTS encontrados: ${containers.length}`,
     ...containers.map(container =>
-      `- ${container.name || "(sin nombre)"} | ${container.id} | ${container.image} | ${container.status}${container.isOurs ? " | managed" : ""}`),
+      `- ${container.name || "(sin nombre)"} | ${container.id} | ${container.image} | ${container.status} | restart=${container.restartPolicy ?? "unknown"}${container.isOurs ? " | managed" : ""}`),
   ].join("\n")
 }
 
@@ -179,7 +202,12 @@ export async function deployManagedTtsContainer(config: TtsConfig): Promise<{ ok
   const baseUrl = getManagedTtsBaseUrl(config)
   const status = await getManagedTtsStatus(config)
   if (status === "running" && await probeManagedTts(config)) {
-    return { ok: true, message: `TTS ya está corriendo en ${baseUrl}.`, baseUrl }
+    const repaired = await ensureRestartPolicy(config.containerName).catch(() => false)
+    return {
+      ok: true,
+      message: `TTS ya está corriendo en ${baseUrl}.${repaired ? " Restart policy reparada a unless-stopped." : ""}`,
+      baseUrl,
+    }
   }
 
   const containers = await findManagedTtsContainers(config)

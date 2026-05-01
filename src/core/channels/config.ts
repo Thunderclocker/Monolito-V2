@@ -64,6 +64,8 @@ type LooseChannelsConfig = ChannelsConfig & {
 
 const CHANNELS_TOP_LEVEL_KEYS = new Set(["telegram", "tts", "stt", "vision"])
 const TELEGRAM_KEYS = new Set(["token", "enabled", "allowedChats"])
+const TTS_KEYS = new Set(["baseUrl", "apiKey", "voice", "model", "responseFormat", "speed", "managed", "autoDeploy", "port", "image", "containerName"])
+const STT_KEYS = new Set(["managed", "autoDeploy", "autoTranscribe", "port", "image", "containerName", "engine", "model", "language", "vadFilter"])
 const VISION_KEYS = new Set(["managed", "autoDeploy", "port", "containerName", "model"])
 
 function hasOwn(object: Record<string, unknown>, key: string) {
@@ -105,6 +107,28 @@ function assertValidChannelsConfigForWrite(config: unknown) {
     const unknownTelegramKeys = Object.keys(telegram).filter(key => !TELEGRAM_KEYS.has(key) && !aliasKeys.has(key))
     if (unknownTelegramKeys.length > 0) {
       throw new Error(`CONF_CHANNELS.telegram contains unsupported keys: ${unknownTelegramKeys.join(", ")}`)
+    }
+  }
+
+  if (record.tts !== undefined) {
+    if (!record.tts || typeof record.tts !== "object" || Array.isArray(record.tts)) {
+      throw new Error("CONF_CHANNELS.tts must be an object.")
+    }
+    const tts = record.tts as Record<string, unknown>
+    const unknownTtsKeys = Object.keys(tts).filter(key => !TTS_KEYS.has(key))
+    if (unknownTtsKeys.length > 0) {
+      throw new Error(`CONF_CHANNELS.tts contains unsupported keys: ${unknownTtsKeys.join(", ")}`)
+    }
+  }
+
+  if (record.stt !== undefined) {
+    if (!record.stt || typeof record.stt !== "object" || Array.isArray(record.stt)) {
+      throw new Error("CONF_CHANNELS.stt must be an object.")
+    }
+    const stt = record.stt as Record<string, unknown>
+    const unknownSttKeys = Object.keys(stt).filter(key => !STT_KEYS.has(key))
+    if (unknownSttKeys.length > 0) {
+      throw new Error(`CONF_CHANNELS.stt contains unsupported keys: ${unknownSttKeys.join(", ")}`)
     }
   }
 
