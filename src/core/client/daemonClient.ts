@@ -167,6 +167,17 @@ export class DaemonClient {
     return await this.request("query.config", { action, field, value })
   }
 
+  async runDaemonCommand(command: string): Promise<string> {
+    await this.connect()
+    const id = randomUUID()
+    const request = { id, type: "daemon.command", command }
+    const response = await new Promise<{ output: string }>((resolve, reject) => {
+      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject })
+      this.socket!.write(encodeEnvelope({ kind: "request", payload: request as never }))
+    })
+    return response.output
+  }
+
   async askAgent(prompt: string, options?: { sessionId?: string; stream?: boolean; onEvent?: (event: AgentEvent) => void }) {
     await this.connect()
     const id = randomUUID()
@@ -229,4 +240,5 @@ type ResponseRequestType =
   | "query.model"
   | "query.config"
   | "session.ask"
+  | "daemon.command"
   | "session.abort"

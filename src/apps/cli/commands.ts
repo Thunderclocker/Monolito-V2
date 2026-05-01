@@ -19,9 +19,10 @@ export async function runCliCommand(client: DaemonClient, args: CliArgs) {
   const { command, rest, prompt } = args
 
   if (command === "--help") {
-    writeLine("monolito [sessions|resume <id>|logs <id>|status <id>|history <id>|ask <prompt> [limit]|-p <prompt>]")
+    writeLine("monolito [sessions|resume <id>|logs <id>|status <id>|history <id>|ask <prompt>|/command [args]] [-p <prompt>]")
     writeLine("Without arguments, opens the Monolito terminal client and starts the daemon if needed.")
-    writeLine("  ask <prompt>   Send a prompt to Monolito via Unix socket (no TUI)")
+    writeLine("  ask <prompt>    Send a prompt to Monolito via Unix socket (no TUI)")
+    writeLine("  /command        Run daemon command directly: /help /update /reset /model /channels")
     return
   }
 
@@ -59,7 +60,13 @@ export async function runCliCommand(client: DaemonClient, args: CliArgs) {
   if (command === "resume") {
     const sessionId = rest[0]
     if (!sessionId) throw new Error("resume requires a session id")
-    if (prompt) {
+if (command?.startsWith("/")) {
+    const output = await client.runDaemonCommand(command)
+    writeLine(output)
+    return
+  }
+
+  if (prompt) {
       await runOneShot(client, prompt, sessionId)
       return
     }

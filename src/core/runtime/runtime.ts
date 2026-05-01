@@ -2573,6 +2573,15 @@ export class MonolitoV2Runtime {
     return await this.runConfig(action ? [action, field, value].filter(Boolean) as string[] : [])
   }
 
+  async runDaemonCommand(command: string): Promise<string> {
+    const sessionId = "daemon-cmd"
+    const session = this.ensureSession(sessionId, "Daemon Command")
+    const pid = session.id
+    const reply = await this.runSlashCommand(pid, command)
+    if (reply === "__SESSION_RESET__") return "Command processed."
+    return reply
+  }
+
   async askAgent(
     sessionId: string,
     prompt: string,

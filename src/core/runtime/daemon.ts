@@ -464,6 +464,11 @@ export class MonolitoV2Daemon {
         case "session.abort":
           this.runtime.abortSession(request.sessionId)
           return { id: request.id, ok: true as const, data: { aborted: true } }
+        case "daemon.command": {
+          const req = request as { id: string; command: string }
+          const reply = await this.runtime.runDaemonCommand(req.command)
+          return { id: req.id, ok: true as const, data: { output: reply } }
+        }
         case "session.ask": {
           const req = request as { id: string; sessionId?: string; prompt: string; stream?: boolean }
           const session = this.runtime.ensureSession(undefined, "ask")
