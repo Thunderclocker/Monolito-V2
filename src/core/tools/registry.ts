@@ -71,6 +71,13 @@ const TELEGRAM_AUDIO_FORMATS = new Set(["mp3", "m4a", "aac"])
 const TELEGRAM_VOICE_FORMATS = new Set(["ogg", "opus"])
 const TTS_RESPONSE_FORMATS = new Set(["mp3", "opus", "aac", "flac", "wav", "pcm"])
 
+export function formatToolError(error: unknown): string {
+  return JSON.stringify({
+    success: false,
+    error: error instanceof Error ? error.message : String(error),
+  })
+}
+
 const configWingZod = z.enum([...CONFIG_WING_ORDER] as [ConfigWingName, ...ConfigWingName[]])
 const bootWingZod = z.enum([...BOOT_WING_ORDER] as [string, ...string[]])
 const strictRecordZod = z.record(z.string(), z.unknown())
@@ -253,6 +260,19 @@ export type ToolDefinition = {
   concurrencySafe?: boolean | ((input: Record<string, unknown>) => boolean)
   validate?: (input: Record<string, unknown>) => string | null
   run: (input: Record<string, unknown>, context: ToolContext) => Promise<unknown>
+}
+
+function withSafeToolFailure(tool: ToolDefinition): ToolDefinition {
+  return {
+    ...tool,
+    async run(input, context) {
+      try {
+        return await tool.run(input, context)
+      } catch (error) {
+        return formatToolError(error)
+      }
+    },
+  }
 }
 
 const emptyInputSchema: ToolInputSchema = {
@@ -765,7 +785,7 @@ async function fetchWithCurl(url: string) {
   }
 }
 
-const tools: ToolDefinition[] = [
+const rawTools: ToolDefinition[] = [
   {
     name: "QuerySessionStatus",
     permissionTier: "read",
@@ -780,8 +800,8 @@ const tools: ToolDefinition[] = [
     concurrencySafe: true,
     async run(input, context) {
       const sessionId = optionalString(input, "sessionId") ?? context.sessionId
-      if (!sessionId) throw new Error("sessionId is required")
-      if (!context.querySessionStatus) throw new Error("Session status query is not available in this context")
+      if (!sessionId) return formatToolError("sessionId is required")
+      if (!context.querySessionStatus) return formatToolError("Session status query is not available in this context")
       return context.querySessionStatus(sessionId)
     },
   },
@@ -792,7 +812,7 @@ const tools: ToolDefinition[] = [
     inputSchema: emptyInputSchema,
     concurrencySafe: true,
     async run(_input, context) {
-      if (!context.queryCost) throw new Error("Cost query is not available in this context")
+      if (!context.queryCost) return formatToolError("Cost query is not available in this context")
       return context.queryCost()
     },
   },
@@ -810,8 +830,8 @@ const tools: ToolDefinition[] = [
     concurrencySafe: true,
     async run(input, context) {
       const sessionId = optionalString(input, "sessionId") ?? context.sessionId
-      if (!sessionId) throw new Error("sessionId is required")
-      if (!context.queryStats) throw new Error("Session stats query is not available in this context")
+      if (!sessionId) return formatToolError("sessionId is required")
+      if (!context.queryStats) return formatToolError("Session stats query is not available in this context")
       return context.queryStats(sessionId)
     },
   },
@@ -837,8 +857,8 @@ const tools: ToolDefinition[] = [
     async run(input, context) {
       const sessionId = optionalString(input, "sessionId") ?? context.sessionId
       const maxMessages = optionalNumber(input, "maxMessages")
-      if (!sessionId) throw new Error("sessionId is required")
-      if (!context.compactSession) throw new Error("Session compaction is not available in this context")
+      if (!sessionId) return formatToolError("sessionId is required")
+      if (!context.compactSession) return formatToolError("Session compaction is not available in this context")
       return context.compactSession(sessionId, maxMessages)
     },
   },
@@ -988,17 +1008,17 @@ const tools: ToolDefinition[] = [
       const original = readFileSync(file, "utf8")
       const matches = findStringOccurrences(original, oldString)
       const occurrences = matches.length
-      if (occurrences === 0) throw new Error(`old_string not found in ${path}`)
+      if (occurrences === 0) return formatToolError(`old_string not found in ${path}`)
       if (replaceAll && matchIndex !== undefined) {
-        throw new Error("match_index cannot be combined with replace_all=true")
+        return formatToolError("match_index cannot be combined with replace_all=true")
       }
       if (!replaceAll && occurrences > 1) {
         if (matchIndex === undefined) {
           const lineSummary = matches.map((match, index) => `${index}:${match.line}`).join(", ")
-          throw new Error(`old_string matched ${occurrences} times in ${path} at match_index:line ${lineSummary}; retry with match_index or set replace_all=true`)
+          return formatToolError(`old_string matched ${occurrences} times in ${path} at match_index:line ${lineSummary}; retry with match_index or set replace_all=true`)
         }
         if (!Number.isInteger(matchIndex) || matchIndex < 0 || matchIndex >= occurrences) {
-          throw new Error(`match_index ${matchIndex} is out of range for ${occurrences} matches in ${path}`)
+          return formatToolError(`match_index ${matchIndex} is out of range for ${occurrences} matches in ${path}`)
         }
       }
       let updated = original
@@ -1008,7 +1028,7 @@ const tools: ToolDefinition[] = [
         replaced = occurrences
       } else if (matchIndex !== undefined) {
         const match = matches[matchIndex]
-        if (!match) throw new Error(`match_index ${matchIndex} is out of range for ${occurrences} matches in ${path}`)
+        if (!match) return formatToolError(`match_index ${matchIndex} is out of range for ${occurrences} matches in ${path}`)
         updated = `${original.slice(0, match.index)}${newString}${original.slice(match.index + oldString.length)}`
         replaced = 1
       } else {
@@ -1379,7 +1399,7 @@ const tools: ToolDefinition[] = [
     async run(input, context) {
       const url = requireString(input, "url")
       if (!context.sessionId?.startsWith("agent-") && /\.(jpe?g|png|webp|gif|avif|svg)(\?.*)?$/i.test(url)) {
-        throw new Error("Action denied. Use delegate_background_task instead.")
+        return formatToolError("Action denied. Use delegate_background_task instead.")
       }
       const prompt = requireString(input, "prompt")
       const startedAt = Date.now()
@@ -1499,7 +1519,7 @@ const tools: ToolDefinition[] = [
     concurrencySafe: true,
     async run(_input, context) {
       if (!context.runtime?.getSystemStatus) {
-        throw new Error("system_status is unavailable outside the Monolito runtime.")
+        return formatToolError("system_status is unavailable outside the Monolito runtime.")
       }
       return JSON.stringify(await context.runtime.getSystemStatus())
     },
@@ -1521,7 +1541,7 @@ const tools: ToolDefinition[] = [
     validate: input => typeof input.reason === "string" && input.reason.trim().length > 0 ? null : "reason must be a non-empty string",
     async run(input, context) {
       if (!context.runtime?.gracefulRestart) {
-        throw new Error("system_reboot is unavailable outside the Monolito runtime.")
+        return formatToolError("system_reboot is unavailable outside the Monolito runtime.")
       }
       const reason = requireString(input, "reason").trim()
       context.runtime.gracefulRestart(reason)
@@ -1626,10 +1646,10 @@ const tools: ToolDefinition[] = [
       const stt = normalizeSttConfig(config.stt)
       if (stt.managed && stt.autoDeploy) {
         const deploy = await deployManagedSttContainer(stt)
-        if (!deploy.ok) throw new Error(deploy.message)
+        if (!deploy.ok) return formatToolError(deploy.message)
       }
       const result = await transcribeManagedAudioFile(path, stt)
-      if (!result.ok) throw new Error(result.error ?? "STT transcription failed")
+      if (!result.ok) return formatToolError(result.error ?? "STT transcription failed")
       return result
     },
   },
@@ -1765,19 +1785,19 @@ const tools: ToolDefinition[] = [
         baseUrl = getManagedTtsBaseUrl(tts)
         if (tts.autoDeploy) {
           const deploy = await deployManagedTtsContainer(tts)
-          if (!deploy.ok) throw new Error(`TTS managed service unavailable and auto-deploy failed: ${deploy.message}`)
+          if (!deploy.ok) return formatToolError(`TTS managed service unavailable and auto-deploy failed: ${deploy.message}`)
         }
       }
       if (!baseUrl && await getManagedTtsStatus(tts) === "running") {
         baseUrl = getManagedTtsBaseUrl(tts)
       }
       if (!baseUrl) {
-        throw new Error("TTS no está configurado. Usá /config set tts_base_url <url> para configurar una API TTS (como la de MiniMax) o activá managed TTS con /config set tts_managed true.")
+        return formatToolError("TTS no está configurado. Usá /config set tts_base_url <url> para configurar una API TTS (como la de MiniMax) o activá managed TTS con /config set tts_managed true.")
       }
 
       const isTtsApiConfigured = baseUrl.length > 0 && (tts.apiKey || optionalString(input, "api_key"))
       if (!isTtsApiConfigured && !tts.managed) {
-        throw new Error("TTS no está configurado. Usá /config set tts_base_url <url> para configurar una API TTS o habilitá managed TTS.")
+        return formatToolError("TTS no está configurado. Usá /config set tts_base_url <url> para configurar una API TTS o habilitá managed TTS.")
       }
 
       const voice = optionalString(input, "voice") ?? tts.voice
@@ -1813,7 +1833,7 @@ const tools: ToolDefinition[] = [
 
       if (!response.ok) {
         const body = await response.text().catch(() => "")
-        throw new Error(`TTS request failed: HTTP ${response.status}${body ? ` - ${body.slice(0, 400)}` : ""}`)
+        return formatToolError(`TTS request failed: HTTP ${response.status}${body ? ` - ${body.slice(0, 400)}` : ""}`)
       }
 
       const buffer = Buffer.from(await response.arrayBuffer())
@@ -1857,7 +1877,7 @@ const tools: ToolDefinition[] = [
       const parseMode = optionalString(input, "parse_mode")
       const config = readChannelsConfig()
       if (!config.telegram?.enabled || !config.telegram.token) {
-        throw new Error("Telegram is not configured or not enabled. Use /channels to set it up.")
+        return formatToolError("Telegram is not configured or not enabled. Use /channels to set it up.")
       }
       const body: Record<string, unknown> = { chat_id: chatId, text }
       if (parseMode) body.parse_mode = parseMode
@@ -1869,7 +1889,7 @@ const tools: ToolDefinition[] = [
       })
       const data = await response.json() as { ok: boolean; result?: unknown; description?: string }
       if (!data.ok) {
-        throw new Error(`Telegram API error: ${data.description ?? response.status}`)
+        return formatToolError(`Telegram API error: ${data.description ?? response.status}`)
       }
       return { ok: true, chat_id: chatId, message: data.result }
     },
@@ -1908,7 +1928,7 @@ const tools: ToolDefinition[] = [
       const performer = optionalString(input, "performer")
       const config = readChannelsConfig()
       if (!config.telegram?.enabled || !config.telegram.token) {
-        throw new Error("Telegram is not configured or not enabled. Use /channels to set it up.")
+        return formatToolError("Telegram is not configured or not enabled. Use /channels to set it up.")
       }
       const params: Record<string, unknown> = { chat_id: chatId, audio }
       if (caption) params.caption = caption
@@ -1917,7 +1937,7 @@ const tools: ToolDefinition[] = [
       const data = isLocalPath(audio)
         ? await telegramApiCallWithFile(config.telegram.token, "sendAudio", "audio", audio, params)
         : await telegramApiCall(config.telegram.token, "sendAudio", params)
-      if (!data.ok) throw new Error(`Telegram API error: ${data.description ?? "sendAudio failed"}`)
+      if (!data.ok) return formatToolError(`Telegram API error: ${data.description ?? "sendAudio failed"}`)
       return { ok: true, chat_id: chatId, message: data.result }
     },
   },
@@ -1951,14 +1971,14 @@ const tools: ToolDefinition[] = [
       const caption = optionalString(input, "caption")
       const config = readChannelsConfig()
       if (!config.telegram?.enabled || !config.telegram.token) {
-        throw new Error("Telegram is not configured or not enabled. Use /channels to set it up.")
+        return formatToolError("Telegram is not configured or not enabled. Use /channels to set it up.")
       }
       const params: Record<string, unknown> = { chat_id: chatId, voice }
       if (caption) params.caption = caption
       const data = isLocalPath(voice)
         ? await telegramApiCallWithFile(config.telegram.token, "sendVoice", "voice", voice, params)
         : await telegramApiCall(config.telegram.token, "sendVoice", params)
-      if (!data.ok) throw new Error(`Telegram API error: ${data.description ?? "sendVoice failed"}`)
+      if (!data.ok) return formatToolError(`Telegram API error: ${data.description ?? "sendVoice failed"}`)
       return { ok: true, chat_id: chatId, message: data.result }
     },
   },
@@ -1990,7 +2010,7 @@ const tools: ToolDefinition[] = [
       const parseMode = optionalString(input, "parse_mode")
       const config = readChannelsConfig()
       if (!config.telegram?.enabled || !config.telegram.token) {
-        throw new Error("Telegram is not configured or not enabled. Use /channels to set it up.")
+        return formatToolError("Telegram is not configured or not enabled. Use /channels to set it up.")
       }
 
       if (isLocalPath(photo)) {
@@ -2003,7 +2023,7 @@ const tools: ToolDefinition[] = [
         if (parseMode) params.parse_mode = parseMode
         const data = await telegramApiCallWithFile(config.telegram.token, "sendPhoto", "photo", photo, params)
         if (data.ok) markPhotoAsSent(context.rootDir, resolvedPath)
-        if (!data.ok) throw new Error(`Telegram API error: ${data.description ?? "sendPhoto failed"}`)
+        if (!data.ok) return formatToolError(`Telegram API error: ${data.description ?? "sendPhoto failed"}`)
         return { ok: true, chat_id: chatId, message: data.result }
       }
 
@@ -2011,7 +2031,7 @@ const tools: ToolDefinition[] = [
       if (caption) params.caption = caption
       if (parseMode) params.parse_mode = parseMode
       const data = await telegramApiCall(config.telegram.token, "sendPhoto", params)
-      if (!data.ok) throw new Error(`Telegram API error: ${data.description ?? "sendPhoto failed"}`)
+      if (!data.ok) return formatToolError(`Telegram API error: ${data.description ?? "sendPhoto failed"}`)
       return { ok: true, chat_id: chatId, message: data.result }
     },
   },
@@ -2041,14 +2061,14 @@ const tools: ToolDefinition[] = [
       const caption = optionalString(input, "caption")
       const config = readChannelsConfig()
       if (!config.telegram?.enabled || !config.telegram.token) {
-        throw new Error("Telegram is not configured or not enabled. Use /channels to set it up.")
+        return formatToolError("Telegram is not configured or not enabled. Use /channels to set it up.")
       }
       const params: Record<string, unknown> = { chat_id: chatId, document }
       if (caption) params.caption = caption
       const data = isLocalPath(document)
         ? await telegramApiCallWithFile(config.telegram.token, "sendDocument", "document", document, params)
         : await telegramApiCall(config.telegram.token, "sendDocument", params)
-      if (!data.ok) throw new Error(`Telegram API error: ${data.description ?? "sendDocument failed"}`)
+      if (!data.ok) return formatToolError(`Telegram API error: ${data.description ?? "sendDocument failed"}`)
       return { ok: true, chat_id: chatId, message: data.result }
     },
   },
@@ -2070,10 +2090,10 @@ const tools: ToolDefinition[] = [
       const fileId = requireString(input, "file_id")
       const config = readChannelsConfig()
       if (!config.telegram?.enabled || !config.telegram.token) {
-        throw new Error("Telegram is not configured or not enabled. Use /channels to set it up.")
+        return formatToolError("Telegram is not configured or not enabled. Use /channels to set it up.")
       }
       const data = await telegramApiCall(config.telegram.token, "getFile", { file_id: fileId })
-      if (!data.ok) throw new Error(`Telegram API error: ${data.description ?? "getFile failed"}`)
+      if (!data.ok) return formatToolError(`Telegram API error: ${data.description ?? "getFile failed"}`)
       return { ok: true, file: data.result }
     },
   },
@@ -2097,7 +2117,7 @@ const tools: ToolDefinition[] = [
       const filename = optionalString(input, "filename")
       const config = readChannelsConfig()
       if (!config.telegram?.enabled || !config.telegram.token) {
-        throw new Error("Telegram is not configured or not enabled. Use /channels to set it up.")
+        return formatToolError("Telegram is not configured or not enabled. Use /channels to set it up.")
       }
       return await resolveTelegramDownload(config.telegram.token, fileId, context.rootDir, filename)
     },
@@ -2155,12 +2175,16 @@ const tools: ToolDefinition[] = [
     },
     concurrencySafe: true,
     async run(input, context) {
-      const wing = requireString(input, "wing")
-      if (!isBootWingName(wing)) throw new Error(`Unsupported BOOT wing: ${wing}`)
-      ensureBootWings(context.rootDir, context.profileId ?? "default")
-      const content = readBootWing(context.rootDir, wing, context.profileId ?? "default")
-      if (content == null) throw new Error(`BOOT wing ${wing} not found in profile ${context.profileId ?? "default"}`)
-      return { wing, content, profile: context.profileId ?? "default" }
+      try {
+        const wing = requireString(input, "wing")
+        if (!isBootWingName(wing)) return formatToolError(`Unsupported BOOT wing: ${wing}`)
+        ensureBootWings(context.rootDir, context.profileId ?? "default")
+        const content = readBootWing(context.rootDir, wing, context.profileId ?? "default")
+        if (content == null) return formatToolError(`BOOT wing ${wing} not found in profile ${context.profileId ?? "default"}`)
+        return { wing, content, profile: context.profileId ?? "default" }
+      } catch (error) {
+        return formatToolError(error)
+      }
     },
   },
   {
@@ -2179,12 +2203,16 @@ const tools: ToolDefinition[] = [
     concurrencySafe: false,
     validate: input => validateZod(bootWriteInputZod, input),
     async run(input, context) {
-      const parsed = parseZod(bootWriteInputZod, input, "BootWrite input")
-      const wing = parsed.wing
-      const content = parsed.content
-      if (!isBootWingName(wing)) throw new Error(`Unsupported BOOT wing: ${wing}`)
-      const result = writeBootWing(context.rootDir, wing, content, context.profileId ?? "default")
-      return { wing, ok: true, changed: result.changed, bytes: result.bytes, profile: context.profileId ?? "default" }
+      try {
+        const parsed = parseZod(bootWriteInputZod, input, "BootWrite input")
+        const wing = parsed.wing
+        const content = parsed.content
+        if (!isBootWingName(wing)) return formatToolError(`Unsupported BOOT wing: ${wing}`)
+        const result = writeBootWing(context.rootDir, wing, content, context.profileId ?? "default")
+        return { wing, ok: true, changed: result.changed, bytes: result.bytes, profile: context.profileId ?? "default" }
+      } catch (error) {
+        return formatToolError(error)
+      }
     },
   },
   {
@@ -2281,7 +2309,7 @@ const tools: ToolDefinition[] = [
       try {
         results = await recallMemory(context.rootDir, wing, room, query, context.profileId, key)
       } catch (error) {
-        if (!query || !isEmbeddingsUnavailableError(error)) throw error
+        if (!query || !isEmbeddingsUnavailableError(error)) return formatToolError(error)
         semanticSearchActive = false
         warning = "La memoria semántica no está disponible en este momento; muestro memoria básica reciente."
         results = await recallMemory(context.rootDir, wing, room, undefined, context.profileId, key)
@@ -2536,12 +2564,12 @@ const tools: ToolDefinition[] = [
       const isolation = (optionalString(input, "isolation") as "none" | "worktree" | undefined) || "none"
       const injectedContext = requireString(input, "injected_context")
 
-      if (!context.orchestrator) throw new Error("Agent Orchestrator not available.")
+      if (!context.orchestrator) return formatToolError("Agent Orchestrator not available.")
 
       const parentSessionId = (context as any).sessionId
-      if (!parentSessionId) throw new Error("Parent Session ID not found.")
+      if (!parentSessionId) return formatToolError("Parent Session ID not found.")
       if (parentSessionId.startsWith("agent-")) {
-        throw new Error("Los sub-agentes no pueden spawnear otros agentes. Ejecutá la tarea directamente y devolvé los resultados.")
+        return formatToolError("Los sub-agentes no pueden spawnear otros agentes. Ejecutá la tarea directamente y devolvé los resultados.")
       }
 
       const spawned = await context.orchestrator.spawnAgent(parentSessionId, profileId, task, description, type, { isolation, injected_context: injectedContext })
@@ -2591,9 +2619,9 @@ const tools: ToolDefinition[] = [
     },
     concurrencySafe: true,
     async run(_input, context) {
-      if (!context.orchestrator) throw new Error("Agent Orchestrator not available.")
+      if (!context.orchestrator) return formatToolError("Agent Orchestrator not available.")
       const parentSessionId = (context as any).sessionId
-      if (!parentSessionId) throw new Error("Parent Session ID not found.")
+      if (!parentSessionId) return formatToolError("Parent Session ID not found.")
       return {
         ok: true,
         internal_tasks: context.orchestrator.getTaskSnapshot(parentSessionId),
@@ -2622,11 +2650,11 @@ const tools: ToolDefinition[] = [
       const description = optionalString(input, "description")
       const profileId = optionalString(input, "profileId") ?? context.profileId ?? "default"
 
-      if (!context.orchestrator) throw new Error("Agent Orchestrator not available.")
+      if (!context.orchestrator) return formatToolError("Agent Orchestrator not available.")
       const parentSessionId = (context as any).sessionId
-      if (!parentSessionId) throw new Error("Parent Session ID not found.")
+      if (!parentSessionId) return formatToolError("Parent Session ID not found.")
       if (parentSessionId.startsWith("agent-")) {
-        throw new Error("Los sub-agentes no pueden delegar tareas en background. Ejecutá la tarea directamente y devolvé los resultados.")
+        return formatToolError("Los sub-agentes no pueden delegar tareas en background. Ejecutá la tarea directamente y devolvé los resultados.")
       }
       const activeWorkers = context.orchestrator
         .getTaskSnapshot(parentSessionId)
@@ -2678,7 +2706,7 @@ const tools: ToolDefinition[] = [
     async run(input, context) {
       const to = requireString(input, "to")
       const message = requireString(input, "message")
-      if (!context.orchestrator) throw new Error("Agent Orchestrator not available.")
+      if (!context.orchestrator) return formatToolError("Agent Orchestrator not available.")
       await context.orchestrator.sendMessageToAgent(to, message)
       return { ok: true, message: `Message sent to agent ${to}.` }
     },
@@ -2698,7 +2726,7 @@ const tools: ToolDefinition[] = [
     concurrencySafe: true,
     async run(input, context) {
       const agentId = requireString(input, "agentId")
-      if (!context.orchestrator) throw new Error("Agent Orchestrator not available.")
+      if (!context.orchestrator) return formatToolError("Agent Orchestrator not available.")
       await context.orchestrator.stopAgent(agentId)
       return { ok: true, message: `Agent ${agentId} stopped.` }
     },
@@ -2759,7 +2787,7 @@ const tools: ToolDefinition[] = [
       const query = requireString(input, "query")
       const limit = optionalNumber(input, "limit") ?? 5
       const deploy = await deploySearxng()
-      if (!deploy.ok) throw new Error(`Error auto-desplegando SearxNG: ${deploy.message}`)
+      if (!deploy.ok) return formatToolError(`Error auto-desplegando SearxNG: ${deploy.message}`)
 
       // 3. Search
       const encoded = encodeURIComponent(query)
@@ -2809,20 +2837,20 @@ const tools: ToolDefinition[] = [
     validate: input => typeof input.url === "string" && input.url.trim().length > 0 ? null : "url must be a non-empty string",
     async run(input, context) {
       if (!context.sessionId?.startsWith("agent-")) {
-        throw new Error("REGLA ESTRICTA: Tareas visuales prohibidas en hilo principal. Debés delegar usando delegate_background_task.")
+        return formatToolError("REGLA ESTRICTA: Tareas visuales prohibidas en hilo principal. Debés delegar usando delegate_background_task.")
       }
       const url = requireString(input, "url")
       const config = readChannelsConfig()
       const vision = normalizeVisionConfig(config.vision)
       if (!vision.managed) {
-        throw new Error("La visión local no está habilitada en la configuración.")
+        return formatToolError("La visión local no está habilitada en la configuración.")
       }
 
       const response = await fetch(url, {
         signal: AbortSignal.timeout(15_000),
       })
       if (!response.ok) {
-        throw new Error(`Image download failed: HTTP ${response.status}`)
+        return formatToolError(`Image download failed: HTTP ${response.status}`)
       }
 
       const scratchpadDir = join(MONOLITO_ROOT, "scratchpad")
@@ -2832,17 +2860,17 @@ const tools: ToolDefinition[] = [
       writeFileSync(tmpPath, buffer)
 
       if (!existsSync(tmpPath) || statSync(tmpPath).size === 0) {
-        throw new Error("File validation failed: image could not be written or size is 0 bytes.")
+        return formatToolError("File validation failed: image could not be written or size is 0 bytes.")
       }
 
       let description: string
       try {
         description = await analyzeManagedImage(tmpPath, vision)
       } catch (error) {
-        if (!vision.autoDeploy || !isVisionConnectionFailure(error)) throw error
+        if (!vision.autoDeploy || !isVisionConnectionFailure(error)) return formatToolError(error)
         const deploy = await deployManagedVisionContainer(vision)
         if (!deploy.ok) {
-          throw new Error(`Local vision service unavailable and auto-deploy failed: ${deploy.message}`)
+          return formatToolError(`Local vision service unavailable and auto-deploy failed: ${deploy.message}`)
         }
         
         let attempts = 0
@@ -2853,7 +2881,7 @@ const tools: ToolDefinition[] = [
           } catch (retryError) {
             attempts++
             if (attempts >= 10 || !isVisionConnectionFailure(retryError)) {
-              throw new Error(`Local vision service failed to become ready after deploy: ${retryError instanceof Error ? retryError.message : String(retryError)}`)
+              return formatToolError(`Local vision service failed to become ready after deploy: ${retryError instanceof Error ? retryError.message : String(retryError)}`)
             }
             await new Promise(resolve => setTimeout(resolve, 3000))
           }
@@ -2883,7 +2911,7 @@ const tools: ToolDefinition[] = [
     },
     async run(input, context) {
       if (!context.sessionId?.startsWith("agent-")) {
-        throw new Error("REGLA ESTRICTA: Tareas visuales prohibidas en hilo principal. Debés delegar usando delegate_background_task.")
+        return formatToolError("REGLA ESTRICTA: Tareas visuales prohibidas en hilo principal. Debés delegar usando delegate_background_task.")
       }
       const url = optionalString(input, "url")
       const pathArg = optionalString(input, "path")
@@ -2897,7 +2925,7 @@ const tools: ToolDefinition[] = [
         else if (url.toLowerCase().endsWith(".gif")) mediaType = "image/gif"
         
         const response = await fetch(url, { signal: context.abortSignal })
-        if (!response.ok) throw new Error(`Error descargando imagen desde URL: HTTP ${response.status}`)
+        if (!response.ok) return formatToolError(`Error descargando imagen desde URL: HTTP ${response.status}`)
         buffer = Buffer.from(await response.arrayBuffer())
       } else if (pathArg) {
         if (pathArg.toLowerCase().endsWith(".png")) mediaType = "image/png"
@@ -2905,10 +2933,10 @@ const tools: ToolDefinition[] = [
         else if (pathArg.toLowerCase().endsWith(".gif")) mediaType = "image/gif"
         
         const absolutePath = resolve(context.cwd, pathArg)
-        if (!existsSync(absolutePath)) throw new Error(`Archivo no encontrado: ${absolutePath}`)
+        if (!existsSync(absolutePath)) return formatToolError(`Archivo no encontrado: ${absolutePath}`)
         buffer = readFileSync(absolutePath)
       } else {
-        throw new Error("Debes proporcionar 'url' o 'path'.")
+        return formatToolError("Debes proporcionar 'url' o 'path'.")
       }
 
       const base64Image = buffer.toString("base64")
@@ -2971,7 +2999,7 @@ const tools: ToolDefinition[] = [
 
         if (!response.ok) {
           const text = await response.text()
-          throw new Error(`Anthropic Vision API failed (${response.status}): ${text}`)
+          return formatToolError(`Anthropic Vision API failed (${response.status}): ${text}`)
         }
 
         const data = await response.json() as any
@@ -3012,7 +3040,7 @@ const tools: ToolDefinition[] = [
 
         if (!response.ok) {
           const text = await response.text()
-          throw new Error(`OpenAI Vision API failed (${response.status}): ${text}`)
+          return formatToolError(`OpenAI Vision API failed (${response.status}): ${text}`)
         }
 
         const data = await response.json() as any
@@ -3037,7 +3065,7 @@ const tools: ToolDefinition[] = [
     async run(input) {
       const query = requireString(input, "query")
       const deploy = await deploySearxng()
-      if (!deploy.ok) throw new Error(`Error auto-desplegando SearxNG: ${deploy.message}`)
+      if (!deploy.ok) return formatToolError(`Error auto-desplegando SearxNG: ${deploy.message}`)
       const searchUrl = `${SEARXNG_URL}/search?q=${encodeURIComponent(query)}&format=json`
 
       try {
@@ -3190,7 +3218,7 @@ const tools: ToolDefinition[] = [
         return { wing, value: redactSensitiveValue(readConfigWing(context.rootDir, wing)) }
       }
       const value = parseJsonStringValue(parsed.value)
-      if (value === undefined) throw new Error("value is required when action='write'")
+      if (value === undefined) return formatToolError("value is required when action='write'")
       const normalizedValue = normalizeConfigWingValue(wing, value)
       const result = writeConfigWing(context.rootDir, wing, normalizedValue as never)
       if (wing === "CONF_SYSTEM" || wing === "CONF_MODELS") {
@@ -3227,6 +3255,8 @@ const tools: ToolDefinition[] = [
     },
   },
 ]
+
+const tools: ToolDefinition[] = rawTools.map(withSafeToolFailure)
 
 function isValidJson(value: string) {
   try {
