@@ -92,7 +92,7 @@ import { normalizeVisionConfig } from "../vision/managed.ts"
 import { MONOLITO_ROOT } from "../system/root.ts"
 import { ToolExecutionError } from "../errors.ts"
 import { redactSensitiveText, redactSensitiveValue } from "../security/redact.ts"
-import type { DeliveryContext } from "./types.ts"
+import type { DeliveryContext, DeliveryHandler } from "./types.ts"
 
 type EventListener = (event: AgentEvent) => void
 
@@ -880,7 +880,6 @@ function sanitizeExternalAssistantText(sessionId: string, text: string, lastUser
   return safeText
 }
 
-const TELEGRAM_MESSAGE_LIMIT = 4096
 const ACK_PATTERNS = [
   /^ahí me pongo/i,
   /^dame un (rato|minuto)/i,
@@ -889,27 +888,6 @@ const ACK_PATTERNS = [
   /^(stopped|aborted|cancelled|killed)[.!]*$/i,
   /^recovery interceptor exhausted/i,
 ]
-
-function chunkTelegramMessage(text: string, maxLength = TELEGRAM_MESSAGE_LIMIT) {
-  const normalized = text.replace(/\r\n/g, "\n")
-  if (normalized.length <= maxLength) return [normalized]
-
-  const chunks: string[] = []
-  let remaining = normalized
-  while (remaining.length > maxLength) {
-    const candidate = remaining.slice(0, maxLength)
-    const splitAt = Math.max(
-      candidate.lastIndexOf("\n\n"),
-      candidate.lastIndexOf("\n"),
-      candidate.lastIndexOf(" "),
-    )
-    const boundary = splitAt > maxLength * 0.5 ? splitAt : maxLength
-    chunks.push(remaining.slice(0, boundary).trim())
-    remaining = remaining.slice(boundary).trimStart()
-  }
-  if (remaining.trim()) chunks.push(remaining.trim())
-  return chunks.filter(Boolean)
-}
 
 function sanitizeWorkerFailureNote(rawResult: string, status: string) {
   const normalized = rawResult.replace(/\s+/g, " ").trim()
@@ -925,16 +903,6 @@ function sanitizeWorkerFailureNote(rawResult: string, status: string) {
   return status === "killed"
     ? "Note: Worker was stopped before it could finish. Inform the user plainly."
     : `Note: Worker failed. Reason: ${normalized.slice(0, 300)}. Report this clearly to the user.`
-}
-
-async function sendTelegramMessage(token: string, chatId: string, text: string) {
-  for (const chunk of chunkTelegramMessage(text)) {
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text: chunk }),
-    })
-  }
 }
 
 function resolveDeliveryContext(sessionId: string, delivery?: DeliveryContext): DeliveryContext | undefined {
@@ -989,6 +957,8 @@ export class MonolitoV2Runtime {
   private currentBatchGroups = new Map<string, string>()
   private pendingBackgroundWakeups = new Map<string, { profileId: string }>()
   private pendingUserMessages = new Map<string, PendingSessionInput[]>()
+  private sessionDeliveryContexts = new Map<string, DeliveryContext>()
+  private deliveryHandlers = new Map<string, DeliveryHandler>()
 
   readonly orchestrator: AgentOrchestrator
 
@@ -1082,6 +1052,17 @@ export class MonolitoV2Runtime {
     return recovered
   }
 
+  registerDeliveryChannel(channel: string, handler: DeliveryHandler) {
+    const key = channel.trim().toLowerCase()
+    if (!key) throw new Error("Delivery channel name is required")
+    this.deliveryHandlers.set(key, handler)
+    return () => {
+      if (this.deliveryHandlers.get(key) === handler) {
+        this.deliveryHandlers.delete(key)
+      }
+    }
+  }
+
   private recordToolFailureStall(sessionId: string, toolName: string, message: string) {
     const key = `${toolName}::${message}`
     const current = this.toolStallState.get(sessionId)
@@ -1147,16 +1128,25 @@ export class MonolitoV2Runtime {
     this.flushPendingBackgroundWakeup(sessionId)
   }
 
+  private rememberDeliveryContext(sessionId: string, delivery?: DeliveryContext) {
+    if (!delivery) return
+    const channel = delivery.channel.trim().toLowerCase()
+    if (!channel || !delivery.targetId.trim()) return
+    this.sessionDeliveryContexts.set(sessionId, { ...delivery, channel })
+  }
+
   private async deliverText(sessionId: string, text: string, delivery?: DeliveryContext, logMessage = "Failed to deliver assistant text") {
     if (!text) return
-    const resolved = resolveDeliveryContext(sessionId, delivery)
+    const resolved = resolveDeliveryContext(sessionId, delivery ?? this.sessionDeliveryContexts.get(sessionId))
     if (!resolved) return
-    if (resolved.channel !== "telegram") return
+    const channel = resolved.channel.trim().toLowerCase()
+    const handler = this.deliveryHandlers.get(channel)
+    if (!handler) {
+      logger.warn(`No delivery handler registered for channel ${channel}`)
+      return
+    }
     try {
-      const config = readChannelsConfig()
-      if (config.telegram?.enabled && config.telegram.token) {
-        await sendTelegramMessage(config.telegram.token, resolved.targetId, text)
-      }
+      await handler(resolved.targetId, text, { ...resolved, channel })
     } catch (error) {
       logger.error(logMessage, error)
     }
@@ -1323,7 +1313,7 @@ export class MonolitoV2Runtime {
         })
         this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
 
-        await this.deliverText(sessionId, userFacingText, undefined, "Failed to send background reply to telegram")
+        await this.deliverText(sessionId, userFacingText, undefined, "Failed to deliver background reply")
       }
     } finally {
       clearTimeout(turnTimeout)
@@ -1415,6 +1405,7 @@ export class MonolitoV2Runtime {
   }
 
   async processMessage(sessionId: string, text: string, options?: { delivery?: DeliveryContext; onAgentLoopEvent?: (event: AgentLoopEvent) => void }) {
+    this.rememberDeliveryContext(sessionId, options?.delivery)
     if (this.activeSessions.has(sessionId)) {
       const queue = this.pendingUserMessages.get(sessionId) ?? []
       queue.push({ kind: "message", text, delivery: options?.delivery })
@@ -1449,6 +1440,7 @@ export class MonolitoV2Runtime {
   }
 
   async processSessionStartup(sessionId: string, prompt: string, options?: { logger?: Logger; maxTokens?: number; delivery?: DeliveryContext }) {
+    this.rememberDeliveryContext(sessionId, options?.delivery)
     const session = getSession(this.rootDir, sessionId)
     if (!session) throw new Error(`Session ${sessionId} not found`)
     const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
@@ -1494,6 +1486,7 @@ export class MonolitoV2Runtime {
   }
 
   async runTurn(sessionId: string, lastUserText: string, profileId = "default", options?: { logger?: Logger; cwd?: string; traceId?: string; maxTokens?: number; delivery?: DeliveryContext; onAgentLoopEvent?: (event: AgentLoopEvent) => void }) {
+    this.rememberDeliveryContext(sessionId, options?.delivery)
     return runWithContext(createSessionContext(sessionId), () => this.runTurnWithContext(sessionId, lastUserText, profileId, options))
   }
 
@@ -1541,7 +1534,7 @@ export class MonolitoV2Runtime {
           role: "assistant",
           durationMs: Date.now() - turnStartedAt,
         })
-        await this.deliverText(sessionId, reply, options?.delivery, "Failed to send slash-command reply to telegram")
+        await this.deliverText(sessionId, reply, options?.delivery, "Failed to deliver slash-command reply")
         await this.transitionState(sessionId, "idle")
 
         return { finalText: reply, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } }
@@ -1680,7 +1673,7 @@ export class MonolitoV2Runtime {
             usage: turn.usage,
           })
 
-          await this.deliverText(sessionId, userFacingText, options?.delivery, "Failed to send reply back to telegram")
+          await this.deliverText(sessionId, userFacingText, options?.delivery, "Failed to deliver assistant reply")
         }
         await this.transitionState(sessionId, turn.error ? "error" : "idle")
 
@@ -1697,7 +1690,7 @@ export class MonolitoV2Runtime {
         this.emit({ type: "error", sessionId, error: message })
         appendMessage(this.rootDir, sessionId, "assistant", message)
         this.emit({ type: "message.received", sessionId, role: "assistant", text: message })
-        await this.deliverText(sessionId, message, options?.delivery, "Failed to send timeout reply to telegram")
+        await this.deliverText(sessionId, message, options?.delivery, "Failed to deliver timeout reply")
         await this.transitionState(sessionId, "error")
         return {
           finalText: message,
@@ -1728,7 +1721,7 @@ export class MonolitoV2Runtime {
       this.emit({ type: "error", sessionId, error: message })
       appendMessage(this.rootDir, sessionId, "assistant", message)
       this.emit({ type: "message.received", sessionId, role: "assistant", text: message })
-      await this.deliverText(sessionId, message, options?.delivery, "Failed to send error reply to telegram")
+      await this.deliverText(sessionId, message, options?.delivery, "Failed to deliver error reply")
       await this.transitionState(sessionId, "error")
       return {
         finalText: message,
@@ -1837,7 +1830,7 @@ export class MonolitoV2Runtime {
           durationMs: Date.now() - turnStartedAt,
           usage: turn.usage,
         })
-        await this.deliverText(sessionId, userFacingText, options?.delivery, "Failed to send startup reply to telegram")
+        await this.deliverText(sessionId, userFacingText, options?.delivery, "Failed to deliver startup reply")
       }
       await this.transitionState(sessionId, turn.error ? "error" : "idle")
       return turn
@@ -1853,7 +1846,7 @@ export class MonolitoV2Runtime {
       this.emit({ type: "error", sessionId, error: message })
       appendMessage(this.rootDir, sessionId, "assistant", message)
       this.emit({ type: "message.received", sessionId, role: "assistant", text: message })
-      await this.deliverText(sessionId, message, options?.delivery, "Failed to send startup error reply to telegram")
+      await this.deliverText(sessionId, message, options?.delivery, "Failed to deliver startup error reply")
       await this.transitionState(sessionId, "error")
       throw error
     } finally {

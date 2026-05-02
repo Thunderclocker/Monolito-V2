@@ -10,6 +10,7 @@ import { deployManagedSttContainer, normalizeSttConfig, transcribeManagedAudioFi
 
 const logger = createLogger("channels")
 let activePoller: TelegramPoller | null = null
+let activeDeliveryUnregister: (() => void) | null = null
 const pendingTelegramInputs = new Map<number, { kind: "channels-token" | "channels-chats" | "websearch-test" }>()
 
 
@@ -361,8 +362,25 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
   const config = readChannelsConfig()
   process.stderr.write(`[ChannelManager] startChannels called. Telegram enabled: ${!!config.telegram?.enabled}\n`)
 
+  if (!config.telegram?.enabled || !config.telegram.token) {
+    activeDeliveryUnregister?.()
+    activeDeliveryUnregister = null
+  }
+
   if (config.telegram?.enabled && config.telegram.token) {
     logger.info("Starting Telegram integration...")
+    activeDeliveryUnregister?.()
+    activeDeliveryUnregister = runtime.registerDeliveryChannel("telegram", async (targetId, text) => {
+      const latestConfig = readChannelsConfig()
+      const telegram = latestConfig.telegram
+      if (!telegram?.enabled || !telegram.token) return
+      const chatId = Number(targetId)
+      if (!Number.isFinite(chatId) || chatId === 0) {
+        throw new Error(`Invalid Telegram delivery target: ${targetId}`)
+      }
+      await sendTelegramText(telegram.token, chatId, text)
+    })
+
     // Worker completion is routed back through the runtime coordinator. The
     // coordinator owns all user-facing Telegram replies so internal workers do
     // not speak directly to chats or leak orchestration details.
@@ -523,6 +541,8 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
 }
 
 export function stopChannels() {
+  activeDeliveryUnregister?.()
+  activeDeliveryUnregister = null
   if (activePoller) {
     logger.info("Stopping Telegram integration...")
     activePoller.stop()
