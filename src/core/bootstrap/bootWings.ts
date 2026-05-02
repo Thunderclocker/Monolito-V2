@@ -11,7 +11,7 @@ export const BOOT_WING_ORDER = [
 export type BootWingName = (typeof BOOT_WING_ORDER)[number]
 
 export type BootWingEntry = {
-  wing: BootWingName
+  wing: string
   content: string
   truncated: boolean
 }

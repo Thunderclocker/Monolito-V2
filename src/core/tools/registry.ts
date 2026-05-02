@@ -23,6 +23,9 @@ import {
   createProfile,
   readBootWing,
   writeBootWing,
+  listBootWings,
+  createBootWing,
+  bootWingExists,
   readCanonicalMemory,
   writeCanonicalMemory,
   ensureBootWings,
@@ -36,7 +39,6 @@ import { isEmbeddingsUnavailableError } from "../session/embeddings.ts"
 import { type AgentOrchestrator } from "../runtime/orchestrator.ts"
 import { redactSensitiveValue } from "../security/redact.ts"
 import { type Logger } from "../logging/logger.ts"
-import { BOOT_WING_ORDER, isBootWingName } from "../bootstrap/bootWings.ts"
 import { CONFIG_WING_ORDER, type ConfigWingName } from "../config/configWings.ts"
 import { coerceConfigRecord } from "../config/wingValue.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "../runtime/modelConfig.ts"
@@ -79,7 +81,6 @@ export function formatToolError(error: unknown): string {
 }
 
 const configWingZod = z.enum([...CONFIG_WING_ORDER] as [ConfigWingName, ...ConfigWingName[]])
-const bootWingZod = z.enum([...BOOT_WING_ORDER] as [string, ...string[]])
 const strictRecordZod = z.record(z.string(), z.unknown())
 const modelProfileZod = z.object({
   id: z.string().min(1),
@@ -136,8 +137,11 @@ const policyConfigZod = z.object({
   }).strict(),
 }).strict()
 const bootWriteInputZod = z.object({
-  wing: bootWingZod,
+  wing: z.string().min(1),
   content: z.string(),
+}).strict()
+const bootCreateWingInputZod = z.object({
+  wing: z.string().min(1).regex(/^[A-Za-z][A-Za-z0-9_]*$/, "wing must be alphanumeric/snake_case and start with a letter"),
 }).strict()
 const manageConfigInputZod = z.object({
   action: z.enum(["read", "write"]),
@@ -2164,11 +2168,11 @@ const rawTools: ToolDefinition[] = [
   {
     name: "BootRead",
     permissionTier: "read",
-    description: "Read a deterministic BOOT wing from SQLite without relying on legacy workspace files.",
+    description: "Read a deterministic or dynamically created BOOT wing from SQLite without relying on legacy workspace files.",
     inputSchema: {
       type: "object",
       properties: {
-        wing: { type: "string", enum: [...BOOT_WING_ORDER] },
+        wing: { type: "string" },
       },
       required: ["wing"],
       additionalProperties: false,
@@ -2177,8 +2181,10 @@ const rawTools: ToolDefinition[] = [
     async run(input, context) {
       try {
         const wing = requireString(input, "wing")
-        if (!isBootWingName(wing)) return formatToolError(`Unsupported BOOT wing: ${wing}`)
         ensureBootWings(context.rootDir, context.profileId ?? "default")
+        if (!bootWingExists(context.rootDir, wing, context.profileId ?? "default")) {
+          return formatToolError(`BOOT wing ${wing} not found in profile ${context.profileId ?? "default"}. Use BootListWings to inspect available wings.`)
+        }
         const content = readBootWing(context.rootDir, wing, context.profileId ?? "default")
         if (content == null) return formatToolError(`BOOT wing ${wing} not found in profile ${context.profileId ?? "default"}`)
         return { wing, content, profile: context.profileId ?? "default" }
@@ -2188,13 +2194,62 @@ const rawTools: ToolDefinition[] = [
     },
   },
   {
-    name: "BootWrite",
+    name: "BootListWings",
+    permissionTier: "read",
+    description: "List BOOT wings currently registered in SQLite for the active profile. Run this before BootCreateWing or BootWrite when choosing a wing.",
+    inputSchema: emptyInputSchema,
+    concurrencySafe: true,
+    async run(_input, context) {
+      try {
+        const profile = context.profileId ?? "default"
+        const wings = listBootWings(context.rootDir, profile)
+        return JSON.stringify({ profile, wings })
+      } catch (error) {
+        return formatToolError(error)
+      }
+    },
+  },
+  {
+    name: "BootCreateWing",
     permissionTier: "edit",
-    description: "Replace the canonical content of a deterministic BOOT wing in SQLite.",
+    description: "Create a new empty BOOT wing in SQLite for the active profile. The model MUST call BootListWings first and only use this when the desired alphanumeric/snake_case wing is absent.",
     inputSchema: {
       type: "object",
       properties: {
-        wing: { type: "string", enum: [...BOOT_WING_ORDER] },
+        wing: {
+          type: "string",
+          description: "New BOOT wing name. Use alphanumeric/snake_case only, starting with a letter.",
+          pattern: "^[A-Za-z][A-Za-z0-9_]*$",
+        },
+      },
+      required: ["wing"],
+      additionalProperties: false,
+    },
+    concurrencySafe: false,
+    validate: input => validateZod(bootCreateWingInputZod, input),
+    async run(input, context) {
+      try {
+        const parsed = parseZod(bootCreateWingInputZod, input, "BootCreateWing input")
+        const wing = parsed.wing.trim()
+        const profile = context.profileId ?? "default"
+        if (bootWingExists(context.rootDir, wing, profile)) {
+          return formatToolError(`BOOT wing ${wing} already exists in profile ${profile}. Use BootWrite to update it.`)
+        }
+        const result = createBootWing(context.rootDir, wing, profile, "")
+        return { ok: true, wing, created: result.created, profile }
+      } catch (error) {
+        return formatToolError(error)
+      }
+    },
+  },
+  {
+    name: "BootWrite",
+    permissionTier: "edit",
+    description: "Replace the canonical content of an existing BOOT wing in SQLite. Use BootListWings first; if the wing does not exist, create it with BootCreateWing before writing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        wing: { type: "string" },
         content: { type: "string" },
       },
       required: ["wing", "content"],
@@ -2207,7 +2262,9 @@ const rawTools: ToolDefinition[] = [
         const parsed = parseZod(bootWriteInputZod, input, "BootWrite input")
         const wing = parsed.wing
         const content = parsed.content
-        if (!isBootWingName(wing)) return formatToolError(`Unsupported BOOT wing: ${wing}`)
+        if (!bootWingExists(context.rootDir, wing, context.profileId ?? "default")) {
+          return formatToolError(`BOOT wing ${wing} does not exist in profile ${context.profileId ?? "default"}. Use BootListWings, then BootCreateWing if you need a new wing.`)
+        }
         const result = writeBootWing(context.rootDir, wing, content, context.profileId ?? "default")
         return { wing, ok: true, changed: result.changed, bytes: result.bytes, profile: context.profileId ?? "default" }
       } catch (error) {

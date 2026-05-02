@@ -10,13 +10,11 @@ import {
   ensureDirs,
   getPaths,
 } from "../ipc/protocol.ts"
-import { bindSemanticSearchDb, generateEmbedding, isEmbeddingsUnavailableError, searchSemantically } from "./embeddings.ts"
+import { bindSemanticSearchDb, generateEmbedding, isEmbeddingsUnavailableError } from "./embeddings.ts"
 import {
   BOOT_WING_ORDER,
   DEFAULT_BOOT_WING_CONTENT,
-  isBootWingName,
   type BootWingEntry,
-  type BootWingName,
 } from "../bootstrap/bootWings.ts"
 import {
   CONFIG_WING_ORDER,
@@ -35,6 +33,11 @@ const CONFIG_SOURCE_ROOM = "__config__"
 const ACTION_LOG_ROOM = "agent-actions"
 const CANONICAL_WING = "CANONICAL"
 const GLOBAL_PROFILE_SCOPE = "__global__"
+const WORKER_SESSION_PREFIXES = ["agent-", "worker-"] as const
+
+export function isMainSession(sessionId: string): boolean {
+  return !WORKER_SESSION_PREFIXES.some(prefix => sessionId.startsWith(prefix))
+}
 
 export type CanonicalMemorySlot =
   | "assistant_name"
@@ -745,7 +748,71 @@ export function appendActionLog(rootDir: string, action: string, details?: Recor
   })
 }
 
-export function readBootWing(rootDir: string, wing: BootWingName, profileId = "default"): string | null {
+export function listBootWings(rootDir: string, profileId = "default"): string[] {
+  ensureBootWings(rootDir, profileId)
+  const db = getDb(rootDir)
+  const profileScope = palaceProfileScope(profileId)
+  const rows = db.prepare(`
+    SELECT DISTINCT wing
+    FROM palace_nodes
+    WHERE namespace = ?
+      AND profile_scope = ?
+      AND superseded_at IS NULL
+    ORDER BY wing ASC
+  `).all(PALACE_NAMESPACE.boot, profileScope) as Array<{ wing: string }>
+
+  const knownOrder = new Map<string, number>(BOOT_WING_ORDER.map((wing, index) => [wing, index]))
+  return rows
+    .map(row => row.wing)
+    .sort((left, right) => {
+      const leftOrder = knownOrder.get(left) ?? Number.MAX_SAFE_INTEGER
+      const rightOrder = knownOrder.get(right) ?? Number.MAX_SAFE_INTEGER
+      return leftOrder === rightOrder ? left.localeCompare(right) : leftOrder - rightOrder
+    })
+}
+
+export function bootWingExists(rootDir: string, wing: string, profileId = "default"): boolean {
+  ensureBootWings(rootDir, profileId)
+  const db = getDb(rootDir)
+  const profileScope = palaceProfileScope(profileId)
+  const row = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM palace_nodes
+    WHERE namespace = ?
+      AND profile_scope = ?
+      AND wing = ?
+      AND node_key = ?
+      AND superseded_at IS NULL
+  `).get(PALACE_NAMESPACE.boot, profileScope, wing, wing) as { count: number }
+  return row.count > 0
+}
+
+export function createBootWing(rootDir: string, wing: string, profileId = "default", content = "") {
+  ensureBootWings(rootDir, profileId)
+  const normalizedWing = wing.trim()
+  if (!normalizedWing) throw new Error("BOOT wing must be a non-empty string")
+  if (bootWingExists(rootDir, normalizedWing, profileId)) {
+    return { created: false, wing: normalizedWing, profile: profileId }
+  }
+
+  const db = getDb(rootDir)
+  const now = new Date().toISOString()
+  const result = upsertMutablePalaceNode(db, {
+    namespace: PALACE_NAMESPACE.boot,
+    wing: normalizedWing,
+    room: BOOTSTRAP_SOURCE_ROOM,
+    nodeKey: normalizedWing,
+    profileId,
+    subjectType: "boot_wing",
+    subjectId: normalizedWing,
+    contentType: "text/markdown",
+    content,
+    now,
+  })
+  return { created: result.changed, wing: normalizedWing, profile: profileId }
+}
+
+export function readBootWing(rootDir: string, wing: string, profileId = "default"): string | null {
   ensureBootWings(rootDir, profileId)
   const db = getDb(rootDir)
   const palaceContent = readLatestPalaceContent(db, {
@@ -760,8 +827,11 @@ export function readBootWing(rootDir: string, wing: BootWingName, profileId = "d
   throw new Error(`BOOT wing ${wing} not found in SQLite Palace kernel for profile ${profileId}`)
 }
 
-export function writeBootWing(rootDir: string, wing: BootWingName, content: string, profileId = "default") {
+export function writeBootWing(rootDir: string, wing: string, content: string, profileId = "default") {
   ensureBootWings(rootDir, profileId)
+  if (!bootWingExists(rootDir, wing, profileId)) {
+    throw new Error(`BOOT wing ${wing} does not exist in profile ${profileId}. Use BootCreateWing after BootListWings if you need a new wing.`)
+  }
   const db = getDb(rootDir)
   const now = new Date().toISOString()
   const currentPalace = readLatestPalaceContent(db, {
@@ -960,7 +1030,7 @@ export function listBootEntries(rootDir: string, profileId = "default", options?
   let remainingChars = options?.maxTotalChars ?? 150_000
   const entries: BootWingEntry[] = []
 
-  for (const wing of BOOT_WING_ORDER) {
+  for (const wing of listBootWings(rootDir, profileId)) {
     if (!includeMemory && wing === "BOOT_MEMORY") continue
     if (remainingChars <= 0) break
     const content = readBootWing(rootDir, wing, profileId)?.trim() ?? ""
@@ -1137,19 +1207,17 @@ export function listSessionRecords(rootDir: string): SessionRecord[] {
 
 export function getSemanticMessageContext(rootDir: string, vector: number[] | Float32Array, limit = 10) {
   const db = getDb(rootDir)
-  const ids = searchSemantically(vector, limit)
-  if (ids.length === 0) return []
-  const placeholders = ids.map(() => "?").join(", ")
   const rows = db.prepare(`
-    SELECT id, session_id, role, text, at
-    FROM messages
-    WHERE id IN (${placeholders})
-  `).all(...ids) as Array<{ id: number; session_id: string; role: string; text: string; at: string }>
-  const byId = new Map(rows.map(row => [row.id, row]))
-  return ids.flatMap(id => {
-    const row = byId.get(id)
-    return row ? [row] : []
-  })
+    SELECT m.id, m.session_id, m.role, m.text, m.at
+    FROM vec_messages v
+    JOIN messages m ON m.id = v.id
+    WHERE v.embedding MATCH ?
+      AND k = ?
+      AND m.session_id NOT LIKE 'agent-%'
+      AND m.session_id NOT LIKE 'worker-%'
+    ORDER BY distance ASC
+  `).all(vector instanceof Float32Array ? vector : Float32Array.from(vector), limit) as Array<{ id: number; session_id: string; role: string; text: string; at: string }>
+  return rows
 }
 
 export function appendMessage(rootDir: string, sessionId: string, role: "user" | "assistant" | "system", text: string) {
@@ -1195,11 +1263,12 @@ export function appendMessage(rootDir: string, sessionId: string, role: "user" |
   }
 
   if (messageId !== null && role !== "system" && text.trim()) {
-    void indexMessageEmbedding(rootDir, messageId, text)
+    void indexMessageEmbedding(rootDir, sessionId, messageId, text)
   }
 }
 
-async function indexMessageEmbedding(rootDir: string, messageId: number, text: string) {
+async function indexMessageEmbedding(rootDir: string, sessionId: string, messageId: number, text: string) {
+  if (!isMainSession(sessionId)) return
   try {
     const embedding = await generateEmbedding(text)
     const db = getDb(rootDir)
