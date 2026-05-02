@@ -38,6 +38,7 @@ import {
   updateWorkerJobStatus,
   hasActiveWorkersForSession,
   reconcileSystemWings,
+  getVectorMemoryStatus,
 } from "../session/store.ts"
 import { generateEmbedding, isEmbeddingsUnavailableError } from "../session/embeddings.ts"
 import { getTool, listTools, type ToolContext } from "../tools/registry.ts"
@@ -225,6 +226,11 @@ type SystemStatus = {
   sqlite: {
     sessions: number
     profiles: number
+  }
+  memory: {
+    extensionLoaded: boolean
+    vecMessagesCount: number
+    vecDrawersCount: number
   }
   workspace: {
     rootDir: string
@@ -2329,6 +2335,7 @@ export class MonolitoV2Runtime {
     const stt = normalizeSttConfig(channels.stt)
     const tts = normalizeTtsConfig(channels.tts)
     const workspace = getWorkspaceContext(this.rootDir, "default")
+    const memory = await getVectorMemoryStatus()
 
     const [searxContainer, sttContainer, ttsContainer] = await Promise.all([
       getSearxngStatus(),
@@ -2420,6 +2427,7 @@ export class MonolitoV2Runtime {
         sessions: listSessions(this.rootDir).length,
         profiles: listProfiles(this.rootDir).length,
       },
+      memory,
       workspace: {
         rootDir: this.rootDir,
         packageJson: existsSync(join(this.rootDir, "package.json")) ? "ok" : "missing",

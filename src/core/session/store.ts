@@ -57,6 +57,12 @@ export type KnowledgeGraphTriple = {
   is_active: boolean
 }
 
+export type VectorMemoryStatus = {
+  extensionLoaded: boolean
+  vecMessagesCount: number
+  vecDrawersCount: number
+}
+
 const CANONICAL_SLOT_META: Record<CanonicalMemorySlot, { room: "identity" | "user"; label: string }> = {
   assistant_name: { room: "identity", label: "Assistant name" },
   user_name: { room: "user", label: "User name" },
@@ -554,6 +560,32 @@ export function getDb(rootDir: string): Database.Database {
   dbInstance = db
   dbPathCache = path
   return db
+}
+
+export async function getVectorMemoryStatus(): Promise<VectorMemoryStatus> {
+  if (!dbInstance) {
+    return {
+      extensionLoaded: false,
+      vecMessagesCount: 0,
+      vecDrawersCount: 0,
+    }
+  }
+
+  try {
+    const vecMessages = dbInstance.prepare(`SELECT count(*) as c FROM vec_messages`).get() as { c: number | bigint }
+    const vecDrawers = dbInstance.prepare(`SELECT count(*) as c FROM vec_drawers`).get() as { c: number | bigint }
+    return {
+      extensionLoaded: true,
+      vecMessagesCount: Number(vecMessages.c),
+      vecDrawersCount: Number(vecDrawers.c),
+    }
+  } catch {
+    return {
+      extensionLoaded: false,
+      vecMessagesCount: 0,
+      vecDrawersCount: 0,
+    }
+  }
 }
 
 export function ensureKernelSeeded(rootDir: string, profileId = "default") {
