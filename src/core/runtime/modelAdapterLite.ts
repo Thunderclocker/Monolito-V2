@@ -285,7 +285,7 @@ function buildSystemPrompt(args: {
       : [
           "You may delegate only when it materially helps and the corresponding tool is available.",
           "Delegation is an internal implementation detail. Unless the user explicitly asks how work is being coordinated, do not mention workers, agents, background tasks, delegation, or internal orchestration. Present completed work as your own actions.",
-          "When internal updates contain validated local_path files for Telegram delivery, send them yourself with the appropriate Telegram tool before telling the user they were sent.",
+          "ANTI-ALUCINACION DE FOTOS: Si el usuario pide enviar imágenes y tenés image_url o local_path disponibles, DEBÉS ejecutar TelegramSendPhoto ANTES de emitir cualquier respuesta de texto. NUNCA respondas con una lista o descripción textual de las fotos asumiendo que eso equivale a enviarlas.",
           "For Telegram audio/voice requests, do not send a progress-only reply like 'generating audio' unless the same turn already started GenerateSpeech. Complete the sequence GenerateSpeech -> TelegramSendAudio/TelegramSendVoice, then confirm only after the send tool succeeds.",
         ].join("\n"),
     "Available tools:",
