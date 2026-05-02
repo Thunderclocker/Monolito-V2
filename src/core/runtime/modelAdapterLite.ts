@@ -14,6 +14,7 @@ import { compactSession, getSession, listCanonicalMemoryEntries, updateWorkerJob
 import { callProvider, type ConversationMessage, type ProviderConfig, type ProviderResponse, type ToolCall } from "./providers/index.ts"
 import { ensureMonolitoRoot } from "../system/root.ts"
 import { redactSensitiveText } from "../security/redact.ts"
+import type { AgentYieldEvent } from "./types.ts"
 
 const defaultLogger = createLogger("modelAdapterLite")
 const MAX_TURN_ITERATIONS = 16
@@ -324,15 +325,22 @@ function buildSystemPrompt(args: {
 }
 
 async function sleep(ms: number, abortSignal?: AbortSignal) {
+  if (abortSignal?.aborted) throw abortSignal.reason ?? new AbortError("Aborted")
   if (!ms) return
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(resolve, ms)
     const onAbort = () => {
       clearTimeout(timer)
-      reject(abortSignal?.reason ?? new Error("Aborted"))
+      reject(abortSignal?.reason ?? new AbortError("Aborted"))
     }
     abortSignal?.addEventListener("abort", onAbort, { once: true })
   })
+}
+
+function throwIfAborted(abortSignal?: AbortSignal) {
+  if (abortSignal?.aborted) {
+    throw abortSignal.reason ?? new AbortError("Aborted")
+  }
 }
 
 function isAuthError(error: unknown) {
@@ -357,7 +365,7 @@ function isRetriableNetworkError(error: unknown) {
   ].includes(code ?? "")
 }
 
-async function callProviderWithRetry(config: ProviderConfig, prompt: ReturnType<typeof buildSystemPrompt>, messages: ConversationMessage[], abortSignal: AbortSignal | undefined, isSubAgent: boolean, maxTokens: number | undefined) {
+async function* callProviderWithRetry(config: ProviderConfig, prompt: ReturnType<typeof buildSystemPrompt>, messages: ConversationMessage[], abortSignal: AbortSignal | undefined, isSubAgent: boolean, maxTokens: number | undefined): AsyncGenerator<AgentYieldEvent, ProviderResponse> {
   let currentConfig = config
   let rateLimitAttempts = 0
   let overloadAttempts = 0
@@ -365,7 +373,16 @@ async function callProviderWithRetry(config: ProviderConfig, prompt: ReturnType<
 
   while (true) {
     try {
-      return await callProvider(currentConfig, prompt, messages, abortSignal, isSubAgent, maxTokens)
+      throwIfAborted(abortSignal)
+      const response = await callProvider(currentConfig, prompt, messages, abortSignal, isSubAgent, maxTokens)
+      throwIfAborted(abortSignal)
+      if (response.text) yield { type: "token", content: response.text }
+      for (const toolCall of response.toolCalls) {
+        throwIfAborted(abortSignal)
+        yield { type: "tool_call", id: toolCall.id, name: toolCall.name, args: toolCall.input }
+      }
+      yield { type: "response", response }
+      return response
     } catch (error) {
       if (abortSignal?.aborted) throw abortSignal.reason ?? error
 
@@ -386,6 +403,7 @@ async function callProviderWithRetry(config: ProviderConfig, prompt: ReturnType<
         overloadAttempts = 0
         if (rateLimitAttempts > MAX_RATE_LIMIT_RETRIES) throw error
         const waitMs = error.retryAfterMs ?? Math.min(30_000, 1_000 * 2 ** (rateLimitAttempts - 1))
+        yield { type: "retry_backoff", attempt: rateLimitAttempts, error: error.message, retryAfterMs: waitMs }
         await sleep(waitMs, abortSignal)
         continue
       }
@@ -393,17 +411,15 @@ async function callProviderWithRetry(config: ProviderConfig, prompt: ReturnType<
       if (error instanceof ProviderOverloadedError || isRetriableNetworkError(error)) {
         overloadAttempts++
         if (overloadAttempts >= MAX_OVERLOAD_RETRIES) throw error
-        await sleep(Math.min(5_000, 750 * 2 ** (overloadAttempts - 1)), abortSignal)
+        const waitMs = Math.min(5_000, 750 * 2 ** (overloadAttempts - 1))
+        yield { type: "retry_backoff", attempt: overloadAttempts, error: error instanceof Error ? error.message : String(error), retryAfterMs: waitMs }
+        await sleep(waitMs, abortSignal)
         continue
       }
 
       throw error
     }
   }
-}
-
-async function callProviderOnce(config: ProviderConfig, prompt: ReturnType<typeof buildSystemPrompt>, messages: ConversationMessage[], abortSignal: AbortSignal | undefined, isSubAgent: boolean, maxTokens: number | undefined) {
-  return await callProvider(config, prompt, messages, abortSignal, isSubAgent, maxTokens)
 }
 
 export function getEffectiveModelConfig() {
@@ -455,9 +471,6 @@ export async function* runAgentLoop(
   const steps: AssistantTurnStep[] = []
   const messages = sessionToMessages(session)
   const prompt = buildSystemPrompt({ session: activeSession, rootDir, context, bootstrap: options?.bootstrap, extras: options?.contextExtras, systemPromptOverride: options?.systemPromptOverride })
-  let rateLimitAttempts = 0
-  let overloadAttempts = 0
-  let authAttempts = 0
 
   for (let iteration = 1; iteration <= maxIterations; iteration++) {
     enforceBudgetLimit(options?.costState, config.model)
@@ -474,7 +487,24 @@ export async function* runAgentLoop(
     }
     try {
       yield { type: "model_invoke_start", sessionId: session.id, iteration, model: config.model }
-      const response = await callProviderOnce(config, prompt, messages, options?.abortSignal, isSubAgent, options?.maxTokens)
+      let response: ProviderResponse | null = null
+      for await (const event of callProviderWithRetry(config, prompt, messages, options?.abortSignal, isSubAgent, options?.maxTokens)) {
+        throwIfAborted(options?.abortSignal)
+        switch (event.type) {
+          case "token":
+            if (event.content) yield { type: "model_stream", sessionId: session.id, iteration, text: redactSensitiveText(event.content) }
+            break
+          case "tool_call":
+            break
+          case "retry_backoff":
+            yield { type: "recoverable_error", sessionId: session.id, iteration, action: "backoff", error: event.error, retryAfterMs: event.retryAfterMs }
+            break
+          case "response":
+            response = event.response
+            break
+        }
+      }
+      if (!response) throw new Error("Provider generator completed without a response")
       enforceBudgetLimit(options?.costState, config.model, response.usage)
       usage = sumUsage(usage, response.usage)
       const loopUsage = response.usage ? {
@@ -482,10 +512,7 @@ export async function* runAgentLoop(
         outputTokens: response.usage.outputTokens,
         totalTokens: (response.usage.inputTokens ?? 0) + (response.usage.outputTokens ?? 0),
       } : undefined
-      if (response.text) yield { type: "model_stream", sessionId: session.id, iteration, text: redactSensitiveText(response.text) }
       yield { type: "model_invoke_end", sessionId: session.id, iteration, usage: loopUsage, toolCallCount: response.toolCalls.length }
-      rateLimitAttempts = 0
-      overloadAttempts = 0
       if (response.toolCalls.length === 0) {
         const result = finalize(response.text, steps, startedAt, iteration, usage)
         yield { type: "done", sessionId: session.id, result }
@@ -558,32 +585,6 @@ export async function* runAgentLoop(
         compacted = true
         continue
       }
-      if (isAuthError(error) && authAttempts === 0) {
-        authAttempts++
-        yield { type: "recoverable_error", sessionId: session.id, iteration, action: "reload_auth", error: error instanceof Error ? error.message : String(error) }
-        loadAndApplyModelSettings(process.env)
-        config = getEffectiveModelConfig()
-        continue
-      }
-      if (error instanceof RateLimitError) {
-        rateLimitAttempts++
-        overloadAttempts = 0
-        if (rateLimitAttempts <= MAX_RATE_LIMIT_RETRIES) {
-          const waitMs = error.retryAfterMs ?? Math.min(30_000, 1_000 * 2 ** (rateLimitAttempts - 1))
-          yield { type: "recoverable_error", sessionId: session.id, iteration, action: "backoff", error: error.message, retryAfterMs: waitMs }
-          await sleep(waitMs, options?.abortSignal)
-          continue
-        }
-      }
-      if (error instanceof ProviderOverloadedError || isRetriableNetworkError(error)) {
-        overloadAttempts++
-        if (overloadAttempts < MAX_OVERLOAD_RETRIES) {
-          const waitMs = Math.min(5_000, 750 * 2 ** (overloadAttempts - 1))
-          yield { type: "recoverable_error", sessionId: session.id, iteration, action: "backoff", error: error instanceof Error ? error.message : String(error), retryAfterMs: waitMs }
-          await sleep(waitMs, options?.abortSignal)
-          continue
-        }
-      }
       if (error instanceof AbortError) throw error
       logger.error("assistant turn failed", { error: error instanceof Error ? error.message : String(error), sessionId: session.id })
       const message = error instanceof Error ? error.message : String(error)
@@ -638,7 +639,7 @@ export async function runBackgroundTextTask(
   const config = getEffectiveModelConfig()
   const prompt = { system, bootBlock: "" }
   const messages: ConversationMessage[] = [{ role: "user", content: userPrompt }]
-  const response = await callProviderWithRetry(
+  const events = callProviderWithRetry(
     { ...config, model: options?.model?.trim() || config.model },
     prompt,
     messages,
@@ -646,5 +647,11 @@ export async function runBackgroundTextTask(
     false,
     options?.maxTokens ?? MAX_BACKGROUND_TOKENS,
   )
-  return { text: response.text, usage: response.usage }
+  let finalResponse: ProviderResponse | null = null
+  for await (const event of events) {
+    throwIfAborted(options?.abortSignal)
+    if (event.type === "response") finalResponse = event.response
+  }
+  if (!finalResponse) throw new Error("Provider generator completed without a response")
+  return { text: finalResponse.text, usage: finalResponse.usage }
 }
