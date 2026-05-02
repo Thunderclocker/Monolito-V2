@@ -1700,9 +1700,18 @@ export class MonolitoV2Runtime {
           type: "session",
           summary: `Turn failed: ${clipForWorklog(message)}`,
         })
-        this.emit({ type: "error", sessionId, error: message })
+this.emit({ type: "error", sessionId, error: message })
         appendMessage(this.rootDir, sessionId, "assistant", message)
         this.emit({ type: "message.received", sessionId, role: "assistant", text: message })
+        const telegramChatIdErr = getTelegramChatId(sessionId)
+        if (telegramChatIdErr && message) {
+          try {
+            const config = readChannelsConfig()
+            if (config.telegram?.enabled && config.telegram.token) {
+              await sendTelegramMessage(config.telegram.token, telegramChatIdErr, message)
+            }
+          } catch {}
+        }
         await this.transitionState(sessionId, "error")
         return {
           finalText: message,
@@ -1841,6 +1850,15 @@ export class MonolitoV2Runtime {
           durationMs: Date.now() - turnStartedAt,
           usage: turn.usage,
         })
+        const telegramChatId = getTelegramChatId(sessionId)
+        if (telegramChatId && userFacingText) {
+          try {
+            const config = readChannelsConfig()
+            if (config.telegram?.enabled && config.telegram.token) {
+              await sendTelegramMessage(config.telegram.token, telegramChatId, userFacingText)
+            }
+          } catch {}
+        }
       }
       await this.transitionState(sessionId, turn.error ? "error" : "idle")
       return turn
