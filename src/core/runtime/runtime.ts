@@ -1,6 +1,6 @@
 import { type Socket } from "node:net"
 import { execFile } from "node:child_process"
-import { existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import { getPaths, encodeEnvelope, type AgentEvent, type SessionRecord } from "../ipc/protocol.ts"
@@ -198,6 +198,42 @@ type SearxngContainerInfo = {
   isOurs: boolean
 }
 
+type ActiveServiceStatus = "online" | "degraded" | "offline"
+type JitServiceState = "running" | "idle" | "failed"
+type SystemServiceStatus = ActiveServiceStatus | "idle" | "failed"
+
+type SystemServiceSnapshot = {
+  status: SystemServiceStatus
+  statusLabel: string
+  jitState: JitServiceState
+  url: string
+  checked: boolean
+  containerState?: string
+  detail?: string
+}
+
+type SystemStatus = {
+  checkedAt: string
+  services: Record<string, SystemServiceSnapshot>
+  routing: {
+    modelProvider: string
+    model: string
+    baseUrl: string
+    webSearchProvider: WebSearchProvider
+    telegramEnabled: boolean
+  }
+  sqlite: {
+    sessions: number
+    profiles: number
+  }
+  workspace: {
+    rootDir: string
+    packageJson: "ok" | "missing"
+    bootstrapPending: boolean
+  }
+  cost: string
+}
+
 
 function asRecord(value: unknown) {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null
@@ -216,6 +252,25 @@ function webSearchProviderLabel(provider: WebSearchProvider) {
     case "searxng":
       return "searxng"
   }
+}
+
+async function checkActiveService(url: string): Promise<ActiveServiceStatus> {
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(500) })
+    return response.status === 200 ? "online" : "degraded"
+  } catch {
+    return "offline"
+  }
+}
+
+function mapContainerStatusToJit(status: "running" | "stopped" | "not_found" | "docker_error"): JitServiceState {
+  if (status === "running") return "running"
+  if (status === "docker_error") return "failed"
+  return "idle"
+}
+
+function systemStatusLabel(status: SystemServiceStatus) {
+  return status.toUpperCase()
 }
 
 async function findAllSearxngContainers(): Promise<SearxngContainerInfo[]> {
@@ -1859,8 +1914,11 @@ export class MonolitoV2Runtime {
           "/reset",
           "/model",
           "/channels",
+          "/status",
           "/update",
         ].join("\n")
+      case "/status":
+        return JSON.stringify(await this.getSystemStatus(), null, 2)
       case "/model":
         return this.runModelCommand(rest)
       case "/update": {
@@ -1912,6 +1970,7 @@ export class MonolitoV2Runtime {
       profileId: session?.profileId,
       sessionId,
       orchestrator: this.orchestrator,
+      runtime: this,
     })
     return JSON.stringify(output, null, 2)
   }
@@ -1952,6 +2011,7 @@ export class MonolitoV2Runtime {
       queryCost: () => this.queryCost(),
       queryStats: id => this.queryStats(id),
       compactSession: (id, maxMessages) => this.queryCompact(id, maxMessages),
+      runtime: context.runtime ?? this,
     }
 
     const tryRepairBashFailure = async (error: ToolExecutionError) => {
@@ -2262,25 +2322,111 @@ export class MonolitoV2Runtime {
 
 
 
-  private async runDoctor(): Promise<string> {
-    const lines: string[] = ["=== Monolito V2 Doctor ==="]
+  async getSystemStatus(): Promise<SystemStatus> {
     const effective = getEffectiveModelConfig()
-    const hasApiKey = effective.apiKey.length > 0
-    const hasBaseUrl = effective.baseUrl.length > 0
-    const hasModel = effective.model.length > 0
-    lines.push(`API Key: ${hasApiKey ? "OK" : "MISSING"}`)
-    lines.push(`Base URL: ${hasBaseUrl ? effective.baseUrl : "MISSING"}`)
-    lines.push(`Model: ${hasModel ? effective.model : "MISSING"}`)
-    lines.push(`Workspace: ${this.rootDir}`)
-    try {
-      const stats = statSync(join(this.rootDir, "package.json"))
-      lines.push(`package.json: OK (${stats.size} bytes)`)
-    } catch {
-      lines.push("package.json: MISSING")
+    const channels = readChannelsConfig()
+    const webSearch = readWebSearchConfig()
+    const stt = normalizeSttConfig(channels.stt)
+    const tts = normalizeTtsConfig(channels.tts)
+    const workspace = getWorkspaceContext(this.rootDir, "default")
+
+    const [searxContainer, sttContainer, ttsContainer] = await Promise.all([
+      getSearxngStatus(),
+      getManagedSttStatus(stt),
+      getManagedTtsStatus(tts),
+    ])
+
+    const ollamaBaseUrl = effective.baseUrl && /ollama|localhost:11434|127\.0\.0\.1:11434/i.test(effective.baseUrl)
+      ? effective.baseUrl.replace(/\/+$/g, "")
+      : "http://127.0.0.1:11434"
+
+    const serviceDefs = [
+      {
+        key: "searxng",
+        url: `${SEARXNG_URL}/healthz`,
+        jitState: mapContainerStatusToJit(searxContainer),
+        containerState: searxContainer,
+      },
+      {
+        key: "stt",
+        url: `${getManagedSttBaseUrl(stt)}/openapi.json`,
+        jitState: mapContainerStatusToJit(sttContainer),
+        containerState: sttContainer,
+      },
+      {
+        key: "tts",
+        url: `${getManagedTtsBaseUrl(tts)}/v1/models`,
+        jitState: mapContainerStatusToJit(ttsContainer),
+        containerState: ttsContainer,
+      },
+      {
+        key: "ollama",
+        url: `${ollamaBaseUrl}/api/tags`,
+        jitState: "running" as const,
+      },
+    ]
+
+    const services: Record<string, SystemServiceSnapshot> = {}
+    const activeChecks = serviceDefs
+      .filter(service => service.jitState === "running")
+      .map(service => ({
+        key: service.key,
+        promise: checkActiveService(service.url),
+      }))
+
+    for (const service of serviceDefs) {
+      if (service.jitState === "running") continue
+      const status = service.jitState === "idle" ? "idle" : "failed"
+      services[service.key] = {
+        status,
+        statusLabel: systemStatusLabel(status),
+        jitState: service.jitState,
+        url: service.url,
+        checked: false,
+        containerState: service.containerState,
+      }
     }
-    lines.push(`Sessions: ${listSessions(this.rootDir).length}`)
-    lines.push(`Cost: ${formatCostSummary(this.costState)}`)
-    return lines.join("\n")
+
+    const settled = await Promise.allSettled(activeChecks.map(check => check.promise))
+    settled.forEach((result, index) => {
+      const service = activeChecks[index]
+      if (!service) return
+      const definition = serviceDefs.find(item => item.key === service.key)
+      const status: SystemServiceStatus = result.status === "fulfilled" ? result.value : "offline"
+      services[service.key] = {
+        status,
+        statusLabel: systemStatusLabel(status),
+        jitState: definition?.jitState ?? "running",
+        url: definition?.url ?? "",
+        checked: true,
+        containerState: definition?.containerState,
+        detail: result.status === "rejected"
+          ? (result.reason instanceof Error ? result.reason.message : String(result.reason))
+          : undefined,
+      }
+    })
+
+    return {
+      checkedAt: new Date().toISOString(),
+      services,
+      routing: {
+        modelProvider: effective.provider,
+        model: effective.model,
+        baseUrl: effective.baseUrl,
+        webSearchProvider: webSearch.provider,
+        telegramEnabled: channels.telegram?.enabled === true,
+      },
+      sqlite: {
+        sessions: listSessions(this.rootDir).length,
+        profiles: listProfiles(this.rootDir).length,
+      },
+      workspace: {
+        rootDir: this.rootDir,
+        packageJson: existsSync(join(this.rootDir, "package.json")) ? "ok" : "missing",
+        bootstrapPending: workspace.bootstrapPending,
+      },
+      cost: formatCostSummary(this.costState),
+    }
   }
 
   private async runUpdate(): Promise<string> {
@@ -2534,8 +2680,8 @@ export class MonolitoV2Runtime {
     return `Compacted ${result.compacted} message${result.compacted !== 1 ? "s" : ""}. ${result.remaining} remaining.`
   }
 
-  queryDoctor() {
-    return this.runDoctor()
+  async queryDoctor() {
+    return JSON.stringify(await this.getSystemStatus(), null, 2)
   }
 
   queryModelInfo() {

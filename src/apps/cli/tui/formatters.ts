@@ -68,6 +68,39 @@ export function formatDoctor(text: string): FormattedBlock {
   return { type: "list", tone: "info", content: formatted.join("\n") }
 }
 
+export function formatSystemStatus(text: string): FormattedBlock {
+  try {
+    const status = JSON.parse(text) as {
+      checkedAt?: string
+      services?: Record<string, { status?: string; statusLabel?: string; checked?: boolean; containerState?: string; url?: string }>
+      routing?: Record<string, unknown>
+      sqlite?: Record<string, unknown>
+      workspace?: Record<string, unknown>
+    }
+    const lines: string[] = []
+    lines.push(`  System status: ${status.checkedAt ?? "(unknown)"}`)
+    lines.push("")
+    lines.push("  Services:")
+    for (const [name, service] of Object.entries(status.services ?? {})) {
+      const label = service.statusLabel ?? service.status ?? "UNKNOWN"
+      const marker =
+        service.status === "online" ? "✅" :
+        service.status === "idle" ? "◌" :
+        service.status === "degraded" ? "⚠" :
+        "❌"
+      const checked = service.checked ? "checked" : "not probed"
+      const container = service.containerState ? ` container=${service.containerState}` : ""
+      lines.push(`  ${marker} ${padRight(name, 10)} ${padRight(label, 9)} ${checked}${container}`)
+    }
+    lines.push("")
+    lines.push("  JSON:")
+    lines.push(JSON.stringify(status, null, 2).split("\n").map(line => `  ${line}`).join("\n"))
+    return { type: "list", tone: "info", content: lines.join("\n") }
+  } catch {
+    return { type: "code", content: text }
+  }
+}
+
 export function formatConfig(text: string): FormattedBlock {
   // Pretty-print JSON config
   try {
@@ -141,6 +174,7 @@ export function formatHelp(): FormattedBlock {
     ["/reset", "Reset session and clear Memory Palace for this profile"],
     ["/model", "Interactive model configuration menu"],
     ["/channels", "Interactive Telegram channel menu or text command"],
+    ["/status", "Show concurrent system health with JIT service states"],
     ["/update", "Fetch and fast-forward from origin"],
     ["/stop", "Stop daemon and exit"],
     ["/quit /exit", "Exit CLI"],

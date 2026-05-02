@@ -226,7 +226,10 @@ export type ToolContext = {
   orchestrator?: AgentOrchestrator
   logger?: Logger
   sessionId?: string
-  runtime?: { acquireJobGroupForBatch: (sessionId: string) => string }
+  runtime?: {
+    acquireJobGroupForBatch: (sessionId: string) => string
+    getSystemStatus?: () => Promise<unknown>
+  }
   querySessionStatus?: (sessionId: string) => string
   queryCost?: () => string
   queryStats?: (sessionId: string) => string
@@ -1484,6 +1487,20 @@ const tools: ToolDefinition[] = [
       mkdirSync(dirname(taskFile), { recursive: true })
       writeFileSync(taskFile, JSON.stringify(tasks, null, 2))
       return { task, total: tasks.length, profile: profileId }
+    },
+  },
+  {
+    name: "system_status",
+    aliases: ["SystemStatus"],
+    permissionTier: "read",
+    description: "Return a concurrent JSON audit of Monolito system health, including JIT-managed services, routing, SQLite sessions, and workspace state.",
+    inputSchema: emptyInputSchema,
+    concurrencySafe: true,
+    async run(_input, context) {
+      if (!context.runtime?.getSystemStatus) {
+        throw new Error("system_status is unavailable outside the Monolito runtime.")
+      }
+      return JSON.stringify(await context.runtime.getSystemStatus())
     },
   },
   {

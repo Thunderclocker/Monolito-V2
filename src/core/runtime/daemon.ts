@@ -499,7 +499,7 @@ export class MonolitoV2Daemon {
           return { id: request.id, ok: true as const, data: this.runtime.queryCompact(sid, max) }
         }
         case "query.doctor":
-          return { id: request.id, ok: true as const, data: this.runtime.queryDoctor() }
+          return { id: request.id, ok: true as const, data: await this.runtime.queryDoctor() }
         case "query.model":
           return { id: request.id, ok: true as const, data: this.runtime.queryModelInfo() }
         case "query.config": {

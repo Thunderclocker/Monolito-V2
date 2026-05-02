@@ -5,6 +5,7 @@ import type { CliArgs } from "./args.ts"
 import { formatHistory, writeBlock, writeLine } from "./output.ts"
 import { openInteractiveSession, runOneShot, ensureCliSession, waitForTurnCompletion } from "./session.ts"
 import { stdout } from "node:process"
+import { formatSystemStatus, renderFormattedBlock } from "./tui/formatters.ts"
 
 function renderEventLog(events: AgentEvent[]) {
   const renderer = new ToolUseRenderer()
@@ -22,7 +23,7 @@ export async function runCliCommand(client: DaemonClient, args: CliArgs) {
     writeLine("monolito [sessions|resume <id>|logs <id>|status <id>|history <id>|ask <prompt>|/command [args]] [-p <prompt>]")
     writeLine("Without arguments, opens the Monolito terminal client and starts the daemon if needed.")
     writeLine("  ask <prompt>    Send a prompt to Monolito via Unix socket (no TUI)")
-    writeLine("  /command        Run daemon command directly: /help /update /reset /model /channels")
+    writeLine("  /command        Run daemon command directly: /help /status /update /reset /model /channels")
     return
   }
 
@@ -91,6 +92,10 @@ export async function runCliCommand(client: DaemonClient, args: CliArgs) {
 
   if (command?.startsWith("/")) {
     const output = await client.runDaemonCommand(command)
+    if (command === "/status") {
+      writeBlock(renderFormattedBlock(formatSystemStatus(output)))
+      return
+    }
     writeLine(output)
     return
   }

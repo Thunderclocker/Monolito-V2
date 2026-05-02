@@ -21,10 +21,10 @@ import { readModelSettings } from "../../core/runtime/modelConfig.ts"
 import { getActiveProfile } from "../../core/runtime/modelRegistry.ts"
 import {
   formatConfig,
-  formatDoctor,
   formatHelp,
   formatModelInfo,
   formatSessionsTable,
+  formatSystemStatus,
   type FormattedBlock,
 } from "./tui/formatters.ts"
 import {
@@ -702,7 +702,8 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
         const sessions = await client.listSessions() as SessionSummary[]
         return formatSessionsTable(sessions)
       }
-      if (cmd === "/doctor") return formatDoctor(await client.queryDoctor() as string)
+      if (cmd === "/doctor") return formatSystemStatus(await client.queryDoctor() as string)
+      if (cmd === "/status") return formatSystemStatus(await client.runDaemonCommand("/status"))
       if (cmd === "/update") {
         const branch = await runGit(rootDir, ["rev-parse", "--abbrev-ref", "HEAD"])
         if (!branch) {
