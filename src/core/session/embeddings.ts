@@ -18,6 +18,7 @@ let state: EmbeddingWarmupState = "idle"
 let lastError: string | null = null
 let pending: Promise<void> | null = null
 let semanticDb: Database.Database | null = null
+let detectedModel: string | null = null
 
 function toEmbeddingsError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error)
@@ -36,7 +37,7 @@ export function bindSemanticSearchDb(db: Database.Database) {
 export function getEmbeddingsStatus() {
   return {
     state,
-    model: OLLAMA_MODEL,
+    model: detectedModel ?? OLLAMA_MODEL,
     baseUrl: OLLAMA_URL,
     dimensions: EMBEDDING_DIMENSIONS,
     lastError,
@@ -110,15 +111,20 @@ async function ensureDockerOllama() {
 
 async function ensureModelPulled() {
   const tags = await ollamaFetch("/api/tags").then(response => response.json()) as { models?: Array<{ name?: string; model?: string }> }
-  const hasModel = tags.models?.some(model => (model.name ?? model.model ?? "").split(":")[0] === OLLAMA_MODEL)
-  if (hasModel) return
-
-  await ollamaFetch("/api/pull", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model: OLLAMA_MODEL, stream: false }),
-    signal: AbortSignal.timeout(OLLAMA_PULL_TIMEOUT_MS),
-  })
+  const modelEntry = tags.models?.find(model => (model.name ?? model.model ?? "").split(":")[0] === OLLAMA_MODEL)
+  if (modelEntry) {
+    detectedModel = (modelEntry.name ?? modelEntry.model ?? OLLAMA_MODEL).split(":")[0]
+  } else {
+    detectedModel = OLLAMA_MODEL
+  }
+  if (!modelEntry) {
+    await ollamaFetch("/api/pull", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: OLLAMA_MODEL, stream: false }),
+      signal: AbortSignal.timeout(OLLAMA_PULL_TIMEOUT_MS),
+    })
+  }
 }
 
 async function ensureEmbeddingsReady() {
