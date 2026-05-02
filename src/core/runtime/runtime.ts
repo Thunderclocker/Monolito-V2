@@ -2441,8 +2441,16 @@ export class MonolitoV2Runtime {
       }
       await runGitCommand(this.rootDir, ["reset", "--hard", "origin/main"])
       await runGitCommand(this.rootDir, ["clean", "-fd"])
-      await execFileAsync("npm", ["install"], { cwd: this.rootDir, timeout: 120_000 })
-      await execFileAsync(process.execPath, ["./node_modules/.bin/tsc", "--noEmit"], { cwd: this.rootDir, timeout: 60_000 })
+      await execFileAsync("npm", ["install", "--include=dev"], {
+        cwd: this.rootDir,
+        timeout: 120_000,
+        env: { ...process.env, NODE_ENV: "development" },
+      })
+      await execFileAsync(process.execPath, ["./node_modules/.bin/tsc", "--noEmit"], {
+        cwd: this.rootDir,
+        timeout: 60_000,
+        env: { ...process.env, NODE_ENV: "development" },
+      })
       this.restartRequested = true
       return "Monolito sincronizado 1:1 desde origin/main. Entorno local purgado. Reiniciando daemon..."
     } catch (error) {
