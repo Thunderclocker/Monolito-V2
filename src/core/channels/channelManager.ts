@@ -120,7 +120,8 @@ async function sendTelegramText(token: string, chatId: number, text: string) {
 function dispatchRuntimeMessage(runtime: MonolitoV2Runtime, sessionId: string, title: string, text: string, detail: string, telegram?: { token: string; chatId: number }) {
   runtime.ensureSession(sessionId, title)
   void (async () => {
-    for await (const event of runtime.processMessageEvents(sessionId, text)) {
+    const delivery = telegram ? { channel: "telegram", targetId: String(telegram.chatId) } : undefined
+    for await (const event of runtime.processMessageEvents(sessionId, text, { delivery })) {
       if (!telegram) continue
       if (event.type === "tool_execute_start" || event.type === "recoverable_error" || event.type === "model_invoke_start") {
         await telegramApi(telegram.token, "sendChatAction", {

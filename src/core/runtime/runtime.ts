@@ -92,6 +92,7 @@ import { normalizeVisionConfig } from "../vision/managed.ts"
 import { MONOLITO_ROOT } from "../system/root.ts"
 import { ToolExecutionError } from "../errors.ts"
 import { redactSensitiveText, redactSensitiveValue } from "../security/redact.ts"
+import type { DeliveryContext } from "./types.ts"
 
 type EventListener = (event: AgentEvent) => void
 
@@ -102,8 +103,8 @@ type TelegramTypingIndicator = {
 
 
 type PendingSessionInput =
-  | { kind: "message"; text: string }
-  | { kind: "startup"; prompt: string; logger?: Logger }
+  | { kind: "message"; text: string; delivery?: DeliveryContext }
+  | { kind: "startup"; prompt: string; logger?: Logger; delivery?: DeliveryContext }
 
 type UpdateRestartState = {
   currentHead: string
@@ -936,6 +937,12 @@ async function sendTelegramMessage(token: string, chatId: string, text: string) 
   }
 }
 
+function resolveDeliveryContext(sessionId: string, delivery?: DeliveryContext): DeliveryContext | undefined {
+  if (delivery) return delivery
+  const telegramChatId = getTelegramChatId(sessionId)
+  return telegramChatId ? { channel: "telegram", targetId: telegramChatId } : undefined
+}
+
 async function sendTelegramTypingAction(token: string, chatId: string) {
   try {
     await fetch(`https://api.telegram.org/bot${token}/sendChatAction`, {
@@ -1124,12 +1131,12 @@ export class MonolitoV2Runtime {
     if (!next) return
     if (queue.length === 0) this.pendingUserMessages.delete(sessionId)
     if (next.kind === "startup") {
-      void this.processSessionStartup(sessionId, next.prompt, { logger: next.logger }).catch(error => {
+      void this.processSessionStartup(sessionId, next.prompt, { logger: next.logger, delivery: next.delivery }).catch(error => {
         logger.error(`Queued startup for ${sessionId} failed`, error)
       })
       return
     }
-    void this.processMessage(sessionId, next.text).catch(error => {
+    void this.processMessage(sessionId, next.text, { delivery: next.delivery }).catch(error => {
       logger.error(`Queued message for ${sessionId} failed`, error)
     })
   }
@@ -1138,6 +1145,21 @@ export class MonolitoV2Runtime {
     this.activeSessions.delete(sessionId)
     this.flushPendingUserMessage(sessionId)
     this.flushPendingBackgroundWakeup(sessionId)
+  }
+
+  private async deliverText(sessionId: string, text: string, delivery?: DeliveryContext, logMessage = "Failed to deliver assistant text") {
+    if (!text) return
+    const resolved = resolveDeliveryContext(sessionId, delivery)
+    if (!resolved) return
+    if (resolved.channel !== "telegram") return
+    try {
+      const config = readChannelsConfig()
+      if (config.telegram?.enabled && config.telegram.token) {
+        await sendTelegramMessage(config.telegram.token, resolved.targetId, text)
+      }
+    } catch (error) {
+      logger.error(logMessage, error)
+    }
   }
 
   async handleBackgroundDelegationResult(task: DelegationTask, error?: string) {
@@ -1301,17 +1323,7 @@ export class MonolitoV2Runtime {
         })
         this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
 
-        const telegramChatId = getTelegramChatId(sessionId)
-        if (telegramChatId) {
-          try {
-            const config = readChannelsConfig()
-            if (config.telegram?.enabled && config.telegram.token) {
-              await sendTelegramMessage(config.telegram.token, telegramChatId, userFacingText)
-            }
-          } catch (e) {
-            logger.error("Failed to send background reply to telegram", e)
-          }
-        }
+        await this.deliverText(sessionId, userFacingText, undefined, "Failed to send background reply to telegram")
       }
     } finally {
       clearTimeout(turnTimeout)
@@ -1388,9 +1400,9 @@ export class MonolitoV2Runtime {
     return tailEvents(this.rootDir, sessionId, lines)
   }
 
-  processMessageEvents(sessionId: string, text: string): AsyncGenerator<AgentLoopEvent> {
+  processMessageEvents(sessionId: string, text: string, options?: { delivery?: DeliveryContext }): AsyncGenerator<AgentLoopEvent> {
     const queue = createAgentLoopEventQueue()
-    void this.processMessage(sessionId, text, { onAgentLoopEvent: event => queue.push(event) })
+    void this.processMessage(sessionId, text, { delivery: options?.delivery, onAgentLoopEvent: event => queue.push(event) })
       .then(() => queue.close())
       .catch(error => {
         if (error instanceof Error && error.name === "AbortError") {
@@ -1402,10 +1414,10 @@ export class MonolitoV2Runtime {
     return queue.iterator
   }
 
-  async processMessage(sessionId: string, text: string, options?: { onAgentLoopEvent?: (event: AgentLoopEvent) => void }) {
+  async processMessage(sessionId: string, text: string, options?: { delivery?: DeliveryContext; onAgentLoopEvent?: (event: AgentLoopEvent) => void }) {
     if (this.activeSessions.has(sessionId)) {
       const queue = this.pendingUserMessages.get(sessionId) ?? []
-      queue.push({ kind: "message", text })
+      queue.push({ kind: "message", text, delivery: options?.delivery })
       this.pendingUserMessages.set(sessionId, queue)
       this.emit({ type: "message.queued", sessionId, role: "user", text })
       return
@@ -1430,20 +1442,20 @@ export class MonolitoV2Runtime {
       this.emit({ type: "message.received", sessionId, role: "user", text: userText })
       await this.transitionState(sessionId, "running")
 
-      await this.runTurn(sessionId, userText, profileId, { onAgentLoopEvent: options?.onAgentLoopEvent })
+      await this.runTurn(sessionId, userText, profileId, { delivery: options?.delivery, onAgentLoopEvent: options?.onAgentLoopEvent })
     } finally {
       this.releaseSessionLock(sessionId)
     }
   }
 
-  async processSessionStartup(sessionId: string, prompt: string, options?: { logger?: Logger; maxTokens?: number }) {
+  async processSessionStartup(sessionId: string, prompt: string, options?: { logger?: Logger; maxTokens?: number; delivery?: DeliveryContext }) {
     const session = getSession(this.rootDir, sessionId)
     if (!session) throw new Error(`Session ${sessionId} not found`)
     const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
     await runLifecycleHooks("SessionStart", { rootDir: this.rootDir, sessionId, profileId })
     if (this.activeSessions.has(sessionId)) {
       const queue = this.pendingUserMessages.get(sessionId) ?? []
-      queue.push({ kind: "startup", prompt, logger: options?.logger })
+      queue.push({ kind: "startup", prompt, logger: options?.logger, delivery: options?.delivery })
       this.pendingUserMessages.set(sessionId, queue)
       return
     }
@@ -1456,7 +1468,7 @@ export class MonolitoV2Runtime {
         summary: "Turn started (session-startup)",
       })
       await this.transitionState(sessionId, "running")
-      await this.runStartupTurn(sessionId, prompt, profileId, turnStartedAt, { logger: options?.logger })
+      await this.runStartupTurn(sessionId, prompt, profileId, turnStartedAt, { logger: options?.logger, delivery: options?.delivery })
     } finally {
       this.releaseSessionLock(sessionId)
     }
@@ -1481,11 +1493,11 @@ export class MonolitoV2Runtime {
     return finalResult
   }
 
-  async runTurn(sessionId: string, lastUserText: string, profileId = "default", options?: { logger?: Logger; cwd?: string; traceId?: string; maxTokens?: number; onAgentLoopEvent?: (event: AgentLoopEvent) => void }) {
+  async runTurn(sessionId: string, lastUserText: string, profileId = "default", options?: { logger?: Logger; cwd?: string; traceId?: string; maxTokens?: number; delivery?: DeliveryContext; onAgentLoopEvent?: (event: AgentLoopEvent) => void }) {
     return runWithContext(createSessionContext(sessionId), () => this.runTurnWithContext(sessionId, lastUserText, profileId, options))
   }
 
-  private async runTurnWithContext(sessionId: string, lastUserText: string, profileId = "default", options?: { logger?: Logger; cwd?: string; traceId?: string; maxTokens?: number; onAgentLoopEvent?: (event: AgentLoopEvent) => void }) {
+  private async runTurnWithContext(sessionId: string, lastUserText: string, profileId = "default", options?: { logger?: Logger; cwd?: string; traceId?: string; maxTokens?: number; delivery?: DeliveryContext; onAgentLoopEvent?: (event: AgentLoopEvent) => void }) {
     const turnStartedAt = Date.now()
     const instanceLogger = options?.logger
     const effectiveCwd = options?.cwd ?? this.rootDir
@@ -1514,7 +1526,7 @@ export class MonolitoV2Runtime {
             ? "El bootstrap del workspace sigue pendiente. Inicia ahora el ritual de primer arranque usando el contexto inyectado de BOOT_BOOTSTRAP, BOOT_IDENTITY, BOOT_USER, BOOT_SOUL y BOOT_AGENTS. Deja que el modelo orqueste la conversacion segun lo ya sabido. Responde en el idioma del usuario; si aun no hay una preferencia clara, comienza en espanol neutro y adapta el idioma enseguida si el usuario marca otro. Saluda brevemente y haz exactamente una sola pregunta corta por turno. No recites una checklist ni menciones almacenamiento interno salvo que el usuario lo pida."
             : "A new session was started via /new. Run your Session Startup sequence using the injected BOOT context already present in this turn before responding. Then greet the user in your configured persona. Keep it to 1-3 sentences. Do not mention internal steps, tools, or reasoning."
           this.releaseSessionLock(sessionId)
-          await this.processSessionStartup(sessionId, startupPrompt, { logger: instanceLogger })
+          await this.processSessionStartup(sessionId, startupPrompt, { logger: instanceLogger, delivery: options?.delivery })
           return { finalText: "", usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } }
         }
         appendMessage(this.rootDir, sessionId, "assistant", reply)
@@ -1529,15 +1541,7 @@ export class MonolitoV2Runtime {
           role: "assistant",
           durationMs: Date.now() - turnStartedAt,
         })
-        const telegramChatId = getTelegramChatId(sessionId)
-        if (telegramChatId && reply) {
-          try {
-            const config = readChannelsConfig()
-            if (config.telegram?.enabled && config.telegram.token) {
-              await sendTelegramMessage(config.telegram.token, telegramChatId, reply)
-            }
-          } catch {}
-        }
+        await this.deliverText(sessionId, reply, options?.delivery, "Failed to send slash-command reply to telegram")
         await this.transitionState(sessionId, "idle")
 
         return { finalText: reply, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } }
@@ -1676,17 +1680,7 @@ export class MonolitoV2Runtime {
             usage: turn.usage,
           })
 
-          const telegramChatId = getTelegramChatId(sessionId)
-          if (telegramChatId) {
-            try {
-              const config = readChannelsConfig()
-              if (config.telegram?.enabled && config.telegram.token) {
-                await sendTelegramMessage(config.telegram.token, telegramChatId, userFacingText)
-              }
-            } catch (e) {
-              logger.error("Failed to send reply back to telegram", e)
-            }
-          }
+          await this.deliverText(sessionId, userFacingText, options?.delivery, "Failed to send reply back to telegram")
         }
         await this.transitionState(sessionId, turn.error ? "error" : "idle")
 
@@ -1700,18 +1694,10 @@ export class MonolitoV2Runtime {
           type: "session",
           summary: `Turn failed: ${clipForWorklog(message)}`,
         })
-this.emit({ type: "error", sessionId, error: message })
+        this.emit({ type: "error", sessionId, error: message })
         appendMessage(this.rootDir, sessionId, "assistant", message)
         this.emit({ type: "message.received", sessionId, role: "assistant", text: message })
-        const telegramChatIdErr = getTelegramChatId(sessionId)
-        if (telegramChatIdErr && message) {
-          try {
-            const config = readChannelsConfig()
-            if (config.telegram?.enabled && config.telegram.token) {
-              await sendTelegramMessage(config.telegram.token, telegramChatIdErr, message)
-            }
-          } catch {}
-        }
+        await this.deliverText(sessionId, message, options?.delivery, "Failed to send timeout reply to telegram")
         await this.transitionState(sessionId, "error")
         return {
           finalText: message,
@@ -1742,6 +1728,7 @@ this.emit({ type: "error", sessionId, error: message })
       this.emit({ type: "error", sessionId, error: message })
       appendMessage(this.rootDir, sessionId, "assistant", message)
       this.emit({ type: "message.received", sessionId, role: "assistant", text: message })
+      await this.deliverText(sessionId, message, options?.delivery, "Failed to send error reply to telegram")
       await this.transitionState(sessionId, "error")
       return {
         finalText: message,
@@ -1757,7 +1744,7 @@ this.emit({ type: "error", sessionId, error: message })
     }
   }
 
-  private async runStartupTurn(sessionId: string, prompt: string, profileId = "default", turnStartedAtIso?: string, options?: { logger?: Logger; maxTokens?: number }) {
+  private async runStartupTurn(sessionId: string, prompt: string, profileId = "default", turnStartedAtIso?: string, options?: { logger?: Logger; maxTokens?: number; delivery?: DeliveryContext }) {
     const turnStartedAt = turnStartedAtIso ? Date.parse(turnStartedAtIso) : Date.now()
     const abortController = new AbortController()
     this.abortControllers.set(sessionId, abortController)
@@ -1850,15 +1837,7 @@ this.emit({ type: "error", sessionId, error: message })
           durationMs: Date.now() - turnStartedAt,
           usage: turn.usage,
         })
-        const telegramChatId = getTelegramChatId(sessionId)
-        if (telegramChatId && userFacingText) {
-          try {
-            const config = readChannelsConfig()
-            if (config.telegram?.enabled && config.telegram.token) {
-              await sendTelegramMessage(config.telegram.token, telegramChatId, userFacingText)
-            }
-          } catch {}
-        }
+        await this.deliverText(sessionId, userFacingText, options?.delivery, "Failed to send startup reply to telegram")
       }
       await this.transitionState(sessionId, turn.error ? "error" : "idle")
       return turn
@@ -1874,6 +1853,7 @@ this.emit({ type: "error", sessionId, error: message })
       this.emit({ type: "error", sessionId, error: message })
       appendMessage(this.rootDir, sessionId, "assistant", message)
       this.emit({ type: "message.received", sessionId, role: "assistant", text: message })
+      await this.deliverText(sessionId, message, options?.delivery, "Failed to send startup error reply to telegram")
       await this.transitionState(sessionId, "error")
       throw error
     } finally {
