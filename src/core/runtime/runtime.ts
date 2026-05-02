@@ -39,6 +39,7 @@ import {
   hasActiveWorkersForSession,
   reconcileSystemWings,
   getVectorMemoryStatus,
+  closeMemoryDb,
 } from "../session/store.ts"
 import { generateEmbedding, isEmbeddingsUnavailableError } from "../session/embeddings.ts"
 import { getTool, listTools, type ToolContext } from "../tools/registry.ts"
@@ -2142,6 +2143,15 @@ export class MonolitoV2Runtime {
     }
     this.mcpClients.clear()
     this.recoverSessions("Recovered after daemon shutdown")
+    closeMemoryDb()
+  }
+
+  gracefulRestart(reason = "system_reboot tool requested restart") {
+    logger.warn(`Graceful restart requested: ${reason}`)
+    setTimeout(() => {
+      this.close()
+      process.exit(0)
+    }, 1_000)
   }
 
   private async runMcpCommand(sessionId: string, rest: string[]) {

@@ -229,6 +229,7 @@ export type ToolContext = {
   runtime?: {
     acquireJobGroupForBatch: (sessionId: string) => string
     getSystemStatus?: () => Promise<unknown>
+    gracefulRestart?: (reason?: string) => void
   }
   querySessionStatus?: (sessionId: string) => string
   queryCost?: () => string
@@ -1501,6 +1502,30 @@ const tools: ToolDefinition[] = [
         throw new Error("system_status is unavailable outside the Monolito runtime.")
       }
       return JSON.stringify(await context.runtime.getSystemStatus())
+    },
+  },
+  {
+    name: "system_reboot",
+    aliases: ["SystemReboot"],
+    permissionTier: "edit",
+    description: "Reinicia completamente el daemon de Monolito. ÚSALA ÚNICAMENTE después de haber modificado el código fuente y haber verificado que compila (npm run build), para que el sistema cargue tu nueva lógica en memoria.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reason: { type: "string", description: "Motivo del reinicio" },
+      },
+      required: ["reason"],
+      additionalProperties: false,
+    },
+    concurrencySafe: false,
+    validate: input => typeof input.reason === "string" && input.reason.trim().length > 0 ? null : "reason must be a non-empty string",
+    async run(input, context) {
+      if (!context.runtime?.gracefulRestart) {
+        throw new Error("system_reboot is unavailable outside the Monolito runtime.")
+      }
+      const reason = requireString(input, "reason").trim()
+      context.runtime.gracefulRestart(reason)
+      return `Reinicio iniciado. El sistema volverá a estar online en unos segundos por el motivo: ${reason}`
     },
   },
   {

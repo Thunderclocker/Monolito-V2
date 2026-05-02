@@ -588,6 +588,16 @@ export async function getVectorMemoryStatus(): Promise<VectorMemoryStatus> {
   }
 }
 
+export function closeMemoryDb() {
+  if (!dbInstance) return
+  try {
+    dbInstance.close()
+  } finally {
+    dbInstance = null
+    dbPathCache = null
+  }
+}
+
 export function ensureKernelSeeded(rootDir: string, profileId = "default") {
   const db = getDb(rootDir)
   try {
