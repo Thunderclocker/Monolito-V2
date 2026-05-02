@@ -41,7 +41,7 @@ import {
   getVectorMemoryStatus,
   closeMemoryDb,
 } from "../session/store.ts"
-import { generateEmbedding, isEmbeddingsUnavailableError, getEmbeddingsStatus } from "../session/embeddings.ts"
+import { generateEmbedding, isEmbeddingsUnavailableError } from "../session/embeddings.ts"
 import { getTool, listTools, type ToolContext } from "../tools/registry.ts"
 import { getEffectiveModelConfig, runAgentLoop, runAssistantTurn, runBackgroundTextTask, type AgentLoopEvent, type AssistantTurnResult } from "./modelAdapterLite.ts"
 import {
@@ -212,7 +212,7 @@ type SystemServiceSnapshot = {
   checked: boolean
   containerState?: string
   detail?: string
-  model?: string
+  models?: string[]
 }
 
 type SystemStatus = {
@@ -268,6 +268,17 @@ async function checkActiveService(url: string): Promise<ActiveServiceStatus> {
     return response.status === 200 ? "online" : "degraded"
   } catch {
     return "offline"
+  }
+}
+
+async function fetchOllamaModels(baseUrl: string): Promise<string[]> {
+  try {
+    const response = await fetch(`${baseUrl}/api/tags`, { signal: AbortSignal.timeout(500) })
+    if (!response.ok) return []
+    const data = await response.json() as { models?: Array<{ name?: string }> }
+    return (data.models ?? []).map(m => m.name ?? "").filter(Boolean)
+  } catch {
+    return []
   }
 }
 
@@ -2406,6 +2417,7 @@ export class MonolitoV2Runtime {
     }
 
     const settled = await Promise.allSettled(activeChecks.map(check => check.promise))
+    const ollamaModels = await fetchOllamaModels(ollamaBaseUrl)
     settled.forEach((result, index) => {
       const service = activeChecks[index]
       if (!service) return
@@ -2421,7 +2433,7 @@ export class MonolitoV2Runtime {
         detail: result.status === "rejected"
           ? (result.reason instanceof Error ? result.reason.message : String(result.reason))
           : undefined,
-        ...(service.key === "ollama" ? { model: getEmbeddingsStatus().model } : {}),
+        ...(service.key === "ollama" ? { models: ollamaModels } : {}),
       }
     })
 

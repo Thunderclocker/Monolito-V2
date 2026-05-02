@@ -72,7 +72,7 @@ export function formatSystemStatus(text: string): FormattedBlock {
   try {
     const status = JSON.parse(text) as {
       checkedAt?: string
-      services?: Record<string, { status?: string; statusLabel?: string; checked?: boolean; containerState?: string; url?: string; model?: string }>
+      services?: Record<string, { status?: string; statusLabel?: string; checked?: boolean; containerState?: string; url?: string; models?: string[] }>
       routing?: Record<string, unknown>
       sqlite?: Record<string, unknown>
       workspace?: Record<string, unknown>
@@ -90,8 +90,8 @@ export function formatSystemStatus(text: string): FormattedBlock {
         "❌"
       const checked = service.checked ? "checked" : "not probed"
       const container = service.containerState ? ` container=${service.containerState}` : ""
-      const model = service.model ? ` (${service.model})` : ""
-      lines.push(`  ${marker} ${padRight(name, 10)} ${padRight(label, 9)} ${checked}${container}${model}`)
+      const models = service.models && service.models.length > 0 ? ` [${service.models.join(", ")}]` : ""
+      lines.push(`  ${marker} ${padRight(name, 10)} ${padRight(label, 9)} ${checked}${container}${models}`)
     }
     lines.push("")
     lines.push("  JSON:")
