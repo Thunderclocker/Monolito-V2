@@ -41,7 +41,7 @@ import {
   getVectorMemoryStatus,
   closeMemoryDb,
 } from "../session/store.ts"
-import { generateEmbedding, isEmbeddingsUnavailableError } from "../session/embeddings.ts"
+import { generateEmbedding, isEmbeddingsUnavailableError, getEmbeddingsStatus } from "../session/embeddings.ts"
 import { getTool, listTools, type ToolContext } from "../tools/registry.ts"
 import { getEffectiveModelConfig, runAgentLoop, runAssistantTurn, runBackgroundTextTask, type AgentLoopEvent, type AssistantTurnResult } from "./modelAdapterLite.ts"
 import {
@@ -212,6 +212,7 @@ type SystemServiceSnapshot = {
   checked: boolean
   containerState?: string
   detail?: string
+  model?: string
 }
 
 type SystemStatus = {
@@ -2420,6 +2421,7 @@ export class MonolitoV2Runtime {
         detail: result.status === "rejected"
           ? (result.reason instanceof Error ? result.reason.message : String(result.reason))
           : undefined,
+        ...(service.key === "ollama" ? { model: getEmbeddingsStatus().model } : {}),
       }
     })
 
