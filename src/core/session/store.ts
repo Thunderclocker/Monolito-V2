@@ -750,7 +750,7 @@ export function readBootWing(rootDir: string, wing: string, profileId = "default
   throw new Error(`BOOT wing ${wing} not found in SQLite Palace kernel for profile ${profileId}`)
 }
 
-export function writeBootWing(rootDir: string, wing: string, content: string, profileId = "default") {
+export function writeBootWing(rootDir: string, wing: string, content: string, profileId = "default", append = false) {
   ensureBootWings(rootDir, profileId)
   if (!bootWingExists(rootDir, wing, profileId)) {
     throw new Error(`BOOT wing ${wing} does not exist in profile ${profileId}. Use BootCreateWing after BootListWings if you need a new wing.`)
@@ -764,8 +764,12 @@ export function writeBootWing(rootDir: string, wing: string, content: string, pr
     nodeKey: wing,
     profileId,
   })
-  if ((currentPalace ?? "") === content) {
-    return { changed: false, bytes: Buffer.byteLength(content) }
+  let finalContent = content
+  if (append && currentPalace !== null) {
+    finalContent = `${currentPalace}\n\n${content}`
+  }
+  if ((currentPalace ?? "") === finalContent) {
+    return { changed: false, bytes: Buffer.byteLength(finalContent) }
   }
 
   db.exec("BEGIN TRANSACTION")
@@ -779,7 +783,7 @@ export function writeBootWing(rootDir: string, wing: string, content: string, pr
       subjectType: "boot_wing",
       subjectId: wing,
       contentType: "text/markdown",
-      content,
+      content: finalContent,
       now,
     })
     db.exec("COMMIT")
@@ -787,7 +791,7 @@ export function writeBootWing(rootDir: string, wing: string, content: string, pr
     db.exec("ROLLBACK")
     throw error
   }
-  return { changed: true, bytes: Buffer.byteLength(content) }
+  return { changed: true, bytes: Buffer.byteLength(finalContent) }
 }
 
 export function listBootEntries(rootDir: string, profileId = "default", options?: { includeMemory?: boolean; maxCharsPerEntry?: number; maxTotalChars?: number }) {

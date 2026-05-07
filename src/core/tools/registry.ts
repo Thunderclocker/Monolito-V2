@@ -2244,7 +2244,7 @@ const rawTools: ToolDefinition[] = [
   {
     name: "BootWrite",
     permissionTier: "edit",
-    description: "Replace or append to the content of an existing BOOT wing in SQLite. Use BootListWings first; if the wing does not exist, create it with BootCreateWing before writing.",
+    description: "Replace or append to the content of an existing BOOT wing in SQLite. Use BootListWings first; if the wing does not exist, create it with BootCreateWing before writing. WARNING: Use ONLY for core, permanent identity rules. For episodic memories, temporary data, or conversational facts, use WorkspaceMemoryFiling instead.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2261,16 +2261,12 @@ const rawTools: ToolDefinition[] = [
       try {
         const parsed = parseZod(bootWriteInputZod, input, "BootWrite input")
         const wing = parsed.wing
-        let content = parsed.content
         const profileId = context.profileId ?? "default"
         if (!bootWingExists(context.rootDir, wing, profileId)) {
           return formatToolError(`BOOT wing ${wing} does not exist in profile ${profileId}. Use BootListWings, then BootCreateWing if you need a new wing.`)
         }
-        if (parsed.action === "append") {
-          const existing = readBootWing(context.rootDir, wing, profileId) ?? ""
-          content = existing ? `${existing}\n\n${content}` : content
-        }
-        const result = writeBootWing(context.rootDir, wing, content, profileId)
+        const append = parsed.action === "append"
+        const result = writeBootWing(context.rootDir, wing, parsed.content, profileId, append)
         return { wing, ok: true, changed: result.changed, bytes: result.bytes, profile: profileId }
       } catch (error) {
         return formatToolError(error)
