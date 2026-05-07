@@ -26,8 +26,6 @@ import {
   listBootWings,
   createBootWing,
   bootWingExists,
-  readCanonicalMemory,
-  writeCanonicalMemory,
   ensureBootWings,
   readConfigWing,
   writeConfigWing,
@@ -139,6 +137,7 @@ const policyConfigZod = z.object({
 const bootWriteInputZod = z.object({
   wing: z.string().min(1),
   content: z.string(),
+  action: z.enum(["overwrite", "append"]).optional().default("overwrite"),
 }).strict()
 const bootCreateWingInputZod = z.object({
   wing: z.string().min(1).regex(/^[A-Za-z][A-Za-z0-9_]*$/, "wing must be alphanumeric/snake_case and start with a letter"),
@@ -2245,12 +2244,13 @@ const rawTools: ToolDefinition[] = [
   {
     name: "BootWrite",
     permissionTier: "edit",
-    description: "Replace the canonical content of an existing BOOT wing in SQLite. Use BootListWings first; if the wing does not exist, create it with BootCreateWing before writing.",
+    description: "Replace or append to the content of an existing BOOT wing in SQLite. Use BootListWings first; if the wing does not exist, create it with BootCreateWing before writing.",
     inputSchema: {
       type: "object",
       properties: {
         wing: { type: "string" },
         content: { type: "string" },
+        action: { type: "string", enum: ["overwrite", "append"], description: "Action to perform. Default is 'overwrite'." },
       },
       required: ["wing", "content"],
       additionalProperties: false,
@@ -2261,56 +2261,19 @@ const rawTools: ToolDefinition[] = [
       try {
         const parsed = parseZod(bootWriteInputZod, input, "BootWrite input")
         const wing = parsed.wing
-        const content = parsed.content
-        if (!bootWingExists(context.rootDir, wing, context.profileId ?? "default")) {
-          return formatToolError(`BOOT wing ${wing} does not exist in profile ${context.profileId ?? "default"}. Use BootListWings, then BootCreateWing if you need a new wing.`)
+        let content = parsed.content
+        const profileId = context.profileId ?? "default"
+        if (!bootWingExists(context.rootDir, wing, profileId)) {
+          return formatToolError(`BOOT wing ${wing} does not exist in profile ${profileId}. Use BootListWings, then BootCreateWing if you need a new wing.`)
         }
-        const result = writeBootWing(context.rootDir, wing, content, context.profileId ?? "default")
-        return { wing, ok: true, changed: result.changed, bytes: result.bytes, profile: context.profileId ?? "default" }
+        if (parsed.action === "append") {
+          const existing = readBootWing(context.rootDir, wing, profileId) ?? ""
+          content = existing ? `${existing}\n\n${content}` : content
+        }
+        const result = writeBootWing(context.rootDir, wing, content, profileId)
+        return { wing, ok: true, changed: result.changed, bytes: result.bytes, profile: profileId }
       } catch (error) {
         return formatToolError(error)
-      }
-    },
-  },
-  {
-    name: "CanonicalMemoryRead",
-    permissionTier: "read",
-    description: "Read stable structured identity/profile memory such as assistant name, user preferred name, location, and timezone.",
-    inputSchema: emptyInputSchema,
-    concurrencySafe: true,
-    async run(_input, context) {
-      const state = readCanonicalMemory(context.rootDir, context.profileId ?? "default")
-      return {
-        profile: context.profileId ?? "default",
-        state,
-      }
-    },
-  },
-  {
-    name: "CanonicalMemoryWrite",
-    permissionTier: "edit",
-    description: "Write a stable structured identity/profile fact. Prefer this over BOOT_* for confirmed assistant/user facts.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        slot: { type: "string", enum: ["assistant_name", "user_name", "user_preferred_name", "user_location", "user_timezone"] },
-        value: { type: "string" },
-      },
-      required: ["slot", "value"],
-      additionalProperties: false,
-    },
-    concurrencySafe: false,
-    async run(input, context) {
-      const slot = requireString(input, "slot") as "assistant_name" | "user_name" | "user_preferred_name" | "user_location" | "user_timezone"
-      const value = requireString(input, "value")
-      const result = await writeCanonicalMemory(context.rootDir, slot, value, context.profileId ?? "default")
-      return {
-        ok: true,
-        profile: context.profileId ?? "default",
-        slot,
-        value: result.value,
-        changed: result.changed,
-        bytes: result.bytes,
       }
     },
   },

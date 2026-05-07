@@ -10,7 +10,7 @@ import { AbortError, ApiError, ContextOverflowError, HttpError, ProviderOverload
 import { createLogger, type Logger } from "../logging/logger.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider } from "./modelRegistry.ts"
-import { compactSession, getSession, listCanonicalMemoryEntries, updateWorkerJobStatus, upsertWorkerJob } from "../session/store.ts"
+import { compactSession, getSession, updateWorkerJobStatus, upsertWorkerJob } from "../session/store.ts"
 import { callProvider, type ConversationMessage, type ProviderConfig, type ProviderResponse, type ToolCall } from "./providers/index.ts"
 import { ensureMonolitoRoot } from "../system/root.ts"
 import { redactSensitiveText } from "../security/redact.ts"
@@ -247,8 +247,6 @@ function buildSystemPrompt(args: {
 }) {
   if (args.systemPromptOverride?.trim()) return { system: args.systemPromptOverride.trim(), bootBlock: "" }
   const bootstrap = args.bootstrap ?? args.extras?.workspaceContext
-  const canonical = listCanonicalMemoryEntries(args.rootDir, args.context?.profileId ?? "default")
-  const identity = canonical.length > 0 ? canonical.map(entry => `- ${entry.label}: ${entry.value}`).join("\n") : "- No canonical identity facts recorded yet."
   const lastUserMessage = getLastUserMessage(args.session)
   const isSubAgent = args.session.id.startsWith("agent-")
   const isImageIntent = lastUserMessage && /imagen|imagenes|foto|fotos|picture|pictures|image|images|vision|visual/i.test(lastUserMessage)
@@ -265,8 +263,6 @@ function buildSystemPrompt(args: {
     "- When a user asks where a prior answer came from, inspect the conversation/tool evidence first. Use SessionForensics when available. Never claim no tool was used if tool evidence exists in the session.",
     "- When giving a user-facing conclusion based on tools, preserve traceability: mention the relevant tool/source path/URL/log/session evidence when it matters for trust or reproducibility.",
     "- Regla de Honestidad: Si una herramienta falla por infraestructura (ej. Visión caída), decilo. No inventes que estás trabajando si una tarea interna falló.",
-    "Identity and durable user facts:",
-    identity,
     isSubAgent
       ? [
           "You are a worker. Complete the task directly with the tools available to you.",
