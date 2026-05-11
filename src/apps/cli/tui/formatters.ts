@@ -76,6 +76,11 @@ export function formatSystemStatus(text: string): FormattedBlock {
       routing?: Record<string, unknown>
       sqlite?: Record<string, unknown>
       workspace?: Record<string, unknown>
+      memory?: {
+        extensionLoaded?: boolean
+        vecMessagesCount?: number
+        vecDrawersCount?: number
+      }
     }
     const lines: string[] = []
     lines.push(`  System status: ${status.checkedAt ?? "(unknown)"}`)
@@ -94,6 +99,18 @@ export function formatSystemStatus(text: string): FormattedBlock {
       lines.push(`  ${marker} ${padRight(name, 10)} ${padRight(label, 9)} ${checked}${container}${models}`)
     }
     lines.push("")
+    
+    if (status.memory) {
+      lines.push("  Memory & Embeddings:")
+      const ollamaState = status.services?.["ollama"]?.status
+      const engineActive = ollamaState === "online"
+      lines.push(`  ${engineActive ? "✅" : "❌"} Engine (Ollama): ${engineActive ? "Active" : "Offline"}`)
+      lines.push(`  ${status.memory.extensionLoaded ? "✅" : "❌"} Vector Extension: ${status.memory.extensionLoaded ? "Loaded" : "Missing"}`)
+      lines.push(`  📊 Indexed Messages: ${status.memory.vecMessagesCount ?? 0}`)
+      lines.push(`  📊 Indexed Drawers:  ${status.memory.vecDrawersCount ?? 0}`)
+      lines.push("")
+    }
+
     lines.push("  JSON:")
     lines.push(JSON.stringify(status, null, 2).split("\n").map(line => `  ${line}`).join("\n"))
     return { type: "list", tone: "info", content: lines.join("\n") }
