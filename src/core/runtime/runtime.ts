@@ -1933,7 +1933,7 @@ export class MonolitoV2Runtime {
           "/update",
         ].join("\n")
       case "/status":
-        return JSON.stringify(await this.getSystemStatus(), null, 2)
+        return this.formatSystemStatusText(await this.getSystemStatus())
       case "/model":
         return this.runModelCommand(rest)
       case "/update": {
@@ -2455,6 +2455,76 @@ export class MonolitoV2Runtime {
       },
       cost: formatCostSummary(this.costState),
     }
+  }
+
+  private formatSystemStatusText(status: SystemStatus): string {
+    const lines: string[] = []
+    lines.push(`System status: ${status.checkedAt ?? "(unknown)"}`)
+    lines.push("")
+    lines.push("Services:")
+    
+    const padRight = (s: string, n: number) => (s.length >= n ? s : s + " ".repeat(n - s.length))
+
+    for (const [name, service] of Object.entries(status.services ?? {})) {
+      const label = service.statusLabel ?? service.status ?? "UNKNOWN"
+      const marker =
+        service.status === "online" ? "✅" :
+        service.status === "idle" ? "◌" :
+        service.status === "degraded" ? "⚠" :
+        "❌"
+      const checked = service.checked ? "checked" : "not probed"
+      const container = service.containerState ? ` container=${service.containerState}` : ""
+      const models = service.models && service.models.length > 0 ? ` [${service.models.join(", ")}]` : ""
+      lines.push(`${marker} ${padRight(name, 10)} ${padRight(label, 9)} ${checked}${container}${models}`)
+    }
+    lines.push("")
+    
+    if (status.memory) {
+      lines.push("Memory & Embeddings:")
+      const ollamaState = status.services?.["ollama"]?.status
+      const engineActive = ollamaState === "online"
+      lines.push(`${engineActive ? "✅" : "❌"} Engine (Ollama): ${engineActive ? "Active" : "Offline"}`)
+      lines.push(`${status.memory.extensionLoaded ? "✅" : "❌"} Vector Extension: ${status.memory.extensionLoaded ? "Loaded" : "Missing"}`)
+      lines.push(`📊 Indexed Messages: ${status.memory.vecMessagesCount ?? 0}`)
+      lines.push(`📊 Indexed Drawers:  ${status.memory.vecDrawersCount ?? 0}`)
+      lines.push("")
+    }
+
+    if (status.routing) {
+      lines.push("Routing:")
+      lines.push(`🌐 Provider: ${status.routing.modelProvider}`)
+      lines.push(`🧠 Model:    ${status.routing.model}`)
+      lines.push(`🔗 Base URL: ${status.routing.baseUrl}`)
+      lines.push(`🔍 Search:   ${status.routing.webSearchProvider}`)
+      lines.push(`📱 Telegram: ${status.routing.telegramEnabled ? "Enabled" : "Disabled"}`)
+      lines.push("")
+    }
+
+    if (status.sqlite || status.workspace) {
+      lines.push("System & Storage:")
+      if (status.workspace) {
+        lines.push(`📂 Workspace: ${status.workspace.rootDir}`)
+      }
+      if (status.sqlite) {
+        lines.push(`🗃️  Sessions:  ${status.sqlite.sessions}`)
+        lines.push(`👥 Profiles:  ${status.sqlite.profiles}`)
+      }
+      lines.push("")
+    }
+
+    if (status.cost) {
+      lines.push("Cost & Metrics:")
+      const costLines = typeof status.cost === "string" ? status.cost.split("\n") : []
+      costLines.forEach(line => {
+        if (line.startsWith("Cost:")) lines.push(`💰 ${line}`)
+        else if (line.startsWith("Tokens:")) lines.push(`📊 ${line}`)
+        else if (line.startsWith("API:")) lines.push(`⏱  ${line}`)
+        else lines.push(line)
+      })
+      lines.push("")
+    }
+
+    return lines.join("\n")
   }
 
   private async runUpdate(): Promise<string> {

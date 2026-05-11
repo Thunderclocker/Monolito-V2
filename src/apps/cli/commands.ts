@@ -92,10 +92,6 @@ export async function runCliCommand(client: DaemonClient, args: CliArgs) {
 
   if (command?.startsWith("/")) {
     const output = await client.runDaemonCommand(command)
-    if (command === "/status") {
-      writeBlock(renderFormattedBlock(formatSystemStatus(output)))
-      return
-    }
     writeLine(output)
     return
   }
