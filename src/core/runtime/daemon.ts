@@ -365,6 +365,9 @@ export class MonolitoV2Daemon {
         this.writeDaemonLog(`embeddings warmup failed; continuing in lazy mode: ${result.error}`)
       } else {
         this.writeDaemonLog(`Embedding Engine ready. Palacio de Memoria activo. model=${result.model} baseUrl=${result.baseUrl} dimensions=${result.dimensions}`)
+        void this.runtime.syncMissingEmbeddings().catch(error => {
+          this.writeDaemonLog(`background embeddings sync failed: ${error instanceof Error ? error.message : String(error)}`)
+        })
       }
     } catch (error) {
       this.writeDaemonLog(`embeddings warmup failed; continuing in lazy mode: ${error instanceof Error ? error.message : String(error)}`)

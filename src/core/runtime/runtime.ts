@@ -40,6 +40,7 @@ import {
   reconcileSystemWings,
   getVectorMemoryStatus,
   closeMemoryDb,
+  syncMissingEmbeddings,
 } from "../session/store.ts"
 import { generateEmbedding, isEmbeddingsUnavailableError } from "../session/embeddings.ts"
 import { getTool, listTools, type ToolContext } from "../tools/registry.ts"
@@ -984,6 +985,10 @@ export class MonolitoV2Runtime {
     ensureConfigWings(this.rootDir)
     reconcileSystemWings(db, rootDir)
     loadAndApplyModelSettings(process.env)
+  }
+
+  async syncMissingEmbeddings() {
+    return syncMissingEmbeddings(this.rootDir)
   }
 
   recoverWorkerJobs() {

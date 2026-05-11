@@ -1814,3 +1814,64 @@ export function queryGraphEntity(
       created_at DESC
   `).all(profileId, entity.trim(), entity.trim()) as KnowledgeGraphTriple[]
 }
+
+// --- Background Embeddings Synchronization ---
+
+export async function syncMissingEmbeddings(rootDir: string) {
+  const db = getDb(rootDir)
+  
+  // 1. Find missing message embeddings
+  const missingMessages = db.prepare(`
+    SELECT id, text 
+    FROM messages 
+    WHERE role != 'system' 
+      AND is_compacted = 0 
+      AND session_id NOT LIKE 'agent-%' 
+      AND session_id NOT LIKE 'worker-%'
+      AND text != ''
+      AND id NOT IN (SELECT id FROM vec_messages)
+  `).all() as Array<{ id: number; text: string }>
+
+  let messagesSynced = 0
+  for (const row of missingMessages) {
+    try {
+      const embedding = await generateEmbedding(row.text)
+      db.prepare(`INSERT OR REPLACE INTO vec_messages (id, embedding) VALUES (?, ?)`).run(BigInt(row.id), embedding)
+      messagesSynced++
+    } catch (error) {
+      if (isEmbeddingsUnavailableError(error)) {
+        logger.warn("Sync aborted: Embeddings unavailable.")
+        return // Abort early if Ollama is down again
+      }
+      logger.error(`Failed to sync embedding for message ${row.id}: ${error}`)
+    }
+  }
+
+  // 2. Find missing memory drawer embeddings
+  const missingDrawers = db.prepare(`
+    SELECT id, content 
+    FROM memory_drawers 
+    WHERE wing NOT LIKE 'CONF\\_%' ESCAPE '\\'
+      AND content != ''
+      AND id NOT IN (SELECT id FROM vec_drawers)
+  `).all() as Array<{ id: string; content: string }>
+
+  let drawersSynced = 0
+  for (const row of missingDrawers) {
+    try {
+      const embedding = await generateEmbedding(row.content)
+      db.prepare(`INSERT OR REPLACE INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(row.id, embedding)
+      drawersSynced++
+    } catch (error) {
+      if (isEmbeddingsUnavailableError(error)) {
+        logger.warn("Sync aborted: Embeddings unavailable.")
+        return
+      }
+      logger.error(`Failed to sync embedding for drawer ${row.id}: ${error}`)
+    }
+  }
+
+  if (messagesSynced > 0 || drawersSynced > 0) {
+    logger.info(`Embeddings sync completed: ${messagesSynced} messages, ${drawersSynced} memory drawers.`)
+  }
+}

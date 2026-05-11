@@ -49,8 +49,9 @@ The runtime does not rely on workspace markdown files for identity or memory. Th
 - Knowledge graph entries are stored as `subject`, `predicate`, `object`, `valid_from`, and optional `valid_to`.
 - `SHARED` wings are visible across profiles; other Memory Palace entries and graph triples stay profile-scoped.
 - Recall supports structural filters (`wing`, `room`, `key`) and semantic lookup with local embeddings.
-- Embeddings use a local `@xenova/transformers` model and are warmed in the background at daemon startup.
+- Embeddings use a local Ollama instance with the `nomic-embed-text` model, managed automatically via Docker if needed, and are warmed in the background at daemon startup.
 - If embeddings are unavailable, Monolito degrades cleanly: filing can continue without vectors and semantic recall falls back to recent non-semantic memory.
+- A background synchronization process automatically runs on daemon startup to catch up and generate embeddings for any messages or memories saved while Ollama was down.
 - Session history can also be compacted while keeping continuity markers.
 
 ## Multi-agent model
