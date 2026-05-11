@@ -22,26 +22,11 @@ These wings are still important, but they are only the first layer of the memory
 
 Monolito now uses a memory pyramid:
 
-- `BOOT_*`: deterministic startup seed and stable system bootstrap.
-- Canonical memory: structured durable facts such as assistant name and stable user profile fields.
+- `BOOT_*`: deterministic startup seed, stable system bootstrap, and current stable identity and user profile facts.
 - Temporal knowledge graph: time-aware relations and facts with validity windows.
 - Memory Palace: verbatim history plus broader long-lived contextual entries.
 
-Stable profile facts should not rely only on `BOOT_IDENTITY` or `BOOT_USER`. The runtime now prefers canonical memory for those facts and only uses BOOT as deterministic startup scaffolding.
-
-## Canonical Memory
-
-Canonical memory is stored in SQLite and currently tracks stable slots such as:
-
-- `assistant_name`
-- `user_name`
-- `user_preferred_name`
-- `user_location`
-- `user_timezone`
-
-The main assistant can read and write these facts explicitly through `CanonicalMemoryRead` and `CanonicalMemoryWrite`.
-
-The main assistant MUST proactively use CanonicalMemoryWrite and WorkspaceMemoryFiling to persist confirmed facts. There is no background memory extraction process.
+Stable profile facts should be persisted directly into `BOOT_IDENTITY` or `BOOT_USER`. The runtime uses BOOT as the primary deterministic startup scaffolding for these facts.
 
 ## Temporal Knowledge Graph
 
@@ -59,7 +44,7 @@ Use it for facts that may change over time:
 - which project is active
 - when a relationship stopped being valid
 
-This layer complements canonical memory. Canonical slots are for a small fixed set of stable identity facts; the graph is for open-ended time-aware relations.
+The graph is for open-ended time-aware relations that complement the stable BOOT wings.
 
 ## Memory Palace
 
@@ -76,7 +61,7 @@ The most important current runtime behavior is verbatim filing of recent turns i
 
 ## Startup Behavior
 
-At session startup, Monolito reads the current profile's BOOT wings in a fixed order. The prompt may also inject canonical memory so the assistant starts with both:
+At session startup, Monolito reads the current profile's BOOT wings in a fixed order. This provides:
 
 - deterministic bootstrap instructions
 - current stable identity and user profile facts
@@ -89,7 +74,6 @@ The onboarding flow should:
 
 - ask one short question at a time
 - persist bootstrap-critical answers into the relevant `BOOT_*` wings
-- write stable profile facts into canonical memory when appropriate
 - replace `BOOT_BOOTSTRAP` with a completion note when onboarding is complete
 
 In other words, onboarding still writes BOOT state, but it should not treat BOOT as the only durable profile store.
@@ -98,7 +82,6 @@ In other words, onboarding still writes BOOT state, but it should not treat BOOT
 
 - main sessions can auto-load `BOOT_MEMORY`
 - sub-agents do not auto-load `BOOT_MEMORY` unless explicitly given it
-- canonical memory is preferred for assistant identity and stable user facts
 - temporal graph facts are queried explicitly through tools, not injected wholesale
 - Memory Palace recall is SQLite-backed and can use embeddings when available
 - bootstrap content is capped so it does not explode the prompt

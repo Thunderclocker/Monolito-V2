@@ -18,7 +18,6 @@ The registry includes tools for:
 - shell execution
 - workspace file read/write
 - BOOT wing read/write
-- canonical memory read/write
 - Memory Palace filing and recall
 - temporal knowledge graph reads and writes
 - MCP listing, reading, and tool calls
@@ -43,16 +42,8 @@ Monolito distinguishes between:
 
 - general workspace files
 - injected BOOT wings
-- structured canonical memory
 
-Deterministic BOOT wings like `BOOT_SOUL`, `BOOT_USER`, and `BOOT_MEMORY` have dedicated read/write tools so the model can update bootstrap state without relying on arbitrary file paths or legacy workspace files.
-
-Canonical memory has its own tools:
-
-- `CanonicalMemoryRead`
-- `CanonicalMemoryWrite`
-
-These are the preferred tools for stable assistant identity and durable user profile facts such as name, preferred name, location, or timezone.
+Deterministic BOOT wings like `BOOT_SOUL`, `BOOT_IDENTITY`, `BOOT_USER`, and `BOOT_MEMORY` have dedicated read/write tools so the model can update bootstrap state, identity, and user profile facts without relying on arbitrary file paths or legacy workspace files.
 
 ## Memory tools
 
@@ -107,16 +98,13 @@ Behavior:
 
 Use these tools for time-aware facts that should not be flattened into free-form Memory Palace text.
 
-## BOOT vs Canonical vs Graph vs Memory Palace
+## BOOT vs Graph vs Memory Palace
 
 Use the layers differently:
 
-- BOOT tools: bootstrap seed, onboarding, stable system instructions
-- canonical memory tools: durable assistant identity and user profile facts
+- BOOT tools: bootstrap seed, onboarding, identity, stable user profile, and system instructions
 - graph tools: time-aware relations and facts with lifecycle
 - Memory Palace tools: verbatim history, broader durable memory, notes, patterns, and semantic recall
-
-Older docs sometimes described BOOT as the main memory layer. That is no longer accurate for current runtime behavior.
 
 ## MCP
 

@@ -160,10 +160,9 @@ The prompt is split into:
 The static block contains:
 
 - core assistant instructions
-- canonical identity facts
 - tool-use instructions
 - the tool summary
-- the BOOT entries
+- the BOOT entries (personality, identity, user profile, workspace rules, memory)
 
 The dynamic block begins with the explicit marker:
 

@@ -7,13 +7,12 @@ Further documentation lives in [`docs/`](./docs/README.md).
 ## Core capabilities
 
 - Daemon + CLI client with resumable local sessions
-- SQLite-backed runtime for sessions, worklog, events, BOOT wings, canonical memory, verbatim long-term memory, and the temporal knowledge graph
+- SQLite-backed runtime for sessions, worklog, events, BOOT wings, verbatim long-term memory, and the temporal knowledge graph
 - Profile-based workspaces with deterministic `BOOT_*` wings stored in SQLite instead of legacy markdown memory files
-- Canonical memory slots for stable assistant/user facts such as assistant name, preferred user name, location, and timezone
 - Verbatim long-term memory filing into SQLite `memory.sqlite`, plus a temporal knowledge graph for subject-predicate-object facts with validity windows
-- First-run bootstrap ritual that persists bootstrap state into BOOT wings while stable facts can also live in canonical memory and the graph
+- First-run bootstrap ritual that persists bootstrap state into BOOT wings and the knowledge graph
 - Multi-agent orchestration with worker spawning, follow-up messaging, stop controls, and real filesystem isolation via Git Worktrees
-- Tool harness for shell execution, web fetches, workspace file access, BOOT access, canonical memory access, Memory Palace filing/recall, knowledge-graph tools, MCP calls, Telegram send, and task tracking
+- Tool harness for shell execution, web fetches, workspace file access, BOOT access, Memory Palace filing/recall, knowledge-graph tools, MCP calls, Telegram send, and task tracking
 - OpenAI-compatible text-to-speech generation into local audio files, with Telegram audio/voice delivery tools
 - Managed speech-to-text ingestion for Telegram audio and voice notes
 - Slash-command interface for runtime inspection and control
@@ -30,9 +29,9 @@ Further documentation lives in [`docs/`](./docs/README.md).
 Monolito is split into a few main layers:
 
 - daemon/runtime: owns sessions, orchestration, slash commands, background work, channels, and logging
-- model adapter: builds the prompt, injects BOOT/canonical memory/config, applies prompt-caching boundaries, and handles provider recovery state
+- model adapter: builds the prompt, injects BOOT/config, applies prompt-caching boundaries, and handles provider recovery state
 - tool registry: exposes structured tools with permission checks and renderer metadata
-- session store: persists messages, worklog, events, tasks, BOOT wings, canonical memory, Memory Palace entries, and the temporal knowledge graph in SQLite
+- session store: persists messages, worklog, events, tasks, BOOT wings, Memory Palace entries, and the temporal knowledge graph in SQLite
 - channels: Telegram ingestion/reply flow plus media handling
 - managed services: optional local TTS, STT, and SearxNG lifecycle helpers
 
@@ -40,10 +39,9 @@ The runtime does not rely on workspace markdown files for identity or memory. Th
 
 ## Memory system
 
-- Session history, messages, worklog entries, runtime events, BOOT wings, canonical slots, Memory Palace entries, and graph triples are persisted locally in SQLite.
-- Long-term memory has four layers:
+- Session history, messages, worklog entries, runtime events, BOOT wings, Memory Palace entries, and graph triples are persisted locally in SQLite.
+- Long-term memory has three layers:
   - `BOOT_*` for deterministic bootstrap state
-  - canonical memory for stable assistant/user facts
   - Memory Palace for broader durable context and verbatim turn capture
   - temporal knowledge graph for time-scoped relations
 - Verbatim conversation storage now writes the latest `USER` / `ASSISTANT` turn pair directly into SQLite under `HISTORY/verbatim`.
@@ -59,11 +57,9 @@ The runtime does not rely on workspace markdown files for identity or memory. Th
 
 - Monolito runs a background `Memory Agent` that reviews recent conversation and proposes updates for `USER` and `MEMORY` without interrupting the main reply flow.
 - The same review pass also stores the last conversation turn verbatim into SQLite, without asking the LLM to invent summaries for the Memory Palace.
-- Stable profile facts can also be promoted into canonical memory.
 - It is triggered after normal turns, before `/compact`, and before session-only resets such as `/new`.
 - Operational logging is emitted through the daemon log under the `memory-agent` logger category.
 - Memory Agent updates are also summarized into the session worklog when something is applied.
-- See `docs/memory-agent.md` for routing and behavior details.
 
 ## Multi-agent model
 
@@ -72,12 +68,12 @@ The runtime does not rely on workspace markdown files for identity or memory. Th
 - Sub-agents report back through task notifications and can be continued or stopped explicitly.
 - When isolation is enabled, each worker runs in its own Git Worktree with a temporary branch, so it cannot collide with files in the main workspace root.
 - Profiles can be created dynamically and keep separate identity, workspace, and task lists.
-- Main sessions can see curated bootstrap and canonical memory; worker sessions stay more isolated unless context is explicitly passed in.
+- Main sessions can see curated bootstrap memory; worker sessions stay more isolated unless context is explicitly passed in.
 
 ## Tool harness
 
 - Tools run through a permission-checked execution harness rather than free-form shell instructions.
-- The registry includes local shell execution, MCP access, Telegram send, workspace read/write, BOOT read/write, canonical memory read/write, memory filing/recall, knowledge-graph tools, todo/task tracking, and agent orchestration tools.
+- The registry includes local shell execution, MCP access, Telegram send, workspace read/write, BOOT read/write, memory filing/recall, knowledge-graph tools, todo/task tracking, and agent orchestration tools.
 - Tool starts, finishes, failures, and summaries are emitted as structured runtime events and appended to the worklog.
 - Post-tool hooks and per-profile/session permission rules are supported.
 - Session forensics is also tool-driven, so the assistant can inspect messages, worklog, and events before answering questions about what happened in a session.

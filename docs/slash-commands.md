@@ -57,7 +57,7 @@ Monolito exposes runtime control commands in the CLI and, where supported, throu
 
 - `/model`, `/channels`, `/config`, and `/websearch` act on runtime-level configuration.
 - `/new` resets only the current session.
-- `/reset` resets the current session and clears profile-scoped Memory Palace data, including regular memory drawers, BOOT memory, canonical memory, and knowledge graph entries.
+- `/reset` resets the current session and clears profile-scoped Memory Palace data, including regular memory drawers, BOOT memory, and knowledge graph entries.
 - Telegram chat sessions remain isolated by `telegram-<chatId>`.
 
 ## Interactive menus
