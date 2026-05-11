@@ -5,7 +5,7 @@ import type { CliArgs } from "./args.ts"
 import { formatHistory, writeBlock, writeLine } from "./output.ts"
 import { openInteractiveSession, runOneShot, ensureCliSession, waitForTurnCompletion } from "./session.ts"
 import { stdout } from "node:process"
-import { formatSystemStatus, renderFormattedBlock } from "./tui/formatters.ts"
+import { renderFormattedBlock } from "./tui/formatters.ts"
 
 function renderEventLog(events: AgentEvent[]) {
   const renderer = new ToolUseRenderer()
