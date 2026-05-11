@@ -17,13 +17,13 @@ export type BootWingEntry = {
 }
 
 export const BOOT_WING_DESCRIPTION: Record<BootWingName, string> = {
-  BOOT_SOUL: "Your operating philosophy and personality. Follow this first unless higher-priority instructions override it.",
-  BOOT_IDENTITY: "Your identity record. Use it to stay consistent about who you are.",
-  BOOT_USER: "The user profile. Use it to adapt to the human you are helping.",
-  BOOT_AGENTS: "Workspace operating rules and startup behavior. Treat it as the local contract for how to work here.",
+  BOOT_SOUL: "Defines the personality, tone, and boundaries of the agent: how it speaks, its attitudes, and how it behaves with the user.",
+  BOOT_IDENTITY: "Defines the agent's name, nickname, and \"vibe\". Keeps the identity consistent across sessions.",
+  BOOT_USER: "Contains the user's profile: who they are, how to address them, their preferences, and relevant personal context.",
+  BOOT_AGENTS: "Defines the operational instructions for the agent: what to do, priorities, how to use tools, and how to manage memory.",
   BOOT_TOOLS: "Local tool conventions and operational notes.",
-  BOOT_BOOTSTRAP: "First-run bootstrap instructions. If this wing is still unresolved, let the model conduct the onboarding in the user's language, persist the result, and finalize it.",
-  BOOT_MEMORY: "Curated long-term memory for the main session. Use it as durable context, not as a trigger for extra probing.",
+  BOOT_BOOTSTRAP: "The initial onboarding ritual that configures the workspace from scratch. Once completed, this ephemeral state is discarded.",
+  BOOT_MEMORY: "Curated long-term memory: important facts, decisions, and preferences that must persist across sessions.",
 }
 
 export const DEFAULT_BOOT_WING_CONTENT: Record<BootWingName, string> = {
