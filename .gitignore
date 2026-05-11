@@ -46,4 +46,3 @@ coverage/
 # NotebookLM sync artifacts
 Monolito Repomix.txt
 scripts/sync_notebooklm.cjs
-CLAUDE.md
