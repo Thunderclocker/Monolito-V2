@@ -790,6 +790,57 @@ async function fetchWithCurl(url: string) {
 
 const rawTools: ToolDefinition[] = [
   {
+    name: "read_crontab",
+    permissionTier: "read",
+    description: "Read the current user's crontab (scheduled tasks). Returns the content of the crontab.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+    async run() {
+      try {
+        const { stdout } = await execFileAsync("crontab", ["-l"])
+        return stdout || "Crontab is empty."
+      } catch (error: any) {
+        if (error.stderr && error.stderr.includes("no crontab for")) {
+          return "No crontab for current user."
+        }
+        throw new Error(error.stderr || error.message)
+      }
+    },
+  },
+  {
+    name: "write_crontab",
+    permissionTier: "read",
+    description: "Write or overwrite the current user's crontab. Provide the COMPLETE crontab content as a string. BE CAREFUL: this completely overwrites the existing crontab. To add a job, first read the crontab, append your new job, and write the whole thing back.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        content: { type: "string", description: "The full content of the new crontab." },
+      },
+      required: ["content"],
+      additionalProperties: false,
+    },
+    async run(input) {
+      const content = input.content as string
+      const tempPath = join("/tmp", `crontab-${randomUUID()}`)
+      try {
+        writeFileSync(tempPath, content + (content.endsWith("\n") ? "" : "\n"))
+        const { stdout, stderr } = await execFileAsync("crontab", [tempPath])
+        return `Crontab successfully updated.\n${stdout}\n${stderr}`.trim()
+      } catch (error: any) {
+        throw new Error(`Failed to write crontab: ${error.stderr || error.message}`)
+      } finally {
+        if (existsSync(tempPath)) {
+          try {
+            require("node:fs").unlinkSync(tempPath)
+          } catch {}
+        }
+      }
+    },
+  },
+  {
     name: "QuerySessionStatus",
     permissionTier: "read",
     description: "Return metadata for the current Monolito session, model configuration, and available tool count.",
