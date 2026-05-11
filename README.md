@@ -53,14 +53,6 @@ The runtime does not rely on workspace markdown files for identity or memory. Th
 - If embeddings are unavailable, Monolito degrades cleanly: filing can continue without vectors and semantic recall falls back to recent non-semantic memory.
 - Session history can also be compacted while keeping continuity markers.
 
-### Background Memory Agent
-
-- Monolito runs a background `Memory Agent` that reviews recent conversation and proposes updates for `USER` and `MEMORY` without interrupting the main reply flow.
-- The same review pass also stores the last conversation turn verbatim into SQLite, without asking the LLM to invent summaries for the Memory Palace.
-- It is triggered after normal turns, before `/compact`, and before session-only resets such as `/new`.
-- Operational logging is emitted through the daemon log under the `memory-agent` logger category.
-- Memory Agent updates are also summarized into the session worklog when something is applied.
-
 ## Multi-agent model
 
 - Agents are represented as profile-scoped sub-sessions with their own isolated runtime context.
