@@ -81,6 +81,7 @@ export function formatSystemStatus(text: string): FormattedBlock {
         vecMessagesCount?: number
         vecDrawersCount?: number
       }
+      cost?: string
     }
     const lines: string[] = []
     lines.push(`  System status: ${status.checkedAt ?? "(unknown)"}`)
@@ -111,10 +112,43 @@ export function formatSystemStatus(text: string): FormattedBlock {
       lines.push("")
     }
 
-    lines.push("  JSON:")
-    lines.push(JSON.stringify(status, null, 2).split("\n").map(line => `  ${line}`).join("\n"))
+    if (status.routing) {
+      lines.push("  Routing:")
+      lines.push(`  🌐 Provider: ${status.routing.modelProvider}`)
+      lines.push(`  🧠 Model:    ${status.routing.model}`)
+      lines.push(`  🔗 Base URL: ${status.routing.baseUrl}`)
+      lines.push(`  🔍 Search:   ${status.routing.webSearchProvider}`)
+      lines.push(`  📱 Telegram: ${status.routing.telegramEnabled ? "Enabled" : "Disabled"}`)
+      lines.push("")
+    }
+
+    if (status.sqlite || status.workspace) {
+      lines.push("  System & Storage:")
+      if (status.workspace) {
+        lines.push(`  📂 Workspace: ${status.workspace.rootDir}`)
+      }
+      if (status.sqlite) {
+        lines.push(`  🗃️  Sessions:  ${status.sqlite.sessions}`)
+        lines.push(`  👥 Profiles:  ${status.sqlite.profiles}`)
+      }
+      lines.push("")
+    }
+
+    if (status.cost) {
+      lines.push("  Cost & Metrics:")
+      const costLines = typeof status.cost === "string" ? status.cost.split("\n") : []
+      costLines.forEach(line => {
+        if (line.startsWith("Cost:")) lines.push(`  💰 ${line}`)
+        else if (line.startsWith("Tokens:")) lines.push(`  📊 ${line}`)
+        else if (line.startsWith("API:")) lines.push(`  ⏱  ${line}`)
+        else lines.push(`  ${line}`)
+      })
+      lines.push("")
+    }
+
     return { type: "list", tone: "info", content: lines.join("\n") }
-  } catch {
+  } catch (err) {
+    console.error("FORMAT_SYSTEM_STATUS_ERROR:", err)
     return { type: "code", content: text }
   }
 }
