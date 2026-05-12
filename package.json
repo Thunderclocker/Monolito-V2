@@ -3,13 +3,16 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "monolito": "./bin/monolito.js"
+  },
   "scripts": {
     "daemon": "node --experimental-strip-types src/apps/daemon.ts",
     "cli": "node --experimental-strip-types src/apps/cli.ts",
     "mcp:demo": "node --experimental-strip-types src/core/mcp/devServer.ts",
     "db:migrate": "node --experimental-strip-types scripts/db-migrate.ts",
     "build": "tsc --noEmit",
-    "check": "node --experimental-strip-types src/apps/cli.ts --help"
+    "check": "node bin/monolito.js --help"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.1",
