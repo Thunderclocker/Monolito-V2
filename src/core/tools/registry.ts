@@ -790,104 +790,136 @@ async function fetchWithCurl(url: string) {
 
 const rawTools: ToolDefinition[] = [
   {
-    name: "read_crontab",
-    permissionTier: "read",
-    description: "Read the current user's crontab (scheduled tasks). Returns the content of the crontab.",
-    inputSchema: {
-      type: "object",
-      properties: {},
-      additionalProperties: false,
-    },
-    async run() {
-      try {
-        const { stdout } = await execFileAsync("crontab", ["-l"])
-        return stdout || "Crontab is empty."
-      } catch (error: any) {
-        if (error.stderr && error.stderr.includes("no crontab for")) {
-          return "No crontab for current user."
-        }
-        throw new Error(error.stderr || error.message)
-      }
-    },
-  },
-  {
-    name: "write_crontab",
+    name: "schedule_task",
     permissionTier: "edit",
-    description: "Write or overwrite the current user's crontab. Provide the COMPLETE crontab content as a string. BE CAREFUL: this completely overwrites the existing crontab. To add a job, first read the crontab, append your new job, and write the whole thing back. IMPORTANT: For Telegram reminders/notifications, use curl to the Telegram Bot API directly — this is stateless and does not require the Monolito daemon to be running. Example: `0 10 * * * curl -s -X POST https://api.telegram.org/bot[BOT_TOKEN]/sendMessage -d chat_id=[CHAT_ID] -d text='Tu recordatorio aqui'`. Use read_config to get the bot token from the config. Never use echo or shell-only commands for notifications.",
+    description: `Unified tool for scheduling and managing reminders and cron jobs. Always use this tool for anything time/reminder related.
+
+Actions:
+- "list": Returns all scheduled recurring cron jobs with their index numbers.
+- "add": Adds a new job. Two modes:
+    * One-shot (delay_seconds): fires once after N seconds via nohup+sleep+curl. Best for 'remind me in X minutes'.
+    * Recurring (cron_expression): adds a persistent cron job. Best for 'every day at 8am'.
+  In both modes, the notification is sent directly to Telegram via curl (stateless, no daemon needed).
+  Requires: message, chat_id. Plus either delay_seconds OR cron_expression.
+- "remove": Removes a recurring cron job by its index (1-based, from "list").
+
+For recurring jobs, the Telegram token is read from the channels config automatically.`,
     inputSchema: {
       type: "object",
       properties: {
-        content: { type: "string", description: "The full content of the new crontab." },
+        action: { type: "string", enum: ["list", "add", "remove"], description: "Operation to perform." },
+        message: { type: "string", description: "[add] The reminder/notification text to send via Telegram." },
+        chat_id: { type: "number", description: "[add] Telegram chat ID." },
+        delay_seconds: { type: "number", description: "[add, one-shot] Seconds from now to fire. Mutually exclusive with cron_expression." },
+        cron_expression: { type: "string", description: "[add, recurring] Standard cron expression, e.g. '0 10 * * *' for 10am daily." },
+        job_index: { type: "number", description: "[remove] 1-based index of the cron job to remove (from 'list')." },
       },
-      required: ["content"],
+      required: ["action"],
       additionalProperties: false,
     },
     async run(input) {
-      const content = input.content as string
-      const tempPath = join("/tmp", `crontab-${randomUUID()}`)
-      try {
-        writeFileSync(tempPath, content + (content.endsWith("\n") ? "" : "\n"))
-        const { stdout, stderr } = await execFileAsync("crontab", [tempPath])
-        return `Crontab successfully updated.\n${stdout}\n${stderr}`.trim()
-      } catch (error: any) {
-        throw new Error(`Failed to write crontab: ${error.stderr || error.message}`)
-      } finally {
-        if (existsSync(tempPath)) {
-          try {
-            require("node:fs").unlinkSync(tempPath)
-          } catch {}
+      const action = input.action as string
+
+      // ── LIST ──────────────────────────────────────────────────────────────
+      if (action === "list") {
+        try {
+          const { stdout } = await execFileAsync("crontab", ["-l"])
+          if (!stdout.trim()) return "No recurring jobs scheduled."
+          const lines = stdout.split("\n")
+          const jobs = lines
+            .map((line, i) => ({ line: line.trim(), i }))
+            .filter(({ line }) => line && !line.startsWith("#"))
+          if (jobs.length === 0) return "No recurring jobs scheduled."
+          return jobs.map(({ line, i: _i }, idx) => `[${idx + 1}] ${line}`).join("\n")
+        } catch (error: any) {
+          if (error.stderr?.includes("no crontab for")) return "No recurring jobs scheduled."
+          throw new Error(error.stderr || error.message)
         }
       }
-    },
-  },
-  {
-    name: "schedule_reminder",
-    permissionTier: "edit",
-    description: "Schedule a one-shot reminder to be sent to a Telegram chat at a specific time or after a delay. Use this instead of write_crontab for one-time 'remind me in X minutes/hours' requests. The reminder is sent via the Telegram Bot API using curl, launched as a detached background process (nohup). Does NOT require the Monolito daemon to be running at fire time.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        message: { type: "string", description: "The reminder message to send." },
-        delay_seconds: { type: "number", description: "How many seconds from now to send the reminder. Use this for relative times ('in 5 minutes' = 300)." },
-        chat_id: { type: "number", description: "Telegram chat ID to send the reminder to. Use the current user's chat ID if known." },
-      },
-      required: ["message", "delay_seconds", "chat_id"],
-      additionalProperties: false,
-    },
-    async run(input, context) {
-      const message = input.message as string
-      const delaySeconds = input.delay_seconds as number
-      const chatId = input.chat_id as number
 
-      if (delaySeconds < 0) return formatToolError("delay_seconds must be >= 0")
-      if (!message.trim()) return formatToolError("message cannot be empty")
-
-      // Get Telegram token from config
-      const channelsCfg = readChannelsConfig()
-      if (!channelsCfg?.telegram?.enabled || !channelsCfg.telegram.token) {
-        return formatToolError("Telegram is not configured or not enabled. Use /channels to set it up.")
+      // ── REMOVE ────────────────────────────────────────────────────────────
+      if (action === "remove") {
+        const jobIndex = input.job_index as number | undefined
+        if (!jobIndex || jobIndex < 1) return formatToolError("job_index is required and must be >= 1")
+        let existing = ""
+        try {
+          const { stdout } = await execFileAsync("crontab", ["-l"])
+          existing = stdout
+        } catch (error: any) {
+          if (!error.stderr?.includes("no crontab for")) throw new Error(error.stderr || error.message)
+        }
+        const lines = existing.split("\n")
+        const jobLines = lines.filter(l => l.trim() && !l.trim().startsWith("#"))
+        if (jobIndex > jobLines.length) return formatToolError(`Job index ${jobIndex} out of range (only ${jobLines.length} jobs).`)
+        const targetJob = jobLines[jobIndex - 1]
+        const newLines = lines.filter(l => l.trim() !== targetJob.trim())
+        const newContent = newLines.join("\n").trim()
+        const tempPath = join("/tmp", `crontab-${randomUUID()}`)
+        try {
+          writeFileSync(tempPath, newContent + "\n")
+          await execFileAsync("crontab", [tempPath])
+          return `Removed job [${jobIndex}]: ${targetJob}`
+        } catch (error: any) {
+          throw new Error(`Failed to update crontab: ${error.stderr || error.message}`)
+        } finally {
+          if (existsSync(tempPath)) try { require("node:fs").unlinkSync(tempPath) } catch {}
+        }
       }
-      const token = channelsCfg.telegram.token
 
-      // Build the curl command
-      const curlArgs = [
-        "-s", "-X", "POST",
-        `https://api.telegram.org/bot${token}/sendMessage`,
-        "-d", `chat_id=${chatId}`,
-        "--data-urlencode", `text=${message}`,
-      ]
+      // ── ADD ───────────────────────────────────────────────────────────────
+      if (action === "add") {
+        const message = input.message as string | undefined
+        const chatId = input.chat_id as number | undefined
+        const delaySeconds = input.delay_seconds as number | undefined
+        const cronExpr = input.cron_expression as string | undefined
 
-      // Launch: nohup bash -c "sleep N && curl ..." &
-      const shellCmd = `sleep ${Math.floor(delaySeconds)} && curl ${curlArgs.map(a => JSON.stringify(a)).join(" ")}`
-      const child = spawn("bash", ["-c", shellCmd], {
-        detached: true,
-        stdio: "ignore",
-      })
-      child.unref()
+        if (!message?.trim()) return formatToolError("message is required")
+        if (!chatId) return formatToolError("chat_id is required")
+        if (delaySeconds === undefined && !cronExpr) return formatToolError("Either delay_seconds or cron_expression is required")
+        if (delaySeconds !== undefined && cronExpr) return formatToolError("Use either delay_seconds or cron_expression, not both")
 
-      const fireAt = new Date(Date.now() + delaySeconds * 1000)
-      const fireAtStr = fireAt.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Argentina/Buenos_Aires" })
-      return `Reminder scheduled. Will fire at ${fireAtStr} (in ${Math.round(delaySeconds / 60)} min). Message: "${message}"`
+        // Get Telegram token
+        const channelsCfg = readChannelsConfig()
+        if (!channelsCfg?.telegram?.enabled || !channelsCfg.telegram.token) {
+          return formatToolError("Telegram is not configured or not enabled. Use /channels to set it up.")
+        }
+        const token = channelsCfg.telegram.token
+        const curlCmd = `curl -s -X POST "https://api.telegram.org/bot${token}/sendMessage" -d "chat_id=${chatId}" --data-urlencode "text=${message.replace(/"/g, '\\"')}"`
+
+        // One-shot: nohup+sleep
+        if (delaySeconds !== undefined) {
+          if (delaySeconds < 0) return formatToolError("delay_seconds must be >= 0")
+          const shellCmd = `sleep ${Math.floor(delaySeconds)} && ${curlCmd}`
+          const child = spawn("bash", ["-c", shellCmd], { detached: true, stdio: "ignore" })
+          child.unref()
+          const fireAt = new Date(Date.now() + delaySeconds * 1000)
+          const fireAtStr = fireAt.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Argentina/Buenos_Aires" })
+          return `One-shot reminder scheduled for ${fireAtStr} (in ${Math.round(delaySeconds / 60)} min).\nMessage: "${message}"`
+        }
+
+        // Recurring: append to crontab
+        let existing = ""
+        try {
+          const { stdout } = await execFileAsync("crontab", ["-l"])
+          existing = stdout
+        } catch (error: any) {
+          if (!error.stderr?.includes("no crontab for")) throw new Error(error.stderr || error.message)
+        }
+        const newLine = `${cronExpr} ${curlCmd}`
+        const newContent = (existing.trim() ? existing.trimEnd() + "\n" : "") + newLine + "\n"
+        const tempPath = join("/tmp", `crontab-${randomUUID()}`)
+        try {
+          writeFileSync(tempPath, newContent)
+          await execFileAsync("crontab", [tempPath])
+          return `Recurring job added: ${newLine}`
+        } catch (error: any) {
+          throw new Error(`Failed to write crontab: ${error.stderr || error.message}`)
+        } finally {
+          if (existsSync(tempPath)) try { require("node:fs").unlinkSync(tempPath) } catch {}
+        }
+      }
+
+      return formatToolError(`Unknown action: ${action}`)
     },
   },
   {
