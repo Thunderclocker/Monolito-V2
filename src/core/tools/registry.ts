@@ -813,7 +813,7 @@ const rawTools: ToolDefinition[] = [
   {
     name: "write_crontab",
     permissionTier: "read",
-    description: "Write or overwrite the current user's crontab. Provide the COMPLETE crontab content as a string. BE CAREFUL: this completely overwrites the existing crontab. To add a job, first read the crontab, append your new job, and write the whole thing back.",
+    description: "Write or overwrite the current user's crontab. Provide the COMPLETE crontab content as a string. BE CAREFUL: this completely overwrites the existing crontab. To add a job, first read the crontab, append your new job, and write the whole thing back. IMPORTANT: For reminders/notifications, DO NOT use `echo`. You MUST trigger the Monolito CLI. Example: `0 10 * * * cd /home/ubuntu/Monolito-V2 && npm run cli -- ask 'Usa TelegramSend para enviarle este recordatorio al chat [CHAT_ID]: [MENSAJE]'`",
     inputSchema: {
       type: "object",
       properties: {
