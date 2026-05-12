@@ -812,8 +812,8 @@ const rawTools: ToolDefinition[] = [
   },
   {
     name: "write_crontab",
-    permissionTier: "read",
-    description: "Write or overwrite the current user's crontab. Provide the COMPLETE crontab content as a string. BE CAREFUL: this completely overwrites the existing crontab. To add a job, first read the crontab, append your new job, and write the whole thing back. IMPORTANT: For reminders/notifications, DO NOT use `echo`. You MUST trigger the Monolito CLI. Example: `0 10 * * * cd /home/ubuntu/Monolito-V2 && npm run cli -- ask 'Usa TelegramSend para enviarle este recordatorio al chat [CHAT_ID]: [MENSAJE]'`",
+    permissionTier: "edit",
+    description: "Write or overwrite the current user's crontab. Provide the COMPLETE crontab content as a string. BE CAREFUL: this completely overwrites the existing crontab. To add a job, first read the crontab, append your new job, and write the whole thing back. IMPORTANT: For Telegram reminders/notifications, use curl to the Telegram Bot API directly — this is stateless and does not require the Monolito daemon to be running. Example: `0 10 * * * curl -s -X POST https://api.telegram.org/bot[BOT_TOKEN]/sendMessage -d chat_id=[CHAT_ID] -d text='Tu recordatorio aqui'`. Use read_config to get the bot token from the config. Never use echo or shell-only commands for notifications.",
     inputSchema: {
       type: "object",
       properties: {
@@ -838,6 +838,56 @@ const rawTools: ToolDefinition[] = [
           } catch {}
         }
       }
+    },
+  },
+  {
+    name: "schedule_reminder",
+    permissionTier: "edit",
+    description: "Schedule a one-shot reminder to be sent to a Telegram chat at a specific time or after a delay. Use this instead of write_crontab for one-time 'remind me in X minutes/hours' requests. The reminder is sent via the Telegram Bot API using curl, launched as a detached background process (nohup). Does NOT require the Monolito daemon to be running at fire time.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        message: { type: "string", description: "The reminder message to send." },
+        delay_seconds: { type: "number", description: "How many seconds from now to send the reminder. Use this for relative times ('in 5 minutes' = 300)." },
+        chat_id: { type: "number", description: "Telegram chat ID to send the reminder to. Use the current user's chat ID if known." },
+      },
+      required: ["message", "delay_seconds", "chat_id"],
+      additionalProperties: false,
+    },
+    async run(input, context) {
+      const message = input.message as string
+      const delaySeconds = input.delay_seconds as number
+      const chatId = input.chat_id as number
+
+      if (delaySeconds < 0) return formatToolError("delay_seconds must be >= 0")
+      if (!message.trim()) return formatToolError("message cannot be empty")
+
+      // Get Telegram token from config
+      const channelsCfg = readChannelsConfig()
+      if (!channelsCfg?.telegram?.enabled || !channelsCfg.telegram.token) {
+        return formatToolError("Telegram is not configured or not enabled. Use /channels to set it up.")
+      }
+      const token = channelsCfg.telegram.token
+
+      // Build the curl command
+      const curlArgs = [
+        "-s", "-X", "POST",
+        `https://api.telegram.org/bot${token}/sendMessage`,
+        "-d", `chat_id=${chatId}`,
+        "--data-urlencode", `text=${message}`,
+      ]
+
+      // Launch: nohup bash -c "sleep N && curl ..." &
+      const shellCmd = `sleep ${Math.floor(delaySeconds)} && curl ${curlArgs.map(a => JSON.stringify(a)).join(" ")}`
+      const child = spawn("bash", ["-c", shellCmd], {
+        detached: true,
+        stdio: "ignore",
+      })
+      child.unref()
+
+      const fireAt = new Date(Date.now() + delaySeconds * 1000)
+      const fireAtStr = fireAt.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Argentina/Buenos_Aires" })
+      return `Reminder scheduled. Will fire at ${fireAtStr} (in ${Math.round(delaySeconds / 60)} min). Message: "${message}"`
     },
   },
   {
