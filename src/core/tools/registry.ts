@@ -879,7 +879,7 @@ For recurring jobs, the Telegram token is read from the channels config automati
         if (delaySeconds !== undefined && cronExpr) return formatToolError("Use either delay_seconds or cron_expression, not both")
 
         // Inject into Monolito's orchestrator session memory so the agent becomes conscious of the reminder
-        const cliScript = join(process.cwd(), "src/apps/cli/index.ts")
+        const cliScript = join(process.cwd(), "src/apps/cli.ts")
         const monolitoCmd = `${process.execPath} --experimental-strip-types "${cliScript}" resume orchestrator -p "RECORDATORIO DEL SISTEMA: ${message.replace(/"/g, '\\"')}"`
 
         // One-shot: nohup+sleep
