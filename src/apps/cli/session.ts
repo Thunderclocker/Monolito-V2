@@ -405,13 +405,7 @@ export async function ensureCliSession(client: DaemonClient, sessionId?: string)
   if (sessionId) {
     return (await client.ensureSession(sessionId, "Monolito v2 Resumed Session")) as SessionRecord
   }
-  // Resume the most recent CLI session (not telegram-* or agent-*)
-  const sessions = (await client.listSessions()) as SessionSummary[]
-  const cliSession = sessions.find(s => !s.id.startsWith("telegram-") && !s.id.startsWith("agent-"))
-  if (cliSession) {
-    return (await client.ensureSession(cliSession.id, cliSession.title)) as SessionRecord
-  }
-  return (await client.ensureSession(undefined, "Monolito v2 Session")) as SessionRecord
+  return (await client.ensureSession("orchestrator", "Orchestrator")) as SessionRecord
 }
 
 export async function openInteractiveSession(client: DaemonClient, sessionId?: string) {
@@ -1006,15 +1000,15 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       transcript = { blocks: [], scrollOffset: 0 }
       needsClear = true
       try {
-        const newSession = await client.ensureSession(undefined, "Monolito v2 Session") as SessionRecord
-        activeSessionId = newSession.id
+        await client.clearSession(activeSessionId)
+        const newSession = await client.ensureSession(activeSessionId) as SessionRecord
         if (subscribedSessionId !== "*") {
           await client.subscribe("*")
           subscribedSessionId = "*"
         }
         await syncTranscriptFromSession(newSession)
         transcript = appendTranscriptBlocks(transcript, [
-          { type: "event", label: "session", tone: "success", text: `New session: ${activeSessionId}` },
+          { type: "event", label: "session", tone: "success", text: `Session cleared: ${activeSessionId}` },
         ])
         refreshHeader()
         redraw()

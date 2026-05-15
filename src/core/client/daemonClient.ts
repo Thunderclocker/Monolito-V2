@@ -124,6 +124,10 @@ export class DaemonClient {
     return await this.request("session.abort", { sessionId })
   }
 
+  async clearSession(sessionId: string) {
+    return await this.request("session.clear", { sessionId })
+  }
+
   async sendMessage(sessionId: string, text: string) {
     return await this.request("message.send", { sessionId, text })
   }
@@ -242,3 +246,4 @@ type ResponseRequestType =
   | "session.ask"
   | "daemon.command"
   | "session.abort"
+  | "session.clear"

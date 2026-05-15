@@ -70,6 +70,7 @@ export type Request =
   | { id: string; type: "session.ask"; sessionId?: string; prompt: string; stream?: boolean }
   | { id: string; type: "daemon.command"; command: string; args?: string[] }
   | { id: string; type: "session.abort"; sessionId: string }
+  | { id: string; type: "session.clear"; sessionId: string }
 
 export type Response =
   | { id: string; ok: true; data?: unknown }

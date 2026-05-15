@@ -467,6 +467,9 @@ export class MonolitoV2Daemon {
         case "session.abort":
           this.runtime.abortSession(request.sessionId)
           return { id: request.id, ok: true as const, data: { aborted: true } }
+        case "session.clear":
+          this.runtime.clearSession(request.sessionId)
+          return { id: request.id, ok: true as const, data: { cleared: true } }
         case "daemon.command": {
           const req = request as { id: string; command: string }
           const reply = await this.runtime.runDaemonCommand(req.command)

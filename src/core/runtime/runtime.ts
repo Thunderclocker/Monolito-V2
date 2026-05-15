@@ -909,7 +909,19 @@ function sanitizeWorkerFailureNote(rawResult: string, status: string) {
 function resolveDeliveryContext(sessionId: string, delivery?: DeliveryContext): DeliveryContext | undefined {
   if (delivery) return delivery
   const telegramChatId = getTelegramChatId(sessionId)
-  return telegramChatId ? { channel: "telegram", targetId: telegramChatId } : undefined
+  if (telegramChatId) return { channel: "telegram", targetId: telegramChatId }
+
+  if (sessionId === "orchestrator") {
+    try {
+      const config = readChannelsConfig()
+      if (config.telegram?.enabled && config.telegram.allowedChats && config.telegram.allowedChats.length > 0) {
+        return { channel: "telegram", targetId: String(config.telegram.allowedChats[0]) }
+      }
+    } catch {
+      // ignore errors
+    }
+  }
+  return undefined
 }
 
 async function sendTelegramTypingAction(token: string, chatId: string) {
@@ -1387,6 +1399,11 @@ export class MonolitoV2Runtime {
 
   getSession(sessionId: string) {
     return getSession(this.rootDir, sessionId)
+  }
+
+  clearSession(sessionId: string) {
+    resetSession(this.rootDir, sessionId, { summary: "Session reset via orchestrator clear" })
+    this.emit({ type: "session.resumed", sessionId })
   }
 
 

@@ -441,7 +441,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
           }
         }
         
-        const sessionId = `telegram-${chatId}`
+        const sessionId = "orchestrator"
 
         const pending = pendingTelegramInputs.get(chatId)
         if (pending) {
