@@ -118,7 +118,7 @@ async function sendTelegramText(token: string, chatId: number, text: string) {
   }
 }
 
-function dispatchRuntimeMessage(runtime: MonolitoV2Runtime, sessionId: string, title: string, text: string, detail: string, telegram?: { token: string; chatId: number }) {
+function dispatchRuntimeMessage(runtime: MonolitoV2Runtime, sessionId: string, title: string, text: string, detail: string, telegram?: { token: string; chatId: number }, onRestartRequested?: () => void) {
   runtime.ensureSession(sessionId, title)
   void (async () => {
     const delivery = telegram ? { channel: "telegram", targetId: String(telegram.chatId) } : undefined
@@ -130,6 +130,9 @@ function dispatchRuntimeMessage(runtime: MonolitoV2Runtime, sessionId: string, t
           action: "typing",
         }).catch(() => {})
       }
+    }
+    if (runtime.consumeRestartRequest()) {
+      onRestartRequested?.()
     }
   })().catch(error => {
     const typed = error as Error & { code?: string }
@@ -522,7 +525,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
           dispatchRuntimeMessage(runtime, sessionId, `Telegram ${chatId}`, inboundText, `message ${chatId}:${msg.message_id}`, {
             token: config.telegram.token,
             chatId,
-          })
+          }, options?.onRestartRequested)
         } catch (error) {
           const err = error as Error & { code?: string }
           const detail = err.code ? ` code=${err.code}` : ""
