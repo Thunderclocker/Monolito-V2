@@ -878,18 +878,14 @@ For recurring jobs, the Telegram token is read from the channels config automati
         if (delaySeconds === undefined && !cronExpr) return formatToolError("Either delay_seconds or cron_expression is required")
         if (delaySeconds !== undefined && cronExpr) return formatToolError("Use either delay_seconds or cron_expression, not both")
 
-        // Get Telegram token
-        const channelsCfg = readChannelsConfig()
-        if (!channelsCfg?.telegram?.enabled || !channelsCfg.telegram.token) {
-          return formatToolError("Telegram is not configured or not enabled. Use /channels to set it up.")
-        }
-        const token = channelsCfg.telegram.token
-        const curlCmd = `curl -s -X POST "https://api.telegram.org/bot${token}/sendMessage" -d "chat_id=${chatId}" --data-urlencode "text=${message.replace(/"/g, '\\"')}"`
+        // Inject into Monolito's orchestrator session memory so the agent becomes conscious of the reminder
+        const cliScript = join(process.cwd(), "src/apps/cli/index.ts")
+        const monolitoCmd = `${process.execPath} --experimental-strip-types "${cliScript}" resume orchestrator -p "RECORDATORIO DEL SISTEMA: ${message.replace(/"/g, '\\"')}"`
 
         // One-shot: nohup+sleep
         if (delaySeconds !== undefined) {
           if (delaySeconds < 0) return formatToolError("delay_seconds must be >= 0")
-          const shellCmd = `sleep ${Math.floor(delaySeconds)} && ${curlCmd}`
+          const shellCmd = `sleep ${Math.floor(delaySeconds)} && ${monolitoCmd}`
           const child = spawn("bash", ["-c", shellCmd], { detached: true, stdio: "ignore" })
           child.unref()
           const fireAt = new Date(Date.now() + delaySeconds * 1000)
@@ -905,7 +901,7 @@ For recurring jobs, the Telegram token is read from the channels config automati
         } catch (error: any) {
           if (!error.stderr?.includes("no crontab for")) throw new Error(error.stderr || error.message)
         }
-        const newLine = `${cronExpr} ${curlCmd}`
+        const newLine = `${cronExpr} ${monolitoCmd}`
         const newContent = (existing.trim() ? existing.trimEnd() + "\n" : "") + newLine + "\n"
         const tempPath = join("/tmp", `crontab-${randomUUID()}`)
         try {
