@@ -812,6 +812,7 @@ For recurring jobs, the Telegram token is read from the channels config automati
         chat_id: { type: "number", description: "[add] Telegram chat ID." },
         delay_seconds: { type: "number", description: "[add, one-shot] Seconds from now to fire. Mutually exclusive with cron_expression." },
         cron_expression: { type: "string", description: "[add, recurring] Standard cron expression, e.g. '0 10 * * *' for 10am daily." },
+        timezone: { type: "string", description: "[add, recurring] The IANA timezone of the user (e.g. 'America/Argentina/Buenos_Aires'). Required for recurring." },
         job_index: { type: "number", description: "[remove] 1-based index of the cron job to remove (from 'list')." },
       },
       required: ["action"],
@@ -828,7 +829,7 @@ For recurring jobs, the Telegram token is read from the channels config automati
           const lines = stdout.split("\n")
           const jobs = lines
             .map((line, i) => ({ line: line.trim(), i }))
-            .filter(({ line }) => line && !line.startsWith("#"))
+            .filter(({ line }) => line && !line.startsWith("#") && !line.startsWith("CRON_TZ="))
           if (jobs.length === 0) return "No recurring jobs scheduled."
           return jobs.map(({ line, i: _i }, idx) => `[${idx + 1}] ${line}`).join("\n")
         } catch (error: any) {
@@ -849,11 +850,21 @@ For recurring jobs, the Telegram token is read from the channels config automati
           if (!error.stderr?.includes("no crontab for")) throw new Error(error.stderr || error.message)
         }
         const lines = existing.split("\n")
-        const jobLines = lines.filter(l => l.trim() && !l.trim().startsWith("#"))
-        if (jobIndex > jobLines.length) return formatToolError(`Job index ${jobIndex} out of range (only ${jobLines.length} jobs).`)
-        const targetJob = jobLines[jobIndex - 1]
-        const newLines = lines.filter(l => l.trim() !== targetJob.trim())
-        const newContent = newLines.join("\n").trim()
+        const jobEntries = lines
+          .map((line, originalIndex) => ({ line: line.trim(), originalIndex }))
+          .filter(entry => entry.line && !entry.line.startsWith("#") && !entry.line.startsWith("CRON_TZ="))
+        if (jobIndex > jobEntries.length) return formatToolError(`Job index ${jobIndex} out of range (only ${jobEntries.length} jobs).`)
+        
+        const targetEntry = jobEntries[jobIndex - 1]
+        const targetIndex = targetEntry.originalIndex
+        const targetJob = targetEntry.line
+        
+        if (targetIndex > 0 && lines[targetIndex - 1].startsWith("CRON_TZ=")) {
+          lines.splice(targetIndex - 1, 2)
+        } else {
+          lines.splice(targetIndex, 1)
+        }
+        const newContent = lines.join("\n").trim()
         const tempPath = join("/tmp", `crontab-${randomUUID()}`)
         try {
           writeFileSync(tempPath, newContent + "\n")
@@ -872,11 +883,13 @@ For recurring jobs, the Telegram token is read from the channels config automati
         const chatId = input.chat_id as number | undefined
         const delaySeconds = input.delay_seconds as number | undefined
         const cronExpr = input.cron_expression as string | undefined
+        const timezone = input.timezone as string | undefined
 
         if (!message?.trim()) return formatToolError("message is required")
         if (!chatId) return formatToolError("chat_id is required")
         if (delaySeconds === undefined && !cronExpr) return formatToolError("Either delay_seconds or cron_expression is required")
         if (delaySeconds !== undefined && cronExpr) return formatToolError("Use either delay_seconds or cron_expression, not both")
+        if (cronExpr && !timezone?.trim()) return formatToolError("timezone is required when using cron_expression")
 
         // Inject into Monolito's orchestrator session memory so the agent becomes conscious of the reminder
         const cliScript = join(process.cwd(), "src/apps/cli.ts")
@@ -901,7 +914,7 @@ For recurring jobs, the Telegram token is read from the channels config automati
         } catch (error: any) {
           if (!error.stderr?.includes("no crontab for")) throw new Error(error.stderr || error.message)
         }
-        const newLine = `${cronExpr} ${monolitoCmd}`
+        const newLine = `CRON_TZ="${timezone}"\n${cronExpr} ${monolitoCmd}`
         const newContent = (existing.trim() ? existing.trimEnd() + "\n" : "") + newLine + "\n"
         const tempPath = join("/tmp", `crontab-${randomUUID()}`)
         try {
