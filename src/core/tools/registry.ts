@@ -788,6 +788,147 @@ async function fetchWithCurl(url: string) {
   }
 }
 
+/**
+ * Helper to convert local time components in a specific IANA timezone to a UTC Date.
+ * 
+ * Works by:
+ * 1. Treating the local time components as a UTC time first.
+ * 2. Formatting this UTC candidate in the target timezone to find the local components of that instant.
+ * 3. Computing the difference (offset) between the target local time and the candidate's local time.
+ * 4. Applying this difference to the candidate to get the exact UTC Date.
+ */
+function localTimeToUtc(
+  year: number,
+  month: number, // 1-12
+  day: number,
+  hour: number,
+  minute: number,
+  second: number,
+  timezone: string
+): Date {
+  const utcCandidateMs = Date.UTC(year, month - 1, day, hour, minute, second)
+  
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "numeric",
+    second: "numeric",
+    hour12: false,
+  })
+  
+  const parts = formatter.formatToParts(new Date(utcCandidateMs))
+  const partVal = (type: string) => parseInt(parts.find(p => p.type === type)!.value, 10)
+  
+  const localYear = partVal("year")
+  const localMonth = partVal("month")
+  const localDay = partVal("day")
+  const localHour = partVal("hour") % 24
+  const localMinute = partVal("minute")
+  const localSecond = partVal("second")
+  
+  const localCandidateMs = Date.UTC(localYear, localMonth - 1, localDay, localHour, localMinute, localSecond)
+  const offsetMs = utcCandidateMs - localCandidateMs
+  
+  return new Date(utcCandidateMs + offsetMs)
+}
+
+/**
+ * Parses an absolute time string (e.g. "15:30", "2026-05-18 10:00") in the context of the
+ * user's timezone and returns a UTC Date.
+ */
+function parseAbsoluteTimeToUtc(timeStr: string, timezone: string): Date {
+  const trimmed = timeStr.trim()
+  const now = new Date()
+
+  // 1. Try Full Date-Time (e.g., "2026-05-17 15:30:00" or "2026-05-17T15:30")
+  const fullDateTimeRegex = /^(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?$/
+  const matchFull = trimmed.match(fullDateTimeRegex)
+  if (matchFull) {
+    const year = parseInt(matchFull[1]!, 10)
+    const month = parseInt(matchFull[2]!, 10)
+    const day = parseInt(matchFull[3]!, 10)
+    const hour = parseInt(matchFull[4]!, 10)
+    const minute = parseInt(matchFull[5]!, 10)
+    const second = matchFull[6] ? parseInt(matchFull[6]!, 10) : 0
+    return localTimeToUtc(year, month, day, hour, minute, second, timezone)
+  }
+
+  // 2. Try Time Only (e.g., "15:30" or "15:30:00")
+  const timeOnlyRegex = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/
+  const matchTime = trimmed.match(timeOnlyRegex)
+  if (matchTime) {
+    const hour = parseInt(matchTime[1]!, 10)
+    const minute = parseInt(matchTime[2]!, 10)
+    const second = matchTime[3] ? parseInt(matchTime[3]!, 10) : 0
+
+    // Retrieve the current date components inside the target timezone
+    const formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+    })
+    const parts = formatter.formatToParts(now)
+    const partVal = (type: string) => parseInt(parts.find(p => p.type === type)!.value, 10)
+    const currentYear = partVal("year")
+    const currentMonth = partVal("month")
+    const currentDay = partVal("day")
+
+    let targetDate = localTimeToUtc(currentYear, currentMonth, currentDay, hour, minute, second, timezone)
+    // If the target time today has already passed, schedule it for tomorrow
+    if (targetDate.getTime() <= now.getTime()) {
+      targetDate = localTimeToUtc(currentYear, currentMonth, currentDay + 1, hour, minute, second, timezone)
+    }
+    return targetDate
+  }
+
+  throw new Error(`Invalid absolute time format: "${timeStr}". Expected "HH:MM", "HH:MM:SS", "YYYY-MM-DD HH:MM" or "YYYY-MM-DD HH:MM:SS".`)
+}
+
+const scheduleTaskInputZod = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("list"),
+  }).strict(),
+  z.object({
+    action: z.literal("remove"),
+    job_index: z.number().int().min(1, "job_index must be >= 1"),
+  }).strict(),
+  z.object({
+    action: z.literal("add"),
+    message: z.string().min(1, "message is required and cannot be empty"),
+    chat_id: z.number(),
+    timezone: z.string().min(1, "timezone is required when adding a task"),
+    delay_seconds: z.number().min(0, "delay_seconds must be >= 0").optional(),
+    at: z.string().min(1).optional(),
+    time: z.string().min(1).optional(),
+    cron_expression: z.string().min(1).optional(),
+  }).strict().superRefine((data, ctx) => {
+    const providedTriggers = [
+      data.delay_seconds !== undefined,
+      data.at !== undefined,
+      data.time !== undefined,
+      data.cron_expression !== undefined,
+    ].filter(Boolean).length
+
+    if (providedTriggers === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Either delay_seconds, at/time, or cron_expression must be provided",
+        path: ["delay_seconds"],
+      })
+    } else if (providedTriggers > 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "delay_seconds, at, time, and cron_expression are mutually exclusive",
+        path: ["delay_seconds"],
+      })
+    }
+  }),
+])
+
 const rawTools: ToolDefinition[] = [
   {
     name: "schedule_task",
@@ -796,30 +937,32 @@ const rawTools: ToolDefinition[] = [
 
 Actions:
 - "list": Returns all scheduled recurring cron jobs with their index numbers.
-- "add": Adds a new job. Two modes:
-    * One-shot (delay_seconds): fires once after N seconds via nohup+sleep+curl. Best for 'remind me in X minutes'.
+- "add": Adds a new job. Three modes:
+    * One-shot relative (delay_seconds): fires once after N seconds.
+    * One-shot absolute (at or time): fires once at a specific absolute local time (e.g., '15:30' or '2026-05-18 10:00').
     * Recurring (cron_expression): adds a persistent cron job. Best for 'every day at 8am'.
-  In both modes, the notification is sent directly to Telegram via curl (stateless, no daemon needed).
-  Requires: message, chat_id. Plus either delay_seconds OR cron_expression.
-- "remove": Removes a recurring cron job by its index (1-based, from "list").
-
-For recurring jobs, the Telegram token is read from the channels config automatically.`,
+  Requires: message, chat_id, timezone. Plus either delay_seconds, at/time, OR cron_expression.
+- "remove": Removes a recurring cron job by its index (1-based, from "list").`,
     inputSchema: {
       type: "object",
       properties: {
         action: { type: "string", enum: ["list", "add", "remove"], description: "Operation to perform." },
         message: { type: "string", description: "[add] The reminder/notification text to send via Telegram." },
         chat_id: { type: "number", description: "[add] Telegram chat ID." },
-        delay_seconds: { type: "number", description: "[add, one-shot] Seconds from now to fire. Mutually exclusive with cron_expression." },
+        delay_seconds: { type: "number", description: "[add, one-shot relative] Seconds from now to fire. Mutually exclusive with at, time, and cron_expression." },
+        at: { type: "string", description: "[add, one-shot absolute] Absolute time to fire (e.g. '15:30', '2026-05-18 10:00'). Mutually exclusive with delay_seconds, time, and cron_expression." },
+        time: { type: "string", description: "[add, one-shot absolute] Alias for 'at'. Absolute time to fire. Mutually exclusive with delay_seconds, at, and cron_expression." },
         cron_expression: { type: "string", description: "[add, recurring] Standard cron expression, e.g. '0 10 * * *' for 10am daily." },
-        timezone: { type: "string", description: "[add, recurring] The IANA timezone of the user (e.g. 'America/Argentina/Buenos_Aires'). Required for recurring." },
+        timezone: { type: "string", description: "[add] The IANA timezone of the user (e.g. 'America/Argentina/Buenos_Aires'). Required when adding any job." },
         job_index: { type: "number", description: "[remove] 1-based index of the cron job to remove (from 'list')." },
       },
       required: ["action"],
       additionalProperties: false,
     },
+    validate: input => validateZod(scheduleTaskInputZod, input),
     async run(input) {
-      const action = input.action as string
+      const parsed = parseZod(scheduleTaskInputZod, input, "schedule_task input")
+      const action = parsed.action
 
       // ── LIST ──────────────────────────────────────────────────────────────
       if (action === "list") {
@@ -840,7 +983,7 @@ For recurring jobs, the Telegram token is read from the channels config automati
 
       // ── REMOVE ────────────────────────────────────────────────────────────
       if (action === "remove") {
-        const jobIndex = input.job_index as number | undefined
+        const jobIndex = parsed.job_index
         if (!jobIndex || jobIndex < 1) return formatToolError("job_index is required and must be >= 1")
         let existing = ""
         try {
@@ -879,52 +1022,73 @@ For recurring jobs, the Telegram token is read from the channels config automati
 
       // ── ADD ───────────────────────────────────────────────────────────────
       if (action === "add") {
-        const message = input.message as string | undefined
-        const chatId = input.chat_id as number | undefined
-        const delaySeconds = input.delay_seconds as number | undefined
-        const cronExpr = input.cron_expression as string | undefined
-        const timezone = input.timezone as string | undefined
-
-        if (!message?.trim()) return formatToolError("message is required")
-        if (!chatId) return formatToolError("chat_id is required")
-        if (delaySeconds === undefined && !cronExpr) return formatToolError("Either delay_seconds or cron_expression is required")
-        if (delaySeconds !== undefined && cronExpr) return formatToolError("Use either delay_seconds or cron_expression, not both")
-        if (cronExpr && !timezone?.trim()) return formatToolError("timezone is required when using cron_expression")
+        const { message, chat_id, timezone, delay_seconds, at, time, cron_expression } = parsed
 
         // Inject into Monolito's orchestrator session memory so the agent becomes conscious of the reminder
         const cliScript = join(process.cwd(), "src/apps/cli.ts")
         const monolitoCmd = `${process.execPath} --experimental-strip-types "${cliScript}" resume orchestrator -p "RECORDATORIO DEL SISTEMA: ${message.replace(/"/g, '\\"')}"`
 
-        // One-shot: nohup+sleep
-        if (delaySeconds !== undefined) {
-          if (delaySeconds < 0) return formatToolError("delay_seconds must be >= 0")
-          const shellCmd = `sleep ${Math.floor(delaySeconds)} && ${monolitoCmd}`
+        // 1. One-shot relative: delay_seconds
+        if (delay_seconds !== undefined) {
+          const shellCmd = `sleep ${Math.floor(delay_seconds)} && ${monolitoCmd}`
           const child = spawn("bash", ["-c", shellCmd], { detached: true, stdio: "ignore" })
           child.unref()
-          const fireAt = new Date(Date.now() + delaySeconds * 1000)
-          const fireAtStr = fireAt.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Argentina/Buenos_Aires" })
-          return `One-shot reminder scheduled for ${fireAtStr} (in ${Math.round(delaySeconds / 60)} min).\nMessage: "${message}"`
+          const fireAt = new Date(Date.now() + delay_seconds * 1000)
+          const fireAtStr = fireAt.toLocaleTimeString("es-AR", {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            timeZone: timezone,
+          })
+          return `One-shot reminder scheduled for ${fireAtStr} (in ${Math.round(delay_seconds / 60)} min) using timezone ${timezone}.\nMessage: "${message}"`
         }
 
-        // Recurring: append to crontab
-        let existing = ""
-        try {
-          const { stdout } = await execFileAsync("crontab", ["-l"])
-          existing = stdout
-        } catch (error: any) {
-          if (!error.stderr?.includes("no crontab for")) throw new Error(error.stderr || error.message)
+        // 2. One-shot absolute: at or time
+        const absoluteTimeStr = at ?? time
+        if (absoluteTimeStr !== undefined) {
+          const targetUtcDate = parseAbsoluteTimeToUtc(absoluteTimeStr, timezone)
+          const currentUtcMs = Date.now()
+          const diffMs = targetUtcDate.getTime() - currentUtcMs
+          
+          if (diffMs <= 0) {
+            return formatToolError("The scheduled absolute time is in the past.")
+          }
+          
+          const computedDelaySeconds = diffMs / 1000
+          const shellCmd = `sleep ${Math.floor(computedDelaySeconds)} && ${monolitoCmd}`
+          const child = spawn("bash", ["-c", shellCmd], { detached: true, stdio: "ignore" })
+          child.unref()
+          
+          const fireAtStr = targetUtcDate.toLocaleTimeString("es-AR", {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            timeZone: timezone,
+          })
+          return `One-shot absolute reminder scheduled for ${fireAtStr} (in ${Math.round(computedDelaySeconds / 60)} min) using timezone ${timezone}.\nMessage: "${message}"`
         }
-        const newLine = `CRON_TZ="${timezone}"\n${cronExpr} ${monolitoCmd}`
-        const newContent = (existing.trim() ? existing.trimEnd() + "\n" : "") + newLine + "\n"
-        const tempPath = join("/tmp", `crontab-${randomUUID()}`)
-        try {
-          writeFileSync(tempPath, newContent)
-          await execFileAsync("crontab", [tempPath])
-          return `Recurring job added: ${newLine}`
-        } catch (error: any) {
-          throw new Error(`Failed to write crontab: ${error.stderr || error.message}`)
-        } finally {
-          if (existsSync(tempPath)) try { require("node:fs").unlinkSync(tempPath) } catch {}
+
+        // 3. Recurring: append to crontab
+        if (cron_expression !== undefined) {
+          let existing = ""
+          try {
+            const { stdout } = await execFileAsync("crontab", ["-l"])
+            existing = stdout
+          } catch (error: any) {
+            if (!error.stderr?.includes("no crontab for")) throw new Error(error.stderr || error.message)
+          }
+          const newLine = `CRON_TZ="${timezone}"\n${cron_expression} ${monolitoCmd}`
+          const newContent = (existing.trim() ? existing.trimEnd() + "\n" : "") + newLine + "\n"
+          const tempPath = join("/tmp", `crontab-${randomUUID()}`)
+          try {
+            writeFileSync(tempPath, newContent)
+            await execFileAsync("crontab", [tempPath])
+            return `Recurring job added: ${newLine}`
+          } catch (error: any) {
+            throw new Error(`Failed to write crontab: ${error.stderr || error.message}`)
+          } finally {
+            if (existsSync(tempPath)) try { require("node:fs").unlinkSync(tempPath) } catch {}
+          }
         }
       }
 
