@@ -972,19 +972,55 @@ export class MonolitoV2Runtime {
     return this.lastUserActivity
   }
 
+  scheduleNextHeartbeat() {
+    if (this.heartbeatTimer) {
+      clearTimeout(this.heartbeatTimer)
+      this.heartbeatTimer = null
+    }
+
+    try {
+      const config = readConfigWing(this.rootDir, "CONF_HEARTBEAT") as import("../config/configWings.ts").HeartbeatConfig
+      if (!config?.enabled) return
+
+      const now = Date.now()
+      const nextIdleTime = this.lastUserActivity + (config.min_idle_minutes || 12) * 60000
+      const nextIntervalTime = this.lastHeartbeatTime + (config.interval_minutes || 30) * 60000
+
+      const targetTime = Math.max(nextIdleTime, nextIntervalTime)
+      const delayMs = Math.max(1000, targetTime - now)
+
+      this.heartbeatTimer = setTimeout(() => {
+        this.heartbeatTimer = null
+        this.runHeartbeatCheckAndReschedule()
+      }, delayMs)
+      this.heartbeatTimer.unref()
+    } catch (e) {
+      logger.error(`Failed to schedule heartbeat: ${e instanceof Error ? e.message : String(e)}`)
+      this.heartbeatTimer = setTimeout(() => {
+        this.heartbeatTimer = null
+        this.scheduleNextHeartbeat()
+      }, 5 * 60 * 1000)
+      this.heartbeatTimer.unref()
+    }
+  }
+
+  private async runHeartbeatCheckAndReschedule() {
+    try {
+      await this.checkAndTriggerHeartbeat()
+    } catch (e) {
+      logger.error(`heartbeat error: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      this.scheduleNextHeartbeat()
+    }
+  }
+
   startHeartbeatTimer() {
-    if (this.heartbeatTimer) return
-    this.heartbeatTimer = setInterval(() => {
-      this.checkAndTriggerHeartbeat().catch(e => {
-        logger.error(`heartbeat error: ${e instanceof Error ? e.message : String(e)}`)
-      })
-    }, 60_000)
-    this.heartbeatTimer.unref()
+    this.scheduleNextHeartbeat()
   }
 
   stopHeartbeatTimer() {
     if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer)
+      clearTimeout(this.heartbeatTimer)
       this.heartbeatTimer = null
     }
   }
@@ -1503,6 +1539,7 @@ export class MonolitoV2Runtime {
 
   async processMessage(sessionId: string, text: string, options?: { delivery?: DeliveryContext; onAgentLoopEvent?: (event: AgentLoopEvent) => void }) {
     this.lastUserActivity = Date.now()
+    this.scheduleNextHeartbeat()
     this.rememberDeliveryContext(sessionId, options?.delivery)
     if (this.activeSessions.has(sessionId)) {
       const queue = this.pendingUserMessages.get(sessionId) ?? []
@@ -2736,6 +2773,7 @@ export class MonolitoV2Runtime {
         const wing = readConfigWing(this.rootDir, "CONF_HEARTBEAT") as import("../config/configWings.ts").HeartbeatConfig
         wing.interval_minutes = parsed
         writeConfigWing(this.rootDir, "CONF_HEARTBEAT", wing)
+        this.scheduleNextHeartbeat()
         return `Saved heartbeat_interval_minutes = ${parsed}`
       }
       else if (field === "heartbeat_min_idle_minutes") {
@@ -2744,6 +2782,7 @@ export class MonolitoV2Runtime {
         const wing = readConfigWing(this.rootDir, "CONF_HEARTBEAT") as import("../config/configWings.ts").HeartbeatConfig
         wing.min_idle_minutes = parsed
         writeConfigWing(this.rootDir, "CONF_HEARTBEAT", wing)
+        this.scheduleNextHeartbeat()
         return `Saved heartbeat_min_idle_minutes = ${parsed}`
       }
       else if (field === "tts_base_url" || field === "tts_api_key" || field === "tts_voice" || field === "tts_model" || field === "tts_format" || field === "tts_speed" || field === "tts_managed" || field === "tts_auto_deploy" || field === "tts_port") {
