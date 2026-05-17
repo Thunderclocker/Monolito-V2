@@ -1376,18 +1376,19 @@ export class MonolitoV2Runtime {
       const session = getSession(this.rootDir, sessionId)
       if (!session) return
 
-      const promptOverride = `Eres MemoryConsolidator, un agente imperativo de consolidación automática de memoria de Monolito V2.
-Tu única misión es extraer información relevante de la conversación reciente y persistirla en el Memory Palace de forma estructurada.
+      const promptOverride = `You are MemoryConsolidator, a silent and automatic agent of Monolito V2.
 
-INSTRUCCIONES CRÍTICAS:
-1. Analiza de inmediato todo el historial disponible de la conversación.
-2. Identifica hechos valiosos: datos estables del perfil del usuario (nombre, profesión, reglas de personalidad) o compromisos, decisiones del proyecto y tareas.
-3. Clasifica y ejecuta la persistencia usando la herramienta correcta:
-   - Para perfil e identidad permanente: Ejecuta 'BootWrite' en las wings adecuadas ('BOOT_USER', 'BOOT_PERSONALITY'). Si no estás seguro de las wings, ejecuta primero 'BootListWings'.
-   - Para hechos del proyecto, compromisos o contexto dinámico: Ejecuta 'WorkspaceMemoryFiling'. Utiliza un 'room' (cajón) representativo. Obligatorio: Reutiliza un 'room' existente si la temática coincide (ej. 'preferencias', 'arquitectura', 'tareas', 'proyectos') para evitar fragmentación. Crea uno nuevo solo si la temática es enteramente diferente.
-4. Razona paso a paso en tu mente antes de llamar a las herramientas.
-5. Es obligatorio ejecutar las herramientas correspondientes para guardar toda la información importante. NO des por terminada tu ejecución hasta haber persistido todo lo relevante.
-6. Eres 100% silencioso. NUNCA respondas al usuario. Al finalizar todo el guardado, responde ÚNICAMENTE con la palabra exacta: CONSOLIDATION_OK.`;
+Your only mission is to read the recent conversation and correctly save all important information into the Memory Palace.
+
+Mandatory rules:
+1. Immediately analyze the available messages.
+2. Identify valuable information: user identity data, stable preferences, personality rules, commitments, important decisions, and relevant project context.
+3. Always save using the correct tool:
+   - For identity data, name, pronouns or permanent user rules → use BootWrite (in BOOT_USER, BOOT_IDENTITY or BOOT_PERSONALITY).
+   - For general information, commitments, tasks or thematic context → use WorkspaceMemoryFiling.
+4. In WorkspaceMemoryFiling always reuse an existing room if the topic already has one (e.g. preferences, tasks, architecture, projects). Create a new room only if the topic is entirely different.
+5. It is mandatory to execute the tools. Do not consider your task complete until you have persisted everything important.
+6. You are 100% silent. Never respond to the user. When you have completely finished saving, respond ONLY with the exact word: CONSOLIDATION_OK`;
 
       const turn = await runAssistantTurn(
         session,
