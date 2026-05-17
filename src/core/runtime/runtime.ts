@@ -966,9 +966,27 @@ export class MonolitoV2Runtime {
   private lastUserActivity = Date.now()
   private lastHeartbeatTime = 0
   private isHeartbeatRunning = false
+  private heartbeatTimer: NodeJS.Timeout | null = null
 
   getLastUserActivity() {
     return this.lastUserActivity
+  }
+
+  startHeartbeatTimer() {
+    if (this.heartbeatTimer) return
+    this.heartbeatTimer = setInterval(() => {
+      this.checkAndTriggerHeartbeat().catch(e => {
+        logger.error(`heartbeat error: ${e instanceof Error ? e.message : String(e)}`)
+      })
+    }, 60_000)
+    this.heartbeatTimer.unref()
+  }
+
+  stopHeartbeatTimer() {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer)
+      this.heartbeatTimer = null
+    }
   }
 
   async checkAndTriggerHeartbeat() {
@@ -1029,6 +1047,11 @@ export class MonolitoV2Runtime {
     ensureConfigWings(this.rootDir)
     reconcileSystemWings(db, rootDir)
     loadAndApplyModelSettings(process.env)
+
+    const config = readConfigWing(this.rootDir, "CONF_HEARTBEAT") as import("../config/configWings.ts").HeartbeatConfig
+    if (config?.enabled) {
+      this.startHeartbeatTimer()
+    }
   }
 
   async syncMissingEmbeddings() {
@@ -2216,6 +2239,7 @@ export class MonolitoV2Runtime {
   }
 
   close() {
+    this.stopHeartbeatTimer()
     for (const client of this.mcpClients.values()) {
       client.close()
     }
@@ -2699,6 +2723,11 @@ export class MonolitoV2Runtime {
         const wing = readConfigWing(this.rootDir, "CONF_HEARTBEAT") as import("../config/configWings.ts").HeartbeatConfig
         wing.enabled = isEnabled
         writeConfigWing(this.rootDir, "CONF_HEARTBEAT", wing)
+        if (isEnabled) {
+          this.startHeartbeatTimer()
+        } else {
+          this.stopHeartbeatTimer()
+        }
         return `Saved heartbeat_enabled = ${isEnabled}`
       }
       else if (field === "heartbeat_interval_minutes") {
