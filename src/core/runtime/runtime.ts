@@ -1073,12 +1073,17 @@ export class MonolitoV2Runtime {
     this.isHeartbeatRunning = true
     this.lastHeartbeatTime = Date.now()
     try {
-      const prompt = "Revisa todo el Memory Palace, grafo temporal, recordatorios pendientes, tareas abiertas y contexto actual. Si consideras que NO hay nada realmente valioso o urgente que recordarle al usuario en este preciso instante, debes responder exactamente con el texto: HEARTBEAT_OK (sin espacios extra ni signos de puntuación). Si consideras que SÍ hay algo valioso, responde normalmente con tu sugerencia."
-      
       const sessions = listSessions(this.rootDir).filter(s => s.id !== "daemon-cmd" && !s.id.startsWith("agent-"))
       const targetSessionId = sessions[0]?.id || "cli-default"
+      const targetSession = getSession(this.rootDir, targetSessionId)
+      const targetProfileId = targetSession?.profileId || "default"
 
-      await this.runProactiveBackgroundTurn(targetSessionId, "default", 0, prompt)
+      // First run memory consolidation silently!
+      await this.runMemoryConsolidation(targetSessionId, targetProfileId)
+
+      // Then run standard proactive heartbeat prompt!
+      const prompt = "Revisa todo el Memory Palace, grafo temporal, recordatorios pendientes, tareas abiertas y contexto actual. Si consideras que NO hay nada realmente valioso o urgente que recordarle al usuario en este preciso instante, debes responder exactamente con el texto: HEARTBEAT_OK (sin espacios extra ni signos de puntuación). Si consideras que SÍ hay algo valioso, responde normalmente con tu sugerencia."
+      await this.runProactiveBackgroundTurn(targetSessionId, targetProfileId, 0, prompt)
     } finally {
       this.isHeartbeatRunning = false
     }
@@ -1349,6 +1354,96 @@ export class MonolitoV2Runtime {
 
     this.enqueueBackgroundWakeup(sessionId, profileId)
     this.flushPendingBackgroundWakeup(sessionId)
+  }
+
+  private async runMemoryConsolidation(sessionId: string, profileId: string) {
+    if (this.activeSessions.has(sessionId)) {
+      logger.info(`[MemoryConsolidator] Session ${sessionId} is active, skipping consolidation.`)
+      return
+    }
+
+    this.activeSessions.add(sessionId)
+    const turnStartedAt = Date.now()
+    const abortController = new AbortController()
+    const turnTimeout = setTimeout(() => {
+      abortController.abort(new TurnTimeoutError("Memory consolidation turn exceeded timeout"))
+    }, 90_000)
+
+    try {
+      logger.info(`[MemoryConsolidator] Starting automatic memory consolidation for session ${sessionId}...`)
+      await this.transitionState(sessionId, "running")
+
+      const session = getSession(this.rootDir, sessionId)
+      if (!session) return
+
+      const promptOverride = `Eres MemoryConsolidator, un agente de Inteligencia Artificial especializado en consolidación automática de memoria de Monolito V2.
+Tu única tarea es analizar los mensajes recientes de la conversación y consolidar la información importante para evitar que el agente principal deba recordar guardarla.
+
+INSTRUCCIONES DE CONSOLIDACIÓN:
+1. Revisa detenidamente todo el historial de la conversación disponible.
+2. Identifica y extrae:
+   - Datos de identidad y perfil del usuario (nombre, profesión, gustos estables, reglas de personalidad o interacción deseadas, estilo de comunicación preferido).
+   - Hechos generales, decisiones importantes del proyecto, conocimientos temáticos estables, compromisos del usuario, tareas o contexto del entorno de trabajo.
+3. Elige la herramienta de persistencia correcta:
+   - Para datos críticos de identidad y reglas estables de perfil/personalidad: Usa la herramienta 'BootWrite'. Asegúrate de escribir en una wing adecuada (ej. 'BOOT_USER' o 'BOOT_PERSONALITY'). Primero lista las wings con 'BootListWings' si necesitas verificar qué wings existen.
+   - Para hechos generales, decisiones del proyecto, snippets, compromisos o información temática: Usa la herramienta 'WorkspaceMemoryFiling'. Elige una wing adecuada (ej. 'SHARED' si es de interés general para todos los perfiles, o cualquier otra para tu perfil actual) y especifica un 'room' representativo (ej. 'preferencias', 'arquitectura', 'tareas'). Si no existe el drawer o wing, se creará automáticamente.
+4. Razona paso a paso en tu mente (internal thoughts) sobre qué es importante consolidar y por qué.
+5. NO debes responder al usuario bajo ninguna circunstancia. Eres 100% silencioso. Tu respuesta final, una vez que hayas ejecutado todas las herramientas de almacenamiento necesarias, debe ser exactamente la palabra: CONSOLIDATION_OK.`;
+
+      const turn = await runAssistantTurn(
+        session,
+        this.rootDir,
+        async (tool, input, context, toolUseId) =>
+          this.executeTool(
+            sessionId,
+            tool,
+            input,
+            { ...context, abortSignal: abortController.signal, sessionId, orchestrator: this.orchestrator, runtime: this },
+            toolUseId,
+            profileId,
+          ),
+        {
+          rootDir: this.rootDir,
+          cwd: this.rootDir,
+          abortSignal: abortController.signal,
+          getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
+          profileId,
+          orchestrator: this.orchestrator,
+        },
+        {
+          systemPromptOverride: promptOverride,
+          costState: this.costState,
+          abortSignal: abortController.signal,
+          turnStartedAt,
+          maxTurnDurationMs: 80_000,
+        },
+      )
+
+      if (turn.usage) {
+        recordApiCall(
+          this.costState,
+          getEffectiveModelConfig().model,
+          {
+            inputTokens: turn.usage.inputTokens,
+            outputTokens: turn.usage.outputTokens,
+          },
+          Date.now() - turnStartedAt,
+        )
+      }
+
+      logger.info(`[MemoryConsolidator] Consolidation turn finished. Result: ${turn.finalText?.trim()}`)
+      appendWorklog(this.rootDir, sessionId, {
+        type: "note",
+        summary: `MemoryConsolidator executed silently: ${turn.finalText?.trim()}`,
+      })
+
+    } catch (e) {
+      logger.error(`[MemoryConsolidator] Execution error: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      clearTimeout(turnTimeout)
+      await this.transitionState(sessionId, "idle")
+      this.releaseSessionLock(sessionId)
+    }
   }
 
   private async runProactiveBackgroundTurn(sessionId: string, profileId: string, attempt: number, heartbeatPrompt?: string) {
