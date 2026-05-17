@@ -972,7 +972,7 @@ export class MonolitoV2Runtime {
     return this.lastUserActivity
   }
 
-  scheduleNextHeartbeat() {
+  scheduleNextHeartbeat(reason?: string) {
     if (this.heartbeatTimer) {
       clearTimeout(this.heartbeatTimer)
       this.heartbeatTimer = null
@@ -980,14 +980,26 @@ export class MonolitoV2Runtime {
 
     try {
       const config = readConfigWing(this.rootDir, "CONF_HEARTBEAT") as import("../config/configWings.ts").HeartbeatConfig
-      if (!config?.enabled) return
+      const enabled = config?.enabled ?? true
+      if (!enabled) {
+        logger.info("Heartbeat is disabled in configuration. Timer stopped.")
+        return
+      }
+
+      const min_idle_minutes = config?.min_idle_minutes ?? 12
+      const interval_minutes = config?.interval_minutes ?? 30
 
       const now = Date.now()
-      const nextIdleTime = this.lastUserActivity + (config.min_idle_minutes || 12) * 60000
-      const nextIntervalTime = this.lastHeartbeatTime + (config.interval_minutes || 30) * 60000
+      const nextIdleTime = (this.lastUserActivity || now) + min_idle_minutes * 60000
+      const nextIntervalTime = (this.lastHeartbeatTime || 0) + interval_minutes * 60000
 
       const targetTime = Math.max(nextIdleTime, nextIntervalTime)
       const delayMs = Math.max(1000, targetTime - now)
+
+      if (reason) {
+        logger.info(`Rescheduling heartbeat due to: ${reason}`)
+      }
+      logger.info(`Scheduling next heartbeat check in ${(delayMs / 60000).toFixed(2)} minutes (at ${new Date(targetTime).toISOString()})`)
 
       this.heartbeatTimer = setTimeout(() => {
         this.heartbeatTimer = null
@@ -996,9 +1008,10 @@ export class MonolitoV2Runtime {
       this.heartbeatTimer.unref()
     } catch (e) {
       logger.error(`Failed to schedule heartbeat: ${e instanceof Error ? e.message : String(e)}`)
+      // Safe fallback: check again in 5 minutes
       this.heartbeatTimer = setTimeout(() => {
         this.heartbeatTimer = null
-        this.scheduleNextHeartbeat()
+        this.scheduleNextHeartbeat("error recovery fallback")
       }, 5 * 60 * 1000)
       this.heartbeatTimer.unref()
     }
@@ -1006,36 +1019,57 @@ export class MonolitoV2Runtime {
 
   private async runHeartbeatCheckAndReschedule() {
     try {
+      logger.info("Triggering scheduled heartbeat check...")
       await this.checkAndTriggerHeartbeat()
     } catch (e) {
-      logger.error(`heartbeat error: ${e instanceof Error ? e.message : String(e)}`)
+      logger.error(`heartbeat execution error: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       this.scheduleNextHeartbeat()
     }
   }
 
   startHeartbeatTimer() {
-    this.scheduleNextHeartbeat()
+    this.scheduleNextHeartbeat("timer start")
   }
 
   stopHeartbeatTimer() {
     if (this.heartbeatTimer) {
       clearTimeout(this.heartbeatTimer)
       this.heartbeatTimer = null
+      logger.info("Heartbeat timer stopped manually.")
     }
   }
 
   async checkAndTriggerHeartbeat() {
     if (this.isHeartbeatRunning) return
-    const config = readConfigWing(this.rootDir, "CONF_HEARTBEAT") as import("../config/configWings.ts").HeartbeatConfig
-    if (!config?.enabled) return
+    
+    let config: import("../config/configWings.ts").HeartbeatConfig | null = null
+    try {
+      config = readConfigWing(this.rootDir, "CONF_HEARTBEAT") as import("../config/configWings.ts").HeartbeatConfig
+    } catch (e) {
+      logger.warn(`Could not read heartbeat config during trigger: ${e instanceof Error ? e.message : String(e)}`)
+    }
 
-    const idleTime = (Date.now() - this.lastUserActivity) / 60000
-    if (idleTime < (config.min_idle_minutes || 12)) return
+    const enabled = config?.enabled ?? true
+    if (!enabled) return
 
-    const minsSinceLast = (Date.now() - this.lastHeartbeatTime) / 60000
-    if (minsSinceLast < (config.interval_minutes || 30)) return
+    const min_idle_minutes = config?.min_idle_minutes ?? 12
+    const interval_minutes = config?.interval_minutes ?? 30
 
+    const now = Date.now()
+    const idleTime = (now - (this.lastUserActivity || now)) / 60000
+    if (idleTime < min_idle_minutes) {
+      logger.debug(`Heartbeat skipped: user is not idle enough (${idleTime.toFixed(2)}/${min_idle_minutes} minutes)`)
+      return
+    }
+
+    const minsSinceLast = (now - (this.lastHeartbeatTime || 0)) / 60000
+    if (minsSinceLast < interval_minutes) {
+      logger.debug(`Heartbeat skipped: interval not met (${minsSinceLast.toFixed(2)}/${interval_minutes} minutes since last)`)
+      return
+    }
+
+    logger.info(`Executing active heartbeat on target session. Idle: ${idleTime.toFixed(2)}m, Interval: ${minsSinceLast.toFixed(2)}m`)
     this.isHeartbeatRunning = true
     this.lastHeartbeatTime = Date.now()
     try {
@@ -1413,6 +1447,7 @@ export class MonolitoV2Runtime {
       }
 
       if (heartbeatPrompt && turn.finalText?.trim() === "HEARTBEAT_OK") {
+        logger.info("Proactive heartbeat evaluated as HEARTBEAT_OK (silent discard).")
         appendWorklog(this.rootDir, sessionId, {
           type: "note",
           summary: "Proactive heartbeat evaluated as HEARTBEAT_OK (silent discard).",
@@ -1427,6 +1462,9 @@ export class MonolitoV2Runtime {
           summary: "Suppressed empty background assistant response",
         })
       } else {
+        if (heartbeatPrompt) {
+          logger.info(`Proactive heartbeat triggered user notification: "${userFacingText.slice(0, 100)}..."`)
+        }
         appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
         appendWorklog(this.rootDir, sessionId, {
           type: "session",
@@ -1539,7 +1577,7 @@ export class MonolitoV2Runtime {
 
   async processMessage(sessionId: string, text: string, options?: { delivery?: DeliveryContext; onAgentLoopEvent?: (event: AgentLoopEvent) => void }) {
     this.lastUserActivity = Date.now()
-    this.scheduleNextHeartbeat()
+    this.scheduleNextHeartbeat("user message received")
     this.rememberDeliveryContext(sessionId, options?.delivery)
     if (this.activeSessions.has(sessionId)) {
       const queue = this.pendingUserMessages.get(sessionId) ?? []
@@ -2773,7 +2811,7 @@ export class MonolitoV2Runtime {
         const wing = readConfigWing(this.rootDir, "CONF_HEARTBEAT") as import("../config/configWings.ts").HeartbeatConfig
         wing.interval_minutes = parsed
         writeConfigWing(this.rootDir, "CONF_HEARTBEAT", wing)
-        this.scheduleNextHeartbeat()
+        this.scheduleNextHeartbeat(`config updated: heartbeat_interval_minutes = ${parsed}`)
         return `Saved heartbeat_interval_minutes = ${parsed}`
       }
       else if (field === "heartbeat_min_idle_minutes") {
@@ -2782,7 +2820,7 @@ export class MonolitoV2Runtime {
         const wing = readConfigWing(this.rootDir, "CONF_HEARTBEAT") as import("../config/configWings.ts").HeartbeatConfig
         wing.min_idle_minutes = parsed
         writeConfigWing(this.rootDir, "CONF_HEARTBEAT", wing)
-        this.scheduleNextHeartbeat()
+        this.scheduleNextHeartbeat(`config updated: heartbeat_min_idle_minutes = ${parsed}`)
         return `Saved heartbeat_min_idle_minutes = ${parsed}`
       }
       else if (field === "tts_base_url" || field === "tts_api_key" || field === "tts_voice" || field === "tts_model" || field === "tts_format" || field === "tts_speed" || field === "tts_managed" || field === "tts_auto_deploy" || field === "tts_port") {
