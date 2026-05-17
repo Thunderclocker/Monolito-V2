@@ -33,6 +33,7 @@ export class MonolitoV2Daemon {
   private restartInFlight = false
   private ownerFd: number | null = null
   private ownershipMonitor: NodeJS.Timeout | null = null
+  private heartbeatTimer: NodeJS.Timeout | null = null
 
   constructor(rootDir: string) {
     this.rootDir = rootDir
@@ -78,9 +79,20 @@ export class MonolitoV2Daemon {
     }
     await this.terminateDuplicateDaemons()
     this.startOwnershipMonitor()
+    this.startHeartbeatMonitor()
     void this.startEmbeddingsWarmup()
     startChannels(this.runtime, { onRestartRequested: () => this.scheduleSelfRestart() })
     return this.server
+  }
+
+  private startHeartbeatMonitor() {
+    if (this.heartbeatTimer) return
+    this.heartbeatTimer = setInterval(() => {
+      this.runtime.checkAndTriggerHeartbeat().catch(e => {
+        this.writeDaemonLog(`heartbeat error: ${e instanceof Error ? e.message : String(e)}`)
+      })
+    }, 60_000)
+    this.heartbeatTimer.unref()
   }
 
   stop() {
@@ -94,6 +106,10 @@ export class MonolitoV2Daemon {
     if (this.ownershipMonitor) {
       clearInterval(this.ownershipMonitor)
       this.ownershipMonitor = null
+    }
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer)
+      this.heartbeatTimer = null
     }
     if (ownsSharedState) {
       try {

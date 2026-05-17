@@ -12,6 +12,7 @@ export const CONFIG_WING_ORDER = [
   "CONF_WEBSEARCH",
   "CONF_MCP",
   "CONF_POLICY",
+  "CONF_HEARTBEAT",
 ] as const
 
 export type ConfigWingName = (typeof CONFIG_WING_ORDER)[number]
@@ -23,6 +24,13 @@ export type ConfigWingValueMap = {
   CONF_WEBSEARCH: WebSearchConfig
   CONF_MCP: Record<string, ResolvedMcpServerConfig>
   CONF_POLICY: PolicyConfig
+  CONF_HEARTBEAT: HeartbeatConfig
+}
+
+export type HeartbeatConfig = {
+  enabled: boolean
+  interval_minutes: number
+  min_idle_minutes: number
 }
 
 export type PermissionMode = "default" | "acceptEdits" | "bypassPermissions"
@@ -102,5 +110,10 @@ export const DEFAULT_CONFIG_WING_VALUES: ConfigWingValueMap = {
       SessionStart: [],
       SessionEnd: [],
     },
+  },
+  CONF_HEARTBEAT: {
+    enabled: false,
+    interval_minutes: 30,
+    min_idle_minutes: 12,
   },
 }

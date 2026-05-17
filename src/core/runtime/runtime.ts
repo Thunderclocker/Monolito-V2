@@ -963,6 +963,38 @@ export class MonolitoV2Runtime {
   private recentResumeAt = new Map<string, number>()
   private abortControllers = new Map<string, AbortController>()
   private costState = createCostState()
+  private lastUserActivity = Date.now()
+  private lastHeartbeatTime = 0
+  private isHeartbeatRunning = false
+
+  getLastUserActivity() {
+    return this.lastUserActivity
+  }
+
+  async checkAndTriggerHeartbeat() {
+    if (this.isHeartbeatRunning) return
+    const config = readConfigWing(this.rootDir, "CONF_HEARTBEAT") as import("../config/configWings.ts").HeartbeatConfig
+    if (!config?.enabled) return
+
+    const idleTime = (Date.now() - this.lastUserActivity) / 60000
+    if (idleTime < (config.min_idle_minutes || 12)) return
+
+    const minsSinceLast = (Date.now() - this.lastHeartbeatTime) / 60000
+    if (minsSinceLast < (config.interval_minutes || 30)) return
+
+    this.isHeartbeatRunning = true
+    this.lastHeartbeatTime = Date.now()
+    try {
+      const prompt = "Revisa todo el Memory Palace, grafo temporal, recordatorios pendientes, tareas abiertas y contexto actual. Si consideras que NO hay nada realmente valioso o urgente que recordarle al usuario en este preciso instante, debes responder exactamente con el texto: HEARTBEAT_OK (sin espacios extra ni signos de puntuación). Si consideras que SÍ hay algo valioso, responde normalmente con tu sugerencia."
+      
+      const sessions = listSessions(this.rootDir).filter(s => s.id !== "daemon-cmd" && !s.id.startsWith("agent-"))
+      const targetSessionId = sessions[0]?.id || "cli-default"
+
+      await this.runProactiveBackgroundTurn(targetSessionId, "default", 0, prompt)
+    } finally {
+      this.isHeartbeatRunning = false
+    }
+  }
 
   private restartRequested = false
   private toolStallState = new Map<string, { key: string; count: number }>()
@@ -1226,7 +1258,7 @@ export class MonolitoV2Runtime {
     this.flushPendingBackgroundWakeup(sessionId)
   }
 
-  private async runProactiveBackgroundTurn(sessionId: string, profileId: string, attempt: number) {
+  private async runProactiveBackgroundTurn(sessionId: string, profileId: string, attempt: number, heartbeatPrompt?: string) {
     if (this.activeSessions.has(sessionId)) {
       this.enqueueBackgroundWakeup(sessionId, profileId)
       return
@@ -1258,7 +1290,19 @@ export class MonolitoV2Runtime {
               },
             ],
           }
-        : session
+        : heartbeatPrompt
+          ? {
+              ...session,
+              messages: [
+                ...sessionMessages,
+                {
+                  role: "user" as const,
+                  text: heartbeatPrompt,
+                  at: new Date().toISOString(),
+                },
+              ],
+            }
+          : session
       const ragSession = await prepareSemanticRagSession(this.rootDir, backgroundSession, profileId)
 
       const isMainSession = !session.id.startsWith("agent-") && !session.id.startsWith("telegram-")
@@ -1307,6 +1351,14 @@ export class MonolitoV2Runtime {
           },
           Date.now() - turnStartedAt,
         )
+      }
+
+      if (heartbeatPrompt && turn.finalText?.trim() === "HEARTBEAT_OK") {
+        appendWorklog(this.rootDir, sessionId, {
+          type: "note",
+          summary: "Proactive heartbeat evaluated as HEARTBEAT_OK (silent discard).",
+        })
+        return
       }
 
       const userFacingText = sanitizeExternalAssistantText(sessionId, turn.finalText)
@@ -1427,6 +1479,7 @@ export class MonolitoV2Runtime {
   }
 
   async processMessage(sessionId: string, text: string, options?: { delivery?: DeliveryContext; onAgentLoopEvent?: (event: AgentLoopEvent) => void }) {
+    this.lastUserActivity = Date.now()
     this.rememberDeliveryContext(sessionId, options?.delivery)
     if (this.activeSessions.has(sessionId)) {
       const queue = this.pendingUserMessages.get(sessionId) ?? []
@@ -2613,6 +2666,7 @@ export class MonolitoV2Runtime {
           containerName: vision.containerName,
           model: vision.model,
         },
+        heartbeat: readConfigWing(this.rootDir, "CONF_HEARTBEAT"),
       }, null, 2)
     }
     if (action === "set") {
@@ -2636,6 +2690,32 @@ export class MonolitoV2Runtime {
         saveModelSettings(next)
         applyModelSettingsToEnv(process.env, next)
         return `Saved ${field} = ${value}`
+      }
+      else if (field === "heartbeat_enabled") {
+        if (!["true", "false", "on", "off", "yes", "no", "1", "0"].includes(value.toLowerCase())) {
+          return "Invalid: heartbeat_enabled must be true or false"
+        }
+        const isEnabled = ["true", "on", "yes", "1"].includes(value.toLowerCase())
+        const wing = readConfigWing(this.rootDir, "CONF_HEARTBEAT") as import("../config/configWings.ts").HeartbeatConfig
+        wing.enabled = isEnabled
+        writeConfigWing(this.rootDir, "CONF_HEARTBEAT", wing)
+        return `Saved heartbeat_enabled = ${isEnabled}`
+      }
+      else if (field === "heartbeat_interval_minutes") {
+        const parsed = Number(value)
+        if (!Number.isFinite(parsed) || parsed <= 0) return "Invalid: heartbeat_interval_minutes must be a positive number"
+        const wing = readConfigWing(this.rootDir, "CONF_HEARTBEAT") as import("../config/configWings.ts").HeartbeatConfig
+        wing.interval_minutes = parsed
+        writeConfigWing(this.rootDir, "CONF_HEARTBEAT", wing)
+        return `Saved heartbeat_interval_minutes = ${parsed}`
+      }
+      else if (field === "heartbeat_min_idle_minutes") {
+        const parsed = Number(value)
+        if (!Number.isFinite(parsed) || parsed < 0) return "Invalid: heartbeat_min_idle_minutes must be a non-negative number"
+        const wing = readConfigWing(this.rootDir, "CONF_HEARTBEAT") as import("../config/configWings.ts").HeartbeatConfig
+        wing.min_idle_minutes = parsed
+        writeConfigWing(this.rootDir, "CONF_HEARTBEAT", wing)
+        return `Saved heartbeat_min_idle_minutes = ${parsed}`
       }
       else if (field === "tts_base_url" || field === "tts_api_key" || field === "tts_voice" || field === "tts_model" || field === "tts_format" || field === "tts_speed" || field === "tts_managed" || field === "tts_auto_deploy" || field === "tts_port") {
         const nextChannels = { ...channels, tts: { ...(channels.tts ?? {}) } }
