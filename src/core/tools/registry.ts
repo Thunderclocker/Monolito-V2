@@ -3155,34 +3155,48 @@ Actions:
       type: "object",
       properties: {
         url: { type: "string" },
+        path: { type: "string" },
       },
-      required: ["url"],
       additionalProperties: false,
     },
     concurrencySafe: false,
-    validate: input => typeof input.url === "string" && input.url.trim().length > 0 ? null : "url must be a non-empty string",
+    validate: input => {
+      const hasUrl = typeof input.url === "string" && input.url.trim().length > 0
+      const hasPath = typeof input.path === "string" && input.path.trim().length > 0
+      if (!hasUrl && !hasPath) return "Must provide 'url' or 'path'"
+      return null
+    },
     async run(input, context) {
       if (!context.sessionId?.startsWith("agent-")) {
         return formatToolError("REGLA ESTRICTA: Tareas visuales prohibidas en hilo principal. Debés delegar usando delegate_background_task.")
       }
-      const url = requireString(input, "url")
+      const url = optionalString(input, "url")
+      const pathArg = optionalString(input, "path")
       const config = readChannelsConfig()
       const vision = normalizeVisionConfig(config.vision)
       if (!vision.managed) {
         return formatToolError("La visión local no está habilitada en la configuración.")
       }
 
-      const response = await fetch(url, {
-        signal: AbortSignal.timeout(15_000),
-      })
-      if (!response.ok) {
-        return formatToolError(`Image download failed: HTTP ${response.status}`)
-      }
-
       const scratchpadDir = join(MONOLITO_ROOT, "scratchpad")
       mkdirSync(scratchpadDir, { recursive: true })
       const tmpPath = join(scratchpadDir, `vision-${randomUUID()}.jpg`)
-      const buffer = Buffer.from(await response.arrayBuffer())
+
+      let buffer: Buffer
+      if (pathArg) {
+        const absolutePath = resolve(context.cwd, pathArg)
+        if (!existsSync(absolutePath)) return formatToolError(`Archivo no encontrado: ${absolutePath}`)
+        buffer = readFileSync(absolutePath)
+      } else {
+        const response = await fetch(url!, {
+          signal: AbortSignal.timeout(15_000),
+        })
+        if (!response.ok) {
+          return formatToolError(`Image download failed: HTTP ${response.status}`)
+        }
+        buffer = Buffer.from(await response.arrayBuffer())
+      }
+
       writeFileSync(tmpPath, buffer)
 
       if (!existsSync(tmpPath) || statSync(tmpPath).size === 0) {
@@ -3330,6 +3344,13 @@ Actions:
 
         const data = await response.json() as any
         const description = data.content?.[0]?.text || ""
+        if (!description) {
+          const visionConfig = normalizeVisionConfig(readChannelsConfig().vision)
+          const tmpPath = join(MONOLITO_ROOT, "scratchpad", `vision-${randomUUID()}.jpg`)
+          writeFileSync(tmpPath, buffer)
+          const localDescription = await analyzeManagedImage(tmpPath, visionConfig)
+          return { ok: true, description: localDescription, local_path: tmpPath }
+        }
         return { ok: true, description }
       } else {
         const endpoint = baseUrl ? `${baseUrl}/v1/chat/completions` : "https://api.openai.com/v1/chat/completions"
@@ -3371,6 +3392,13 @@ Actions:
 
         const data = await response.json() as any
         const description = data.choices?.[0]?.message?.content || ""
+        if (!description) {
+          const visionConfig = normalizeVisionConfig(readChannelsConfig().vision)
+          const tmpPath = join(MONOLITO_ROOT, "scratchpad", `vision-${randomUUID()}.jpg`)
+          writeFileSync(tmpPath, buffer)
+          const localDescription = await analyzeManagedImage(tmpPath, visionConfig)
+          return { ok: true, description: localDescription, local_path: tmpPath }
+        }
         return { ok: true, description }
       }
     },
