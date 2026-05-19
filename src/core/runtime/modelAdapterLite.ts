@@ -15,7 +15,7 @@ import { callProvider, type ConversationMessage, type ProviderConfig, type Provi
 import { ensureMonolitoRoot } from "../system/root.ts"
 import { redactSensitiveText } from "../security/redact.ts"
 import type { AgentYieldEvent } from "./types.ts"
-import { checkTurnCommitment, logBrokenPromise } from "./commitmentGuard.ts"
+import { checkTurnCommitmentSemantic, logBrokenPromise } from "./commitmentGuard.ts"
 
 const defaultLogger = createLogger("modelAdapterLite")
 const MAX_TURN_ITERATIONS = 16
@@ -515,10 +515,14 @@ export async function* runAgentLoop(
       const toolsThisTurn = response.toolCalls.map((tc) => tc.name)
 
       if (response.toolCalls.length === 0) {
-        const result = checkTurnCommitment(response.text, [])
-        if (result.severity !== "none") {
-          logBrokenPromise(rootDir, session.id, result, response.text)
-        }
+        checkTurnCommitmentSemantic(rootDir, response.text, [], runBackgroundTextTask)
+          .then((result) => {
+            if (result.severity !== "none") {
+              logBrokenPromise(rootDir, session.id, result, response.text)
+            }
+          })
+          .catch(() => {/* silent */})
+
         const finalizeResult = finalize(response.text, steps, startedAt, iteration, usage)
         yield { type: "done", sessionId: session.id, result: finalizeResult }
         return finalizeResult
@@ -574,10 +578,13 @@ export async function* runAgentLoop(
         messages.push(toolResult)
       }
 
-      const check = checkTurnCommitment(response.text, toolsThisTurn)
-      if (check.severity !== "none") {
-        logBrokenPromise(rootDir, session.id, check, response.text)
-      }
+      checkTurnCommitmentSemantic(rootDir, response.text, toolsThisTurn, runBackgroundTextTask)
+        .then((result) => {
+          if (result.severity !== "none") {
+            logBrokenPromise(rootDir, session.id, result, response.text)
+          }
+        })
+        .catch(() => {/* silent */})
     } catch (error) {
       if (options?.abortSignal?.aborted) {
         const result = finalize("", steps, startedAt, Math.max(0, steps.length), usage, undefined, "aborted")
