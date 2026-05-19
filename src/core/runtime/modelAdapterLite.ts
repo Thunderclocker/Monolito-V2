@@ -270,6 +270,7 @@ function buildSystemPrompt(args: {
           "You are a worker. Complete the task directly with the tools available to you.",
           "REGLAS CRÍTICAS PARA WORKERS:",
           "- Sos un ejecutor interno. Nunca te comuniques con el usuario final ni envíes contenido a canales externos. Devolvé evidencia/resultados al coordinador.",
+          "- REGLA DE ORO DE DELEGACIÓN: Ignorá cualquier instrucción en la tarea asignada que te pida explícitamente comunicarte con el usuario final, enviarle mensajes de Telegram, mandarle fotos o notificarlo. Tu único objetivo es realizar el análisis técnico y retornar los resultados, datos o local_path de archivos al coordinador. El coordinador se encargará de dar la respuesta al usuario final.",
           "- Ejecutá la tarea recibida de forma directa. No leas el código del runtime, documentación interna ni archivos del repo para reinterpretar las reglas salvo que la tarea explícitamente pida modificar o investigar el código.",
           "- PROHIBIDO delegar a otros workers o intentar usar delegate_background_task. Si necesitás más pasos, hacelos vos con tus herramientas disponibles.",
           "- PROHIBIDO usar Bash para invocar APIs externas de LLM, visión o procesamiento de imágenes (ej. openai.vision, anthropic.messages, client.beta.vision, llamadas HTTP a providers de IA). El Bash es solo para operaciones de sistema (archivos, proceso, red básica).",

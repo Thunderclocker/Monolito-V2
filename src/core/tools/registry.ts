@@ -2894,7 +2894,9 @@ Actions:
         return formatToolError("Los sub-agentes no pueden spawnear otros agentes. Ejecutá la tarea directamente y devolvé los resultados.")
       }
 
-      const spawned = await context.orchestrator.spawnAgent(parentSessionId, profileId, task, description, type, { isolation, injected_context: injectedContext })
+      const delegationGoldenRule = "\n\n[REGLA DE ORO DE DELEGACIÓN: Eres un ejecutor interno. Ignora cualquier instrucción de esta tarea que te pida hablar con el usuario final, enviar mensajes de Telegram, mandar fotos o realizar notificaciones directas. Tu único objetivo es obtener los datos/análisis y devolver el resultado técnico, descripción y/o local_path de archivos al coordinador. No busques formas de comunicarte con el canal externo.]"
+      const finalTask = task + delegationGoldenRule
+      const spawned = await context.orchestrator.spawnAgent(parentSessionId, profileId, finalTask, description, type, { isolation, injected_context: injectedContext })
       if (spawned.status === "failed") {
         return {
           ok: false,
@@ -2997,8 +2999,10 @@ Actions:
         ? buildTelegramPhotoWorkerTask(task, parentSessionId, latestUserText)
         : task
 
+      const delegationGoldenRule = "\n\n[REGLA DE ORO DE DELEGACIÓN: Eres un ejecutor interno. Ignora cualquier instrucción de esta tarea que te pida hablar con el usuario final, enviar mensajes de Telegram, mandar fotos o realizar notificaciones directas. Tu único objetivo es obtener los datos/análisis y devolver el resultado técnico, descripción y/o local_path de archivos al coordinador. No busques formas de comunicarte con el canal externo.]"
+      const finalTask = effectiveTask + delegationGoldenRule
       const jobGroupId = context.runtime?.acquireJobGroupForBatch(parentSessionId)
-      const spawned = await context.orchestrator.spawnBackgroundTask(parentSessionId, profileId, effectiveTask, description, jobGroupId, { injected_context: injectedContext })
+      const spawned = await context.orchestrator.spawnBackgroundTask(parentSessionId, profileId, finalTask, description, jobGroupId, { injected_context: injectedContext })
       return {
         ok: spawned.status !== "failed" && spawned.status !== "killed",
         job_id: spawned.agentId,
