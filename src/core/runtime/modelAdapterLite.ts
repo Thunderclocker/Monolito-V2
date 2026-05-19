@@ -15,6 +15,7 @@ import { callProvider, type ConversationMessage, type ProviderConfig, type Provi
 import { ensureMonolitoRoot } from "../system/root.ts"
 import { redactSensitiveText } from "../security/redact.ts"
 import type { AgentYieldEvent } from "./types.ts"
+import { checkTurnCommitment, logBrokenPromise } from "./commitmentGuard.ts"
 
 const defaultLogger = createLogger("modelAdapterLite")
 const MAX_TURN_ITERATIONS = 16
@@ -263,6 +264,7 @@ function buildSystemPrompt(args: {
     "- When a user asks where a prior answer came from, inspect the conversation/tool evidence first. Use SessionForensics when available. Never claim no tool was used if tool evidence exists in the session.",
     "- When giving a user-facing conclusion based on tools, preserve traceability: mention the relevant tool/source path/URL/log/session evidence when it matters for trust or reproducibility.",
     "- Regla de Honestidad: Si una herramienta falla por infraestructura (ej. Visión caída), decilo. No inventes que estás trabajando si una tarea interna falló.",
+    "- REGLA DE COMPROMISOS: Si vas a prometerle al usuario que vas a hacer algo más adelante (recordar, avisar, revisar, analizar, enviar, chequear, etc.), tenés que ejecutar la herramienta correspondiente en el mismo turno. Si no ejecutás una tool, no hagas promesas de acción futura. En ese caso decí algo como 'necesito hacer X primero' o directamente no prometas nada. Una promesa verbal sin tool call asociada es inválida.",
     isSubAgent
       ? [
           "You are a worker. Complete the task directly with the tools available to you.",
@@ -509,10 +511,17 @@ export async function* runAgentLoop(
         totalTokens: (response.usage.inputTokens ?? 0) + (response.usage.outputTokens ?? 0),
       } : undefined
       yield { type: "model_invoke_end", sessionId: session.id, iteration, usage: loopUsage, toolCallCount: response.toolCalls.length }
+
+      const toolsThisTurn = response.toolCalls.map((tc) => tc.name)
+
       if (response.toolCalls.length === 0) {
-        const result = finalize(response.text, steps, startedAt, iteration, usage)
-        yield { type: "done", sessionId: session.id, result }
-        return result
+        const result = checkTurnCommitment(response.text, [])
+        if (result.severity !== "none") {
+          logBrokenPromise(rootDir, session.id, result, response.text)
+        }
+        const finalizeResult = finalize(response.text, steps, startedAt, iteration, usage)
+        yield { type: "done", sessionId: session.id, result: finalizeResult }
+        return finalizeResult
       }
       const assistantMessage: ConversationMessage = { role: "assistant", content: response.text, toolCalls: response.toolCalls }
       messages.push(assistantMessage)
@@ -563,6 +572,11 @@ export async function* runAgentLoop(
       for (const toolResult of toolResults) {
         if (!toolResult) continue
         messages.push(toolResult)
+      }
+
+      const check = checkTurnCommitment(response.text, toolsThisTurn)
+      if (check.severity !== "none") {
+        logBrokenPromise(rootDir, session.id, check, response.text)
       }
     } catch (error) {
       if (options?.abortSignal?.aborted) {
