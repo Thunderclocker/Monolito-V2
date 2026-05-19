@@ -1333,6 +1333,17 @@ export class MonolitoV2Runtime {
     ].filter(Boolean).join("\n")
 
     appendMessage(this.rootDir, sessionId, "user", xmlPayload)
+
+    // Phase 4: Add a visible, human-readable completion message that survives
+    // message filtering. This ensures the task resolution is explicit in session
+    // history and visible to MemoryConsolidator and future context windows.
+    const completionNote = effectiveStatus === "completed"
+      ? `[Completed] ${task.description}. Result: ${rawResult.slice(0, 300)}${rawResult.length > 300 ? "..." : ""}`
+      : effectiveStatus === "failed" || effectiveStatus === "killed"
+        ? `[Failed] ${task.description}. Error: ${rawResult.slice(0, 200)}`
+        : `[${effectiveStatus}] ${task.description}`
+    appendMessage(this.rootDir, sessionId, "user", completionNote)
+
     appendWorklog(this.rootDir, sessionId, {
       type: "note",
       summary: `Internal task ${task.status}: ${task.description}`,
@@ -1376,6 +1387,8 @@ export class MonolitoV2Runtime {
       const session = getSession(this.rootDir, sessionId)
       if (!session) return
 
+      const allTasks = this.orchestrator.getTaskSnapshot(sessionId)
+      const recentNotifications = collectAllRecentTaskNotifications(session)
       const promptOverride = `You are MemoryConsolidator, a silent and automatic agent of Monolito V2.
 
 Your only mission is to read the recent conversation and correctly save all important information into the Memory Palace.
@@ -1388,7 +1401,14 @@ Mandatory rules:
    - For general information, commitments, tasks or thematic context → use WorkspaceMemoryFiling.
 4. In WorkspaceMemoryFiling always reuse an existing room if the topic already has one (e.g. preferences, tasks, architecture, projects). Create a new room only if the topic is entirely different.
 5. It is mandatory to execute the tools. Do not consider your task complete until you have persisted everything important.
-6. You are 100% silent. Never respond to the user. When you have completely finished saving, respond ONLY with the exact word: CONSOLIDATION_OK`;
+6. You are 100% silent. Never respond to the user. When you have completely finished saving, respond ONLY with the exact word: CONSOLIDATION_OK
+7. Task state rules:
+   - Tasks with status "completed" or "done" are RESOLVED. File them in Memory Palace under "tasks" room with status "resolved".
+   - Never mark a task as pending if it already has a completion result available in context.
+   - If a task notification shows the task succeeded, treat it as resolved, not pending.
+8. Current task state:
+   - Active tasks (pending/running): ${allTasks.filter(t => t.status === "pending" || t.status === "running").length}
+   - Recent task notifications: ${recentNotifications.length > 0 ? recentNotifications.join("; ") : "none"}`;
 
       const turn = await runAssistantTurn(
         session,
@@ -1416,6 +1436,10 @@ Mandatory rules:
           abortSignal: abortController.signal,
           turnStartedAt,
           maxTurnDurationMs: 80_000,
+          contextExtras: {
+            activeTasks: allTasks,
+            taskNotifications: recentNotifications,
+          },
         },
       )
 
@@ -1466,6 +1490,18 @@ Mandatory rules:
       if (!session) return
       const taskNotifications = collectRecentTaskNotifications(session)
       const sessionMessages = session.messages ?? []
+
+      // DEFENSIVE: If heartbeat has no real pending work, skip proactive notification.
+      // Completed tasks are already delivered to user; no need to bother them again.
+      const activeTaskCount = this.orchestrator.getTaskSnapshot(sessionId)
+        .filter(t => t.status === "pending" || t.status === "running").length
+      if (heartbeatPrompt && activeTaskCount === 0 && taskNotifications.length === 0) {
+        appendWorklog(this.rootDir, sessionId, {
+          type: "note",
+          summary: "Proactive heartbeat skipped: no pending tasks found.",
+        })
+        return
+      }
       const backgroundSession = taskNotifications.length > 0
         ? {
             ...session,
