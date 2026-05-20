@@ -984,6 +984,15 @@ export class MonolitoV2Runtime {
   private recentResumeAt = new Map<string, number>()
   private abortControllers = new Map<string, AbortController>()
   private costState = createCostState()
+  private adultModeSessions = new Set<string>()
+
+  public hasAdultMode(sessionId: string): boolean {
+    return this.adultModeSessions.has(sessionId)
+  }
+
+  public enableAdultMode(sessionId: string): void {
+    this.adultModeSessions.add(sessionId)
+  }
   private lastUserActivity = Date.now()
   private lastHeartbeatTime = 0
   private lastHeartbeatSkippedAt = 0
@@ -1594,6 +1603,7 @@ Mandatory rules:
             gitContext,
             dateContext,
             workspaceContext,
+            adultMode: this.adultModeSessions.has(sessionId),
             webSearchProvider: webSearchConfig.provider,
             taskNotifications,
             activeTasks: this.orchestrator.getTaskSnapshot(sessionId).filter(t => t.status === "pending" || t.status === "running"),
@@ -1959,6 +1969,7 @@ Mandatory rules:
                 gitContext,
                 dateContext,
                 workspaceContext,
+                adultMode: this.adultModeSessions.has(sessionId),
                 webSearchProvider: webSearchConfig.provider,
                 stallAlert: this.consumeStallAlert(sessionId),
                 activeTasks: this.orchestrator.getTaskSnapshot(sessionId).filter(t => t.status === "pending" || t.status === "running"),
@@ -2134,6 +2145,7 @@ Mandatory rules:
             gitContext,
             dateContext,
             workspaceContext,
+            adultMode: this.adultModeSessions.has(sessionId),
             webSearchProvider: webSearchConfig.provider,
             stallAlert: this.consumeStallAlert(sessionId),
             activeTasks: this.orchestrator.getTaskSnapshot(sessionId).filter(t => t.status === "pending" || t.status === "running"),
@@ -2285,6 +2297,15 @@ Mandatory rules:
       case "/channels": {
         return this.runChannelsCommand(rest)
       }
+      case "/adult": {
+        const isActive = this.adultModeSessions.has(sessionId)
+        if (isActive) {
+          this.adultModeSessions.delete(sessionId)
+          return "Modo adulto desactivado."
+        }
+        this.adultModeSessions.add(sessionId)
+        return "Modo adulto activado."
+      }
       case "/new": {
         const session = getSession(this.rootDir, sessionId)
         const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
@@ -2304,6 +2325,7 @@ Mandatory rules:
           graphRowsDeleted: cleared.graphRowsDeleted,
         })
         resetSession(this.rootDir, sessionId, { summary: "Session and Memory Palace reset via /reset" })
+        this.adultModeSessions.delete(sessionId)
         return "__SESSION_RESET__"
       }
       default:

@@ -20,6 +20,7 @@ const TELEGRAM_BOT_COMMANDS = [
   { command: "channels", description: "Configure Telegram channel settings" },
   { command: "update", description: "Fetch updates and restart daemon" },
   { command: "new", description: "Start a fresh session" },
+  { command: "adult", description: "Toggle adult mode" },
 ] as const
 
 async function registerTelegramCommands(token: string) {
