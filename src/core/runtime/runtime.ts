@@ -1082,7 +1082,11 @@ export class MonolitoV2Runtime {
       await this.runMemoryConsolidation(targetSessionId, targetProfileId)
 
       // Then run standard proactive heartbeat prompt!
-      const prompt = "Revisa todo el Memory Palace, grafo temporal, recordatorios pendientes, tareas abiertas y contexto actual. Si consideras que NO hay nada realmente valioso o urgente que recordarle al usuario en este preciso instante, debes responder exactamente con el texto: HEARTBEAT_OK (sin espacios extra ni signos de puntuación). Si consideras que SÍ hay algo valioso, responde normalmente con tu sugerencia."
+      const prompt = `[SYSTEM EVENT: HEARTBEAT_CHECK]
+Read system state, pending tasks, and recent context.
+- If nothing requires urgent attention, reply exactly with: HEARTBEAT_OK
+- If something is urgent, reply with your suggestion.
+IMPORTANT: The human user did NOT send or write this message. Do not reference this automated system check in your response.`
       await this.runProactiveBackgroundTurn(targetSessionId, targetProfileId, 0, prompt)
     } finally {
       this.isHeartbeatRunning = false
@@ -1577,7 +1581,8 @@ Mandatory rules:
         )
       }
 
-      if (heartbeatPrompt && turn.finalText?.trim() === "HEARTBEAT_OK") {
+      const isHeartbeatOk = turn.finalText?.trim().toUpperCase().replace(/[^A-Z_]/g, "") === "HEARTBEAT_OK"
+      if (heartbeatPrompt && isHeartbeatOk) {
         logger.info("Proactive heartbeat evaluated as HEARTBEAT_OK (silent discard).")
         appendWorklog(this.rootDir, sessionId, {
           type: "note",
