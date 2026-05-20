@@ -16,7 +16,6 @@ import { ensureMonolitoRoot } from "../system/root.ts"
 import { redactSensitiveText } from "../security/redact.ts"
 import type { AgentYieldEvent } from "./types.ts"
 import { checkTurnCommitmentSemantic, logBrokenPromise } from "./commitmentGuard.ts"
-import { resolveGrokAccessToken } from "./providers/grokAuth.ts"
 
 const defaultLogger = createLogger("modelAdapterLite")
 const MAX_TURN_ITERATIONS = 16
@@ -383,15 +382,6 @@ async function* callProviderWithRetry(config: ProviderConfig, prompt: ReturnType
   let authAttempts = 0
 
   while (true) {
-    if (currentConfig.provider === "xai-oauth") {
-      try {
-        const token = await resolveGrokAccessToken()
-        currentConfig = { ...currentConfig, apiKey: token }
-      } catch (tokenErr) {
-        throw new Error(`Grok OAuth token error: ${tokenErr instanceof Error ? tokenErr.message : String(tokenErr)}`)
-      }
-    }
-
     try {
       throwIfAborted(abortSignal)
       const response = await callProvider(currentConfig, prompt, messages, abortSignal, isSubAgent, maxTokens)
@@ -414,7 +404,7 @@ async function* callProviderWithRetry(config: ProviderConfig, prompt: ReturnType
         if (authAttempts > 0) throw error
         authAttempts++
         loadAndApplyModelSettings(process.env)
-        currentConfig = { ...getEffectiveModelConfig(), sessionId: config.sessionId }
+        currentConfig = { ...getEffectiveModelConfig() }
         continue
       }
 
@@ -483,7 +473,7 @@ export async function* runAgentLoop(
   const startedAt = options?.turnStartedAt ?? Date.now()
   const maxIterations = options?.maxIterations ?? MAX_TURN_ITERATIONS
   const maxTurnDurationMs = options?.maxTurnDurationMs ?? DEFAULT_MAX_TURN_DURATION_MS
-  let config = { ...getEffectiveModelConfig(), sessionId: session.id }
+  let config = { ...getEffectiveModelConfig() }
   const isSubAgent = session.id.startsWith("agent-")
   let activeSession = session
   let compacted = false
@@ -675,7 +665,7 @@ export async function runBackgroundTextTask(
   userPrompt: string,
   options?: { model?: string; maxTokens?: number; abortSignal?: AbortSignal; logger?: Logger },
 ): Promise<{ text: string; usage?: TurnUsage }> {
-  const config = { ...getEffectiveModelConfig(), sessionId: `bg-${randomUUID().slice(0, 8)}` }
+  const config = { ...getEffectiveModelConfig() }
   const prompt = { system, bootBlock: "" }
   const messages: ConversationMessage[] = [{ role: "user", content: userPrompt }]
   const events = callProviderWithRetry(

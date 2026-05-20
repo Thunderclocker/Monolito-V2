@@ -83,7 +83,7 @@ const strictRecordZod = z.record(z.string(), z.unknown())
 const modelProfileZod = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
-  provider: z.enum(["minimax", "ollama", "openai_compatible", "anthropic_compatible", "xai", "xai-oauth"]),
+  provider: z.enum(["minimax", "ollama", "openai_compatible", "anthropic_compatible"]),
   baseUrl: z.string(),
   apiKey: z.string(),
   model: z.string().min(1),

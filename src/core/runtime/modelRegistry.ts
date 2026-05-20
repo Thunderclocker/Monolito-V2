@@ -8,7 +8,7 @@ import { coerceConfigRecord } from "../config/wingValue.ts"
 // Types
 // ---------------------------------------------------------------------------
 
-export type ModelProvider = "minimax" | "ollama" | "openai_compatible" | "anthropic_compatible" | "xai" | "xai-oauth"
+export type ModelProvider = "minimax" | "ollama" | "openai_compatible" | "anthropic_compatible"
 
 export type ModelProfile = {
   id: string
@@ -50,8 +50,6 @@ const PROVIDER_DEFAULTS: Record<ModelProvider, { baseUrl: string; needsApiKey: b
   ollama: { baseUrl: "http://localhost:11434", needsApiKey: false },
   openai_compatible: { baseUrl: "https://api.openai.com", needsApiKey: true },
   anthropic_compatible: { baseUrl: "", needsApiKey: true },
-  xai: { baseUrl: "https://api.x.ai", needsApiKey: true },
-  "xai-oauth": { baseUrl: "https://api.x.ai", needsApiKey: false },
 }
 
 export function getProviderDefaults(provider: ModelProvider) {
@@ -59,7 +57,7 @@ export function getProviderDefaults(provider: ModelProvider) {
 }
 
 export function getAvailableProviders(): ModelProvider[] {
-  return ["openai_compatible", "anthropic_compatible", "ollama", "minimax", "xai", "xai-oauth"]
+  return ["openai_compatible", "anthropic_compatible", "ollama", "minimax"]
 }
 
 // ---------------------------------------------------------------------------
@@ -103,7 +101,6 @@ function normalizeProfile(raw: unknown): ModelProfile | null {
 
 function inferProviderFromUrl(baseUrl: string): ModelProvider {
   const normalized = baseUrl.toLowerCase()
-  if (normalized.includes("x.ai") || normalized.includes("grok")) return "xai"
   if (normalized.includes("minimax")) return "minimax"
   if (normalized.includes("localhost:11434") || normalized.includes("ollama")) return "ollama"
   if (normalized.includes("openai")) return "openai_compatible"
@@ -281,7 +278,7 @@ export async function discoverProviderModels(
 
   try {
     const headers: Record<string, string> = {}
-    if (provider === "openai_compatible" || provider === "xai") {
+    if (provider === "openai_compatible") {
       headers.Authorization = `Bearer ${apiKey}`
     } else if (provider === "anthropic_compatible") {
       headers["x-api-key"] = apiKey

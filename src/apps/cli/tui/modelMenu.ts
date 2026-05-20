@@ -268,25 +268,7 @@ function handleSelect(input: string): MenuResult {
   try {
     activateProfileByIndex(index)
     applyProfileToEnv(process.env, profile)
-    
-    let msg = `Active model changed to: ${profile.name} (${profile.provider})`
-    if (profile.provider === "xai-oauth") {
-      msg += "\n\n" + [
-        "⚠️  Dynamic Grok OAuth login is required for this profile.",
-        "If you haven't authenticated yet, please run one of these options:",
-        "",
-        "💡 OPTION A: If running Monolito locally on your machine:",
-        "   Open a new terminal and run: npm run cli auth xai-oauth",
-        "",
-        "🌐 OPTION B: If running Monolito on a remote VPS via SSH:",
-        "   1. Reconnect using an SSH Tunnel:",
-        "      ssh -L 56121:127.0.0.1:56121 vps",
-        "   2. Execute the login command: monolito auth xai-oauth",
-        "   3. Copy/paste the URL into your local web browser.",
-      ].join("\n")
-    }
-    
-    return openModelMenu(msg, "success", true)
+    return openModelMenu(`Active model changed to: ${profile.name} (${profile.provider})`, "success", true)
   } catch (error) {
     return {
       output: `Error: ${error instanceof Error ? error.message : String(error)}`,
@@ -367,25 +349,6 @@ async function handleAddBaseUrl(input: string, state: MenuState): Promise<MenuRe
         "Enter model name manually:",
       ].join("\n"),
       nextState: { ...state!, step: "add-model", draft: { ...state!.draft, baseUrl, apiKey: "" } },
-      tone: "info",
-    }
-  }
-
-  if (provider === "xai-oauth") {
-    const availableModels = ["grok-2-1212", "grok-2-vision-1212", "grok-beta"]
-    const lines = [
-      `Provider: ${provider}`,
-      `Base URL: ${baseUrl}`,
-      "API Key: (not required, managed via 'monolito auth xai-oauth')",
-      "",
-      "Available models:",
-      ...availableModels.map((model, index) => `  ${index + 1}. ${model}`),
-      "",
-      "Enter model number, or type 'manual' to enter one yourself:",
-    ]
-    return {
-      output: lines.join("\n"),
-      nextState: { ...state!, step: "add-model-pick", draft: { ...state!.draft, baseUrl, apiKey: "oauth" }, availableModels },
       tone: "info",
     }
   }
@@ -542,24 +505,7 @@ function handleAddName(input: string, state: MenuState): MenuResult {
     if (idx >= 0) activateProfileByIndex(idx)
     applyProfileToEnv(process.env, profile)
 
-    let msg = `Profile "${profile.name}" created and activated successfully.`
-    if (profile.provider === "xai-oauth") {
-      msg += "\n\n" + [
-        "⚠️  Dynamic Grok OAuth login is required to use this profile.",
-        "Please authenticate using one of the following methods:",
-        "",
-        "💡 OPTION A: If running Monolito locally on your machine:",
-        "   Open a new terminal and run: npm run cli auth xai-oauth",
-        "",
-        "🌐 OPTION B: If running Monolito on a remote VPS via SSH:",
-        "   1. Reconnect using an SSH Tunnel:",
-        "      ssh -L 56121:127.0.0.1:56121 vps",
-        "   2. Execute the login command: monolito auth xai-oauth",
-        "   3. Copy/paste the URL into your local web browser.",
-      ].join("\n")
-    }
-
-    return openModelMenu(msg, "success", true)
+    return openModelMenu(`Profile "${profile.name}" created and activated.`, "success", true)
   } catch (error) {
     return {
       output: `Error creating profile: ${error instanceof Error ? error.message : String(error)}`,
@@ -624,7 +570,7 @@ function handleEditField(input: string, state: MenuState): MenuResult {
 
   const labelMap: Record<string, string> = {
     name: "Name",
-    provider: "Provider (openai_compatible, anthropic_compatible, ollama, minimax, xai, xai-oauth)",
+    provider: "Provider (openai_compatible, anthropic_compatible, ollama, minimax)",
     baseUrl: "Base URL",
     apiKey: "API Key",
     model: "Model",
