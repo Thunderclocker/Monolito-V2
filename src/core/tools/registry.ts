@@ -1823,7 +1823,7 @@ Actions:
     name: "system_status",
     aliases: ["SystemStatus"],
     permissionTier: "read",
-    description: "Return a concurrent JSON audit of Monolito system health, including JIT-managed services, routing, SQLite sessions, and workspace state.",
+    description: "Return a concurrent JSON audit of Monolito system health, including JIT-managed services, routing, SQLite sessions, workspace state, and daemon heartbeat timing (lastExecutedAt, lastSkippedAt, isRunning). Use this tool when asked about the current state or recent activity of any daemon component.",
     inputSchema: emptyInputSchema,
     concurrencySafe: true,
     async run(_input, context) {
@@ -2751,7 +2751,7 @@ Actions:
   {
     name: "SessionForensics",
     permissionTier: "read",
-    description: "Inspect persisted session evidence before answering questions about what happened, what was said, which tools/workers ran, or where a prior conclusion came from.",
+    description: "Inspect persisted session evidence before answering questions about what happened, what was said, which tools/workers ran, or where a prior conclusion came from. This is ALSO the correct tool for questions about internal daemon events such as heartbeat history, memory consolidation runs, background turns, and worklog entries — use this instead of Bash/Grep over source code.",
     inputSchema: {
       type: "object",
       properties: {

@@ -241,6 +241,11 @@ type SystemStatus = {
     packageJson: "ok" | "missing"
     bootstrapPending: boolean
   }
+  heartbeat: {
+    lastExecutedAt: string | null
+    lastSkippedAt: string | null
+    isRunning: boolean
+  }
   cost: string
 }
 
@@ -981,6 +986,7 @@ export class MonolitoV2Runtime {
   private costState = createCostState()
   private lastUserActivity = Date.now()
   private lastHeartbeatTime = 0
+  private lastHeartbeatSkippedAt = 0
   private isHeartbeatRunning = false
   private heartbeatTimer: NodeJS.Timeout | null = null
 
@@ -1076,12 +1082,14 @@ export class MonolitoV2Runtime {
     const idleTime = (now - (this.lastUserActivity || now)) / 60000
     if (idleTime < min_idle_minutes) {
       logger.debug(`Heartbeat skipped: user is not idle enough (${idleTime.toFixed(2)}/${min_idle_minutes} minutes)`)
+      this.lastHeartbeatSkippedAt = now
       return
     }
 
     const minsSinceLast = (now - (this.lastHeartbeatTime || 0)) / 60000
     if (minsSinceLast < interval_minutes) {
       logger.debug(`Heartbeat skipped: interval not met (${minsSinceLast.toFixed(2)}/${interval_minutes} minutes since last)`)
+      this.lastHeartbeatSkippedAt = now
       return
     }
 
@@ -2789,6 +2797,11 @@ Mandatory rules:
         packageJson: existsSync(join(this.rootDir, "package.json")) ? "ok" : "missing",
         bootstrapPending: workspace.bootstrapPending,
       },
+      heartbeat: {
+        lastExecutedAt: this.lastHeartbeatTime ? new Date(this.lastHeartbeatTime).toISOString() : null,
+        lastSkippedAt: this.lastHeartbeatSkippedAt ? new Date(this.lastHeartbeatSkippedAt).toISOString() : null,
+        isRunning: this.isHeartbeatRunning,
+      },
       cost: formatCostSummary(this.costState),
     }
   }
@@ -2857,6 +2870,14 @@ Mandatory rules:
         else if (line.startsWith("API:")) lines.push(`⏱  ${line}`)
         else lines.push(line)
       })
+      lines.push("")
+    }
+
+    if (status.heartbeat) {
+      lines.push("Heartbeat:")
+      lines.push(`🫀 Last executed: ${status.heartbeat.lastExecutedAt ?? "never"}`)
+      lines.push(`⏭  Last skipped:  ${status.heartbeat.lastSkippedAt ?? "never"}`)
+      lines.push(`⚙️  Running now:   ${status.heartbeat.isRunning ? "yes" : "no"}`)
       lines.push("")
     }
 
