@@ -268,7 +268,25 @@ function handleSelect(input: string): MenuResult {
   try {
     activateProfileByIndex(index)
     applyProfileToEnv(process.env, profile)
-    return openModelMenu(`Active model changed to: ${profile.name} (${profile.provider})`, "success", true)
+    
+    let msg = `Active model changed to: ${profile.name} (${profile.provider})`
+    if (profile.provider === "xai-oauth") {
+      msg += "\n\n" + [
+        "⚠️  Dynamic Grok OAuth login is required for this profile.",
+        "If you haven't authenticated yet, please run one of these options:",
+        "",
+        "💡 OPTION A: If running Monolito locally on your machine:",
+        "   Open a new terminal and run: npm run cli auth xai-oauth",
+        "",
+        "🌐 OPTION B: If running Monolito on a remote VPS via SSH:",
+        "   1. Reconnect using an SSH Tunnel:",
+        "      ssh -L 56121:127.0.0.1:56121 vps",
+        "   2. Execute the login command: monolito auth xai-oauth",
+        "   3. Copy/paste the URL into your local web browser.",
+      ].join("\n")
+    }
+    
+    return openModelMenu(msg, "success", true)
   } catch (error) {
     return {
       output: `Error: ${error instanceof Error ? error.message : String(error)}`,
@@ -524,7 +542,24 @@ function handleAddName(input: string, state: MenuState): MenuResult {
     if (idx >= 0) activateProfileByIndex(idx)
     applyProfileToEnv(process.env, profile)
 
-    return openModelMenu(`Profile "${profile.name}" created and activated.`, "success", true)
+    let msg = `Profile "${profile.name}" created and activated successfully.`
+    if (profile.provider === "xai-oauth") {
+      msg += "\n\n" + [
+        "⚠️  Dynamic Grok OAuth login is required to use this profile.",
+        "Please authenticate using one of the following methods:",
+        "",
+        "💡 OPTION A: If running Monolito locally on your machine:",
+        "   Open a new terminal and run: npm run cli auth xai-oauth",
+        "",
+        "🌐 OPTION B: If running Monolito on a remote VPS via SSH:",
+        "   1. Reconnect using an SSH Tunnel:",
+        "      ssh -L 56121:127.0.0.1:56121 vps",
+        "   2. Execute the login command: monolito auth xai-oauth",
+        "   3. Copy/paste the URL into your local web browser.",
+      ].join("\n")
+    }
+
+    return openModelMenu(msg, "success", true)
   } catch (error) {
     return {
       output: `Error creating profile: ${error instanceof Error ? error.message : String(error)}`,
