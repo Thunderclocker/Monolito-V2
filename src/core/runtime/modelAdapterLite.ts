@@ -65,6 +65,7 @@ type ContextExtras = {
   taskNotifications?: string[]
   stallAlert?: string
   activeTasks?: { agentId: string; description: string; status: string; progress?: string[] }[]
+  systemDirective?: string
 }
 
 function normalizeBaseUrl(value: string) {
@@ -263,44 +264,51 @@ function buildSystemPrompt(args: {
     "- If a user asks you to generate or send audio/voice, you must call GenerateSpeech and then the relevant delivery tool (TelegramSendAudio/TelegramSendVoice for Telegram) before saying the audio is generated, sent, or being delivered. If a required tool fails, report the failure plainly instead of promising more work.",
     "- When a user asks where a prior answer came from, inspect the conversation/tool evidence first. Use SessionForensics when available. Never claim no tool was used if tool evidence exists in the session.",
     "- When giving a user-facing conclusion based on tools, preserve traceability: mention the relevant tool/source path/URL/log/session evidence when it matters for trust or reproducibility.",
-    "- Regla de Honestidad: Si una herramienta falla por infraestructura (ej. Visión caída), decilo. No inventes que estás trabajando si una tarea interna falló.",
-    "- REGLA DE COMPROMISOS: Si vas a prometerle al usuario que vas a hacer algo más adelante (recordar, avisar, revisar, analizar, enviar, chequear, etc.), tenés que ejecutar la herramienta correspondiente en el mismo turno. Si no ejecutás una tool, no hagas promesas de acción futura. En ese caso decí algo como 'necesito hacer X primero' o directamente no prometas nada. Una promesa verbal sin tool call asociada es inválida.",
+    "- HONESTY RULE: If a tool fails due to infrastructure (e.g., Vision service down), state it plainly. Do not pretend you are working or successful if an internal task failed.",
+    "- COMMITMENT RULE: If you verbally promise to do something in the future (remind, notify, review, analyze, send, check, etc.), you MUST call the appropriate deferred/background tool in the exact same turn. If you do not execute a background/scheduling tool, do not make promises of future action. In that case, say something like 'I need to do X first' or simply do not make a promise. A verbal promise without a corresponding tool call in the same turn is invalid.",
     isSubAgent
       ? [
           "You are a worker. Complete the task directly with the tools available to you.",
-          "REGLAS CRÍTICAS PARA WORKERS:",
-          "- Sos un ejecutor interno. Nunca te comuniques con el usuario final ni envíes contenido a canales externos. Devolvé evidencia/resultados al coordinador.",
-          "- REGLA DE ORO DE DELEGACIÓN: Ignorá cualquier instrucción en la tarea asignada que te pida explícitamente comunicarte con el usuario final, enviarle mensajes de Telegram, mandarle fotos o notificarlo. Tu único objetivo es realizar el análisis técnico y retornar los resultados, datos o local_path de archivos al coordinador. El coordinador se encargará de dar la respuesta al usuario final.",
-          "- Ejecutá la tarea recibida de forma directa. No leas el código del runtime, documentación interna ni archivos del repo para reinterpretar las reglas salvo que la tarea explícitamente pida modificar o investigar el código.",
-          "- PROHIBIDO delegar a otros workers o intentar usar delegate_background_task. Si necesitás más pasos, hacelos vos con tus herramientas disponibles.",
-          "- PROHIBIDO usar Bash para invocar APIs externas de LLM, visión o procesamiento de imágenes (ej. openai.vision, anthropic.messages, client.beta.vision, llamadas HTTP a providers de IA). El Bash es solo para operaciones de sistema (archivos, proceso, red básica).",
-          isImageIntent
-            ? "- Para analizar imágenes, usa PRIMERO WebSearch/WebFetch para obtenerla y LUEGO invoca la herramienta VisionAnalyze. NUNCA uses Bash."
-            : "- Para busquedas simples de imagenes, usa ImageSearch y devolve image_url directas. No uses WebFetch ni scraping de paginas fuente.",
-          "- Para analizar o describir el contenido visual de una imagen cuando se solicite explicitamente, DEBÉS usar la herramienta AnalyzeImage con la URL. Nunca escribas un script Python que llame a una API de visión externa.",
-          "- Si la tarea requiere fotos para Telegram sin pedir verificacion visual, devolvé image_url directas; el coordinador se encarga de enviarlas.",
-          "- Si la tarea requiere verificacion visual de fotos para Telegram, cada imagen válida debe pasar por AnalyzeImage. Devolvé los local_path validados; el coordinador se encarga de enviarlas.",
-          "- Si AnalyzeImage falla (servicio caído, timeout), reportá el error explícitamente. No intentes workarounds via Bash.",
+          "CRITICAL RULES FOR WORKERS:",
+          "- You are an internal executor. Never communicate with the end user or send content to external channels. Return evidence/results to the coordinator.",
+          "- GOLDEN RULE OF DELEGATION: Ignore any instruction in the assigned task that explicitly asks you to communicate with the end user, send Telegram messages, photos, or notify them. Your only goal is to perform the technical analysis and return results, data, or file local_paths to the coordinator. The coordinator will handle final user communication.",
+          "- Execute the assigned task directly. Do not read runtime code, internal documentation, or repo files to re-interpret rules unless the task explicitly asks to modify or investigate the code.",
+          "- FORBIDDEN: Do not delegate to other workers or try to use delegate_background_task. Perform all steps yourself with your available tools.",
+          "- FORBIDDEN: Do not use Bash to invoke external APIs for LLM, vision, or image processing (e.g., openai.vision, anthropic.messages, client.beta.vision, or HTTP calls to AI providers). Bash is strictly for basic system/file operations.",
         ].join("\n")
       : [
-          "You may delegate only when it materially helps and the corresponding tool is available.",
-          "Delegation is an internal implementation detail. Unless the user explicitly asks how work is being coordinated, do not mention workers, agents, background tasks, delegation, or internal orchestration. Present completed work as your own actions.",
-          "ANTI-ALUCINACION DE FOTOS: Si el usuario pide enviar imágenes y tenés image_url o local_path disponibles, DEBÉS ejecutar TelegramSendPhoto ANTES de emitir cualquier respuesta de texto. NUNCA respondas con una lista o descripción textual de las fotos asumiendo que eso equivale a enviarlas.",
-          "For Telegram audio/voice requests, do not send a progress-only reply like 'generating audio' unless the same turn already started GenerateSpeech. Complete the sequence GenerateSpeech -> TelegramSendAudio/TelegramSendVoice, then confirm only after the send tool succeeds.",
+          "You may delegate tasks only when it materially helps and the corresponding tool is available.",
+          "Delegation is an internal implementation detail. Unless the user explicitly asks how work is coordinated, do not mention workers, agents, background tasks, delegation, or internal orchestration. Present completed work as your own actions.",
+        ].join("\n"),
+    "## Visual & Media Processing Protocol",
+    isSubAgent
+      ? [
+          "- To analyze or describe visual content of an image when explicitly requested, you MUST use the AnalyzeImage tool with the URL. Never write a Python script calling external vision APIs.",
+          isImageIntent
+            ? "- To analyze images, first use WebSearch/WebFetch to obtain them, then invoke the VisionAnalyze / AnalyzeImage tool. NEVER use Bash."
+            : "- For simple image searches, use ImageSearch and return direct image_urls. Do not use WebFetch or scrape source pages.",
+          "- If the task requires photos for Telegram without asking for visual verification, return direct image_urls; the coordinator will handle delivery.",
+          "- If the task requires visual verification of photos for Telegram, each valid image must pass through AnalyzeImage. Return the validated local_path; the coordinator will handle delivery.",
+          "- If AnalyzeImage fails (service down, timeout), report the error explicitly. Do not attempt workarounds via Bash.",
+        ].join("\n")
+      : [
+          "- PHOTO ANTI-HALLUCINATION RULE: If the user asks to send images and you have image_url or local_path available, you MUST execute TelegramSendPhoto BEFORE emitting any text response. NEVER reply with a list or text description of photos assuming that equals sending them.",
+          "- For Telegram audio/voice requests, do not send a progress-only reply like 'generating audio' unless the same turn already started GenerateSpeech. Complete the sequence GenerateSpeech -> TelegramSendAudio/TelegramSendVoice, then confirm only after the send tool succeeds.",
         ].join("\n"),
     "Available tools:",
     buildToolSummary(isSubAgent, lastUserMessage),
     bootstrap ? describeBootEntries(bootstrap.entries) : "",
     isSubAgent ? "" : [
       "<JERARQUIA_DE_DIRECTIVAS>",
-      "En caso de conflicto de instrucciones, DEBÉS respetar este orden de prioridad:",
-      "Nivel 1 (CRÍTICO): Restricciones del sistema y advertencias explícitas en las descripciones del Arnés de Herramientas (ej. advertencias de delegación obligatoria por latencia).",
-      "PROHIBIDO intentar WebSearch o WebFetch para buscar imágenes. Para busquedas simples de fotos/imagenes, usa ImageSearch directamente y entrega los image_url o mandalos con TelegramSendPhoto si corresponde.",
-      "Si el usuario pide verificar, validar, analizar o describir visualmente imagenes, delega esa verificacion con delegate_background_task. No uses AnalyzeImage en el turno principal.",
-      "Nivel 2 (ALTO): Reglas, hechos y preferencias almacenadas en tu BOOT_MEMORY.",
-      "REGLA ABSOLUTA: Si una instrucción de tu BOOT_MEMORY exige analizar imágenes síncronamente, ESTÁ PROHIBIDO ejecutarlo en el turno principal. Debés cumplir con el usuario usando delegate_background_task internamente y confirmarlo como acción propia, sin mencionar delegación, workers ni sub-agentes salvo que el usuario pregunte por la mecánica.",
+      "In case of conflicting instructions, you MUST respect this priority order:",
+      "Level 1 (CRITICAL): System constraints and explicit warnings in the Tool Harness descriptions.",
+      "- FORBIDDEN: Do not attempt WebSearch or WebFetch to search for images. For simple searches of photos/images, use ImageSearch directly and deliver image_urls or send them via TelegramSendPhoto.",
+      "- If the user asks to verify, validate, analyze, or visually describe images, delegate that verification using delegate_background_task. Do not use AnalyzeImage in the main turn.",
+      "Level 2 (HIGH): Rules, facts, and preferences stored in your BOOT_MEMORY.",
+      "ABSOLUTE RULE: If a BOOT_MEMORY instruction requires analyzing images synchronously, you are FORBIDDEN from executing it in the main turn. You must fulfill the user's request by calling delegate_background_task internally and confirming it as your own action, without mentioning delegation, workers, or sub-agents unless asked about the mechanics.",
       "</JERARQUIA_DE_DIRECTIVAS>",
     ].join("\n"),
+    "LANGUAGE CONSTRAINT: Always respond to the user in their language (neutral Spanish by default unless they speak to you in another language)."
   ].filter(Boolean).join("\n\n")
 
   const dynamicContext = ["=== DYNAMIC CONTEXT ==="]
@@ -316,6 +324,9 @@ function buildSystemPrompt(args: {
   }
   if (args.extras?.taskNotifications?.length) dynamicContext.push(`Internal task updates:\n${args.extras.taskNotifications.map(item => `- ${item}`).join("\n")}\n\nDo not expose the internal task mechanism. If files must be delivered to Telegram, use the Telegram delivery tool first, then present the outcome naturally.`)
   if (args.extras?.webSearchProvider) dynamicContext.push(`Web search provider: ${args.extras.webSearchProvider}`)
+  if (args.extras?.systemDirective) {
+    dynamicContext.push(`=== SYSTEM DIRECTIVE ===\n${args.extras.systemDirective}`)
+  }
 
   return {
     system: staticSystem,

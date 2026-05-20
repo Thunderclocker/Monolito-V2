@@ -788,17 +788,33 @@ async function prepareSemanticRagSession(rootDir: string, session: SessionRecord
 
 function buildBackgroundWakeupPrompt(notifications: string[]) {
   return [
-    "Internal task updates arrived.",
-    "You are the coordinator. Use these updates to answer the user now.",
-    "Do not spawn new agents, do not delegate more work, and do not retry automatically in this wake-up turn.",
-    "If a worker failed, state that plainly and stop unless the user explicitly asked you to continue researching.",
-    "If the updates contain usable findings, present them directly as your completed work.",
-    "If the updates contain local_path values that should be delivered to Telegram, call TelegramSendPhoto/TelegramSendDocument yourself before saying they were sent.",
-    "Do not mention workers, agents, background tasks, task notifications, or internal orchestration unless the user explicitly asks how it was done.",
-    "",
-    "Updates:",
+    "[SYSTEM EVENT: BACKGROUND_WAKEUP]",
+    "The following internal background tasks completed or updated:",
     ...notifications.map(item => `- ${item}`),
   ].join("\n")
+}
+
+function getCleanStartupMessageAndDirective(prompt: string): { messageText: string; systemDirective?: string } {
+  const normalized = prompt.trim()
+  if (normalized.includes("El bootstrap del workspace sigue pendiente") || normalized.includes("ritual de primer arranque")) {
+    return {
+      messageText: "[SYSTEM EVENT: INITIAL_BOOTSTRAP]",
+      systemDirective: prompt,
+    }
+  }
+  if (normalized.includes("Run your Session Startup sequence using the injected BOOT context") || normalized.includes("Session Startup sequence")) {
+    return {
+      messageText: "[SYSTEM EVENT: SESSION_STARTUP]",
+      systemDirective: prompt,
+    }
+  }
+  if (normalized.length > 80 && (normalized.includes("BOOT") || normalized.includes("session") || normalized.includes("persona"))) {
+    return {
+      messageText: "[SYSTEM EVENT: SESSION_STARTUP]",
+      systemDirective: prompt,
+    }
+  }
+  return { messageText: prompt }
 }
 
 function extractTelegramAudioFileId(text: string) {
@@ -1541,6 +1557,18 @@ Mandatory rules:
       ])
       const webSearchConfig = readWebSearchConfig()
 
+      const systemDirective = taskNotifications.length > 0
+        ? [
+            "You are the coordinator in a background wake-up turn. Use the latest internal task updates to answer the user now.",
+            "Rules for this turn:",
+            "- Do not spawn new agents, do not delegate more work, and do not retry automatically.",
+            "- If a worker failed, state that plainly and stop unless the user explicitly asked you to continue researching.",
+            "- If the updates contain usable findings, present them directly as your completed work.",
+            "- If the updates contain local_path values that should be delivered to Telegram, call TelegramSendPhoto/TelegramSendDocument yourself before saying they were sent.",
+            "- Do not mention workers, agents, background tasks, task notifications, or internal orchestration unless the user explicitly asks how it was done.",
+          ].join("\n")
+        : undefined
+
       const turn = await runAssistantTurn(
         ragSession,
         this.rootDir,
@@ -1561,6 +1589,7 @@ Mandatory rules:
             webSearchProvider: webSearchConfig.provider,
             taskNotifications,
             activeTasks: this.orchestrator.getTaskSnapshot(sessionId).filter(t => t.status === "pending" || t.status === "running"),
+            systemDirective,
           },
           costState: this.costState,
           abortSignal: abortController.signal,
@@ -2062,11 +2091,12 @@ Mandatory rules:
     try {
       const session = getSession(this.rootDir, sessionId)
       if (!session) throw new Error(`Session ${sessionId} not found`)
+      const { messageText, systemDirective } = getCleanStartupMessageAndDirective(prompt)
       const syntheticSession: SessionRecord = {
         ...session,
         messages: [
           ...session.messages,
-          { at: new Date().toISOString(), role: "user", text: prompt },
+          { at: new Date().toISOString(), role: "user", text: messageText },
         ],
       }
       const ragSession = await prepareSemanticRagSession(this.rootDir, syntheticSession, profileId)
@@ -2100,6 +2130,7 @@ Mandatory rules:
             stallAlert: this.consumeStallAlert(sessionId),
             activeTasks: this.orchestrator.getTaskSnapshot(sessionId).filter(t => t.status === "pending" || t.status === "running"),
             taskNotifications: collectAllRecentTaskNotifications(ragSession),
+            systemDirective,
           },
           costState: this.costState,
           abortSignal: abortController.signal,
