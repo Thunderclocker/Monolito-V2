@@ -286,9 +286,9 @@ export class AgentOrchestrator {
     const subSessionId = `agent-${options.profileId}-${randomUUID().slice(0, 8)}`
     const traceId = createTraceparent()
 
-    // Inherit adult mode from parent session
-    if (this.runtime.hasAdultMode(options.parentSessionId)) {
-      this.runtime.enableAdultMode(subSessionId)
+    // Inherit adult mode state from parent session (propagate opt-out if parent disabled it)
+    if (!this.runtime.hasAdultMode(options.parentSessionId)) {
+      this.runtime.disableAdultMode(subSessionId)
     }
 
     const profiles = listProfiles(rootDir)
