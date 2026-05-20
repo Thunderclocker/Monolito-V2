@@ -353,6 +353,25 @@ async function handleAddBaseUrl(input: string, state: MenuState): Promise<MenuRe
     }
   }
 
+  if (provider === "xai-oauth") {
+    const availableModels = ["grok-2-1212", "grok-2-vision-1212", "grok-beta"]
+    const lines = [
+      `Provider: ${provider}`,
+      `Base URL: ${baseUrl}`,
+      "API Key: (not required, managed via 'monolito auth xai-oauth')",
+      "",
+      "Available models:",
+      ...availableModels.map((model, index) => `  ${index + 1}. ${model}`),
+      "",
+      "Enter model number, or type 'manual' to enter one yourself:",
+    ]
+    return {
+      output: lines.join("\n"),
+      nextState: { ...state!, step: "add-model-pick", draft: { ...state!.draft, baseUrl, apiKey: "oauth" }, availableModels },
+      tone: "info",
+    }
+  }
+
   const lines = [
     `Provider: ${provider}`,
     `Base URL: ${baseUrl}`,
