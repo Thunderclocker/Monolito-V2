@@ -24,6 +24,7 @@ export type ProviderConfig = {
   apiKey: string
   model: string
   provider: ModelProvider
+  sessionId?: string
 }
 
 export type PromptBlocks = {

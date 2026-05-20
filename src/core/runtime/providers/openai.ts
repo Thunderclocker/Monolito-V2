@@ -12,12 +12,18 @@ export async function callOpenAiCompatibleApi(
   maxTokens: number | undefined,
   isSubAgent: boolean,
 ): Promise<ProviderResponse> {
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    authorization: `Bearer ${config.apiKey}`,
+  }
+
+  if (config.sessionId && (config.provider === "xai" || config.provider === "xai-oauth" || /x\.ai|grok/i.test(config.baseUrl))) {
+    headers["x-grok-conv-id"] = config.sessionId
+  }
+
   const data = await callJsonApi(`${config.baseUrl}/v1/chat/completions`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${config.apiKey}`,
-    },
+    headers,
     body: JSON.stringify({
       model: config.model,
       messages: buildOpenAiMessages(system, messages),

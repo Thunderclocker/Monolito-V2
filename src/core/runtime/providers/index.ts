@@ -19,5 +19,6 @@ export async function callProvider(
   if (config.provider === "ollama") {
     return await callOllamaApi(config, prompt.system, messages, abortSignal, isSubAgent)
   }
+  // Both "xai" and other OpenAI compatible endpoints are routed here
   return await callOpenAiCompatibleApi(config, prompt.system, messages, abortSignal, maxTokens, isSubAgent)
 }
