@@ -536,6 +536,28 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       }
     }
 
+    // Load tool execution worklog entries
+    const toolTimed: TimedBlock[] = []
+    if (session.worklog) {
+      for (const entry of session.worklog) {
+        if (entry.type === "tool") {
+          const isFinish = entry.summary.includes("finished") || entry.summary.includes("completed")
+          const isError = entry.summary.includes("failed") || entry.summary.includes("error")
+          const tone = isError ? "error" : (isFinish ? "success" : "info")
+          
+          toolTimed.push({
+            at: entry.at,
+            block: {
+              type: "event",
+              label: "tool",
+              tone,
+              text: entry.summary,
+            },
+          })
+        }
+      }
+    }
+
     // Load telegram messages that happened during this CLI session
     let telegramTimed: TimedBlock[] = []
     try {
@@ -575,7 +597,7 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     }
 
     // Merge by timestamp
-    const merged = [...cliTimed, ...telegramTimed].sort((a, b) => a.at.localeCompare(b.at))
+    const merged = [...cliTimed, ...telegramTimed, ...toolTimed].sort((a, b) => a.at.localeCompare(b.at))
     transcript = {
       blocks: merged.map(m => m.block).slice(-MAX_TRANSCRIPT_BLOCKS),
       scrollOffset: transcript.scrollOffset,

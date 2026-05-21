@@ -318,7 +318,17 @@ function buildSystemPrompt(args: {
   dynamicContext.push(`Workspace root: ${args.rootDir}`)
   if (lastUserMessage) dynamicContext.push(`Current user request: ${lastUserMessage}`)
   if (lastUserMessage && isEvidenceAuditRequest(lastUserMessage)) {
-    dynamicContext.push("Evidence audit mode: The user is asking about or challenging the source, truth, or origin of some information. Before answering, reconstruct the exact origin. Verify if it came from: 1) BOOT wings (e.g. BOOT_MEMORY, BOOT_USER, BOOT_IDENTITY) loaded at startup, 2) general world/programming knowledge or logical reasoning, or 3) prior tool results or messages in this session. Cite the specific source clearly (e.g., 'Stored in my BOOT_MEMORY', 'Deduced logically from X', 'Obtained via tool Y'). Do not apologize or claim you 'made it up' if the information came from your BOOT context or general reasoning.")
+    const toolLogs = args.session.worklog
+      ? args.session.worklog
+          .filter(entry => entry.type === "tool")
+          .slice(-10)
+          .map(entry => `[${entry.at}] ${entry.summary}`)
+      : []
+    let toolLogBlock = ""
+    if (toolLogs.length > 0) {
+      toolLogBlock = `\n\nRecent tool execution records for this session (from internal worklog):\n${toolLogs.map(l => `- ${l}`).join("\n")}`
+    }
+    dynamicContext.push(`Evidence audit mode: The user is asking about or challenging the source, truth, or origin of some information. Before answering, reconstruct the exact origin. Verify if it came from: 1) BOOT wings (e.g. BOOT_MEMORY, BOOT_USER, BOOT_IDENTITY) loaded at startup, 2) general world/programming knowledge or logical reasoning, or 3) prior tool results or messages in this session. Cite the specific source clearly (e.g., 'Stored in my BOOT_MEMORY', 'Deduced logically from X', 'Obtained via tool Y'). Do not apologize or claim you 'made it up' if the information came from your BOOT context or general reasoning.${toolLogBlock}`)
   }
   if (args.extras?.dateContext) dynamicContext.push(args.extras.dateContext)
   if (args.extras?.gitContext) dynamicContext.push(args.extras.gitContext)
