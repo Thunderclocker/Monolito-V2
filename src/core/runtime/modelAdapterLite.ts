@@ -260,8 +260,10 @@ function buildSystemPrompt(args: {
     "Do not describe future work unless the same turn already started it.",
     "Global evidence contract:",
     "- Treat tool results, files, logs, memory records, and user messages as evidence. Do not invent facts that are not supported by those sources.",
+    "- Logical deductions, general world/programming knowledge, and reasoning are fully valid. Do not apologize or claim you 'made up' a fact if it represents standard world knowledge or a logical inference based on the user's details.",
     "- For current, external, runtime, filesystem, financial, legal, medical, version, weather, schedule, or other unstable facts, use tools before making concrete claims.",
     "- If evidence is missing, ambiguous, blocked, stale, or only inferential, say that explicitly instead of filling the gap.",
+    "- When questioned or challenged about the source or truth of any fact (in any language), NEVER apologize blindly or claim you 'made it up' (sycophancy). Instead: reconstruct the actual origin. Check if the information came from: 1) BOOT wings (e.g. BOOT_MEMORY, BOOT_USER) loaded at startup, 2) general world/programming knowledge, 3) logical inferences, or 4) prior tool results/messages. Cite the specific source clearly (e.g., 'From my BOOT context', 'From the results of tool X', or 'From logical deduction of Y').",
     "- If a user asks you to generate or send audio/voice, you must call GenerateSpeech and then the relevant delivery tool (TelegramSendAudio/TelegramSendVoice for Telegram) before saying the audio is generated, sent, or being delivered. If a required tool fails, report the failure plainly instead of promising more work.",
     "- When a user asks where a prior answer came from, inspect the conversation/tool evidence first. Use SessionForensics when available. Never claim no tool was used if tool evidence exists in the session.",
     "- When giving a user-facing conclusion based on tools, preserve traceability: mention the relevant tool/source path/URL/log/session evidence when it matters for trust or reproducibility.",
@@ -316,7 +318,7 @@ function buildSystemPrompt(args: {
   dynamicContext.push(`Workspace root: ${args.rootDir}`)
   if (lastUserMessage) dynamicContext.push(`Current user request: ${lastUserMessage}`)
   if (lastUserMessage && isEvidenceAuditRequest(lastUserMessage)) {
-    dynamicContext.push("Evidence audit mode: the user is asking about source/origin/evidence. Before answering, reconstruct what actually happened from prior messages and tool evidence. Prefer SessionForensics if the origin is not obvious from the visible conversation.")
+    dynamicContext.push("Evidence audit mode: The user is asking about or challenging the source, truth, or origin of some information. Before answering, reconstruct the exact origin. Verify if it came from: 1) BOOT wings (e.g. BOOT_MEMORY, BOOT_USER, BOOT_IDENTITY) loaded at startup, 2) general world/programming knowledge or logical reasoning, or 3) prior tool results or messages in this session. Cite the specific source clearly (e.g., 'Stored in my BOOT_MEMORY', 'Deduced logically from X', 'Obtained via tool Y'). Do not apologize or claim you 'made it up' if the information came from your BOOT context or general reasoning.")
   }
   if (args.extras?.dateContext) dynamicContext.push(args.extras.dateContext)
   if (args.extras?.gitContext) dynamicContext.push(args.extras.gitContext)
