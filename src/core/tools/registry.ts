@@ -3450,7 +3450,7 @@ Actions:
           .slice(0, 8)
           .map(result => ({
             title: compactWhitespace(typeof result.title === "string" ? result.title : "Untitled result"),
-            url: result.url ?? "",
+            url: typeof result.url === "string" ? result.url : "",
             snippet: compactWhitespace(typeof result.content === "string" ? result.content : ""),
           }))
 
@@ -3463,13 +3463,49 @@ Actions:
             })
             .join("\n\n")
 
+        // Auto-Scrape de la primera fuente (top result) para enriquecer la respuesta
+        let autoFetchContent = ""
+        const topResult = results[0]
+        if (topResult && topResult.url && !/\.(jpe?g|png|webp|gif|avif|svg|pdf)(\?.*)?$/i.test(topResult.url)) {
+          try {
+            const fetchRes = await fetch(topResult.url, {
+              headers: {
+                "User-Agent": "MonolitoV2/1.0",
+                "Accept": "text/html,application/xhtml+xml,text/plain,*/*",
+              },
+              signal: AbortSignal.timeout(3000), // Timeout corto de 3 segundos
+            })
+            if (fetchRes.ok) {
+              const contentType = fetchRes.headers.get("content-type") ?? ""
+              const buffer = await fetchRes.arrayBuffer()
+              const decoder = new TextDecoder("utf-8", { fatal: false })
+              let rawText = decoder.decode(buffer)
+              if (rawText) {
+                rawText = /<\/?[a-z][\s\S]*>/i.test(rawText)
+                  ? htmlToReadableText(rawText)
+                  : rawText.replace(/\s+/g, " ").trim()
+                if (rawText) {
+                  autoFetchContent = rawText.slice(0, 4000) // Primeros 4000 caracteres
+                }
+              }
+            }
+          } catch (e) {
+            // Silenciosamente ignorar fallas de autofetch
+          }
+        }
+
+        let finalFormatted = formatted
+        if (autoFetchContent) {
+          finalFormatted += `\n\n=== CONTENIDO EXTRAÍDO AUTOMÁTICAMENTE DE LA PRIMERA FUENTE (${topResult.url}) ===\n${autoFetchContent}`
+        }
+
         if (context.sessionId) {
           try {
             writeSessionSource(
               context.rootDir,
               context.sessionId,
               `WebSearch:${Date.now()}`,
-              `Resultados de búsqueda para "${query}":\n\n${formatted}`,
+              `Resultados de búsqueda para "${query}":\n\n${finalFormatted}`,
               context.profileId,
             )
           } catch (e) {
@@ -3477,7 +3513,7 @@ Actions:
           }
         }
 
-        return { ok: true, query, count: results.length, results, formatted }
+        return { ok: true, query, count: results.length, results, formatted: finalFormatted }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         return { ok: false, error: `Search failed: ${message}` }
