@@ -17,6 +17,7 @@ import {
   updateBackgroundTaskStatus,
   updateWorkerJobStatus,
   upsertWorkerJob,
+  listSessionTasks,
 } from "../session/store.ts"
 import { createInstanceLogger, createLogger, type Logger } from "../logging/logger.ts"
 
@@ -166,6 +167,53 @@ function buildRalphLoopImagePrompt(task: string, assistantReply: string) {
     "",
     `Último intento rechazado: ${clip(assistantReply, 500)}`,
   ].join("\n")
+}
+
+function buildRalphLoopUnfinishedTasksPrompt(task: string, unfinished: Array<{ content: string; status: string }>, assistantReply: string) {
+  const listStr = unfinished.map(t => `- [${t.status.toUpperCase()}] ${t.content}`).join("\n")
+  return [
+    task.trim(),
+    "",
+    "[Ralph Loop] SYSTEM ALERT",
+    "Intentaste finalizar pero aún tenés tareas pendientes o en progreso en la base de datos cognitiva (Memory Palace):",
+    listStr,
+    "",
+    "No podés cerrar la tarea principal hasta que completes todas las tareas de tu lista.",
+    "Para marcar una tarea como completada, utilizá la herramienta TodoUpdate con su taskId.",
+    "Si ya las completaste físicamente, acordate de actualizar su estado en la DB antes de salir.",
+    "",
+    `Último intento rechazado: ${clip(assistantReply, 500)}`,
+  ].join("\n")
+}
+
+function buildRalphLoopFailingBashPrompt(task: string, command: string, exitCode: number, assistantReply: string) {
+  return [
+    task.trim(),
+    "",
+    "[Ralph Loop] SYSTEM ALERT",
+    "Intentaste finalizar pero el último comando ejecutado falló:",
+    `Comando: ${command}`,
+    `Código de salida: ${exitCode}`,
+    "",
+    "No podés terminar el trabajo si el último comando de verificación (tests, compilación, etc.) falló.",
+    "Corregí el problema, verificá que compile o los tests pasen exitosamente (exitCode 0) antes de intentar salir.",
+    "",
+    `Último intento rechazado: ${clip(assistantReply, 500)}`,
+  ].join("\n")
+}
+
+function getLatestFailingBashCommand(rootDir: string, sessionId: string) {
+  const events = tailEvents(rootDir, sessionId, 15)
+  for (const event of [...events].reverse()) {
+    if (event.type !== "tool.finish" || !event.ok) continue
+    if (event.tool === "Bash") {
+      const output = event.output as { command: string; exitCode?: number | null } | undefined
+      if (output && typeof output.exitCode === "number" && output.exitCode !== 0) {
+        return output
+      }
+    }
+  }
+  return null
 }
 
 function createTraceparent() {
@@ -545,7 +593,40 @@ export class AgentOrchestrator {
           continue
         }
 
-        // Image verification check
+        // 2. Cognitive Task Persistence (Memory Palace) check
+        const activeTasksList = listSessionTasks(runtime.rootDir, task.subSessionId, task.profileId)
+        const unfinishedTasks = activeTasksList.filter(t => t.status === "pending" || t.status === "in_progress")
+        if (unfinishedTasks.length > 0) {
+          appendWorklog(runtime.rootDir, task.subSessionId, {
+            type: "note",
+            summary: `[Ralph Loop] Blocked premature completion on attempt ${attempt}: ${unfinishedTasks.length} unfinished tasks remaining in Memory Palace.`,
+          })
+          partialResult = assistantReply || partialResult
+          if (attempt >= maxAttempts) {
+            throw new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts with unfinished cognitive tasks remaining`)
+          }
+          currentText = buildRalphLoopUnfinishedTasksPrompt(task.task, unfinishedTasks, assistantReply)
+          attempt++
+          continue
+        }
+
+        // 3. Failing Bash command exit code check
+        const failingBash = getLatestFailingBashCommand(runtime.rootDir, task.subSessionId)
+        if (failingBash) {
+          appendWorklog(runtime.rootDir, task.subSessionId, {
+            type: "note",
+            summary: `[Ralph Loop] Blocked premature completion on attempt ${attempt}: Latest bash command '${failingBash.command}' failed with exitCode ${failingBash.exitCode}.`,
+          })
+          partialResult = assistantReply || partialResult
+          if (attempt >= maxAttempts) {
+            throw new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts with failing terminal command exitCode`)
+          }
+          currentText = buildRalphLoopFailingBashPrompt(task.task, failingBash.command, failingBash.exitCode ?? -1, assistantReply)
+          attempt++
+          continue
+        }
+
+        // 4. Image verification check
         if (isImageTaskIntent(task.task, task.description) && requiresImageVerification(task.task, task.description)) {
           if (!hasSuccessfulAnalyzeImage(session)) {
             appendWorklog(runtime.rootDir, task.subSessionId, {

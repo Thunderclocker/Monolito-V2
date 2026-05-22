@@ -283,6 +283,89 @@ export function readSessionSources(
     .all(PALACE_NAMESPACE.chatHistory, "websearch_history", sessionId, profileScope) as Array<{ key: string; content: string }>
 }
 
+export interface SessionTask {
+  id: string
+  content: string
+  status: "pending" | "in_progress" | "completed"
+  createdAt: string
+  sessionId?: string
+}
+
+export function writeSessionTask(
+  rootDir: string,
+  sessionId: string,
+  taskId: string,
+  task: SessionTask,
+  profileId: string = "default",
+) {
+  const db = getDb(rootDir)
+  const now = new Date().toISOString()
+  upsertMutablePalaceNode(db, {
+    namespace: PALACE_NAMESPACE.chatHistory,
+    wing: "active_tasks",
+    room: sessionId,
+    nodeKey: taskId,
+    profileId,
+    contentType: "application/json",
+    content: JSON.stringify(task),
+    now,
+  })
+}
+
+export function listSessionTasks(
+  rootDir: string,
+  sessionId: string,
+  profileId: string = "default",
+): SessionTask[] {
+  const db = getDb(rootDir)
+  const profileScope = palaceProfileScope(profileId)
+  const rows = db
+    .prepare(
+      `
+    SELECT node_key as id, content
+    FROM palace_nodes
+    WHERE namespace = ?
+      AND wing = ?
+      AND room = ?
+      AND profile_scope = ?
+      AND superseded_at IS NULL
+    ORDER BY created_at ASC, id ASC
+  `,
+    )
+    .all(PALACE_NAMESPACE.chatHistory, "active_tasks", sessionId, profileScope) as Array<{ id: string; content: string }>
+
+  const tasks: SessionTask[] = []
+  for (const row of rows) {
+    try {
+      tasks.push(JSON.parse(row.content))
+    } catch {}
+  }
+  return tasks
+}
+
+export function deleteSessionTask(
+  rootDir: string,
+  sessionId: string,
+  taskId: string,
+  profileId: string = "default",
+) {
+  const db = getDb(rootDir)
+  const now = new Date().toISOString()
+  const profileScope = palaceProfileScope(profileId)
+  db.prepare(
+    `
+    UPDATE palace_nodes
+    SET superseded_at = ?
+    WHERE namespace = ?
+      AND wing = ?
+      AND room = ?
+      AND node_key = ?
+      AND profile_scope = ?
+      AND superseded_at IS NULL
+  `,
+  ).run(now, PALACE_NAMESPACE.chatHistory, "active_tasks", sessionId, taskId, profileScope)
+}
+
 function ensureKernelSeededDb(db: Database.Database, profileId = "default") {
   ensurePalaceSchema(db)
   const now = new Date().toISOString()
@@ -1128,6 +1211,8 @@ export function resetSession(rootDir: string, sessionId: string, options?: { sum
     db.prepare(`DELETE FROM events WHERE session_id = ?`).run(sessionId)
     db.prepare(`DELETE FROM palace_nodes WHERE room = ? AND namespace = ? AND wing = ?`)
       .run(sessionId, PALACE_NAMESPACE.chatHistory, "websearch_history")
+    db.prepare(`DELETE FROM palace_nodes WHERE room = ? AND namespace = ? AND wing = ?`)
+      .run(sessionId, PALACE_NAMESPACE.chatHistory, "active_tasks")
     db.prepare(`UPDATE sessions SET updated_at = ? WHERE id = ?`).run(now, sessionId)
     db.prepare(`INSERT INTO worklog (session_id, type, summary, at) VALUES (?, ?, ?, ?)`).run(sessionId, "session", summary, now)
     db.exec("COMMIT")

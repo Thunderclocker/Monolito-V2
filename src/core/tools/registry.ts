@@ -33,6 +33,9 @@ import {
   listSessions,
   tailEvents,
   writeSessionSource,
+  writeSessionTask,
+  listSessionTasks,
+  deleteSessionTask,
 } from "../session/store.ts"
 import { isEmbeddingsUnavailableError } from "../session/embeddings.ts"
 import { type AgentOrchestrator } from "../runtime/orchestrator.ts"
@@ -1810,29 +1813,26 @@ Actions:
     concurrencySafe: true,
     async run(input, context) {
       const content = requireString(input, "content")
-      const status = optionalString(input, "status") ?? "pending"
+      const status = (optionalString(input, "status") as any) ?? "pending"
       const profileId = context.profileId || "default"
-      const paths = getPaths(context.rootDir, profileId)
-      const taskFile = join(paths.profilesDir, profileId, "tasks.json")
+      const sessionId = (context as any).sessionId
+      if (!sessionId) {
+        return formatToolError("No active session ID found in context.")
+      }
       
-      let tasks: Array<{ id: string; content: string; status: string; createdAt: string; sessionId?: string }> = []
-      try {
-        if (existsSync(taskFile)) {
-          tasks = JSON.parse(readFileSync(taskFile, "utf8"))
-        }
-      } catch {}
-      
+      const taskId = `task-${randomUUID().slice(0, 8)}`
       const task = {
-        id: randomUUID().slice(0, 8),
-        sessionId: (context as any).sessionId,
+        id: taskId,
+        sessionId,
         content,
         status,
         createdAt: new Date().toISOString(),
       }
-      tasks.push(task)
-      mkdirSync(dirname(taskFile), { recursive: true })
-      writeFileSync(taskFile, JSON.stringify(tasks, null, 2))
-      return { task, total: tasks.length, profile: profileId }
+      
+      writeSessionTask(context.rootDir, sessionId, taskId, task, profileId)
+      const tasks = listSessionTasks(context.rootDir, sessionId, profileId)
+      
+      return { task, totalInSession: tasks.length, profile: profileId }
     },
   },
   {
@@ -2463,27 +2463,65 @@ Actions:
       const filter = optionalString(input, "filter") ?? "all"
       const profileId = context.profileId || "default"
       const sessionId = (context as any).sessionId
-      const paths = getPaths(context.rootDir, profileId)
-      const taskFile = join(paths.profilesDir, profileId, "tasks.json")
+      if (!sessionId) {
+        return formatToolError("No active session ID found in context.")
+      }
       
-      let tasks: Array<{ id: string; content: string; status: string; createdAt: string; sessionId?: string }> = []
-      try {
-        if (existsSync(taskFile)) {
-          tasks = JSON.parse(readFileSync(taskFile, "utf8"))
-        }
-      } catch {}
-      
-      // Filter by session first
-      let sessionTasks = sessionId ? tasks.filter(t => t.sessionId === sessionId) : tasks
-      const filtered = filter === "all" ? sessionTasks : sessionTasks.filter(t => t.status === filter)
+      const tasks = listSessionTasks(context.rootDir, sessionId, profileId)
+      const filtered = filter === "all" ? tasks : tasks.filter(t => t.status === filter)
       
       return { 
         tasks: filtered, 
-        totalInSession: sessionTasks.length, 
-        totalInProfile: tasks.length,
+        totalInSession: tasks.length, 
         filter,
         profile: profileId
       }
+    },
+  },
+  {
+    name: "TodoUpdate",
+    permissionTier: "edit",
+    description: "Update the status of a task or delete it from the session task list.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        taskId: { type: "string", description: "The ID of the task to update (e.g. task-abcdef12)" },
+        status: { type: "string", enum: ["pending", "in_progress", "completed"], description: "The new status for the task" },
+        deleteTask: { type: "boolean", description: "Set to true to delete the task instead of updating its status" },
+      },
+      required: ["taskId"],
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    async run(input, context) {
+      const taskId = requireString(input, "taskId")
+      const status = optionalString(input, "status")
+      const deleteTaskFlag = optionalBoolean(input, "deleteTask") ?? false
+      const profileId = context.profileId || "default"
+      const sessionId = (context as any).sessionId
+      if (!sessionId) {
+        return formatToolError("No active session ID found in context.")
+      }
+      
+      const tasks = listSessionTasks(context.rootDir, sessionId, profileId)
+      const task = tasks.find(t => t.id === taskId)
+      if (!task) {
+        return formatToolError(`Task with ID '${taskId}' not found in the current session.`)
+      }
+      
+      if (deleteTaskFlag) {
+        deleteSessionTask(context.rootDir, sessionId, taskId, profileId)
+        const updatedTasks = listSessionTasks(context.rootDir, sessionId, profileId)
+        return { message: `Task '${taskId}' deleted successfully.`, totalInSession: updatedTasks.length }
+      }
+      
+      if (status) {
+        task.status = status as any
+        writeSessionTask(context.rootDir, sessionId, taskId, task, profileId)
+        return { message: `Task '${taskId}' status updated to '${status}'.`, task }
+      }
+      
+      return formatToolError("Either 'status' or 'deleteTask' must be specified.")
     },
   },
   {
@@ -3717,6 +3755,7 @@ export function listModelTools(isSubAgent = false, lastUserText?: string) {
     "MultiEdit",
     "Bash",
     "TodoWrite",
+    "TodoUpdate",
   ])
 
   return tools
