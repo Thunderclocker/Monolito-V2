@@ -10,7 +10,7 @@ import { AbortError, ApiError, ContextOverflowError, HttpError, ProviderOverload
 import { createLogger, type Logger } from "../logging/logger.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider } from "./modelRegistry.ts"
-import { compactSession, getSession, readSessionSources, updateWorkerJobStatus, upsertWorkerJob } from "../session/store.ts"
+import { compactSession, getSession, readSessionSources, updateWorkerJobStatus, upsertWorkerJob, tailEvents, listSessionTasks } from "../session/store.ts"
 import { callProvider, type ConversationMessage, type ProviderConfig, type ProviderResponse, type ToolCall } from "./providers/index.ts"
 import { ensureMonolitoRoot } from "../system/root.ts"
 import { redactSensitiveText } from "../security/redact.ts"
@@ -101,6 +101,22 @@ function getLastUserMessage(session: SessionRecord) {
 function isEvidenceAuditRequest(text: string) {
   const normalized = compactWhitespace(text).toLowerCase()
   return /\b(de donde|de dónde|fuente|fuentes|origen|source|sources|evidencia|evidence|sacaste|salio|salió|herramienta|tool|tools)\b/.test(normalized)
+}
+
+function getLatestFailingBashCommand(rootDir: string, sessionId: string) {
+  try {
+    const events = tailEvents(rootDir, sessionId, 15)
+    for (const event of [...events].reverse()) {
+      if (event.type !== "tool.finish" || !event.ok) continue
+      if (event.tool === "Bash") {
+        const output = event.output as { command: string; exitCode?: number | null } | undefined
+        if (output && typeof output.exitCode === "number" && output.exitCode !== 0) {
+          return output
+        }
+      }
+    }
+  } catch {}
+  return null
 }
 
 function truncate(value: string, max: number) {
@@ -367,6 +383,45 @@ function buildSystemPrompt(args: {
   if (args.extras?.webSearchProvider) dynamicContext.push(`Web search provider: ${args.extras.webSearchProvider}`)
   if (args.extras?.systemDirective) {
     dynamicContext.push(`=== SYSTEM DIRECTIVE ===\n${args.extras.systemDirective}`)
+  }
+
+  // Inject session cognitive tasks (Memory Palace) to drive proactivity
+  try {
+    const sessionTasks = listSessionTasks(args.rootDir, args.session.id, args.session.profileId)
+    if (sessionTasks.length > 0) {
+      const pendingTasks = sessionTasks.filter(t => t.status === "pending" || t.status === "in_progress")
+      if (pendingTasks.length > 0) {
+        dynamicContext.push([
+          "=== COGNITIVE TASK LIST (MEMORY PALACE) ===",
+          "Tenés las siguientes tareas cognitivas pendientes o en progreso en esta sesión:",
+          pendingTasks.map(t => `- [${t.status.toUpperCase()}] ID: ${t.id} - ${t.content}`).join("\n"),
+          "",
+          "PROACTIVIDAD DIRECTIVA:",
+          "Sé proactivo y orientá tus respuestas a resolver estas tareas pendientes.",
+          "Cuando las completes físicamente, recordá usar la herramienta TodoUpdate con su taskId para marcarlas como 'completed'.",
+          "Mantené al usuario informado de forma natural sobre el avance de estas tareas sin mencionar tecnicismos del loop.",
+        ].join("\n"))
+      }
+    }
+  } catch (e) {
+    // Ignorar si falla la consulta
+  }
+
+  // Inject latest failing bash command to drive proactivity in debugging
+  try {
+    const failingBash = getLatestFailingBashCommand(args.rootDir, args.session.id)
+    if (failingBash) {
+      dynamicContext.push([
+        "=== BASH COMMAND ERROR DETECTED ===",
+        `El último comando ejecutado falló con exitCode ${failingBash.exitCode}:`,
+        `Comando: ${failingBash.command}`,
+        "",
+        "PROACTIVIDAD EN DEPURACIÓN:",
+        "El último comando de consola falló. Sé proactivo y proponé o ejecutá de inmediato soluciones para corregir el error en lugar de esperar a que el usuario te lo pida.",
+      ].join("\n"))
+    }
+  } catch (e) {
+    // Ignorar si falla
   }
 
   return {
