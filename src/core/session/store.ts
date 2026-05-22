@@ -239,6 +239,50 @@ function appendPalaceNode(
   return id
 }
 
+export function writeSessionSource(
+  rootDir: string,
+  sessionId: string,
+  sourceKey: string,
+  content: string,
+  profileId: string = "default",
+) {
+  const db = getDb(rootDir)
+  const now = new Date().toISOString()
+  upsertMutablePalaceNode(db, {
+    namespace: PALACE_NAMESPACE.chatHistory,
+    wing: "websearch_history",
+    room: sessionId,
+    nodeKey: sourceKey,
+    profileId,
+    contentType: "text/plain",
+    content,
+    now,
+  })
+}
+
+export function readSessionSources(
+  rootDir: string,
+  sessionId: string,
+  profileId: string = "default",
+): Array<{ key: string; content: string }> {
+  const db = getDb(rootDir)
+  const profileScope = palaceProfileScope(profileId)
+  return db
+    .prepare(
+      `
+    SELECT node_key as key, content
+    FROM palace_nodes
+    WHERE namespace = ?
+      AND wing = ?
+      AND room = ?
+      AND profile_scope = ?
+      AND superseded_at IS NULL
+    ORDER BY updated_at DESC, created_at DESC
+  `,
+    )
+    .all(PALACE_NAMESPACE.chatHistory, "websearch_history", sessionId, profileScope) as Array<{ key: string; content: string }>
+}
+
 function ensureKernelSeededDb(db: Database.Database, profileId = "default") {
   ensurePalaceSchema(db)
   const now = new Date().toISOString()
@@ -1082,6 +1126,8 @@ export function resetSession(rootDir: string, sessionId: string, options?: { sum
     db.prepare(`DELETE FROM messages WHERE session_id = ?`).run(sessionId)
     db.prepare(`DELETE FROM worklog WHERE session_id = ?`).run(sessionId)
     db.prepare(`DELETE FROM events WHERE session_id = ?`).run(sessionId)
+    db.prepare(`DELETE FROM palace_nodes WHERE room = ? AND namespace = ? AND wing = ?`)
+      .run(sessionId, PALACE_NAMESPACE.chatHistory, "websearch_history")
     db.prepare(`UPDATE sessions SET updated_at = ? WHERE id = ?`).run(now, sessionId)
     db.prepare(`INSERT INTO worklog (session_id, type, summary, at) VALUES (?, ?, ?, ?)`).run(sessionId, "session", summary, now)
     db.exec("COMMIT")

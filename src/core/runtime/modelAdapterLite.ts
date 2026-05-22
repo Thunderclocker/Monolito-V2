@@ -10,7 +10,7 @@ import { AbortError, ApiError, ContextOverflowError, HttpError, ProviderOverload
 import { createLogger, type Logger } from "../logging/logger.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider } from "./modelRegistry.ts"
-import { compactSession, getSession, updateWorkerJobStatus, upsertWorkerJob } from "../session/store.ts"
+import { compactSession, getSession, readSessionSources, updateWorkerJobStatus, upsertWorkerJob } from "../session/store.ts"
 import { callProvider, type ConversationMessage, type ProviderConfig, type ProviderResponse, type ToolCall } from "./providers/index.ts"
 import { ensureMonolitoRoot } from "../system/root.ts"
 import { redactSensitiveText } from "../security/redact.ts"
@@ -328,7 +328,20 @@ function buildSystemPrompt(args: {
     if (toolLogs.length > 0) {
       toolLogBlock = `\n\nRecent tool execution records for this session (from internal worklog):\n${toolLogs.map(l => `- ${l}`).join("\n")}`
     }
-    dynamicContext.push(`Evidence audit mode: The user is asking about or challenging the source, truth, or origin of some information. Before answering, reconstruct the exact origin. Verify if it came from: 1) BOOT wings (e.g. BOOT_MEMORY, BOOT_USER, BOOT_IDENTITY) loaded at startup, 2) general world/programming knowledge or logical reasoning, or 3) prior tool results or messages in this session. Cite the specific source clearly (e.g., 'Stored in my BOOT_MEMORY', 'Deduced logically from X', 'Obtained via tool Y'). Do not apologize or claim you 'made it up' if the information came from your BOOT context or general reasoning.${toolLogBlock}`)
+
+    let sourcesBlock = ""
+    try {
+      const cachedSources = readSessionSources(args.rootDir, args.session.id, args.session.profileId)
+      if (cachedSources.length > 0) {
+        sourcesBlock = `\n\nExact tool output payloads & sources captured during this session:\n${
+          cachedSources.map(s => `--- ${s.key} ---\n${s.content}`).join("\n\n")
+        }`
+      }
+    } catch (e) {
+      // Ignorar errores de lectura en caché
+    }
+
+    dynamicContext.push(`Evidence audit mode: The user is asking about or challenging the source, truth, or origin of some information. Before answering, reconstruct the exact origin. Verify if it came from: 1) BOOT wings (e.g. BOOT_MEMORY, BOOT_USER, BOOT_IDENTITY) loaded at startup, 2) general world/programming knowledge or logical reasoning, or 3) prior tool results or messages in this session. Cite the specific source clearly (e.g., 'Stored in my BOOT_MEMORY', 'Deduced logically from X', 'Obtained via tool Y'). Do not apologize or claim you 'made it up' if the information came from your BOOT context or general reasoning.${toolLogBlock}${sourcesBlock}`)
   }
   if (args.extras?.dateContext) dynamicContext.push(args.extras.dateContext)
   if (args.extras?.gitContext) dynamicContext.push(args.extras.gitContext)

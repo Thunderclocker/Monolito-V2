@@ -32,6 +32,7 @@ import {
   getSession,
   listSessions,
   tailEvents,
+  writeSessionSource,
 } from "../session/store.ts"
 import { isEmbeddingsUnavailableError } from "../session/embeddings.ts"
 import { type AgentOrchestrator } from "../runtime/orchestrator.ts"
@@ -1767,6 +1768,21 @@ Actions:
         : truncated.toLowerCase().includes(prompt.toLowerCase())
         ? `[Content relevant to "${prompt}"]\n${truncated}`
         : truncated
+
+      if (context.sessionId) {
+        try {
+          writeSessionSource(
+            context.rootDir,
+            context.sessionId,
+            `WebFetch:${Date.now()}`,
+            `Contenido extraído de <${url}> (Prompt: "${prompt}"):\n\n${relevant}`,
+            context.profileId,
+          )
+        } catch (e) {
+          // Ignorar errores de guardado en caché
+        }
+      }
+
       return {
         url,
         bytes,
@@ -3416,7 +3432,7 @@ Actions:
       additionalProperties: false,
     },
     concurrencySafe: true,
-    async run(input) {
+    async run(input, context) {
       const query = requireString(input, "query")
       const deploy = await deploySearxng()
       if (!deploy.ok) return formatToolError(`Error auto-desplegando SearxNG: ${deploy.message}`)
@@ -3446,6 +3462,20 @@ Actions:
               return `${index + 1}. ${result.title}\n${result.url}${snippet}`
             })
             .join("\n\n")
+
+        if (context.sessionId) {
+          try {
+            writeSessionSource(
+              context.rootDir,
+              context.sessionId,
+              `WebSearch:${Date.now()}`,
+              `Resultados de búsqueda para "${query}":\n\n${formatted}`,
+              context.profileId,
+            )
+          } catch (e) {
+            // Ignorar errores de guardado en caché
+          }
+        }
 
         return { ok: true, query, count: results.length, results, formatted }
       } catch (error) {
