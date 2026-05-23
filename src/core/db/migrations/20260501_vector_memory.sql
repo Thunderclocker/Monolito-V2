@@ -8,10 +8,10 @@ DROP TABLE IF EXISTS vec_messages;
 
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_drawers USING vec0(
   id TEXT PRIMARY KEY,
-  embedding float[768]
+  embedding float[1024]
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_messages USING vec0(
   id INTEGER PRIMARY KEY,
-  embedding float[768]
+  embedding float[1024]
 );

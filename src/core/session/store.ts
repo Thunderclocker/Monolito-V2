@@ -78,7 +78,7 @@ function ensureVectorSchema(db: Database.Database) {
     FROM sqlite_master
     WHERE name IN ('vec_drawers', 'vec_messages')
   `).all() as Array<{ name: string; sql: string | null }>
-  const hasLegacyVectorTable = vectorTables.some(row => !row.sql?.includes("float[768]"))
+  const hasLegacyVectorTable = vectorTables.some(row => !row.sql?.includes("float[1024]"))
   if (hasLegacyVectorTable) {
     db.exec(`
       DROP TABLE IF EXISTS vec_drawers;
@@ -674,9 +674,9 @@ export function reconcileSystemWings(db: Database.Database, rootDir: string) {
   const now = new Date().toISOString()
   const embeddingsContent = JSON.stringify({
     provider: "ollama",
-    model: "nomic-embed-text",
+    model: "bge-m3",
     baseUrl: "http://127.0.0.1:11434",
-    dimensions: 768,
+    dimensions: 1024,
     enabled: true,
   }, null, 2)
 
