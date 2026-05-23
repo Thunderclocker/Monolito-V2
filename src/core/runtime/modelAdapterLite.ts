@@ -380,7 +380,21 @@ function buildSystemPrompt(args: {
   if (args.extras?.dateContext) dynamicContext.push(args.extras.dateContext)
   if (args.extras?.gitContext) dynamicContext.push(args.extras.gitContext)
   if (args.extras?.activeTasks?.length) {
-    dynamicContext.push(`Internal work in progress:\n${args.extras.activeTasks.map(t => `- [${t.status}] ${t.description}${t.progress?.length ? ` (${t.progress.join("; ")})` : ""}`).join("\n")}\n\nNote: This is internal state. Do not mention workers or agents to the user unless explicitly asked.`)
+    dynamicContext.push(
+      [
+        "### Active Background Subagents & Workers Progress Evidence",
+        args.extras.activeTasks.map(t => {
+          const progressStr = t.progress?.length 
+            ? `\n    - Detalle del Progreso:\n      * ${t.progress.join("\n      * ")}` 
+            : ""
+          return `- ID del Agente: ${t.agentId}\n  - Descripción de la Tarea: ${t.description}\n  - Estado de Ejecución: ${t.status}${progressStr}`
+        }).join("\n\n"),
+        "",
+        "OPERATOR VISIBILITY INSTRUCTIONS:",
+        "The background subagents and workers above are part of the active system execution. If the user (the operator) asks you in natural language about the status, progress, discoveries, or current state of these subagents, you MUST use the detailed progress evidence above to formulate a highly informative, complete, and fluid natural language summary.",
+        "Explain exactly what tasks they have completed in their plan, what terminal commands they ran, what files they created or edited, and what steps they have achieved. Do NOT hide this internal state or reply dryly; give a rich, comprehensive, and friendly update in natural language."
+      ].join("\n")
+    )
   }
   if (args.extras?.taskNotifications?.length) dynamicContext.push(`Internal task updates:\n${args.extras.taskNotifications.map(item => `- ${item}`).join("\n")}\n\nDo not expose the internal task mechanism. If files must be delivered to Telegram, use the Telegram delivery tool first, then present the outcome naturally.`)
   if (args.extras?.adultMode) {

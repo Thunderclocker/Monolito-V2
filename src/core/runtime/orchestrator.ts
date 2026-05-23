@@ -10,6 +10,7 @@ import {
   createProfile,
   getBackgroundTask,
   getSession,
+  getDb,
   listBackgroundTasks,
   listProfiles,
   listRecoverableWorkerJobs,
@@ -86,31 +87,94 @@ function extractPartialImageEvidence(rootDir: string, sessionId: string) {
   ].join("\n")
 }
 
-function getTaskProgress(rootDir: string, sessionId: string) {
+function getTaskProgress(rootDir: string, sessionId: string, profileId = "default") {
   const events = tailEvents(rootDir, sessionId, 80)
+  
+  // 1. Gather cognitive tasks/TODOs progress from SQLite Memory Palace
+  let todoSummary = ""
+  try {
+    const tasks = listSessionTasks(rootDir, sessionId, profileId)
+    if (tasks.length > 0) {
+      const completed = tasks.filter(t => t.status === "completed").length
+      const total = tasks.length
+      const pct = Math.round((completed / total) * 100)
+      const taskDetails = tasks.map(t => {
+        const symbol = t.status === "completed" ? "✓" : (t.status === "in_progress" ? "⏳" : "☐")
+        return `${symbol} ${t.content}`
+      }).join("; ")
+      todoSummary = `Plan cognitivo: ${completed}/${total} completado (${pct}%). Detalles: [${taskDetails}]`
+    }
+  } catch (e) {
+    // Ignore errors querying database
+  }
+
   let imageSearches = 0
   let analyzed = 0
   let telegramSends = 0
-  const localPaths: string[] = []
+  const executedCommands: string[] = []
+  const modifiedFiles = new Set<string>()
+  let lastAction = ""
+
+  const startEventsMap = new Map<string, unknown>()
+  for (const event of events) {
+    if (event.type === "tool.start" && event.toolUseId) {
+      startEventsMap.set(event.toolUseId, event.input)
+    }
+  }
 
   for (const event of events) {
     if (event.type !== "tool.finish" || !event.ok) continue
-    if (event.tool === "ImageSearch") imageSearches += 1
-    if (event.tool === "AnalyzeImage") {
+    const input = event.toolUseId ? startEventsMap.get(event.toolUseId) : undefined
+    if (event.tool === "ImageSearch") {
+      imageSearches += 1
+    } else if (event.tool === "AnalyzeImage") {
       analyzed += 1
-      const output = event.output as Record<string, unknown> | undefined
-      const localPath = typeof output?.local_path === "string" ? output.local_path : ""
-      if (localPath) localPaths.push(localPath)
+    } else if (event.tool === "TelegramSendPhoto") {
+      telegramSends += 1
+    } else if (event.tool === "Bash") {
+      const typedInput = input as Record<string, unknown> | undefined
+      const cmd = typeof typedInput?.command === "string" ? typedInput.command : ""
+      if (cmd) {
+        executedCommands.push(cmd)
+        lastAction = `Ejecutó comando en terminal: "${cmd}"`
+      }
+    } else if (["WriteFile", "EditFile", "ReplaceFileContent", "replace_file_content", "multi_replace_file_content"].includes(event.tool)) {
+      const typedInput = input as Record<string, unknown> | undefined
+      const path = typeof typedInput?.path === "string" ? typedInput.path : (typeof typedInput?.TargetFile === "string" ? typedInput.TargetFile : "")
+      if (path) {
+        const fileBasename = path.split("/").pop() ?? path
+        modifiedFiles.add(fileBasename)
+        lastAction = `Escribió/modificó archivo: "${fileBasename}"`
+      }
+    } else if (event.tool === "WebSearch" || event.tool === "search_web") {
+      const typedInput = input as Record<string, unknown> | undefined
+      const query = typeof typedInput?.query === "string" ? typedInput.query : ""
+      if (query) {
+        lastAction = `Buscó en la web: "${query}"`
+      }
     }
-    if (event.tool === "TelegramSendPhoto") telegramSends += 1
   }
 
-  return [
-    imageSearches > 0 ? `${imageSearches} image search${imageSearches === 1 ? "" : "es"}` : "",
-    analyzed > 0 ? `${analyzed} image${analyzed === 1 ? "" : "s"} analyzed` : "",
-    localPaths.length > 0 ? `${localPaths.length} validated local_path${localPaths.length === 1 ? "" : "s"}` : "",
-    telegramSends > 0 ? `${telegramSends} Telegram photo send${telegramSends === 1 ? "" : "s"}` : "",
-  ].filter(Boolean)
+  const fileList = Array.from(modifiedFiles)
+  const progressDetails: string[] = []
+
+  if (todoSummary) {
+    progressDetails.push(todoSummary)
+  }
+  if (fileList.length > 0) {
+    progressDetails.push(`Archivos modificados: ${fileList.join(", ")}`)
+  }
+  if (executedCommands.length > 0) {
+    progressDetails.push(`Comandos ejecutados: ${executedCommands.length} (${executedCommands.slice(-2).join(", ")})`)
+  }
+  if (imageSearches > 0) progressDetails.push(`${imageSearches} búsquedas de imágenes`)
+  if (analyzed > 0) progressDetails.push(`${analyzed} imágenes analizadas`)
+  if (telegramSends > 0) progressDetails.push(`${telegramSends} fotos enviadas por Telegram`)
+  if (lastAction) {
+    progressDetails.push(`Último paso: ${lastAction}`)
+  }
+
+  return progressDetails
 }
 
 function compactWhitespace(value: string) {
@@ -273,9 +337,51 @@ export class AgentOrchestrator {
   private activeTasks = new Map<string, DelegationTask>()
   private runningWorkerCount = 0
   private runtime: MonolitoV2Runtime
+  private monitorInterval: NodeJS.Timeout | null = null
 
   constructor(runtime: MonolitoV2Runtime) {
     this.runtime = runtime
+  }
+
+  private startMonitorLoop() {
+    if (this.monitorInterval) return
+    logger.info("[Worker Monitor] Starting active worker monitoring loop.")
+    this.monitorInterval = setInterval(async () => {
+      const active = Array.from(this.activeTasks.values()).filter(t => t.status === "pending" || t.status === "running")
+      if (active.length === 0) {
+        this.stopMonitorLoop()
+        return
+      }
+      for (const task of active) {
+        logger.info(`[Worker Monitor] Worker ${task.id} (${task.description}) is in state: ${task.status}`)
+        try {
+          const recoveredJobs = listRecoverableWorkerJobs(this.runtime.rootDir)
+          const dbJob = recoveredJobs.find(j => j.id === task.id)
+          if (!dbJob) {
+            const db = getDb(this.runtime.rootDir)
+            const fullJob = db.prepare("SELECT status, error_text, result_text FROM worker_jobs WHERE id = ?").get(task.id) as { status: string; error_text?: string; result_text?: string } | undefined
+            if (fullJob && (fullJob.status === "completed" || fullJob.status === "failed" || fullJob.status === "killed")) {
+              logger.warn(`[Worker Monitor] Discovered silently completed/failed job ${task.id} in SQLite. Proactively synchronizing and notifying parent.`)
+              task.status = fullJob.status as any
+              task.result = fullJob.result_text ?? ""
+              task.error = fullJob.error_text ?? ""
+              await this.notifyParent(task, task.error)
+            }
+          }
+        } catch (dbErr) {
+          logger.warn(`[Worker Monitor] Error checking DB state for worker ${task.id}:`, dbErr)
+        }
+      }
+    }, 45000)
+    this.monitorInterval.unref()
+  }
+
+  private stopMonitorLoop() {
+    if (this.monitorInterval) {
+      clearInterval(this.monitorInterval)
+      this.monitorInterval = null
+      logger.info("[Worker Monitor] Monitoring loop stopped (no active workers).")
+    }
   }
 
   async spawnAgent(
@@ -438,6 +544,7 @@ export class AgentOrchestrator {
     }
 
     this.activeTasks.set(delegationTask.id, delegationTask)
+    this.startMonitorLoop()
 
     const abortController = new AbortController()
     const softTimeoutTimer = setTimeout(() => {
@@ -799,7 +906,7 @@ ${usageXml}
         description: task.description,
         status: task.status,
         hasResult: Boolean(task.result?.trim()),
-        progress: getTaskProgress(this.runtime.rootDir, task.subSessionId),
+        progress: getTaskProgress(this.runtime.rootDir, task.subSessionId, task.profileId),
         ...(task.error ? { error: task.error } : {}),
       }))
   }

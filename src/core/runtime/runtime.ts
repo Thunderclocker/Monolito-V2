@@ -712,12 +712,20 @@ function summarizeTaskNotification(text: string) {
 function collectRecentTaskNotifications(session: SessionRecord, limit = 3) {
   const notifications: string[] = []
   const messages = session.messages ?? []
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
+  const scanLimit = Math.min(messages.length, 25)
+  for (let index = messages.length - 1; index >= messages.length - scanLimit; index -= 1) {
     const message = messages[index]
-    if (!message || message.role !== "user") break
-    if (!isTaskNotificationText(message.text)) break
-    notifications.push(summarizeTaskNotification(message.text))
-    if (notifications.length >= limit) break
+    if (!message || message.role !== "user") continue
+    const text = message.text.trim()
+    if (/^\[(Completed|Failed|killed|running|pending|in_progress)\]/i.test(text)) {
+      continue
+    }
+    if (isTaskNotificationText(message.text)) {
+      notifications.push(summarizeTaskNotification(message.text))
+      if (notifications.length >= limit) break
+    } else {
+      break
+    }
   }
   return notifications.reverse()
 }
