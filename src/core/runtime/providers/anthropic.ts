@@ -20,6 +20,7 @@ export async function callAnthropicApi(
   abortSignal: AbortSignal | undefined,
   maxTokens: number | undefined,
   isSubAgent: boolean,
+  allowedToolNames?: string[],
 ): Promise<ProviderResponse> {
   const cleanBaseUrl = config.baseUrl ? sanitizeAnthropicBaseUrl(config.baseUrl) : undefined
   const client = new Anthropic({
@@ -29,11 +30,12 @@ export async function callAnthropicApi(
     dangerouslyAllowBrowser: true,
   })
   const lastUserText = messages.slice().reverse().find(m => m.role === "user")?.content || ""
-  const anthropicTools = buildToolDefinitions(isSubAgent, lastUserText).map(tool => ({
+  const anthropicTools = buildToolDefinitions(isSubAgent, lastUserText, allowedToolNames).map(tool => ({
     name: tool.name,
     description: tool.description,
     input_schema: tool.input_schema,
   }))
+
   const stream = await client.messages.create({
     model: config.model,
     max_tokens: maxTokens ?? 4_000,

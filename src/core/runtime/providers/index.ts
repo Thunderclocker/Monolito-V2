@@ -14,11 +14,12 @@ export async function callProvider(
   maxTokens?: number,
 ): Promise<ProviderResponse> {
   if (config.provider === "anthropic_compatible" || config.provider === "minimax") {
-    return await callAnthropicApi(config, prompt.system, prompt.bootBlock, messages, abortSignal, maxTokens, isSubAgent)
+    return await callAnthropicApi(config, prompt.system, prompt.bootBlock, messages, abortSignal, maxTokens, isSubAgent, prompt.allowedToolNames)
   }
   if (config.provider === "ollama") {
-    return await callOllamaApi(config, prompt.system, messages, abortSignal, isSubAgent)
+    return await callOllamaApi(config, prompt.system, messages, abortSignal, isSubAgent, prompt.allowedToolNames)
   }
   // Both "xai" and other OpenAI compatible endpoints are routed here
-  return await callOpenAiCompatibleApi(config, prompt.system, messages, abortSignal, maxTokens, isSubAgent)
+  return await callOpenAiCompatibleApi(config, prompt.system, messages, abortSignal, maxTokens, isSubAgent, prompt.allowedToolNames)
 }
+

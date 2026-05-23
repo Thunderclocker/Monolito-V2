@@ -36,6 +36,8 @@ import {
   writeSessionTask,
   listSessionTasks,
   deleteSessionTask,
+  upsertSemanticTool,
+  querySemanticTools,
 } from "../session/store.ts"
 import { isEmbeddingsUnavailableError } from "../session/embeddings.ts"
 import { type AgentOrchestrator } from "../runtime/orchestrator.ts"
@@ -3712,6 +3714,36 @@ Actions:
       return buildMasterDashboard()
     },
   },
+  {
+    name: "search_tools",
+    permissionTier: "read",
+    description: "Busca herramientas disponibles en el registro que coincidan con la descripción o necesidad indicada. Úsala para descubrir nuevas herramientas dinámicamente si no encontrás una específica en tu contexto actual.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "La descripción de la necesidad o funcionalidad que buscás (ej: 'enviar archivos a Telegram', 'buscar en la web')."
+        }
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    async run(input, context) {
+      try {
+        const query = typeof input.query === "string" ? input.query : ""
+        const results = await querySemanticTools(context.rootDir, query, 10)
+        if (results.length === 0) {
+          return "No se encontraron herramientas que coincidan con la búsqueda."
+        }
+        const matchedTools = tools.filter(t => results.includes(t.name))
+        return `Herramientas encontradas:\n${matchedTools.map(t => `- ${t.name}: ${t.description}`).join("\n")}`
+      } catch (err) {
+        return `Error buscando herramientas: ${err}`
+      }
+    }
+  },
 ]
 
 const tools: ToolDefinition[] = rawTools.map(withSafeToolFailure)
@@ -3729,7 +3761,7 @@ export function listTools() {
   return tools
 }
 
-export function listModelTools(isSubAgent = false, lastUserText?: string) {
+export function listModelTools(isSubAgent = false, lastUserText?: string, allowedToolNames?: string[]) {
   const hiddenFromSubAgents = new Set([
     "AgentSpawn",
     "AgentSendMessage",
@@ -3779,8 +3811,37 @@ export function listModelTools(isSubAgent = false, lastUserText?: string) {
     "TodoUpdate",
   ])
 
+  const CORE_TOOLS = new Set([
+    "TodoWrite",
+    "TodoUpdate",
+    "TodoList",
+    "delegate_background_task",
+    "search_tools",
+    "Bash",
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "AgentSendMessage",
+    "AgentSpawn",
+    "AgentStop",
+    "TelegramSend",
+    "TelegramSendPhoto",
+  ])
+
   return tools
     .filter(tool => {
+      // 1. Core Tools are ALWAYS included
+      if (CORE_TOOLS.has(tool.name)) {
+        if (isSubAgent && hiddenFromSubAgents.has(tool.name)) return false;
+        if (isSubAgent && isImageIntent && imageWorkerBlockedTools.has(tool.name)) return false;
+        if (!isSubAgent && hiddenFromMainSession.has(tool.name)) return false;
+        return true;
+      }
+
+      // 2. If allowedToolNames is supplied, only allow those tools
+      if (allowedToolNames && !allowedToolNames.includes(tool.name)) return false;
+
+      // 3. Apply standard static filters for all other tools
       if (isSubAgent && hiddenFromSubAgents.has(tool.name)) return false;
       if (isSubAgent && isImageIntent && imageWorkerBlockedTools.has(tool.name)) return false;
       if (!isSubAgent && hiddenFromMainSession.has(tool.name)) return false;
@@ -3814,3 +3875,15 @@ export function isToolConcurrencySafe(name: string, input: Record<string, unknow
   if (typeof tool.concurrencySafe === "function") return tool.concurrencySafe(input)
   return tool.concurrencySafe === true
 }
+
+export async function indexToolsInPalace(rootDir: string) {
+  for (const tool of tools) {
+    const formattedDesc = `${tool.name}: ${tool.description}`
+    try {
+      await upsertSemanticTool(rootDir, tool.name, formattedDesc)
+    } catch (err) {
+      console.error(`[indexToolsInPalace] Failed to index ${tool.name}:`, err)
+    }
+  }
+}
+

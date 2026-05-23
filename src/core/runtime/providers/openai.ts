@@ -11,6 +11,7 @@ export async function callOpenAiCompatibleApi(
   abortSignal: AbortSignal | undefined,
   maxTokens: number | undefined,
   isSubAgent: boolean,
+  allowedToolNames?: string[],
 ): Promise<ProviderResponse> {
   const headers: Record<string, string> = {
     "content-type": "application/json",
@@ -23,7 +24,12 @@ export async function callOpenAiCompatibleApi(
     body: JSON.stringify({
       model: config.model,
       messages: buildOpenAiMessages(system, messages),
-      tools: buildToolDefinitions(isSubAgent, messages.slice().reverse().find(m => m.role === "user")?.content || "").map(tool => ({ type: tool.type, function: tool.function })),
+      tools: buildToolDefinitions(
+        isSubAgent,
+        messages.slice().reverse().find(m => m.role === "user")?.content || "",
+        allowedToolNames
+      ).map(tool => ({ type: tool.type, function: tool.function })),
+
       tool_choice: "auto",
       max_tokens: maxTokens ?? 4_000,
       stream: false,

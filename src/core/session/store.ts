@@ -2006,3 +2006,76 @@ export async function syncMissingEmbeddings(rootDir: string) {
     logger.info(`Embeddings sync completed: ${messagesSynced} messages, ${drawersSynced} memory drawers.`)
   }
 }
+
+export async function upsertSemanticTool(rootDir: string, name: string, description: string) {
+  const db = getDb(rootDir)
+  const wing = "CONF_TOOLS"
+  const room = "registry"
+  const now = new Date().toISOString()
+  
+  // Check if already exists and has the same content
+  const existing = db.prepare(`
+    SELECT id, content FROM memory_drawers
+    WHERE wing = ? AND room = ? AND memory_key = ?
+    LIMIT 1
+  `).get(wing, room, name) as { id: string; content: string } | undefined
+
+  if (existing) {
+    if (existing.content === description) {
+      // Check if it already has an embedding
+      const hasVec = db.prepare(`SELECT 1 FROM vec_drawers WHERE id = ?`).get(existing.id)
+      if (hasVec) return
+    }
+    // Update content
+    db.prepare(`
+      UPDATE memory_drawers
+      SET content = ?
+      WHERE id = ?
+    `).run(description, existing.id)
+    try {
+      const floatArray = await generateEmbedding(description)
+      db.prepare(`INSERT OR REPLACE INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(existing.id, floatArray)
+    } catch (err) {
+      logger.error(`Failed to update tool embedding for ${name}: ${err}`)
+    }
+    return
+  }
+
+  // Create new
+  const id = randomUUID()
+  db.prepare(`
+    INSERT INTO memory_drawers (id, profile_id, wing, room, memory_key, content, created_at)
+    VALUES (?, NULL, ?, ?, ?, ?, ?)
+  `).run(id, wing, room, name, description, now)
+
+  try {
+    const floatArray = await generateEmbedding(description)
+    db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(id, floatArray)
+  } catch (err) {
+    logger.error(`Failed to generate tool embedding for ${name}: ${err}`)
+  }
+}
+
+export async function querySemanticTools(rootDir: string, prompt: string, limit = 5): Promise<string[]> {
+  const db = getDb(rootDir)
+  const wing = "CONF_TOOLS"
+  const room = "registry"
+  try {
+    const floatArray = await generateEmbedding(prompt)
+    const sql = `
+      SELECT m.memory_key as name
+      FROM vec_drawers v
+      JOIN memory_drawers m ON m.id = v.id
+      WHERE m.wing = ? AND m.room = ?
+        AND v.embedding MATCH ? AND k = 50
+      ORDER BY v.distance ASC
+      LIMIT ?
+    `
+    const rows = db.prepare(sql).all(wing, room, floatArray, limit) as Array<{ name: string }>
+    return rows.map(r => r.name)
+  } catch (error) {
+    logger.error(`Error querying semantic tools for prompt: ${error}`)
+    return []
+  }
+}
+

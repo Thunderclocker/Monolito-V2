@@ -8,6 +8,7 @@ export async function callOllamaApi(
   messages: ConversationMessage[],
   abortSignal: AbortSignal | undefined,
   isSubAgent: boolean,
+  allowedToolNames?: string[],
 ): Promise<ProviderResponse> {
   const data = await callJsonApi(`${config.baseUrl}/api/chat`, {
     method: "POST",
@@ -16,10 +17,15 @@ export async function callOllamaApi(
       model: config.model,
       stream: false,
       messages: buildOpenAiMessages(system, messages),
-      tools: buildToolDefinitions(isSubAgent, messages.slice().reverse().find(m => m.role === "user")?.content || "").map(tool => ({ type: tool.type, function: tool.function })),
+      tools: buildToolDefinitions(
+        isSubAgent,
+        messages.slice().reverse().find(m => m.role === "user")?.content || "",
+        allowedToolNames
+      ).map(tool => ({ type: tool.type, function: tool.function })),
     }),
     signal: abortSignal,
   })
+
   const message = data.message ?? {}
   return {
     text: typeof message.content === "string" ? message.content.trim() : "",

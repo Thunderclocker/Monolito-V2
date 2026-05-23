@@ -243,8 +243,8 @@ function getLogger(context?: ToolContext, logger?: Logger) {
   return logger ?? context?.logger ?? defaultLogger
 }
 
-function buildToolSummary(isSubAgent: boolean, lastUserMessage?: string) {
-  return listModelTools(isSubAgent, lastUserMessage)
+function buildToolSummary(isSubAgent: boolean, lastUserMessage?: string, allowedToolNames?: string[]) {
+  return listModelTools(isSubAgent, lastUserMessage, allowedToolNames)
     .map(tool => `- ${tool.name}: ${tool.description}`)
     .join("\n")
 }
@@ -263,6 +263,7 @@ function buildSystemPrompt(args: {
   bootstrap?: WorkspaceBootstrapContext
   extras?: ContextExtras
   systemPromptOverride?: string
+  allowedToolNames?: string[]
 }) {
   if (args.systemPromptOverride?.trim()) return { system: args.systemPromptOverride.trim(), bootBlock: "" }
   const bootstrap = args.bootstrap ?? args.extras?.workspaceContext
@@ -333,7 +334,7 @@ function buildSystemPrompt(args: {
           "- For Telegram audio/voice requests, do not send a progress-only reply like 'generating audio' unless the same turn already started GenerateSpeech. Complete the sequence GenerateSpeech -> TelegramSendAudio/TelegramSendVoice, then confirm only after the send tool succeeds.",
         ].join("\n"),
     "Available tools:",
-    buildToolSummary(isSubAgent, lastUserMessage),
+    buildToolSummary(isSubAgent, lastUserMessage, args.allowedToolNames),
     bootstrap ? describeBootEntries(bootstrap.entries) : "",
     isSubAgent ? "" : [
       "<JERARQUIA_DE_DIRECTIVAS>",
@@ -459,6 +460,7 @@ function buildSystemPrompt(args: {
   return {
     system: staticSystem,
     bootBlock: dynamicContext.join("\n\n"),
+    allowedToolNames: args.allowedToolNames,
   }
 }
 
@@ -608,7 +610,34 @@ export async function* runAgentLoop(
   let usage: TurnUsage | undefined
   const steps: AssistantTurnStep[] = []
   const messages = sessionToMessages(session)
-  const prompt = buildSystemPrompt({ session: activeSession, rootDir, context, bootstrap: options?.bootstrap, extras: options?.contextExtras, systemPromptOverride: options?.systemPromptOverride })
+
+  const lastUserText = getLastUserMessage(session)
+  let allowedToolNames: string[] | undefined = undefined
+  if (lastUserText && lastUserText.trim().length > 0) {
+    try {
+      const { querySemanticTools } = await import("../session/store.ts")
+      const queryPromise = querySemanticTools(rootDir, lastUserText, 5)
+      const timeoutPromise = new Promise<string[]>(resolve => {
+        setTimeout(() => resolve([]), 200)
+      })
+      const results = await Promise.race([queryPromise, timeoutPromise])
+      if (results.length > 0) {
+        allowedToolNames = results
+      }
+    } catch (err) {
+      logger.warn(`Semantic tool query failed: ${err}`)
+    }
+  }
+
+  const prompt = buildSystemPrompt({
+    session: activeSession,
+    rootDir,
+    context,
+    bootstrap: options?.bootstrap,
+    extras: options?.contextExtras,
+    systemPromptOverride: options?.systemPromptOverride,
+    allowedToolNames,
+  })
 
   for (let iteration = 1; iteration <= maxIterations; iteration++) {
     enforceBudgetLimit(options?.costState, config.model)

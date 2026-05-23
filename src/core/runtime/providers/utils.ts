@@ -52,8 +52,8 @@ export function buildOpenAiMessages(system: string, messages: ConversationMessag
   return output
 }
 
-export function buildToolDefinitions(isSubAgent: boolean, lastUserText?: string) {
-  return listModelTools(isSubAgent, lastUserText).map(tool => ({
+export function buildToolDefinitions(isSubAgent: boolean, lastUserText?: string, allowedToolNames?: string[]) {
+  return listModelTools(isSubAgent, lastUserText, allowedToolNames).map(tool => ({
     name: tool.name,
     description: tool.description,
     input_schema: tool.input_schema,
@@ -65,6 +65,7 @@ export function buildToolDefinitions(isSubAgent: boolean, lastUserText?: string)
     },
   }))
 }
+
 
 async function parseError(response: Response) {
   const text = await response.text()

@@ -29,7 +29,9 @@ export type ProviderConfig = {
 export type PromptBlocks = {
   system: string
   bootBlock: string
+  allowedToolNames?: string[]
 }
+
 
 export function parseStructuredToolCalls(rawToolCalls: unknown): ToolCall[] {
   if (!Array.isArray(rawToolCalls)) return []
