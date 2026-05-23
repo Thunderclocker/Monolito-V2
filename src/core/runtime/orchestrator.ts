@@ -54,12 +54,17 @@ function requiresImageVerification(...values: Array<string | undefined>) {
   return /\b(verifica(?:r|me|las|los)?|valid(?:a|ar|ame|alas|alos)|analiza(?:r|me|las|los)?|describe(?:me|las|los)?|confirm(?:a|ar|ame)|vision|visual|coincid(?:e|an)|contenido|real(?:es)?|correct(?:a|as|o|os))\b/.test(normalized)
 }
 
-function hasSuccessfulAnalyzeImage(session: ReturnType<typeof getSession>) {
-  return session?.worklog?.some(w =>
-    w.type === "tool" &&
-    /^Tool AnalyzeImage finished successfully\b/.test(w.summary)
-  ) ?? false
+const VISION_TOOLS = new Set(["AnalyzeImage", "VisionAnalyze"])
+
+function hasSuccessfulAnalyzeImage(session: ReturnType<typeof getSession>, rootDir: string, sessionId: string) {
+  const events = tailEvents(rootDir, sessionId, 80)
+  return events.some(e =>
+    e.type === "tool.finish" &&
+    e.ok === true &&
+    VISION_TOOLS.has(e.tool)
+  )
 }
+
 
 function extractPartialImageEvidence(rootDir: string, sessionId: string) {
   const events = tailEvents(rootDir, sessionId, 80)
@@ -721,20 +726,21 @@ export class AgentOrchestrator {
 
         // 4. Image verification check
         if (isImageTaskIntent(task.task, task.description) && requiresImageVerification(task.task, task.description)) {
-          if (!hasSuccessfulAnalyzeImage(session)) {
+          if (!hasSuccessfulAnalyzeImage(session, runtime.rootDir, task.subSessionId)) {
             appendWorklog(runtime.rootDir, task.subSessionId, {
               type: "note",
-              summary: `[Ralph Loop] Blocked premature completion on attempt ${attempt}: Image task must execute AnalyzeImage for verification.`,
+              summary: `[Ralph Loop] Blocked premature completion on attempt ${attempt}: Image task must execute a vision tool (AnalyzeImage or VisionAnalyze) for verification.`,
             })
             partialResult = assistantReply || partialResult
             if (attempt >= maxAttempts) {
-              throw new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts without executing AnalyzeImage`)
+              throw new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts without executing a vision tool`)
             }
             currentText = buildRalphLoopImagePrompt(task.task, assistantReply)
             attempt++
             continue
           }
         }
+
 
         break
       }
