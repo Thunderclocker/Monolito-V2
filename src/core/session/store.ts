@@ -2079,3 +2079,47 @@ export async function querySemanticTools(rootDir: string, prompt: string, limit 
   }
 }
 
+export function upsertRalphRule(rootDir: string, key: string, ruleJson: string): void {
+  const db = getDb(rootDir)
+  const wing = "CONF_RALPH_RULES"
+  const room = "rules"
+  const now = new Date().toISOString()
+
+  const existing = db.prepare(`
+    SELECT id, content FROM memory_drawers
+    WHERE wing = ? AND room = ? AND memory_key = ?
+    LIMIT 1
+  `).get(wing, room, key) as { id: string; content: string } | undefined
+
+  if (existing) {
+    if (existing.content === ruleJson) {
+      return
+    }
+    db.prepare(`
+      UPDATE memory_drawers
+      SET content = ?
+      WHERE id = ?
+    `).run(ruleJson, existing.id)
+    return
+  }
+
+  const id = randomUUID()
+  db.prepare(`
+    INSERT INTO memory_drawers (id, profile_id, wing, room, memory_key, content, created_at)
+    VALUES (?, NULL, ?, ?, ?, ?, ?)
+  `).run(id, wing, room, key, ruleJson, now)
+}
+
+export function listRalphRules(rootDir: string): Array<{ key: string; content: string }> {
+  const db = getDb(rootDir)
+  const wing = "CONF_RALPH_RULES"
+  const room = "rules"
+  const rows = db.prepare(`
+    SELECT memory_key as key, content
+    FROM memory_drawers
+    WHERE wing = ? AND room = ?
+  `).all(wing, room) as Array<{ key: string; content: string }>
+  return rows
+}
+
+

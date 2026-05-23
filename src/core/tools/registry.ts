@@ -38,6 +38,7 @@ import {
   deleteSessionTask,
   upsertSemanticTool,
   querySemanticTools,
+  upsertRalphRule,
 } from "../session/store.ts"
 import { isEmbeddingsUnavailableError } from "../session/embeddings.ts"
 import { type AgentOrchestrator } from "../runtime/orchestrator.ts"
@@ -3886,4 +3887,21 @@ export async function indexToolsInPalace(rootDir: string) {
     }
   }
 }
+
+export async function indexRalphRulesInPalace(rootDir: string) {
+  const imageVerificationRule = {
+    name: "Image Verification Rule",
+    intentRegex: "\\b(imagen(?:es)?|foto(?:s)?|picture(?:s)?|photo(?:s)?|image(?:s)?|vision|visual)\\b",
+    requiredRegex: "\\b(verifica(?:r|me|las|los)?|valid(?:a|ar|ame|alas|alos)|analiza(?:r|me|las|los)?|describe(?:me|las|los)?|confirm(?:a|ar|ame)|vision|visual|coincid(?:e|an)|contenido|real(?:es)?|correct(?:a|as|o|os))\\b",
+    requiredTools: ["AnalyzeImage", "VisionAnalyze"],
+    errorMessage: "[Ralph Loop] SYSTEM ALERT\nTu respuesta incluye el tag de éxito pero NO ejecutaste la herramienta de visión (AnalyzeImage o VisionAnalyze).\nPara tareas de imágenes, es OBLIGATORIO descargar y validar visualmente con una herramienta de visión.\nNo podés cerrar la tarea diciendo que lo hiciste sin haber llamado a la tool.\nCorregilo: buscá la imagen, descargala y pasale la ruta a la herramienta antes de responder."
+  }
+
+  try {
+    upsertRalphRule(rootDir, "image_verification", JSON.stringify(imageVerificationRule, null, 2))
+  } catch (err) {
+    console.error("[indexRalphRulesInPalace] Failed to index image_verification rule:", err)
+  }
+}
+
 

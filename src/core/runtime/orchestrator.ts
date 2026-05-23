@@ -19,6 +19,7 @@ import {
   updateWorkerJobStatus,
   upsertWorkerJob,
   listSessionTasks,
+  listRalphRules,
 } from "../session/store.ts"
 import { createInstanceLogger, createLogger, type Logger } from "../logging/logger.ts"
 
@@ -44,25 +45,73 @@ function normalizeForIntent(value: string) {
     .toLowerCase()
 }
 
-function isImageTaskIntent(...values: Array<string | undefined>) {
-  const normalized = normalizeForIntent(values.filter(Boolean).join(" "))
-  return /\b(imagen(?:es)?|foto(?:s)?|picture(?:s)?|photo(?:s)?|image(?:s)?|vision|visual)\b/.test(normalized)
-}
+function checkDynamicRalphRules(
+  rootDir: string,
+  sessionId: string,
+  taskText: string,
+  descriptionText: string,
+  assistantReply: string,
+  attempt: number
+): string | null {
+  try {
+    const rules = listRalphRules(rootDir)
+    const combinedText = normalizeForIntent((taskText || "") + " " + (descriptionText || ""))
 
-function requiresImageVerification(...values: Array<string | undefined>) {
-  const normalized = normalizeForIntent(values.filter(Boolean).join(" "))
-  return /\b(verifica(?:r|me|las|los)?|valid(?:a|ar|ame|alas|alos)|analiza(?:r|me|las|los)?|describe(?:me|las|los)?|confirm(?:a|ar|ame)|vision|visual|coincid(?:e|an)|contenido|real(?:es)?|correct(?:a|as|o|os))\b/.test(normalized)
-}
+    for (const row of rules) {
+      try {
+        const rule = JSON.parse(row.content) as {
+          name: string
+          intentRegex?: string
+          requiredRegex?: string
+          requiredTools: string[]
+          errorMessage: string
+        }
 
-const VISION_TOOLS = new Set(["AnalyzeImage", "VisionAnalyze"])
+        if (!rule.requiredTools || !Array.isArray(rule.requiredTools) || rule.requiredTools.length === 0) {
+          continue
+        }
 
-function hasSuccessfulAnalyzeImage(session: ReturnType<typeof getSession>, rootDir: string, sessionId: string) {
-  const events = tailEvents(rootDir, sessionId, 80)
-  return events.some(e =>
-    e.type === "tool.finish" &&
-    e.ok === true &&
-    VISION_TOOLS.has(e.tool)
-  )
+        // Match intent and requirements
+        if (rule.intentRegex) {
+          const intentRe = new RegExp(rule.intentRegex, "i")
+          if (!intentRe.test(combinedText)) continue
+        }
+        if (rule.requiredRegex) {
+          const requiredRe = new RegExp(rule.requiredRegex, "i")
+          if (!requiredRe.test(combinedText)) continue
+        }
+
+        // Rule is active: check if any of the required tools were executed successfully
+        const events = tailEvents(rootDir, sessionId, 80)
+        const hasSuccessfulTool = events.some(e =>
+          e.type === "tool.finish" &&
+          e.ok === true &&
+          rule.requiredTools.includes(e.tool)
+        )
+
+        if (!hasSuccessfulTool) {
+          appendWorklog(rootDir, sessionId, {
+            type: "note",
+            summary: `[Ralph Loop] Blocked premature completion on attempt ${attempt}: matched rule '${rule.name || row.key}' but did not successfully run required tools (${rule.requiredTools.join(", ")}).`,
+          })
+
+          return [
+            taskText.trim(),
+            "",
+            rule.errorMessage || `Task verification failed for rule: ${rule.name || row.key}. Please execute one of: ${rule.requiredTools.join(", ")}`,
+            "",
+            `Último intento rechazado: ${clip(assistantReply, 500)}`,
+          ].join("\n")
+        }
+      } catch (ruleErr) {
+        logger.error(`Error parsing or evaluating dynamic Ralph rule ${row.key}: ${ruleErr}`)
+      }
+    }
+  } catch (err) {
+    logger.error(`Error listing dynamic Ralph rules: ${err}`)
+  }
+
+  return null
 }
 
 
@@ -224,19 +273,6 @@ function buildRalphLoopPrompt(task: string, assistantReply: string) {
   ].join("\n")
 }
 
-function buildRalphLoopImagePrompt(task: string, assistantReply: string) {
-  return [
-    task.trim(),
-    "",
-    "[Ralph Loop] SYSTEM ALERT",
-    "Tu respuesta incluye el tag de éxito pero NO ejecutaste la herramienta AnalyzeImage.",
-    "Para tareas de imágenes, es OBLIGATORIO descargar y validar visualmente con AnalyzeImage.",
-    "No podés cerrar la tarea diciendo que lo hiciste sin haber llamado a la tool.",
-    "Corregilo: buscá la imagen, descargala y pasale la ruta a AnalyzeImage antes de responder.",
-    "",
-    `Último intento rechazado: ${clip(assistantReply, 500)}`,
-  ].join("\n")
-}
 
 function buildRalphLoopUnfinishedTasksPrompt(task: string, unfinished: Array<{ content: string; status: string }>, assistantReply: string) {
   const listStr = unfinished.map(t => `- [${t.status.toUpperCase()}] ${t.content}`).join("\n")
@@ -724,21 +760,16 @@ export class AgentOrchestrator {
           continue
         }
 
-        // 4. Image verification check
-        if (isImageTaskIntent(task.task, task.description) && requiresImageVerification(task.task, task.description)) {
-          if (!hasSuccessfulAnalyzeImage(session, runtime.rootDir, task.subSessionId)) {
-            appendWorklog(runtime.rootDir, task.subSessionId, {
-              type: "note",
-              summary: `[Ralph Loop] Blocked premature completion on attempt ${attempt}: Image task must execute a vision tool (AnalyzeImage or VisionAnalyze) for verification.`,
-            })
-            partialResult = assistantReply || partialResult
-            if (attempt >= maxAttempts) {
-              throw new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts without executing a vision tool`)
-            }
-            currentText = buildRalphLoopImagePrompt(task.task, assistantReply)
-            attempt++
-            continue
+        // 4. Dynamic Verification Rules check (SQLite Memory Palace backed)
+        const dynamicBlockedPrompt = checkDynamicRalphRules(runtime.rootDir, task.subSessionId, task.task, task.description || "", assistantReply, attempt)
+        if (dynamicBlockedPrompt) {
+          partialResult = assistantReply || partialResult
+          if (attempt >= maxAttempts) {
+            throw new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts with failing dynamic verification rules`)
           }
+          currentText = dynamicBlockedPrompt
+          attempt++
+          continue
         }
 
 

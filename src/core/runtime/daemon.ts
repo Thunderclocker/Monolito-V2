@@ -366,12 +366,17 @@ export class MonolitoV2Daemon {
       } else {
         this.writeDaemonLog(`Embedding Engine ready. Palacio de Memoria activo. model=${result.model} baseUrl=${result.baseUrl} dimensions=${result.dimensions}`)
         
-        // Dynamically import and run semantic tool indexing
-        import("../tools/registry.ts").then(({ indexToolsInPalace }) => {
+        // Dynamically import and run semantic tool and Ralph rule indexing
+        import("../tools/registry.ts").then(({ indexToolsInPalace, indexRalphRulesInPalace }) => {
           indexToolsInPalace(this.rootDir).then(() => {
             this.writeDaemonLog("Dynamic semantic tool indexing completed successfully")
           }).catch(err => {
             this.writeDaemonLog(`Dynamic semantic tool indexing failed: ${err}`)
+          })
+          indexRalphRulesInPalace(this.rootDir).then(() => {
+            this.writeDaemonLog("Dynamic Ralph rules indexing completed successfully")
+          }).catch(err => {
+            this.writeDaemonLog(`Dynamic Ralph rules indexing failed: ${err}`)
           })
         }).catch(err => {
           this.writeDaemonLog(`Failed to load tool registry for indexing: ${err}`)
