@@ -2394,6 +2394,12 @@ Mandatory rules:
       throw new Error(message)
     }
     this.emit({ type: "tool.start", sessionId, toolUseId, tool: tool.name, input: normalizedInput })
+    const startLine = renderToolStart(tool.name, normalizedInput)
+    const startText = renderToolStartText(startLine)
+    appendWorklog(this.rootDir, sessionId, {
+      type: "tool",
+      summary: `Tool ${tool.name} started: ${startText}`,
+    })
     const toolStartedAt = Date.now()
 
     const toolContext: ToolContext = {
@@ -2494,9 +2500,10 @@ Mandatory rules:
         output = await tryRepairBashFailure(executionError)
       }
       recordToolCall(this.costState, Date.now() - toolStartedAt)
+      const finishLine = renderToolFinish(tool.name, true, output)
       appendWorklog(this.rootDir, sessionId, {
         type: "tool",
-        summary: `Tool ${tool.name} finished successfully`,
+        summary: `Tool ${tool.name} finished: ${finishLine.text}`,
       })
       appendActionLog(this.rootDir, "Herramienta ejecutada", {
         tool: tool.name,
@@ -2509,9 +2516,10 @@ Mandatory rules:
       const output = error instanceof ToolExecutionError ? error.output : undefined
       this.recordToolFailureStall(sessionId, tool.name, message)
       recordToolCall(this.costState, Date.now() - toolStartedAt)
+      const finishLine = renderToolFinish(tool.name, false, outputWithError(output, message))
       appendWorklog(this.rootDir, sessionId, {
         type: "tool",
-        summary: `Tool ${tool.name} failed: ${message}`,
+        summary: `Tool ${tool.name} failed: ${finishLine.text}`,
       })
       this.emit({ type: "tool.finish", sessionId, toolUseId, tool: tool.name, ok: false, output: outputWithError(output, message) })
       throw error

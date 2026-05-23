@@ -360,12 +360,10 @@ class InteractiveTranscriptFormatter {
           this.pendingAssistantToolResults.push(stringifyPretty(event.output))
         }
         const line = renderToolFinish(event.tool, event.ok, event.output)
-        if (event.ok && event.output && typeof event.output === "object" && !Array.isArray(event.output) && "background" in event.output) {
+        if (line.text) {
           return [{ type: "event", label: line.label, tone: line.tone, text: line.text }]
         }
-        return line.tone === "error" && line.text
-          ? [{ type: "event", label: line.label, tone: line.tone, text: line.text }]
-          : []
+        return []
       }
       case "mcp.connected":
         return [{ type: "event", label: "mcp", tone: "info", text: `connected ${event.server}` }]
@@ -541,9 +539,16 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     if (session.worklog) {
       for (const entry of session.worklog) {
         if (entry.type === "tool") {
-          const isFinish = entry.summary.includes("finished") || entry.summary.includes("completed")
-          const isError = entry.summary.includes("failed") || entry.summary.includes("error")
-          const tone = isError ? "error" : (isFinish ? "success" : "info")
+          const isStart = entry.summary.includes("started:")
+          const isFinish = entry.summary.includes("finished:")
+          const isError = entry.summary.includes("failed:") || entry.summary.includes("error:")
+          const tone = isError ? "error" : (isStart ? "info" : "success")
+          
+          let text = entry.summary
+          const prefixMatch = entry.summary.match(/^Tool \w+ (?:started|finished|failed|blocked): ([\s\S]*)$/)
+          if (prefixMatch && prefixMatch[1]) {
+            text = prefixMatch[1]
+          }
           
           toolTimed.push({
             at: entry.at,
@@ -551,7 +556,7 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
               type: "event",
               label: "tool",
               tone,
-              text: entry.summary,
+              text,
             },
           })
         }

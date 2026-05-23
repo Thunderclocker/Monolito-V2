@@ -71,6 +71,9 @@ export function renderTranscriptBlock(block: TranscriptBlock, width: number) {
   if (block.tone === "info") {
     return renderBulletedBlock(block.text, width, ANSI.purpleFluor)
   }
+  if (block.tone === "success") {
+    return renderBulletedBlock(block.text, width, ANSI.green)
+  }
   if (!block.label) {
     return renderBulletedBlock(block.text, width, "")
   }
