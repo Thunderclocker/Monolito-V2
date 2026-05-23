@@ -296,8 +296,26 @@ function buildSystemPrompt(args: {
           "- FORBIDDEN: Do not use Bash to invoke external APIs for LLM, vision, or image processing (e.g., openai.vision, anthropic.messages, client.beta.vision, or HTTP calls to AI providers). Bash is strictly for basic system/file operations.",
         ].join("\n")
       : [
-          "You may delegate tasks only when it materially helps and the corresponding tool is available.",
-          "Delegation is an internal implementation detail. Unless the user explicitly asks how work is coordinated, do not mention workers, agents, background tasks, delegation, or internal orchestration. Present completed work as your own actions.",
+          "CRITICAL DELEGATION RULE (HEURISTICS):",
+          "- You MUST immediately delegate the task using `delegate_background_task` if it is a complex, multi-step, or long-running operation.",
+          "- Specific triggers that FORCE you to delegate:",
+          "  1. Code changes, refactoring, or bug fixes affecting more than 1 file.",
+          "  2. Heavy terminal command execution (e.g. running builds, test suites, multi-step package installations, or complex scripts).",
+          "  3. Deep web research involving multiple sequential searches or site scraping.",
+          "  4. Any request where you can foresee taking more than 2-3 tool calls to complete.",
+          "- When delegating, respond with a short confirmation as your own action (e.g., 'Me pongo con eso, dame un momento') and do not explain orchestration mechanics to the user unless they ask.",
+          "",
+          "Examples of correct delegation trigger in your workflow:",
+          "",
+          "  Context: User requests a new feature or complex code refactor across files.",
+          "  User: \"refactorea el modulo de autenticacion para soportar JWT y JWT-refresh\"",
+          "  Assistant Tool Call: delegate_background_task({ task: \"Refactor authentication module to support JWT and JWT-refresh in the workspace files\" })",
+          "  Assistant Response: \"Me pongo con eso de inmediato, dame un momento para refactorizar el módulo en segundo plano.\"",
+          "",
+          "  Context: User asks for deep web research and a comprehensive report.",
+          "  User: \"hace un analisis profundo de las librerias de testing en Node y escribi un reporte\"",
+          "  Assistant Tool Call: delegate_background_task({ task: \"Perform deep web research comparing Node.js testing libraries (Jest, Vitest, Bun) and write a comprehensive report\" })",
+          "  Assistant Response: \"Me pongo a investigar en la web y preparar el reporte comparativo en segundo plano, dame un momento.\"",
         ].join("\n"),
     "## Visual & Media Processing Protocol",
     isSubAgent
@@ -592,6 +610,17 @@ export async function* runAgentLoop(
       return result
     }
     try {
+      const estimatedTokens = messages.reduce((sum, m) => sum + (m.content?.length ?? 0), 0) / 4
+      if (estimatedTokens > 24000) {
+        yield { type: "recoverable_error", sessionId: session.id, iteration, action: "compact_context", error: `Proactive context compaction (Estimated tokens: ${Math.round(estimatedTokens)})` }
+        compactSession(rootDir, session.id)
+        const refreshed = getSession(rootDir, session.id)
+        if (refreshed) {
+          activeSession = refreshed
+          messages.splice(0, messages.length, ...sessionToMessages(refreshed))
+        }
+      }
+
       yield { type: "model_invoke_start", sessionId: session.id, iteration, model: config.model }
       let response: ProviderResponse | null = null
       for await (const event of callProviderWithRetry(config, prompt, messages, options?.abortSignal, isSubAgent, options?.maxTokens)) {
