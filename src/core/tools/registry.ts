@@ -3741,6 +3741,27 @@ export function listModelTools(isSubAgent = false, lastUserText?: string) {
     "TelegramSendVoice",
     "TelegramSendPhoto",
     "TelegramSendDocument",
+    "schedule_task",
+    "system_reboot",
+    "system_status",
+    "QueryCost",
+    "QuerySessionStats",
+    "CompactSession",
+    "SttServiceStatus",
+    "SttServiceDeploy",
+    "SttServiceStop",
+    "SttServiceRemove",
+    "SttServiceList",
+    "TranscribeAudio",
+    "TtsServiceStatus",
+    "TtsServiceDeploy",
+    "TtsServiceStop",
+    "TtsServiceRemove",
+    "TtsServiceList",
+    "GenerateSpeech",
+    "tool_manage_config",
+    "ProfileCreate",
+    "AgentList"
   ])
   const hiddenFromMainSession = new Set([
     "AnalyzeImage"
