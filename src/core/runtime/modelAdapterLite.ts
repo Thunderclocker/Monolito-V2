@@ -239,6 +239,31 @@ function finalize(finalText: string, steps: AssistantTurnStep[], startedAt: numb
   }
 }
 
+function compileHandoffContext(session: SessionRecord, steps: AssistantTurnStep[]): string {
+  const lastUserMsg = session.messages.filter(m => m.role === "user").slice(-1)[0]?.text ?? "Tarea original";
+  const toolExecs = steps
+    .filter(s => s.type === "tool")
+    .map(s => `- Ejecutó la herramienta **${s.tool}** con argumentos: ${JSON.stringify(s.input)}`)
+    .join("\n");
+
+  return [
+    `# RESUMEN DE TRASPASO POR LÍMITE DE TURNOS SÍNCRONOS`,
+    `El coordinador principal inició el trabajo y se quedó sin turnos en el chat síncrono. Tu misión es continuar y completar la tarea original desde este punto.`,
+    ``,
+    `## Tarea Original del Usuario:`,
+    `"${lastUserMsg}"`,
+    ``,
+    `## Acciones y Herramientas Ejecutadas en este Turno:`,
+    toolExecs || "Ninguna herramienta ejecutada antes del traspaso.",
+    ``,
+    `## Misión Restante Obligatoria:`,
+    `1. Analiza el estado actual de los archivos y del workspace (usa view_file, list_dir, grep_search, etc.).`,
+    `2. Completa los requisitos faltantes de la tarea original.`,
+    `3. Compila, testea y valida empíricamente que tu código funciona sin errores.`,
+    `4. IMPORTANTE: Una vez que termines por completo, finaliza tu respuesta agregando exactamente el tag: <verified>SUCCESS</verified>`,
+  ].join("\n");
+}
+
 function getLogger(context?: ToolContext, logger?: Logger) {
   return logger ?? context?.logger ?? defaultLogger
 }
@@ -642,6 +667,34 @@ export async function* runAgentLoop(
   for (let iteration = 1; iteration <= maxIterations; iteration++) {
     enforceBudgetLimit(options?.costState, config.model)
     yield { type: "setup", sessionId: session.id, iteration, model: config.model, maxIterations, maxTurnDurationMs }
+
+    if (iteration === maxIterations && !isSubAgent) {
+      if (context.orchestrator) {
+        try {
+          const lastUserMsg = session.messages.filter(m => m.role === "user").slice(-1)[0]?.text ?? "Tarea original";
+          const handoffContext = compileHandoffContext(session, steps);
+          const spawned = await context.orchestrator.spawnBackgroundTask(
+            session.id,
+            context.profileId ?? "default",
+            `Completar la tarea original: ${lastUserMsg}`,
+            `Auto-delegation from turn limit`,
+            undefined,
+            { injected_context: handoffContext }
+          );
+
+          const finalText = `⚠️ **Autodelegación por límite de turnos (16/16)**\n\n` +
+            `Para evitar bloquear este chat y no perder el progreso del refactor/análisis actual, he delegado el resto del trabajo a un sub-agente en segundo plano (Job ID: \`${spawned.agentId}\`) con todo el contexto, código modificado y herramientas utilizadas hasta el momento.\n\n` +
+            `Te notificaré de forma autónoma apenas esté 100% verificado y completado. ¡No te preocupes por nada!`;
+
+          const result = finalize(finalText, steps, startedAt, iteration, usage, undefined, "completed");
+          yield { type: "done", sessionId: session.id, result };
+          return result;
+        } catch (spawnErr) {
+          logger.error(`Auto-delegation failed: ${spawnErr}`);
+        }
+      }
+    }
+
     if (options?.abortSignal?.aborted) {
       const result = finalize("", steps, startedAt, iteration - 1, usage, undefined, "aborted")
       yield { type: "done", sessionId: session.id, result }
