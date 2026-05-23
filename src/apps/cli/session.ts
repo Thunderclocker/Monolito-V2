@@ -540,12 +540,12 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       for (const entry of session.worklog) {
         if (entry.type === "tool") {
           const isStart = entry.summary.includes("started:")
-          const isFinish = entry.summary.includes("finished:")
+          const isFinish = entry.summary.includes("finished successfully:") || entry.summary.includes("finished:")
           const isError = entry.summary.includes("failed:") || entry.summary.includes("error:")
           const tone = isError ? "error" : (isStart ? "info" : "success")
           
           let text = entry.summary
-          const prefixMatch = entry.summary.match(/^Tool \w+ (?:started|finished|failed|blocked): ([\s\S]*)$/)
+          const prefixMatch = entry.summary.match(/^Tool \w+ (?:started|finished successfully|finished|failed|blocked): ([\s\S]*)$/)
           if (prefixMatch && prefixMatch[1]) {
             text = prefixMatch[1]
           }

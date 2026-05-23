@@ -2503,7 +2503,7 @@ Mandatory rules:
       const finishLine = renderToolFinish(tool.name, true, output)
       appendWorklog(this.rootDir, sessionId, {
         type: "tool",
-        summary: `Tool ${tool.name} finished: ${finishLine.text}`,
+        summary: `Tool ${tool.name} finished successfully: ${finishLine.text}`,
       })
       appendActionLog(this.rootDir, "Herramienta ejecutada", {
         tool: tool.name,
