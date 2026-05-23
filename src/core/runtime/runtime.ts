@@ -712,7 +712,9 @@ function summarizeTaskNotification(text: string) {
 function collectRecentTaskNotifications(session: SessionRecord, limit = 3) {
   const notifications: string[] = []
   const messages = session.messages ?? []
-  const scanLimit = Math.min(messages.length, 25)
+  const lastAssistantIndex = messages.findLastIndex(m => m.role === "assistant")
+  const startIndex = lastAssistantIndex + 1
+  const scanLimit = Math.min(messages.length - startIndex, 25)
   for (let index = messages.length - 1; index >= messages.length - scanLimit; index -= 1) {
     const message = messages[index]
     if (!message || message.role !== "user") continue
@@ -1459,8 +1461,21 @@ Mandatory rules:
    - Active tasks (pending/running): ${allTasks.filter(t => t.status === "pending" || t.status === "running").length}
    - Recent task notifications: ${recentNotifications.length > 0 ? recentNotifications.join("; ") : "none"}`;
 
+      const syntheticSession: SessionRecord = {
+        ...session,
+        messages: [
+          ...session.messages,
+          {
+            role: "user" as const,
+            at: new Date().toISOString(),
+            text: `[SYSTEM EVENT: MEMORY_CONSOLIDATION_TRIGGER]
+Please analyze the preceding conversation and run your memory consolidation tools. When you have completely finished saving, reply with CONSOLIDATION_OK.`,
+          },
+        ],
+      }
+
       const turn = await runAssistantTurn(
-        session,
+        syntheticSession,
         this.rootDir,
         async (tool, input, context, toolUseId) =>
           this.executeTool(
