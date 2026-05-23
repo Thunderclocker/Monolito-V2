@@ -192,17 +192,18 @@ test("tool_manage_config rejects JSON string CONF_CHANNELS values that use root 
     const tool = getTool("tool_manage_config")
     assert.ok(tool)
 
-    await assert.rejects(
-      () => tool.run({
-        action: "write",
-        wing: "CONF_CHANNELS",
-        value: "{\"enabled\":true,\"telegram\":{\"token\":\"abc\",\"enabled\":true,\"allowedChats\":[]}}",
-      }, {
-        rootDir,
-        cwd: rootDir,
-      }),
-      /unsupported top-level keys: enabled/,
-    )
+    const result = await tool.run({
+      action: "write",
+      wing: "CONF_CHANNELS",
+      value: "{\"enabled\":true,\"telegram\":{\"token\":\"abc\",\"enabled\":true,\"allowedChats\":[]}}",
+    }, {
+      rootDir,
+      cwd: rootDir,
+    }) as string
+
+    const parsed = JSON.parse(result)
+    assert.equal(parsed.success, false)
+    assert.match(parsed.error, /unsupported top-level keys: enabled/)
   } finally {
     cleanupRootDir(rootDir)
   }
@@ -214,17 +215,18 @@ test("tool_manage_config rejects JSON string CONF_CHANNELS values that use sessi
     const tool = getTool("tool_manage_config")
     assert.ok(tool)
 
-    await assert.rejects(
-      () => tool.run({
-        action: "write",
-        wing: "CONF_CHANNELS",
-        value: "{\"telegram\":{\"token\":\"abc\",\"enabled\":true,\"allowedChats\":[],\"session_name\":\"legacy\"}}",
-      }, {
-        rootDir,
-        cwd: rootDir,
-      }),
-      /must not use 'session_name'/,
-    )
+    const result = await tool.run({
+      action: "write",
+      wing: "CONF_CHANNELS",
+      value: "{\"telegram\":{\"token\":\"abc\",\"enabled\":true,\"allowedChats\":[],\"session_name\":\"legacy\"}}",
+    }, {
+      rootDir,
+      cwd: rootDir,
+    }) as string
+
+    const parsed = JSON.parse(result)
+    assert.equal(parsed.success, false)
+    assert.match(parsed.error, /must not use 'session_name'/)
   } finally {
     cleanupRootDir(rootDir)
   }
@@ -380,3 +382,67 @@ test("clearMemoryPalace removes profile memory while preserving configuration", 
     cleanupRootDir(rootDir)
   }
 })
+
+test("Dynamic Skills System lifecycle: CreateSkill, ListSkills, listModelTools, executeDynamicSkill, and DeleteSkill", async () => {
+  const rootDir = createRootDir()
+  try {
+    const createTool = getTool("CreateSkill")
+    const listTool = getTool("ListSkills")
+    const deleteTool = getTool("DeleteSkill")
+    assert.ok(createTool)
+    assert.ok(listTool)
+    assert.ok(deleteTool)
+
+    // 1. Create a dynamic skill
+    const createResult = await createTool.run({
+      name: "skill_test_hello",
+      description: "Outputs a welcome message",
+      code: "echo \"Hello, ${ARG_NAME}!\"",
+      inputSchema: {
+        type: "object",
+        properties: {
+          name: { type: "string" }
+        },
+        required: ["name"]
+      }
+    }, {
+      rootDir,
+      cwd: rootDir
+    }) as { ok: boolean }
+
+    assert.equal(createResult.ok, true)
+
+    // 2. List skills
+    const listResult = await listTool.run({}, { rootDir, cwd: rootDir }) as string
+    assert.match(listResult, /skill_test_hello/)
+    assert.match(listResult, /Outputs a welcome message/)
+
+    // 3. Retrieve dynamic skill and verify listModelTools merges it
+    const { listModelTools } = await import("./registry.ts")
+    const tools = listModelTools(false, undefined, undefined, rootDir)
+    const matching = tools.find(t => t.name === "skill_test_hello")
+    assert.ok(matching)
+    assert.equal(matching.description, "Outputs a welcome message")
+
+    // 4. Execute dynamic skill directly using dynamic runner
+    const { executeDynamicSkill } = await import("./dynamicRunner.ts")
+    const { getDynamicSkill } = await import("../session/store.ts")
+    const skill = getDynamicSkill(rootDir, "skill_test_hello")
+    assert.ok(skill)
+
+    const execResult = await executeDynamicSkill(rootDir, skill, { name: "Cristian" }, { cwd: rootDir })
+    assert.equal(execResult.ok, true)
+    assert.equal(execResult.output.trim(), "Hello, Cristian!")
+
+    // 5. Delete the skill
+    const deleteResult = await deleteTool.run({ name: "skill_test_hello" }, { rootDir, cwd: rootDir }) as { ok: boolean }
+    assert.equal(deleteResult.ok, true)
+
+    // 6. Verify it is deleted
+    const listAfterDelete = await listTool.run({}, { rootDir, cwd: rootDir }) as string
+    assert.equal(listAfterDelete, "No hay skills dinámicos registrados en este momento.")
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+

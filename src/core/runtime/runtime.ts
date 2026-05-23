@@ -41,9 +41,10 @@ import {
   getVectorMemoryStatus,
   closeMemoryDb,
   syncMissingEmbeddings,
+  getDynamicSkill,
 } from "../session/store.ts"
 import { generateEmbedding, isEmbeddingsUnavailableError } from "../session/embeddings.ts"
-import { getTool, listTools, type ToolContext } from "../tools/registry.ts"
+import { getTool, listTools, type ToolContext, type ToolInputSchema } from "../tools/registry.ts"
 import { getEffectiveModelConfig, runAgentLoop, runAssistantTurn, runBackgroundTextTask, type AgentLoopEvent, type AssistantTurnResult } from "./modelAdapterLite.ts"
 import {
   applyModelSettingsToEnv,
@@ -1450,6 +1451,7 @@ Mandatory rules:
 3. Always save using the correct tool:
    - For identity data, name, pronouns or permanent user rules → use BootWrite (in BOOT_USER, BOOT_IDENTITY or BOOT_PERSONALITY).
    - For general information, commitments, tasks or thematic context → use WorkspaceMemoryFiling.
+   - For repetitive sequences of Bash commands or complex tasks executed frequently in this session → design, write and register a dynamic skill using the CreateSkill tool. Ensure the skill name begins with 'skill_', uses 'bash' as codeType, specifies an inputSchema for parameters, and maps inputs to $ARG_ env variables.
 4. In WorkspaceMemoryFiling always reuse an existing room if the topic already has one (e.g. preferences, tasks, architecture, projects). Create a new room only if the topic is entirely different.
 5. It is mandatory to execute the tools. Do not consider your task complete until you have persisted everything important.
 6. You are 100% silent. Never respond to the user. When you have completely finished saving, respond ONLY with the exact word: CONSOLIDATION_OK
@@ -2390,7 +2392,36 @@ Please analyze the preceding conversation and run your memory consolidation tool
     toolUseId?: string,
     profileId?: string,
   ) {
-    const tool = getTool(toolName)
+    let tool = getTool(toolName)
+    if (!tool && toolName.startsWith("skill_")) {
+      const skill = getDynamicSkill(this.rootDir, toolName)
+      if (skill && skill.active) {
+        tool = {
+          name: skill.name,
+          permissionTier: "edit",
+          description: skill.description,
+          inputSchema: skill.inputSchema as ToolInputSchema,
+          concurrencySafe: true,
+          async run(input, ctx) {
+            const { executeDynamicSkill } = await import("../tools/dynamicRunner.ts")
+            const { incrementSkillTelemetry } = await import("../session/store.ts")
+            const result = await executeDynamicSkill(
+              ctx.rootDir,
+              skill,
+              input,
+              { cwd: ctx.rootDir, sessionId: ctx.sessionId }
+            )
+            try {
+              await incrementSkillTelemetry(ctx.rootDir, skill.name, result.ok)
+            } catch {}
+            if (!result.ok) {
+              throw new Error(`[${skill.name} Failed]\nstdout: ${result.output}\nstderr: ${result.stderr}`)
+            }
+            return result.output
+          }
+        }
+      }
+    }
     if (!tool) throw new Error(`Unknown tool: ${toolName}`)
     const normalizedInput = normalizeToolInputPayload(input) as Record<string, unknown>
     const permission = await checkToolPermission(tool.name, normalizedInput, {

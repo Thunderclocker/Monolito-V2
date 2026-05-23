@@ -243,8 +243,8 @@ function getLogger(context?: ToolContext, logger?: Logger) {
   return logger ?? context?.logger ?? defaultLogger
 }
 
-function buildToolSummary(isSubAgent: boolean, lastUserMessage?: string, allowedToolNames?: string[]) {
-  return listModelTools(isSubAgent, lastUserMessage, allowedToolNames)
+function buildToolSummary(isSubAgent: boolean, lastUserMessage?: string, allowedToolNames?: string[], rootDir?: string) {
+  return listModelTools(isSubAgent, lastUserMessage, allowedToolNames, rootDir)
     .map(tool => `- ${tool.name}: ${tool.description}`)
     .join("\n")
 }
@@ -334,7 +334,7 @@ function buildSystemPrompt(args: {
           "- For Telegram audio/voice requests, do not send a progress-only reply like 'generating audio' unless the same turn already started GenerateSpeech. Complete the sequence GenerateSpeech -> TelegramSendAudio/TelegramSendVoice, then confirm only after the send tool succeeds.",
         ].join("\n"),
     "Available tools:",
-    buildToolSummary(isSubAgent, lastUserMessage, args.allowedToolNames),
+    buildToolSummary(isSubAgent, lastUserMessage, args.allowedToolNames, args.rootDir),
     bootstrap ? describeBootEntries(bootstrap.entries) : "",
     isSubAgent ? "" : [
       "<JERARQUIA_DE_DIRECTIVAS>",

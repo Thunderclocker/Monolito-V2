@@ -2122,4 +2122,122 @@ export function listRalphRules(rootDir: string): Array<{ key: string; content: s
   return rows
 }
 
+export interface DynamicSkill {
+  name: string
+  description: string
+  author: string
+  codeType: "bash" | "typescript"
+  code: string
+  inputSchema: Record<string, any>
+  telemetry?: {
+    use_count: number
+    last_used_at: string
+    failure_count: number
+  }
+  active: boolean
+}
+
+export function saveDynamicSkill(rootDir: string, skill: DynamicSkill): void {
+  const db = getDb(rootDir)
+  const wing = "CONF_SKILLS"
+  const room = "registry"
+  const now = new Date().toISOString()
+  const skillJson = JSON.stringify({
+    ...skill,
+    telemetry: skill.telemetry || { use_count: 0, last_used_at: now, failure_count: 0 }
+  })
+
+  const existing = db.prepare(`
+    SELECT id FROM memory_drawers
+    WHERE wing = ? AND room = ? AND memory_key = ?
+    LIMIT 1
+  `).get(wing, room, skill.name) as { id: string } | undefined
+
+  if (existing) {
+    db.prepare(`
+      UPDATE memory_drawers
+      SET content = ?
+      WHERE id = ?
+    `).run(skillJson, existing.id)
+    return
+  }
+
+  const id = randomUUID()
+  db.prepare(`
+    INSERT INTO memory_drawers (id, profile_id, wing, room, memory_key, content, created_at)
+    VALUES (?, NULL, ?, ?, ?, ?, ?)
+  `).run(id, wing, room, skill.name, skillJson, now)
+}
+
+export function listDynamicSkills(rootDir: string): DynamicSkill[] {
+  const db = getDb(rootDir)
+  const wing = "CONF_SKILLS"
+  const room = "registry"
+  const rows = db.prepare(`
+    SELECT content
+    FROM memory_drawers
+    WHERE wing = ? AND room = ?
+  `).all(wing, room) as Array<{ content: string }>
+
+  return rows.map(r => {
+    try {
+      return JSON.parse(r.content) as DynamicSkill
+    } catch {
+      return null
+    }
+  }).filter((s): s is DynamicSkill => s !== null)
+}
+
+export function getDynamicSkill(rootDir: string, name: string): DynamicSkill | undefined {
+  const db = getDb(rootDir)
+  const wing = "CONF_SKILLS"
+  const room = "registry"
+  const row = db.prepare(`
+    SELECT content
+    FROM memory_drawers
+    WHERE wing = ? AND room = ? AND memory_key = ?
+    LIMIT 1
+  `).get(wing, room, name) as { content: string } | undefined
+
+  if (!row) return undefined
+  try {
+    return JSON.parse(row.content) as DynamicSkill
+  } catch {
+    return undefined
+  }
+}
+
+export function deleteDynamicSkill(rootDir: string, name: string): void {
+  const db = getDb(rootDir)
+  const wing = "CONF_SKILLS"
+  const room = "registry"
+  
+  const existing = db.prepare(`
+    SELECT id FROM memory_drawers
+    WHERE wing = ? AND room = ? AND memory_key = ?
+    LIMIT 1
+  `).get(wing, room, name) as { id: string } | undefined
+
+  if (existing) {
+    db.prepare(`DELETE FROM vec_drawers WHERE id = ?`).run(existing.id)
+    db.prepare(`DELETE FROM memory_drawers WHERE id = ?`).run(existing.id)
+  }
+}
+
+export function incrementSkillTelemetry(rootDir: string, name: string, success: boolean): void {
+  const skill = getDynamicSkill(rootDir, name)
+  if (!skill) return
+  
+  const telemetry = skill.telemetry || { use_count: 0, last_used_at: new Date().toISOString(), failure_count: 0 }
+  telemetry.use_count += 1
+  telemetry.last_used_at = new Date().toISOString()
+  if (!success) {
+    telemetry.failure_count += 1
+  }
+  
+  skill.telemetry = telemetry
+  saveDynamicSkill(rootDir, skill)
+}
+
+
 

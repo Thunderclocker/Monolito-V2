@@ -39,6 +39,10 @@ import {
   upsertSemanticTool,
   querySemanticTools,
   upsertRalphRule,
+  listDynamicSkills,
+  saveDynamicSkill,
+  getDynamicSkill,
+  deleteDynamicSkill,
 } from "../session/store.ts"
 import { isEmbeddingsUnavailableError } from "../session/embeddings.ts"
 import { type AgentOrchestrator } from "../runtime/orchestrator.ts"
@@ -3745,6 +3749,121 @@ Actions:
       }
     }
   },
+  {
+    name: "CreateSkill",
+    permissionTier: "edit",
+    description: "Crea o actualiza un skill dinámico (habilidad) basado en scripts ejecutables de Bash. El skill será registrado semánticamente y estará disponible de inmediato para todos los perfiles de Monolito.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "Nombre único del skill (debe empezar con 'skill_' y usar snake_case, ej: 'skill_commit_build')."
+        },
+        description: {
+          type: "string",
+          description: "Una descripción clara y descriptiva del propósito y funcionamiento del skill. Servirá para la búsqueda vectorial."
+        },
+        code: {
+          type: "string",
+          description: "El código o script en Bash a ejecutar. Los parámetros de entrada serán inyectados como variables de entorno con prefijo ARG_ (ej: si se define 'commit_message', leerlo en Bash con $ARG_COMMIT_MESSAGE)."
+        },
+        inputSchema: {
+          type: "object",
+          description: "Definición del esquema de entrada JSON para los parámetros usando JSON Schema."
+        }
+      },
+      required: ["name", "description", "code", "inputSchema"],
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    async run(input, context) {
+      try {
+        const name = String(input.name).trim()
+        if (!name.startsWith("skill_")) {
+          return { ok: false, error: "El nombre del skill debe empezar con 'skill_'." }
+        }
+        const description = String(input.description).trim()
+        const code = String(input.code)
+        const schema = input.inputSchema as Record<string, any>
+
+        const skill = {
+          name,
+          description,
+          author: context.sessionId?.startsWith("agent-") ? "sub-agent" : "coordinator",
+          codeType: "bash" as const,
+          code,
+          inputSchema: schema,
+          active: true,
+        }
+
+        saveDynamicSkill(context.rootDir, skill)
+        // Vectorize semantically right away
+        await upsertSemanticTool(context.rootDir, name, `Dynamic Skill: ${name} - ${description}`)
+
+        return { ok: true, message: `Skill '${name}' creado e indexado semánticamente de forma exitosa.` }
+      } catch (err: any) {
+        return { ok: false, error: `Error creando el skill: ${err.message}` }
+      }
+    }
+  },
+  {
+    name: "DeleteSkill",
+    permissionTier: "edit",
+    description: "Elimina permanentemente un skill dinámico por su nombre de registro.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "Nombre del skill a eliminar (ej: 'skill_deploy_website')."
+        }
+      },
+      required: ["name"],
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    async run(input, context) {
+      try {
+        const name = String(input.name).trim()
+        const skill = getDynamicSkill(context.rootDir, name)
+        if (!skill) {
+          return { ok: false, error: `El skill '${name}' no existe.` }
+        }
+        deleteDynamicSkill(context.rootDir, name)
+        return { ok: true, message: `Skill '${name}' eliminado exitosamente del registro y del vector store.` }
+      } catch (err: any) {
+        return { ok: false, error: `Error eliminando el skill: ${err.message}` }
+      }
+    }
+  },
+  {
+    name: "ListSkills",
+    permissionTier: "read",
+    description: "Lista todas las habilidades dinámicas creadas, mostrando su estado y telemetría de uso.",
+    inputSchema: emptyInputSchema,
+    concurrencySafe: true,
+    async run(input, context) {
+      try {
+        const skills = listDynamicSkills(context.rootDir)
+        if (skills.length === 0) {
+          return "No hay skills dinámicos registrados en este momento."
+        }
+        const formatted = skills.map(s => {
+          const telemetry = s.telemetry || { use_count: 0, last_used_at: "nunca", failure_count: 0 }
+          return `* ${s.name} (Activo: ${s.active ? "SÍ" : "NO"})
+  - Descripción: ${s.description}
+  - Autor: ${s.author}
+  - Usos: ${telemetry.use_count} | Fallos: ${telemetry.failure_count}
+  - Último Uso: ${telemetry.last_used_at}
+  - Parámetros: ${JSON.stringify(s.inputSchema?.properties || {})}`
+        }).join("\n\n")
+        return `Skills dinámicos registrados:\n\n${formatted}`
+      } catch (err: any) {
+        return `Error listando skills: ${err.message}`
+      }
+    }
+  },
 ]
 
 const tools: ToolDefinition[] = rawTools.map(withSafeToolFailure)
@@ -3762,7 +3881,7 @@ export function listTools() {
   return tools
 }
 
-export function listModelTools(isSubAgent = false, lastUserText?: string, allowedToolNames?: string[]) {
+export function listModelTools(isSubAgent = false, lastUserText?: string, allowedToolNames?: string[], rootDir?: string) {
   const hiddenFromSubAgents = new Set([
     "AgentSpawn",
     "AgentSendMessage",
@@ -3829,7 +3948,7 @@ export function listModelTools(isSubAgent = false, lastUserText?: string, allowe
     "TelegramSendPhoto",
   ])
 
-  return tools
+  const staticMapped = tools
     .filter(tool => {
       // 1. Core Tools are ALWAYS included
       if (CORE_TOOLS.has(tool.name)) {
@@ -3854,6 +3973,23 @@ export function listModelTools(isSubAgent = false, lastUserText?: string, allowe
       description: tool.description,
       input_schema: tool.inputSchema,
     }))
+
+  try {
+    const activeSkills = listDynamicSkills(rootDir || MONOLITO_ROOT).filter(s => s.active)
+    const skillMapped = activeSkills
+      .filter(skill => {
+        if (allowedToolNames && !allowedToolNames.includes(skill.name)) return false;
+        return true;
+      })
+      .map(skill => ({
+        name: skill.name,
+        description: skill.description,
+        input_schema: skill.inputSchema as ToolInputSchema,
+      }))
+    return [...staticMapped, ...skillMapped]
+  } catch {
+    return staticMapped
+  }
 }
 
 export function getTool(name: string) {
@@ -3885,6 +4021,16 @@ export async function indexToolsInPalace(rootDir: string) {
     } catch (err) {
       console.error(`[indexToolsInPalace] Failed to index ${tool.name}:`, err)
     }
+  }
+
+  try {
+    const activeSkills = listDynamicSkills(rootDir).filter(s => s.active)
+    for (const skill of activeSkills) {
+      const formattedDesc = `Dynamic Skill: ${skill.name} - ${skill.description}`
+      await upsertSemanticTool(rootDir, skill.name, formattedDesc)
+    }
+  } catch (err) {
+    console.error(`[indexToolsInPalace] Failed to index dynamic skills:`, err)
   }
 }
 
