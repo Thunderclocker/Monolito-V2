@@ -37,6 +37,7 @@ import {
   listRecoverableWorkerJobs,
   updateWorkerJobStatus,
   hasActiveWorkersForSession,
+  isSessionResearchSilent,
   reconcileSystemWings,
   getVectorMemoryStatus,
   closeMemoryDb,
@@ -1416,6 +1417,16 @@ IMPORTANT: The human user did NOT send or write this message. Do not reference t
       } else {
         deleteBackgroundTaskGroup(this.rootDir, task.jobGroupId)
       }
+    }
+
+    const isSilent = isSessionResearchSilent(this.rootDir, sessionId, profileId)
+    if (isSilent) {
+      appendWorklog(this.rootDir, sessionId, {
+        type: "note",
+        summary: `Background task completed silently: session is configured for silent research.`,
+      })
+      logger.info(`[runtime] Background task completed silently for session ${sessionId} due to pref_silent_research.`)
+      return
     }
 
     this.enqueueBackgroundWakeup(sessionId, profileId)

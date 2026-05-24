@@ -2239,5 +2239,24 @@ export function incrementSkillTelemetry(rootDir: string, name: string, success: 
   saveDynamicSkill(rootDir, skill)
 }
 
+export function isSessionResearchSilent(rootDir: string, sessionId: string, profileId = "default"): boolean {
+  const db = getDb(rootDir)
+  const profileScope = palaceProfileScope(profileId)
+  const row = db.prepare(`
+    SELECT content
+    FROM palace_nodes
+    WHERE namespace = ?
+      AND wing = 'SESSION_PREFERENCES'
+      AND room = ?
+      AND node_key = 'pref_silent_research'
+      AND (profile_scope = ? OR profile_scope = '__global__')
+      AND superseded_at IS NULL
+    ORDER BY updated_at DESC, created_at DESC
+    LIMIT 1
+  `).get(PALACE_NAMESPACE.projectFacts, sessionId, profileScope) as { content: string } | undefined
+
+  return row?.content === "true"
+}
+
 
 

@@ -2643,11 +2643,11 @@ Actions:
   {
     name: "WorkspaceMemoryFiling",
     permissionTier: "edit",
-    description: "Store facts, decisions, or snippets in the SQLite Memory Palace. Use wing='SHARED' for team-wide memory visible to every profile. Any other wing stays private to the current profile.",
+    description: "Store facts, decisions, or snippets in the SQLite Memory Palace. Use wing='SHARED' for team-wide memory visible to every profile. Use wing='session_preferences' with room=sessionId and key='pref_silent_research' (content='true'/'false') to dynamically toggle silent background updates for this session.",
     inputSchema: {
       type: "object",
       properties: {
-        wing: { type: "string", description: "Wing name. Use 'SHARED' for global memory; any other wing is private to the current profile." },
+        wing: { type: "string", description: "Wing name. Use 'SHARED' for global memory, or 'session_preferences' to toggle session-scoped preferences (with room=sessionId)." },
         room: { type: "string", description: "Topical room within the wing (e.g. 'architecture', 'auth')." },
         key: { type: "string", description: "Optional stable key to group or retrieve a specific memory later." },
         content: { type: "string", description: "The raw verbatim detail or decision to save." },
