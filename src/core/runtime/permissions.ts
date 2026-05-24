@@ -3,7 +3,7 @@ import { promisify } from "node:util"
 import { runBackgroundTextTask } from "./modelAdapterLite.ts"
 import { getTool } from "../tools/registry.ts"
 import { DEFAULT_CONFIG_WING_VALUES, type HookDefinition, type PermissionMode, type PermissionRule, type PolicyConfig } from "../config/configWings.ts"
-import { readConfigWing } from "../session/store.ts"
+import { readConfigWing, getDynamicSkill } from "../session/store.ts"
 
 const execFileAsync = promisify(execFile)
 
@@ -163,7 +163,7 @@ function isSafeReadOnlyBash(command: string) {
   return DEFAULT_SAFE_BASH_PREFIXES.some(prefix => normalized === prefix || normalized.startsWith(`${prefix} `))
 }
 
-function evaluateMode(mode: PermissionMode, toolName: string, input: Record<string, unknown>): PermissionCheckResult {
+function evaluateMode(mode: PermissionMode, toolName: string, input: Record<string, unknown>, rootDir?: string): PermissionCheckResult {
   if (mode === "bypassPermissions") {
     return { behavior: "allow", source: "mode" }
   }
@@ -193,7 +193,21 @@ function evaluateMode(mode: PermissionMode, toolName: string, input: Record<stri
     }
     return { behavior: "allow", source: "mode" }
   }
-  const tool = getTool(toolName)
+  let tool = getTool(toolName)
+  if (!tool && toolName.startsWith("skill_") && rootDir) {
+    try {
+      const skill = getDynamicSkill(rootDir, toolName)
+      if (skill && skill.active) {
+        tool = {
+          name: skill.name,
+          permissionTier: "edit",
+          description: skill.description,
+          inputSchema: skill.inputSchema as any,
+          run: async () => "",
+        }
+      }
+    } catch {}
+  }
   if (tool?.permissionTier === "read") {
     return { behavior: "allow", source: "mode" }
   }
@@ -336,7 +350,7 @@ export async function checkToolPermission(toolName: string, input: Record<string
   }
   if (ruleDecision) return ruleDecision
 
-  return evaluateMode(policy.permissions.mode, toolName, input)
+  return evaluateMode(policy.permissions.mode, toolName, input, context.rootDir)
 }
 
 export async function runPostToolHooks(toolName: string, input: Record<string, unknown>, context: PermissionContext, output: unknown) {

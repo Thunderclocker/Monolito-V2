@@ -490,6 +490,9 @@ export class MonolitoV2Daemon {
         case "daemon.command": {
           const req = request as { id: string; command: string }
           const reply = await this.runtime.runDaemonCommand(req.command)
+          if (this.runtime.consumeRestartRequest()) {
+            this.scheduleSelfRestart()
+          }
           return { id: req.id, ok: true as const, data: { output: reply } }
         }
         case "session.ask": {
