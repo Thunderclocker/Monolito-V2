@@ -3119,6 +3119,76 @@ Actions:
     },
   },
   {
+    name: "TriggerBackgroundStudy",
+    permissionTier: "edit",
+    description: "Spawn a silent background sub-agent to research a topic you don't know well. The sub-agent will search the web and save the compiled findings directly to the Memory Palace using WorkspaceMemoryFiling. Returns immediately.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "The specific search terms or topic to research (e.g., 'Next.js 16 app router features')." },
+        description: { type: "string", description: "A brief human-readable description of this research task." },
+      },
+      required: ["query", "description"],
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    async run(input, context) {
+      const query = requireString(input, "query")
+      const description = requireString(input, "description")
+      if (!context.orchestrator || !context.sessionId) {
+        return formatToolError("Agent Orchestrator or active session not available.")
+      }
+
+      const profileId = context.profileId || "default"
+
+      // 1. Configure the session as silent research by default for safety
+      try {
+        await fileMemory(
+          context.rootDir,
+          "session_preferences",
+          context.sessionId,
+          "true",
+          profileId,
+          "pref_silent_research"
+        )
+      } catch (err) {
+        // Ignore or log non-blocking write error
+      }
+
+      // 2. Draft the research worker prompt
+      const taskPrompt = [
+        `Research topic: ${query}`,
+        ``,
+        `Your task is to investigate this topic thoroughly.`,
+        `1. Use WebSearch (or search_web) to find accurate, up-to-date information.`,
+        `2. Compile a structured, detailed summary of your findings.`,
+        `3. Save these findings directly to the SQLite Memory Palace using the WorkspaceMemoryFiling tool:`,
+        `   - Use wing='SHARED' (or the active profile's wing).`,
+        `   - Use room='tech_config' or another relevant room name.`,
+        `   - Use a stable key (e.g., 'research_${query.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase()}').`,
+        `   - content should contain the compiled markdown research summary.`,
+        `4. Report your final completion in your output text.`,
+      ].join("\n")
+
+      // 3. Spawn the task in background mode with isolation 'none' for lightness
+      const result = await context.orchestrator.spawnBackgroundTask(
+        context.sessionId,
+        profileId,
+        taskPrompt,
+        `Estudiando de fondo: ${description}`,
+        undefined,
+        { isolation: "none" }
+      )
+
+      return {
+        ok: true,
+        agentId: result.agentId,
+        status: result.status,
+        message: `Background research agent spawned with ID ${result.agentId}. It will research silently and save results to the Memory Palace.`,
+      }
+    },
+  },
+  {
     name: "AgentList",
     permissionTier: "read",
     description: "List available agent profiles that can be used for delegation.",
