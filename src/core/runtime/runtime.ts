@@ -1129,6 +1129,9 @@ export class MonolitoV2Runtime {
       // First run memory consolidation silently!
       await this.runMemoryConsolidation(targetSessionId, targetProfileId)
 
+      // Run skills synthesis silently!
+      await this.runSkillsSynthesis(targetSessionId, targetProfileId)
+
       // Then run standard proactive heartbeat prompt!
       const prompt = `[SYSTEM EVENT: HEARTBEAT_CHECK]
 Read system state, pending tasks, and recent context.
@@ -1441,7 +1444,7 @@ IMPORTANT: The human user did NOT send or write this message. Do not reference t
 
       const allTasks = this.orchestrator.getTaskSnapshot(sessionId)
       const recentNotifications = collectAllRecentTaskNotifications(session)
-      const promptOverride = `You are MemoryAgent, a silent and automatic agent of Monolito V2.
+      const promptOverride = `You are MemoryAgent, a silent and automatic memory consolidation agent of Monolito V2.
 
 Your only mission is to read the recent conversation and correctly save all important information into the Memory Palace.
 
@@ -1451,7 +1454,6 @@ Mandatory rules:
 3. Always save using the correct tool:
    - For identity data, name, pronouns or permanent user rules → use BootWrite (in BOOT_USER, BOOT_IDENTITY or BOOT_PERSONALITY).
    - For general information, commitments, tasks or thematic context → use WorkspaceMemoryFiling.
-   - For repetitive sequences of Bash commands or complex tasks executed frequently in this session → design, write and register a dynamic skill using the CreateSkill tool. Ensure the skill name begins with 'skill_', uses 'bash' as codeType, specifies an inputSchema for parameters, and maps inputs to $ARG_ env variables.
 4. In WorkspaceMemoryFiling always reuse an existing room if the topic already has one (e.g. preferences, tasks, architecture, projects). Create a new room only if the topic is entirely different.
 5. It is mandatory to execute the tools. Do not consider your task complete until you have persisted everything important.
 6. You are 100% silent. Never respond to the user. When you have completely finished saving, respond ONLY with the exact word: CONSOLIDATION_OK
@@ -1529,6 +1531,112 @@ Please analyze the preceding conversation and run your memory consolidation tool
 
     } catch (e) {
       logger.error(`[MemoryAgent] Execution error: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      clearTimeout(turnTimeout)
+      await this.transitionState(sessionId, "idle")
+      this.releaseSessionLock(sessionId)
+    }
+  }
+
+  private async runSkillsSynthesis(sessionId: string, profileId: string) {
+    if (this.activeSessions.has(sessionId)) {
+      logger.info(`[SkillsAgent] Session ${sessionId} is active, skipping skills synthesis.`)
+      return
+    }
+
+    this.activeSessions.add(sessionId)
+    const turnStartedAt = Date.now()
+    const abortController = new AbortController()
+    const turnTimeout = setTimeout(() => {
+      abortController.abort(new TurnTimeoutError("Skills synthesis turn exceeded timeout"))
+    }, 90_000)
+
+    try {
+      logger.info(`[SkillsAgent] Starting automatic skills synthesis for session ${sessionId}...`)
+      await this.transitionState(sessionId, "running")
+
+      const session = getSession(this.rootDir, sessionId)
+      if (!session) return
+
+      const promptOverride = `You are SkillsAgent, a silent and automatic software automation agent of Monolito V2.
+
+Your only mission is to analyze the recent command execution logs, terminal command history, and tool outputs in this session to identify repetitive tasks, and design, write and register dynamic skills (habilidades) to automate them using the CreateSkill tool.
+
+Mandatory rules:
+1. Analyze the available messages, terminal history (Bash commands), and tool invocations.
+2. Identify repetitive actions (e.g. compiling, checking status, committing, cleaning up, formatting files) that would benefit from a single automated script.
+3. When you find a repetitive task pattern, design and register a robust dynamic skill using the CreateSkill tool.
+4. Rules for the dynamic skill:
+   - The skill name must begin with 'skill_' and use snake_case (e.g., 'skill_verify_build').
+   - Use 'bash' as codeType.
+   - The script code must be written in robust Bash.
+   - Design a clear, descriptive parameter structure (inputSchema) for any inputs the user might want to customize (e.g., file paths, commit messages).
+   - In the Bash code, access those inputs as environment variables with the prefix 'ARG_' (e.g., read $ARG_COMMIT_MESSAGE).
+   - Ensure the skill description clearly explains its purpose, inputs, and output behaviour for vector search discovery.
+5. You are 100% silent. Never respond to the user. When you have completely finished analyzing and registering skills, respond ONLY with the exact word: SKILLS_OK`;
+
+      const syntheticSession: SessionRecord = {
+        ...session,
+        messages: [
+          ...session.messages,
+          {
+            role: "user" as const,
+            at: new Date().toISOString(),
+            text: `[SYSTEM EVENT: SKILLS_SYNTHESIS_TRIGGER]
+Please analyze the preceding conversation, tool usage logs, and terminal outputs, and run the CreateSkill tool to automate any repetitive sequences of commands you identify. When you have finished, reply with SKILLS_OK.`,
+          },
+        ],
+      }
+
+      const turn = await runAssistantTurn(
+        syntheticSession,
+        this.rootDir,
+        async (tool, input, context, toolUseId) =>
+          this.executeTool(
+            sessionId,
+            tool,
+            input,
+            { ...context, abortSignal: abortController.signal, sessionId, orchestrator: this.orchestrator, runtime: this },
+            toolUseId,
+            profileId,
+          ),
+        {
+          rootDir: this.rootDir,
+          cwd: this.rootDir,
+          abortSignal: abortController.signal,
+          getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
+          profileId,
+          orchestrator: this.orchestrator,
+        },
+        {
+          systemPromptOverride: promptOverride,
+          costState: this.costState,
+          abortSignal: abortController.signal,
+          turnStartedAt,
+          maxTurnDurationMs: 80_000,
+        },
+      )
+
+      if (turn.usage) {
+        recordApiCall(
+          this.costState,
+          getEffectiveModelConfig().model,
+          {
+            inputTokens: turn.usage.inputTokens,
+            outputTokens: turn.usage.outputTokens,
+          },
+          Date.now() - turnStartedAt,
+        )
+      }
+
+      logger.info(`[SkillsAgent] Skills synthesis turn finished. Result: ${turn.finalText?.trim()}`)
+      appendWorklog(this.rootDir, sessionId, {
+        type: "note",
+        summary: `SkillsAgent executed silently: ${turn.finalText?.trim()}`,
+      })
+
+    } catch (e) {
+      logger.error(`[SkillsAgent] Execution error: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       clearTimeout(turnTimeout)
       await this.transitionState(sessionId, "idle")

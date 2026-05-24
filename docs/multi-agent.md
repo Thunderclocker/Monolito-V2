@@ -78,14 +78,22 @@ The temporal knowledge graph and Memory Palace are also profile-scoped unless ex
 
 If an agent is spawned from a Telegram-backed session, completion or failure summaries can be mirrored back to the originating chat.
 
-## Background Memory Consolidation
+## Background Memory Consolidation & Skill Synthesis
 
-Monolito V2 features an automatic, background memory consolidation agent named `MemoryAgent`. 
+Monolito V2 features two automatic, background agents triggered consecutively during the active heartbeat timer when the user is inactive:
 
-Unlike standard delegated agents, this agent:
+### 1. MemoryAgent
+Focuses on semantic memory synthesis and organization:
 - Runs directly inside the daemon process under a custom silent assistant turn.
 - Does not spawn a separate Git worktree or poll for user messages.
-- Is triggered automatically by the active heartbeat timer when the user has been idle/inactive.
 - Analyzes the recent conversation history to identify user profile, identities, preferences, facts, and tasks.
 - Uses `BootWrite` and `WorkspaceMemoryFiling` to save relevant information directly into the Memory Palace (`BOOT_WINGS`, `palace_nodes`, and `memory_drawers`).
 - Is **100% silent**, writing only notes to the session's worklog (`MemoryAgent executed silently: CONSOLIDATION_OK`) and never adding messages to the thread or sending notifications to the user. This ensures a clean and undisturbed user experience.
+
+### 2. SkillsAgent
+Focuses on technical automation and scripting:
+- Runs immediately after `MemoryAgent` during the heartbeat check under a silent assistant turn.
+- Analyzes the technical terminal command logs, execution history, and tool outputs in this session to identify repetitive tasks.
+- Automatically designs, writes, and registers robust dynamic skills (Bash scripts) using the `CreateSkill` tool.
+- Automatically generates appropriate input schemas (JSON Schema) and parameterizes inputs under the `$ARG_` prefix.
+- Is **100% silent**, recording its outcome to the worklog (`SkillsAgent executed silently: SKILLS_OK`).
