@@ -1388,7 +1388,7 @@ IMPORTANT: The human user did NOT send or write this message. Do not reference t
 
     // Phase 4: Add a visible, human-readable completion message that survives
     // message filtering. This ensures the task resolution is explicit in session
-    // history and visible to MemoryConsolidator and future context windows.
+    // history and visible to MemoryAgent and future context windows.
     const completionNote = effectiveStatus === "completed"
       ? `[Completed] ${task.description}. Result: ${rawResult.slice(0, 300)}${rawResult.length > 300 ? "..." : ""}`
       : effectiveStatus === "failed" || effectiveStatus === "killed"
@@ -1421,7 +1421,7 @@ IMPORTANT: The human user did NOT send or write this message. Do not reference t
 
   private async runMemoryConsolidation(sessionId: string, profileId: string) {
     if (this.activeSessions.has(sessionId)) {
-      logger.info(`[MemoryConsolidator] Session ${sessionId} is active, skipping consolidation.`)
+      logger.info(`[MemoryAgent] Session ${sessionId} is active, skipping consolidation.`)
       return
     }
 
@@ -1433,7 +1433,7 @@ IMPORTANT: The human user did NOT send or write this message. Do not reference t
     }, 90_000)
 
     try {
-      logger.info(`[MemoryConsolidator] Starting automatic memory consolidation for session ${sessionId}...`)
+      logger.info(`[MemoryAgent] Starting automatic memory consolidation for session ${sessionId}...`)
       await this.transitionState(sessionId, "running")
 
       const session = getSession(this.rootDir, sessionId)
@@ -1441,7 +1441,7 @@ IMPORTANT: The human user did NOT send or write this message. Do not reference t
 
       const allTasks = this.orchestrator.getTaskSnapshot(sessionId)
       const recentNotifications = collectAllRecentTaskNotifications(session)
-      const promptOverride = `You are MemoryConsolidator, a silent and automatic agent of Monolito V2.
+      const promptOverride = `You are MemoryAgent, a silent and automatic agent of Monolito V2.
 
 Your only mission is to read the recent conversation and correctly save all important information into the Memory Palace.
 
@@ -1521,14 +1521,14 @@ Please analyze the preceding conversation and run your memory consolidation tool
         )
       }
 
-      logger.info(`[MemoryConsolidator] Consolidation turn finished. Result: ${turn.finalText?.trim()}`)
+      logger.info(`[MemoryAgent] Consolidation turn finished. Result: ${turn.finalText?.trim()}`)
       appendWorklog(this.rootDir, sessionId, {
         type: "note",
-        summary: `MemoryConsolidator executed silently: ${turn.finalText?.trim()}`,
+        summary: `MemoryAgent executed silently: ${turn.finalText?.trim()}`,
       })
 
     } catch (e) {
-      logger.error(`[MemoryConsolidator] Execution error: ${e instanceof Error ? e.message : String(e)}`)
+      logger.error(`[MemoryAgent] Execution error: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       clearTimeout(turnTimeout)
       await this.transitionState(sessionId, "idle")

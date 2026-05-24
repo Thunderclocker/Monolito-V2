@@ -80,7 +80,7 @@ If an agent is spawned from a Telegram-backed session, completion or failure sum
 
 ## Background Memory Consolidation
 
-Monolito V2 features an automatic, background memory consolidation agent named `MemoryConsolidator`. 
+Monolito V2 features an automatic, background memory consolidation agent named `MemoryAgent`. 
 
 Unlike standard delegated agents, this agent:
 - Runs directly inside the daemon process under a custom silent assistant turn.
@@ -88,4 +88,4 @@ Unlike standard delegated agents, this agent:
 - Is triggered automatically by the active heartbeat timer when the user has been idle/inactive.
 - Analyzes the recent conversation history to identify user profile, identities, preferences, facts, and tasks.
 - Uses `BootWrite` and `WorkspaceMemoryFiling` to save relevant information directly into the Memory Palace (`BOOT_WINGS`, `palace_nodes`, and `memory_drawers`).
-- Is **100% silent**, writing only notes to the session's worklog (`MemoryConsolidator executed silently: CONSOLIDATION_OK`) and never adding messages to the thread or sending notifications to the user. This ensures a clean and undisturbed user experience.
+- Is **100% silent**, writing only notes to the session's worklog (`MemoryAgent executed silently: CONSOLIDATION_OK`) and never adding messages to the thread or sending notifications to the user. This ensures a clean and undisturbed user experience.
