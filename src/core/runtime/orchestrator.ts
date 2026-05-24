@@ -693,7 +693,9 @@ export class AgentOrchestrator {
 
         if (turn.error) {
           partialResult = turn.finalText || partialResult
-          if (attempt >= maxAttempts) {
+          const isExhausted = turn.error.includes("Max iterations reached") || 
+                              turn.error.includes("Turn duration exceeded");
+          if (attempt >= maxAttempts || isExhausted) {
             throw new Error(turn.error)
           }
           currentText = buildSubagentRetryPrompt(

@@ -239,7 +239,7 @@ function finalize(finalText: string, steps: AssistantTurnStep[], startedAt: numb
   }
 }
 
-function compileHandoffContext(session: SessionRecord, steps: AssistantTurnStep[]): string {
+function compileHandoffContext(session: SessionRecord, steps: AssistantTurnStep[], goalExplanation: string): string {
   const lastUserMsg = session.messages.filter(m => m.role === "user").slice(-1)[0]?.text ?? "Tarea original";
   const toolExecs = steps
     .filter(s => s.type === "tool")
@@ -250,7 +250,10 @@ function compileHandoffContext(session: SessionRecord, steps: AssistantTurnStep[
     `# RESUMEN DE TRASPASO POR LÍMITE DE TURNOS SÍNCRONOS`,
     `El coordinador principal inició el trabajo y se quedó sin turnos en el chat síncrono. Tu misión es continuar y completar la tarea original desde este punto.`,
     ``,
-    `## Tarea Original del Usuario:`,
+    `## Objetivo Técnico a Completar:`,
+    goalExplanation.trim(),
+    ``,
+    `## Tarea Original del Usuario (Último Mensaje):`,
     `"${lastUserMsg}"`,
     ``,
     `## Acciones y Herramientas Ejecutadas en este Turno:`,
@@ -672,7 +675,17 @@ export async function* runAgentLoop(
       if (context.orchestrator) {
         try {
           const lastUserMsg = session.messages.filter(m => m.role === "user").slice(-1)[0]?.text ?? "Tarea original";
-          const handoffContext = compileHandoffContext(session, steps);
+          
+          // Sintetizar explicación del objetivo técnico usando el modelo de lenguaje de background
+          const recentChat = session.messages.slice(-10).map(m => `[${m.role.toUpperCase()}]: ${m.text}`).join("\n");
+          const goalExplanation = await runBackgroundTextTask(
+            rootDir,
+            "Eres el sintetizador de traspaso de Monolito V2. Tu tarea es analizar el historial reciente de chat e identificar con precisión el objetivo técnico real que el usuario y el asistente están intentando resolver. Genera una explicación técnica corta, directa y sin introducciones sobre el objetivo que el sub-agente debe completar.",
+            `Historial reciente de chat:\n${recentChat}`,
+            { logger }
+          ).then(r => r.text).catch(() => "Completar la tarea original solicitada por el usuario en el chat.");
+
+          const handoffContext = compileHandoffContext(session, steps, goalExplanation);
           const spawned = await context.orchestrator.spawnBackgroundTask(
             session.id,
             context.profileId ?? "default",
