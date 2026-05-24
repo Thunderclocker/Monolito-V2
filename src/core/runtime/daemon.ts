@@ -145,7 +145,8 @@ export class MonolitoV2Daemon {
       // (e.g. a self-restarted daemon whose socket file was orphaned after a crash)
       const socketAlive = await this.probeSocketAlive(paths.socketPath)
       if (socketAlive) {
-        throw new Error(`monolitod-v2 already running (pid ${existing.pid})`)
+        this.writeDaemonLog(`monolitod-v2 already running (pid ${existing.pid}) — exiting cleanly to avoid duplicate`)
+        process.exit(0)
       }
       // Socket is unresponsive: zombie daemon. Kill it and take over.
       this.writeDaemonLog(`zombie daemon detected (pid ${existing.pid}, socket unresponsive) — forcing takeover`)

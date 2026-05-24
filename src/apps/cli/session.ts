@@ -1,6 +1,5 @@
 import { stdin, stdout } from "node:process"
-import { spawn } from "node:child_process"
-import { execFile } from "node:child_process"
+import { spawn, execSync, execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { readDaemonLock, type AgentEvent, type SessionRecord, type SessionSummary } from "../../core/ipc/protocol.ts"
 import {
@@ -94,6 +93,24 @@ async function ensureDaemon(client: DaemonClient, rootDir: string) {
     await client.connect()
     return
   } catch {
+    // Intentar iniciar el servicio systemd en Linux si está disponible
+    if (process.platform === "linux") {
+      try {
+        execSync("systemctl --user start monolito.service", { stdio: "ignore" })
+        for (let i = 0; i < 20; i++) {
+          await new Promise(r => setTimeout(r, 250))
+          try {
+            await client.connect()
+            return
+          } catch {
+            // continuar esperando
+          }
+        }
+      } catch {
+        // Fallback a spawn manual si systemd falla o no está configurado
+      }
+    }
+
     const daemonPath = `${rootDir}/src/apps/daemon.ts`
     const child = spawn(process.execPath, ["--experimental-strip-types", daemonPath], {
       cwd: rootDir,
