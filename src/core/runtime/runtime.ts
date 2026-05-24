@@ -2428,7 +2428,8 @@ Please analyze the preceding conversation, tool usage logs, and terminal outputs
   }
 
   private async runSlashCommand(sessionId: string, line: string) {
-    const [command, ...rest] = line.trim().split(" ")
+    const firstLine = line.split("\n")[0] || ""
+    const [command, ...rest] = firstLine.trim().split(/\s+/)
     switch (command) {
       case "/help":
         return [
