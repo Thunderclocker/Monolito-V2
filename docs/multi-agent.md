@@ -91,9 +91,12 @@ Focuses on semantic memory synthesis and organization:
 - Is **100% silent**, writing only notes to the session's worklog (`MemoryAgent executed silently: CONSOLIDATION_OK`) and never adding messages to the thread or sending notifications to the user. This ensures a clean and undisturbed user experience.
 
 ### 2. SkillsAgent
-Focuses on technical automation and scripting:
+Focuses on technical automation, scripting, and complete skill lifecycle management:
 - Runs immediately after `MemoryAgent` during the heartbeat check under a silent assistant turn.
+- Lists and analyzes all existing dynamic skills via `ListSkills` to understand the current library.
 - Analyzes the technical terminal command logs, execution history, and tool outputs in this session to identify repetitive tasks.
-- Automatically designs, writes, and registers robust dynamic skills (Bash scripts) using the `CreateSkill` tool.
-- Automatically generates appropriate input schemas (JSON Schema) and parameterizes inputs under the `$ARG_` prefix.
+- **Synthesizes & Creates** robust dynamic skills (Bash scripts) using the `CreateSkill` tool.
+- **Merges & Consolidates** redundant, overlapping, or narrow near-duplicate skills under a single, well-structured "umbrella" skill to prevent catalog inflation.
+- **Updates** existing skills using `CreateSkill` to adjust parameters, fix errors, or adapt them to new project paradigms (e.g. `npm` to `pnpm` migration).
+- **Archives & Deletes** obsolete or failing skills via `DeleteSkill` to keep the vector search pre-filtering clean and optimized.
 - Is **100% silent**, recording its outcome to the worklog (`SkillsAgent executed silently: SKILLS_OK`).
