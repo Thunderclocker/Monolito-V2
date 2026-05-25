@@ -240,6 +240,8 @@ function buildTelegramInboundText(
   msg: TelegramMessage | undefined,
   transcript?: { text: string; language?: string } | null,
   visionTranscript?: string | null,
+  localPhotoPath?: string | null,
+  localDocPath?: string | null,
 ) {
   if (!msg) return null
   const text = msg.text?.trim() || msg.caption?.trim() || ""
@@ -266,12 +268,17 @@ function buildTelegramInboundText(
   if (msg.photo?.length && !visionTranscript?.trim()) {
     const largest = getLargestTelegramPhoto(msg)
     if (largest) {
-      parts.push(`<attachment kind="photo" file_id="${largest.file_id}" width="${largest.width}" height="${largest.height}" />`)
+      const localPathAttr = localPhotoPath ? ` local_path="${escapeXml(localPhotoPath)}"` : ""
+      parts.push(`<attachment kind="photo" file_id="${largest.file_id}" width="${largest.width}" height="${largest.height}"${localPathAttr} />`)
     }
   }
   if (msg.document) {
+    const localPathAttr = localDocPath ? ` local_path="${escapeXml(localDocPath)}"` : ""
+    const limitExceededAttr = msg.document.file_size && msg.document.file_size > 20 * 1024 * 1024
+      ? ` status="size_limit_exceeded" size_bytes="${msg.document.file_size}" max_limit_bytes="${20 * 1024 * 1024}"`
+      : ""
     parts.push(
-      `<attachment kind="document" file_id="${msg.document.file_id}" file_name="${escapeXml(msg.document.file_name ?? "")}" mime_type="${escapeXml(msg.document.mime_type ?? "")}" />`,
+      `<attachment kind="document" file_id="${msg.document.file_id}" file_name="${escapeXml(msg.document.file_name ?? "")}" mime_type="${escapeXml(msg.document.mime_type ?? "")}"${localPathAttr}${limitExceededAttr} />`,
     )
   }
   if (msg.audio && !hideAudioAttachmentFromModel) {
@@ -516,7 +523,38 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
           return
         }
 
-        const inboundText = buildTelegramInboundText(msg, transcript)
+        let localPhotoPath: string | null = null
+        if (msg.photo?.length) {
+          try {
+            const largest = getLargestTelegramPhoto(msg)
+            if (largest) {
+              const prefix = `telegram-photo-${msg.chat.id}-${Date.now()}-${largest.file_id.slice(0, 8)}`
+              localPhotoPath = await downloadTelegramFile(config.telegram.token, largest.file_id, runtime.rootDir, prefix)
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            logger.warn(`Photo auto-download failed for Telegram chat ${chatId}: ${message}`)
+          }
+        }
+
+        let localDocPath: string | null = null
+        if (msg.document) {
+          try {
+            const maxSizeBytes = 20 * 1024 * 1024
+            if (!msg.document.file_size || msg.document.file_size <= maxSizeBytes) {
+              const safeName = msg.document.file_name ? msg.document.file_name.replace(/[^a-zA-Z0-9._-]/g, "_") : `doc-${msg.document.file_id.slice(0, 8)}`
+              const prefix = `telegram-doc-${msg.chat.id}-${Date.now()}-${safeName}`
+              localDocPath = await downloadTelegramFile(config.telegram.token, msg.document.file_id, runtime.rootDir, prefix)
+            } else {
+              logger.warn(`Telegram document skipped (size exceeds limit): ${msg.document.file_name} (${msg.document.file_size} bytes)`)
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            logger.warn(`Document auto-download failed for Telegram chat ${chatId}: ${message}`)
+          }
+        }
+
+        const inboundText = buildTelegramInboundText(msg, transcript, null, localPhotoPath, localDocPath)
         if (!inboundText) return
         
         logger.debug(`Received Telegram message [${chatId}]`)

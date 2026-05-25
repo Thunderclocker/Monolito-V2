@@ -271,8 +271,8 @@ function getLogger(context?: ToolContext, logger?: Logger) {
   return logger ?? context?.logger ?? defaultLogger
 }
 
-function buildToolSummary(isSubAgent: boolean, lastUserMessage?: string, allowedToolNames?: string[], rootDir?: string) {
-  return listModelTools(isSubAgent, lastUserMessage, allowedToolNames, rootDir)
+function buildToolSummary(isSubAgent: boolean, lastUserMessage?: string, allowedToolNames?: string[], rootDir?: string, exposeTelegramDownload = false) {
+  return listModelTools(isSubAgent, lastUserMessage, allowedToolNames, rootDir, exposeTelegramDownload)
     .map(tool => `- ${tool.name}: ${tool.description}`)
     .join("\n")
 }
@@ -298,6 +298,7 @@ function buildSystemPrompt(args: {
   const lastUserMessage = getLastUserMessage(args.session)
   const isSubAgent = args.session.id.startsWith("agent-")
   const isImageIntent = lastUserMessage && /imagen|imagenes|foto|fotos|picture|pictures|image|images|vision|visual/i.test(lastUserMessage)
+  const exposeTelegramDownload = args.session.messages.some(m => m.text.includes('status="size_limit_exceeded"'))
   const staticSystem = [
     "You are Monolito V2, a local assistant with tool access.",
     "Use tools when the answer depends on current files, system state, internal task status, or external resources.",
@@ -362,7 +363,7 @@ function buildSystemPrompt(args: {
           "- For Telegram audio/voice requests, do not send a progress-only reply like 'generating audio' unless the same turn already started GenerateSpeech. Complete the sequence GenerateSpeech -> TelegramSendAudio/TelegramSendVoice, then confirm only after the send tool succeeds.",
         ].join("\n"),
     "Available tools:",
-    buildToolSummary(isSubAgent, lastUserMessage, args.allowedToolNames, args.rootDir),
+    buildToolSummary(isSubAgent, lastUserMessage, args.allowedToolNames, args.rootDir, exposeTelegramDownload),
     bootstrap ? describeBootEntries(bootstrap.entries) : "",
     isSubAgent ? "" : [
       "<JERARQUIA_DE_DIRECTIVAS>",

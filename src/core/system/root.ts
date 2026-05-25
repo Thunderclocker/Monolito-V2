@@ -18,7 +18,7 @@ export function ensureMonolitoRoot() {
 export function cleanupScratchpad() {
   const scratchpadDir = join(MONOLITO_ROOT, "scratchpad")
   try {
-    const files = readdirSync(scratchpadDir)
+    const files = readdirSync(scratchpadDir, { recursive: true }) as string[]
     const now = Date.now()
     const maxAgeMs = 24 * 60 * 60 * 1000
 
@@ -26,7 +26,7 @@ export function cleanupScratchpad() {
       const filePath = join(scratchpadDir, file)
       try {
         const stats = statSync(filePath)
-        if (now - stats.mtimeMs > maxAgeMs) {
+        if (stats.isFile() && (now - stats.mtimeMs > maxAgeMs)) {
           unlinkSync(filePath)
         }
       } catch {

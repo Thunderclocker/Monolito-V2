@@ -720,6 +720,28 @@ async function resolveTelegramDownload(
   rootDir: string,
   filename?: string,
 ) {
+  const paths = ensureDirs(rootDir)
+  const downloadsDir = join(paths.scratchpadDir, "telegram-downloads")
+  if (existsSync(downloadsDir)) {
+    const existingFiles = readdirSync(downloadsDir)
+    const match = existingFiles.find(name => name.includes(fileId.slice(0, 8)))
+    if (match) {
+      const localPath = join(downloadsDir, match)
+      try {
+        const stats = statSync(localPath)
+        return {
+          ok: true,
+          file_id: fileId,
+          local_path: localPath,
+          bytes: stats.size,
+          cached: true,
+        }
+      } catch {
+        // Fall back to downloading if stat fails.
+      }
+    }
+  }
+
   const fileInfo = await telegramApiCall(token, "getFile", { file_id: fileId })
   if (!fileInfo.ok || !fileInfo.result || typeof fileInfo.result !== "object") {
     throw new Error(`Failed to get Telegram file info: ${fileInfo.description ?? "unknown error"}`)
@@ -737,8 +759,6 @@ async function resolveTelegramDownload(
     throw new Error(`Failed to download Telegram file: HTTP ${response.status}`)
   }
 
-  const paths = ensureDirs(rootDir)
-  const downloadsDir = join(paths.scratchpadDir, "telegram-downloads")
   mkdirSync(downloadsDir, { recursive: true })
   const originalName = result.file_path.split("/").at(-1) ?? fileId
   const extension = originalName.includes(".") ? `.${originalName.split(".").at(-1)}` : ""
@@ -2432,7 +2452,7 @@ Actions:
   {
     name: "TelegramDownloadFile",
     permissionTier: "edit",
-    description: "Download a Telegram file_id into Monolito scratchpad storage and return the local path.",
+    description: "Download a Telegram file_id into Monolito scratchpad storage and return the local path. IMPORTANT: Do NOT execute this tool for standard attachments that already provide a 'local_path' attribute, as they are downloaded automatically. Only execute this tool as a manual override when a Telegram attachment exceeds the auto-download size limit (status='size_limit_exceeded') and the user explicitly confirms they want to proceed.",
     inputSchema: {
       type: "object",
       properties: {
@@ -3951,7 +3971,7 @@ export function listTools() {
   return tools
 }
 
-export function listModelTools(isSubAgent = false, lastUserText?: string, allowedToolNames?: string[], rootDir?: string) {
+export function listModelTools(isSubAgent = false, lastUserText?: string, allowedToolNames?: string[], rootDir?: string, exposeTelegramDownload = false) {
   const hiddenFromSubAgents = new Set([
     "AgentSpawn",
     "AgentSendMessage",
@@ -3983,11 +4003,18 @@ export function listModelTools(isSubAgent = false, lastUserText?: string, allowe
     "GenerateSpeech",
     "tool_manage_config",
     "ProfileCreate",
-    "AgentList"
+    "AgentList",
+    "TelegramDownloadFile"
   ])
   const hiddenFromMainSession = new Set([
-    "AnalyzeImage"
+    "AnalyzeImage",
+    "TelegramDownloadFile"
   ])
+
+  if (exposeTelegramDownload) {
+    hiddenFromSubAgents.delete("TelegramDownloadFile")
+    hiddenFromMainSession.delete("TelegramDownloadFile")
+  }
 
   const isImageIntent = lastUserText && /imagen|imagenes|foto|fotos|picture|pictures|image|images|vision|visual/i.test(lastUserText)
   const imageWorkerBlockedTools = new Set([
