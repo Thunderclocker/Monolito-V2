@@ -5,7 +5,11 @@ import { buildAnthropicMessages, buildToolDefinitions, normalizeAnthropicToolInp
 
 function parsePartialJson(value: string): Record<string, unknown> {
   if (!value.trim()) return {}
-  return normalizeAnthropicToolInput(JSON.parse(value))
+  try {
+    return normalizeAnthropicToolInput(JSON.parse(value))
+  } catch {
+    return {}
+  }
 }
 
 function sanitizeAnthropicBaseUrl(baseUrl: string) {

@@ -16,7 +16,7 @@ export const VECTOR_DIMENSIONS = 1024
 
 export const VECTOR_SCHEMA_SQL = `
   CREATE VIRTUAL TABLE IF NOT EXISTS vec_drawers USING vec0(
-    id TEXT PRIMARY KEY,
+    id INTEGER PRIMARY KEY,
     embedding float[1024]
   );
 
