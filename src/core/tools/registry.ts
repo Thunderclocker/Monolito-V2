@@ -2450,6 +2450,83 @@ Actions:
     },
   },
   {
+    name: "DownloadFile",
+    permissionTier: "read",
+    description: "Download any file from a public HTTP/HTTPS URL into the secure Monolito scratchpad storage and return the local path. Essential for bypassing hotlinking blocks on images or getting documents.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "The HTTP/HTTPS URL of the file to download." },
+        filename: { type: "string", description: "Optional local filename override (including extension). If not provided, a safe name will be generated from the URL path." },
+      },
+      required: ["url"],
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    validate: input => {
+      if (typeof input.url !== "string" || input.url.length === 0) return "url must be a non-empty string"
+      try { new URL(input.url) } catch { return "url must be a valid HTTP/HTTPS URL" }
+      if (input.filename !== undefined && typeof input.filename !== "string") return "filename must be a string"
+      return null
+    },
+    async run(input, context) {
+      const url = requireString(input, "url")
+      const filename = optionalString(input, "filename")
+      
+      const paths = ensureDirs(context.rootDir)
+      const downloadsDir = join(paths.scratchpadDir, "downloads")
+      
+      const startedAt = Date.now()
+      try {
+        const response = await fetch(url, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "*/*",
+          },
+          signal: AbortSignal.timeout(30_000),
+        })
+        
+        if (!response.ok) {
+          throw new Error(`HTTP Error ${response.status}: ${response.statusText}`)
+        }
+        
+        const contentType = response.headers.get("content-type") ?? "application/octet-stream"
+        const buffer = Buffer.from(await response.arrayBuffer())
+        
+        // Determinar nombre del archivo
+        let finalName = filename
+        if (!finalName) {
+          const parsedUrl = new URL(url)
+          const urlSegment = parsedUrl.pathname.split("/").at(-1)
+          finalName = urlSegment && urlSegment.includes(".")
+            ? sanitizeFilenameSegment(urlSegment)
+            : `download-${Date.now()}`
+        }
+        
+        // Asegurar extensión adecuada si falta en la inferencia básica
+        if (!finalName.includes(".") && contentType !== "application/octet-stream") {
+          const mimeExt = contentType.split(";")[0]?.split("/")[1]
+          if (mimeExt) finalName = `${finalName}.${mimeExt}`
+        }
+        
+        mkdirSync(downloadsDir, { recursive: true })
+        const localPath = join(downloadsDir, finalName)
+        writeFileSync(localPath, buffer)
+        
+        return {
+          ok: true,
+          url,
+          local_path: localPath,
+          bytes: buffer.length,
+          content_type: contentType,
+          durationMs: Date.now() - startedAt,
+        }
+      } catch (error: any) {
+        return formatToolError(`Download failed: ${error.message || error}`)
+      }
+    },
+  },
+  {
     name: "TelegramDownloadFile",
     permissionTier: "edit",
     description: "Download a Telegram file_id into Monolito scratchpad storage and return the local path. IMPORTANT: Do NOT execute this tool for standard attachments that already provide a 'local_path' attribute, as they are downloaded automatically. Only execute this tool as a manual override when a Telegram attachment exceeds the auto-download size limit (status='size_limit_exceeded') and the user explicitly confirms they want to proceed.",
