@@ -43,6 +43,7 @@ import {
   closeMemoryDb,
   syncMissingEmbeddings,
   getDynamicSkill,
+  recallMemory,
 } from "../session/store.ts"
 import { generateEmbedding, isEmbeddingsUnavailableError } from "../session/embeddings.ts"
 import { getTool, listTools, type ToolContext, type ToolInputSchema } from "../tools/registry.ts"
@@ -772,6 +773,25 @@ function formatSemanticContext(rows: ReturnType<typeof getSemanticMessageContext
   ].join("\n")
 }
 
+function formatSemanticFacts(recalled: any[]) {
+  const filtered = recalled
+    .filter(row => row.distance === undefined || row.distance < 0.65)
+    .slice(0, 3)
+
+  if (filtered.length === 0) return null
+
+  const lines = filtered.map(
+    row => `- [Memoria: ${row.wing}/${row.room}] ${row.content.replace(/\s+/g, " ").trim()}`
+  )
+
+  return [
+    "<semantic-palace-memory>",
+    "Relevant facts and decisions recalled from your Memory Palace by vector similarity. Treat as absolute truth and constraint. Do not ignore these constraints in your response.",
+    ...lines,
+    "</semantic-palace-memory>"
+  ].join("\n")
+}
+
 async function prepareSemanticRagSession(rootDir: string, session: SessionRecord, profileId: string) {
   const messages = session.messages ?? []
   const lastUserIndex = messages.findLastIndex(message => message.role === "user" && isRagEligibleMessage(message))
@@ -780,12 +800,21 @@ async function prepareSemanticRagSession(rootDir: string, session: SessionRecord
   const lastUser = messages[lastUserIndex]!
   try {
     const vector = await generateEmbedding(lastUser.text)
-    const semanticRows = getSemanticMessageContext(rootDir, vector, 12)
+    
+    // Doble consulta RAG paralela (Historial + Hechos Palace)
+    const [semanticRows, semanticFacts] = await Promise.all([
+      Promise.resolve(getSemanticMessageContext(rootDir, vector, 12)),
+      recallMemory(rootDir, undefined, undefined, lastUser.text, profileId)
+    ])
+
     const semanticContext = formatSemanticContext(semanticRows, session.id, lastUser.text)
+    const semanticFactsContext = formatSemanticFacts(semanticFacts)
+
     const boundedMessages = [
       ...messages.filter(message => message.role === "system"),
       ...messages.filter((message, index) => index !== lastUserIndex && message.role !== "system" && isRagEligibleMessage(message)).slice(-8),
       ...(semanticContext ? [{ at: new Date().toISOString(), role: "user" as const, text: semanticContext }] : []),
+      ...(semanticFactsContext ? [{ at: new Date().toISOString(), role: "user" as const, text: semanticFactsContext }] : []),
       lastUser,
     ]
     return { ...session, messages: boundedMessages }
