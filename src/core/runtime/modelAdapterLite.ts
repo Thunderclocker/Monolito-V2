@@ -16,6 +16,7 @@ import { ensureMonolitoRoot } from "../system/root.ts"
 import { redactSensitiveText } from "../security/redact.ts"
 import type { AgentYieldEvent } from "./types.ts"
 import { checkTurnCommitmentSemantic, logBrokenPromise } from "./commitmentGuard.ts"
+import { checkTurnCoherence, logCoherenceBreach } from "./coherenceGuard.ts"
 
 const defaultLogger = createLogger("modelAdapterLite")
 const MAX_TURN_ITERATIONS = 16
@@ -762,6 +763,37 @@ export async function* runAgentLoop(
       const toolsThisTurn = response.toolCalls.map((tc) => tc.name)
 
       if (response.toolCalls.length === 0) {
+        // --- COHERENCE GUARD VERIFICATION ---
+        const profileId = context.profileId || "default";
+        const coherence = await checkTurnCoherence(
+          rootDir,
+          response.text,
+          profileId,
+          runBackgroundTextTask
+        );
+
+        if (!coherence.coherent) {
+          logCoherenceBreach(rootDir, session.id, coherence.reason ?? "Incoherencia de perfil", response.text);
+
+          yield {
+            type: "recoverable_error",
+            sessionId: session.id,
+            iteration,
+            action: "coherence_correction" as any,
+            error: `Respuesta rechazada por coherencia: ${coherence.reason}`
+          };
+
+          messages.push({
+            role: "user",
+            content: `[SYSTEM ALERT - COHERENCE GUARD] Tu respuesta anterior fue RECHAZADA.
+Contradicción detectada: ${coherence.reason}
+Por favor, corregí este error de inmediato y reescribí tu respuesta respetando estrictamente tu memoria.`
+          });
+
+          continue;
+        }
+        // --- END OF COHERENCE GUARD ---
+
         checkTurnCommitmentSemantic(rootDir, response.text, [], runBackgroundTextTask)
           .then((result) => {
             if (result.severity !== "none") {
