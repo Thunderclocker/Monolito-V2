@@ -3875,7 +3875,18 @@ Actions:
         }
         const description = String(input.description).trim()
         const code = String(input.code)
-        const schema = input.inputSchema as Record<string, any>
+        let schema = input.inputSchema
+        if (typeof schema === "string") {
+          try {
+            schema = JSON.parse(schema)
+          } catch (e) {
+            return { ok: false, error: "El inputSchema proporcionado es un string que no se puede parsear como JSON válido." }
+          }
+        }
+
+        if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+          return { ok: false, error: "El inputSchema debe ser un objeto JSON válido." }
+        }
 
         const skill = {
           name,
@@ -3883,7 +3894,7 @@ Actions:
           author: context.sessionId?.startsWith("agent-") ? "sub-agent" : "coordinator",
           codeType: "bash" as const,
           code,
-          inputSchema: schema,
+          inputSchema: schema as Record<string, any>,
           active: true,
         }
 
