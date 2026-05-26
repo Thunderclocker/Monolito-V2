@@ -1619,7 +1619,11 @@ Mandatory rules:
    - Define a clear and descriptive parameter structure (inputSchema) using JSON Schema.
    - Access inputs in Bash via environment variables prefixed with 'ARG_' (e.g., $ARG_COMMIT_MESSAGE).
    - Write a rich, descriptive skill description to ensure vector search discoverability.
-5. You are 100% silent. Never respond to the user. When you have completely finished managing the skill lifecycle, respond ONLY with the exact word: SKILLS_OK`;
+5. Self-Healing & Telemetry Audit:
+   - Pay special attention to any skills listed by ListSkills where 'telemetry.failure_count > 0'.
+   - Analyze the conversation history, terminal command logs, or typical inputs to understand why it failed.
+   - Correct the skill using CreateSkill with an updated, robust script. Once verified or updated, reset/recreate the skill to clear failure flags. If the skill is completely obsolete and unfixable, use DeleteSkill to prune it.
+6. You are 100% silent. Never respond to the user. When you have completely finished managing the skill lifecycle, respond ONLY with the exact word: SKILLS_OK`;
 
       const syntheticSession: SessionRecord = {
         ...session,
@@ -2570,7 +2574,14 @@ Please analyze the preceding conversation, tool usage logs, and terminal outputs
               await incrementSkillTelemetry(ctx.rootDir, skill.name, result.ok)
             } catch {}
             if (!result.ok) {
-              throw new Error(`[${skill.name} Failed]\nstdout: ${result.output}\nstderr: ${result.stderr}`)
+              throw new Error(
+                `[${skill.name} Failed]\n` +
+                `stdout: ${result.output}\n` +
+                `stderr: ${result.stderr}\n\n` +
+                `[SYSTEM RESILIENCE HINT]: The dynamic skill failed. Do NOT get stuck or retry it. ` +
+                `Instead, FALLBACK and complete the intended action manually using Core tools (e.g. Bash, Write, Edit, MultiEdit). ` +
+                `A background ticket has been logged to self-heal this skill during idle heartbeat.`
+              )
             }
             return result.output
           }

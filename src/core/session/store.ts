@@ -1248,7 +1248,7 @@ export function clearMemoryPalace(rootDir: string, profileId = "default") {
 
   db.exec("BEGIN TRANSACTION")
   try {
-    const deleteVec = db.prepare(`DELETE FROM vec_drawers WHERE rowid = ?`)
+    const deleteVec = db.prepare(`DELETE FROM vec_drawers WHERE id = ?`)
     for (const row of rows) {
       deleteVec.run(row.rowid)
     }
@@ -1573,7 +1573,7 @@ export async function recallMemory(rootDir: string, wing?: string, room?: string
     let sql = `SELECT m.id, m.profile_id, m.wing, m.room, m.memory_key, m.content, m.created_at, 
                       v.distance
                FROM vec_drawers v
-               JOIN memory_drawers m ON m.rowid = v.rowid
+               JOIN memory_drawers m ON m.rowid = v.id
                WHERE v.embedding MATCH ? AND k = 50`
 
     if (conditions.length > 0) {
@@ -1987,14 +1987,14 @@ export async function syncMissingEmbeddings(rootDir: string) {
     FROM memory_drawers 
     WHERE wing NOT LIKE 'CONF\\_%' ESCAPE '\\'
       AND content != ''
-      AND rowid NOT IN (SELECT rowid FROM vec_drawers)
+      AND rowid NOT IN (SELECT id FROM vec_drawers)
   `).all() as Array<{ rowid: number; id: string; content: string }>
 
   let drawersSynced = 0
   for (const row of missingDrawers) {
     try {
       const embedding = await generateEmbedding(row.content)
-      db.prepare(`INSERT OR REPLACE INTO vec_drawers (rowid, embedding) VALUES (?, ?)`).run(row.rowid, embedding)
+      db.prepare(`INSERT OR REPLACE INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(row.rowid, embedding)
       drawersSynced++
     } catch (error) {
       if (isEmbeddingsUnavailableError(error)) {
@@ -2026,7 +2026,7 @@ export async function upsertSemanticTool(rootDir: string, name: string, descript
   if (existing) {
     if (existing.content === description) {
       // Check if it already has an embedding
-      const hasVec = db.prepare(`SELECT 1 FROM vec_drawers WHERE rowid = ?`).get(existing.rowid)
+      const hasVec = db.prepare(`SELECT 1 FROM vec_drawers WHERE id = ?`).get(existing.rowid)
       if (hasVec) return
     }
     // Update content
@@ -2037,7 +2037,7 @@ export async function upsertSemanticTool(rootDir: string, name: string, descript
     `).run(description, existing.id)
     try {
       const floatArray = await generateEmbedding(description)
-      db.prepare(`INSERT OR REPLACE INTO vec_drawers (rowid, embedding) VALUES (?, ?)`).run(existing.rowid, floatArray)
+      db.prepare(`INSERT OR REPLACE INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(existing.rowid, floatArray)
     } catch (err) {
       logger.error(`Failed to update tool embedding for ${name}: ${err}`)
     }
@@ -2053,7 +2053,7 @@ export async function upsertSemanticTool(rootDir: string, name: string, descript
 
   try {
     const floatArray = await generateEmbedding(description)
-    db.prepare(`INSERT INTO vec_drawers (rowid, embedding) VALUES (?, ?)`).run(result.lastInsertRowid, floatArray)
+    db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(result.lastInsertRowid, floatArray)
   } catch (err) {
     logger.error(`Failed to generate tool embedding for ${name}: ${err}`)
   }
@@ -2068,7 +2068,7 @@ export async function querySemanticTools(rootDir: string, prompt: string, limit 
     const sql = `
       SELECT m.memory_key as name
       FROM vec_drawers v
-      JOIN memory_drawers m ON m.rowid = v.rowid
+      JOIN memory_drawers m ON m.rowid = v.id
       WHERE m.wing = ? AND m.room = ?
         AND v.embedding MATCH ? AND k = 50
       ORDER BY v.distance ASC
@@ -2222,7 +2222,7 @@ export function deleteDynamicSkill(rootDir: string, name: string): void {
   `).get(wing, room, name) as { rowid: number; id: string } | undefined
 
   if (existing) {
-    db.prepare(`DELETE FROM vec_drawers WHERE rowid = ?`).run(existing.rowid)
+    db.prepare(`DELETE FROM vec_drawers WHERE id = ?`).run(existing.rowid)
     db.prepare(`DELETE FROM memory_drawers WHERE id = ?`).run(existing.id)
   }
 }

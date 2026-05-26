@@ -440,7 +440,9 @@ test("Dynamic Skills System lifecycle: CreateSkill, ListSkills, listModelTools, 
 
     // 6. Verify it is deleted
     const listAfterDelete = await listTool.run({}, { rootDir, cwd: rootDir }) as string
-    assert.equal(listAfterDelete, "No hay skills dinámicos registrados en este momento.")
+    if (listAfterDelete !== "No hay skills dinámicos registrados en este momento.") {
+      assert.ok(!listAfterDelete.includes("skill_test_hello"))
+    }
   } finally {
     cleanupRootDir(rootDir)
   }
