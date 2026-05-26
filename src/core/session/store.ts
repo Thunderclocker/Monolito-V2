@@ -1250,7 +1250,7 @@ export function clearMemoryPalace(rootDir: string, profileId = "default") {
   try {
     const deleteVec = db.prepare(`DELETE FROM vec_drawers WHERE id = ?`)
     for (const row of rows) {
-      deleteVec.run(row.rowid)
+      deleteVec.run(BigInt(row.rowid))
     }
     db.prepare(`
       DELETE FROM memory_drawers
@@ -1532,8 +1532,8 @@ export async function fileMemory(rootDir: string, wing: string, room: string, co
     
     // Guardar vector matematico
     if (floatArray) {
-      const stmtVec = db.prepare(`INSERT INTO vec_drawers (rowid, embedding) VALUES (?, ?)`)
-      stmtVec.run(result.lastInsertRowid, floatArray)
+      const stmtVec = db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`)
+      stmtVec.run(BigInt(result.lastInsertRowid), floatArray)
     }
     
     db.exec("COMMIT")
@@ -1994,7 +1994,7 @@ export async function syncMissingEmbeddings(rootDir: string) {
   for (const row of missingDrawers) {
     try {
       const embedding = await generateEmbedding(row.content)
-      db.prepare(`INSERT OR REPLACE INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(row.rowid, embedding)
+      db.prepare(`INSERT OR REPLACE INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(row.rowid), embedding)
       drawersSynced++
     } catch (error) {
       if (isEmbeddingsUnavailableError(error)) {
@@ -2026,7 +2026,7 @@ export async function upsertSemanticTool(rootDir: string, name: string, descript
   if (existing) {
     if (existing.content === description) {
       // Check if it already has an embedding
-      const hasVec = db.prepare(`SELECT 1 FROM vec_drawers WHERE id = ?`).get(existing.rowid)
+      const hasVec = db.prepare(`SELECT 1 FROM vec_drawers WHERE id = ?`).get(BigInt(existing.rowid))
       if (hasVec) return
     }
     // Update content
@@ -2037,7 +2037,7 @@ export async function upsertSemanticTool(rootDir: string, name: string, descript
     `).run(description, existing.id)
     try {
       const floatArray = await generateEmbedding(description)
-      db.prepare(`INSERT OR REPLACE INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(existing.rowid, floatArray)
+      db.prepare(`INSERT OR REPLACE INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(existing.rowid), floatArray)
     } catch (err) {
       logger.error(`Failed to update tool embedding for ${name}: ${err}`)
     }
@@ -2053,7 +2053,7 @@ export async function upsertSemanticTool(rootDir: string, name: string, descript
 
   try {
     const floatArray = await generateEmbedding(description)
-    db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(result.lastInsertRowid, floatArray)
+    db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(result.lastInsertRowid), floatArray)
   } catch (err) {
     logger.error(`Failed to generate tool embedding for ${name}: ${err}`)
   }
@@ -2222,7 +2222,7 @@ export function deleteDynamicSkill(rootDir: string, name: string): void {
   `).get(wing, room, name) as { rowid: number; id: string } | undefined
 
   if (existing) {
-    db.prepare(`DELETE FROM vec_drawers WHERE id = ?`).run(existing.rowid)
+    db.prepare(`DELETE FROM vec_drawers WHERE id = ?`).run(BigInt(existing.rowid))
     db.prepare(`DELETE FROM memory_drawers WHERE id = ?`).run(existing.id)
   }
 }
