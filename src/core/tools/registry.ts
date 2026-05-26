@@ -674,6 +674,15 @@ function isLocalPath(value: string) {
   return value.startsWith("/") || value.startsWith("./") || value.startsWith("../") || value.startsWith("~/")
 }
 
+function resolveMonolitoPath(pathStr: string): string {
+  const index = pathStr.indexOf(".monolito-v2")
+  if (index !== -1) {
+    const relativePart = pathStr.slice(index + ".monolito-v2".length)
+    return join(MONOLITO_ROOT, relativePart)
+  }
+  return pathStr
+}
+
 async function telegramApiCallWithFile(
   token: string,
   method: string,
@@ -685,10 +694,7 @@ async function telegramApiCallWithFile(
     ? filePath.replace("~/", `${process.env.HOME ?? ""}/`)
     : filePath
 
-  if (resolvedPath.includes(".monolito-v2")) {
-    const worktreeRoot = process.cwd()
-    resolvedPath = resolvedPath.replace(/\/\.monolito-v2\//, `/${MONOLITO_ROOT}/`)
-  }
+  resolvedPath = resolveMonolitoPath(resolvedPath)
 
   if (!existsSync(resolvedPath)) {
     return { ok: false, description: `File not found: ${resolvedPath}` }
@@ -2366,7 +2372,7 @@ Actions:
       }
 
       if (isLocalPath(photo)) {
-        const resolvedPath = photo.replace(/\/\.monolito-v2\//, `/${MONOLITO_ROOT}/`)
+        const resolvedPath = resolveMonolitoPath(photo)
         if (isPhotoAlreadySent(context.rootDir, resolvedPath)) {
           return { ok: true, chat_id: chatId, message: "Photo already sent previously (deduplicated)", deduplicated: true }
         }
