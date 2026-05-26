@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { type MonolitoV2Runtime } from "./runtime.ts"
+import { runBackgroundTextTask } from "./modelAdapterLite.ts"
 import { ensureDirs } from "../ipc/protocol.ts"
 import {
   appendMessage,
@@ -114,21 +115,71 @@ function checkDynamicRalphRules(
   return null
 }
 
-function checkAssertionRalphRules(
+async function checkAssertionRalphRules(
   rootDir: string,
   sessionId: string,
   assistantReply: string,
   attempt: number
-): string | null {
+): Promise<string | null> {
   try {
     const events = tailEvents(rootDir, sessionId, 80)
     const normalizedReply = normalizeForIntent(assistantReply)
 
-    // Rule 1: Telegram media delivery (photos/images/gomas/tetas)
-    const hasSendPhotoClaim = /(?:te (?:envié|mandé|pasé|subí|adjunté|compartí)|ahí te (?:va|van|mando|envío)|acá (?:tenés|tienen|está|están))\b/i.test(normalizedReply) &&
+    // Fallback/default values using original regexes (Spanish specific)
+    let send_telegram_photo = /(?:te (?:envié|mandé|pasé|subí|adjunté|compartí)|ahí te (?:va|van|mando|envío)|acá (?:tenés|tienen|está|están))\b/i.test(normalizedReply) &&
       /(?:foto|imagen|goma|teta|captura|pic|img)\b/i.test(normalizedReply)
-    
-    if (hasSendPhotoClaim) {
+    let send_telegram_file = /(?:te (?:envié|mandé|pasé|subí|adjunté|compartí)|ahí te (?:va|van|mando|envío)|acá (?:tenés|tienen|está|están))\b/i.test(normalizedReply) &&
+      /(?:archivo|documento|pdf|zip|tar|rar|plan|txt)\b/i.test(normalizedReply)
+    let send_telegram_msg = /(?:te (?:envié|mandé|pasé|escribí|avisé)|ahí te (?:mando|envío))\b/i.test(normalizedReply) &&
+      /(?:mensaje|texto|chat|telegram)\b/i.test(normalizedReply)
+    let modify_workspace_files = /(?:creé el archivo|guardé en|modifiqué el archivo|escribí en|actualicé el archivo|agregué al archivo|eliminé el archivo)\b/i.test(normalizedReply)
+    let search_web = /(?:busqué en la web|busqué en internet|busqué en searxng|busqué en google|investigué en la web)\b/i.test(normalizedReply)
+
+    // Language-agnostic semantic classification
+    try {
+      const systemPrompt = `You are a silent runtime auditor. Your task is to analyze the assistant's message to see if they claim to have completed certain types of actions in this turn.
+
+Analyze the text and output a JSON object indicating whether the assistant explicitly or implicitly claims to have successfully done these actions:
+1. "send_telegram_photo": True if they claim to have sent an image, photo, screenshot, visual asset, or media via Telegram.
+2. "send_telegram_file": True if they claim to have sent a file, document, zip, pdf, sheet, or report via Telegram.
+3. "send_telegram_msg": True if they claim to have sent a message, notification, ping, alert, or text update via Telegram.
+4. "modify_workspace_files": True if they claim to have created, written, edited, modified, updated, or deleted any file in the workspace.
+5. "search_web": True if they claim to have performed a web search, internet search, or fetched information from a web URL.
+
+CRITICAL RULES:
+- Language Agnostic: The text might be in Spanish, English, Portuguese, or any other language.
+- Claims vs. Promises: Only flag if the assistant claims they HAVE ALREADY DONE/SENT it in this turn (e.g. "I've sent the photo", "ahí van las fotos", "aquí tienes el documento", "ya busqué en internet", "he editado el archivo"). Do NOT flag future promises (e.g., "I will send it later", "en un momento te lo envío").
+- Be precise and strict. Only output true if the language clearly asserts the action was performed.
+
+Respond ONLY with a valid JSON object in this format:
+{
+  "send_telegram_photo": boolean,
+  "send_telegram_file": boolean,
+  "send_telegram_msg": boolean,
+  "modify_workspace_files": boolean,
+  "search_web": boolean
+}`
+
+      const { text } = await runBackgroundTextTask(rootDir, systemPrompt, `Assistant message: "${assistantReply}"`, {
+        maxTokens: 150,
+      })
+
+      const parsed = JSON.parse(text.trim())
+      if (parsed && typeof parsed === "object") {
+        if (typeof parsed.send_telegram_photo === "boolean") send_telegram_photo = parsed.send_telegram_photo
+        if (typeof parsed.send_telegram_file === "boolean") send_telegram_file = parsed.send_telegram_file
+        if (typeof parsed.send_telegram_msg === "boolean") send_telegram_msg = parsed.send_telegram_msg
+        if (typeof parsed.modify_workspace_files === "boolean") modify_workspace_files = parsed.modify_workspace_files
+        if (typeof parsed.search_web === "boolean") search_web = parsed.search_web
+        
+        logger.debug(`[Ralph Loop] Semantic verification classification: ${JSON.stringify(parsed)}`)
+      }
+    } catch (llmErr) {
+      logger.warn(`[Ralph Loop] Semantic verification LLM call failed, falling back to regex: ${llmErr}`)
+    }
+
+    // Rule 1: Telegram media delivery (photos/images/gomas/tetas)
+    if (send_telegram_photo) {
       const sentPhoto = events.some(e =>
         e.type === "tool.finish" &&
         e.ok === true &&
@@ -151,10 +202,7 @@ function checkAssertionRalphRules(
     }
 
     // Rule 2: Telegram file delivery
-    const hasSendFileClaim = /(?:te (?:envié|mandé|pasé|subí|adjunté|compartí)|ahí te (?:va|van|mando|envío)|acá (?:tenés|tienen|está|están))\b/i.test(normalizedReply) &&
-      /(?:archivo|documento|pdf|zip|tar|rar|plan|txt)\b/i.test(normalizedReply)
-    
-    if (hasSendFileClaim) {
+    if (send_telegram_file) {
       const sentFile = events.some(e =>
         e.type === "tool.finish" &&
         e.ok === true &&
@@ -177,10 +225,7 @@ function checkAssertionRalphRules(
     }
 
     // Rule 3: Telegram message delivery (fallback for general "te mandé un mensaje")
-    const hasSendMessageClaim = /(?:te (?:envié|mandé|pasé|escribí|avisé)|ahí te (?:mando|envío))\b/i.test(normalizedReply) &&
-      /(?:mensaje|texto|chat|telegram)\b/i.test(normalizedReply)
-    
-    if (hasSendMessageClaim) {
+    if (send_telegram_msg) {
       const sentMsg = events.some(e =>
         e.type === "tool.finish" &&
         e.ok === true &&
@@ -203,8 +248,7 @@ function checkAssertionRalphRules(
     }
 
     // Rule 4: File modification claims
-    const hasFileModificationClaim = /(?:creé el archivo|guardé en|modifiqué el archivo|escribí en|actualicé el archivo|agregué al archivo|eliminé el archivo)\b/i.test(normalizedReply)
-    if (hasFileModificationClaim) {
+    if (modify_workspace_files) {
       const modifiedFile = events.some(e =>
         e.type === "tool.finish" &&
         e.ok === true &&
@@ -227,8 +271,7 @@ function checkAssertionRalphRules(
     }
 
     // Rule 5: Web Search claims
-    const hasSearchClaim = /(?:busqué en la web|busqué en internet|busqué en searxng|busqué en google|investigué en la web)\b/i.test(normalizedReply)
-    if (hasSearchClaim) {
+    if (search_web) {
       const searched = events.some(e =>
         e.type === "tool.finish" &&
         e.ok === true &&
@@ -918,7 +961,7 @@ export class AgentOrchestrator {
         }
 
         // 5. Assertion-based verification check (checks assistant claims vs actual tool executions)
-        const assertionBlockedPrompt = checkAssertionRalphRules(runtime.rootDir, task.subSessionId, assistantReply, attempt)
+        const assertionBlockedPrompt = await checkAssertionRalphRules(runtime.rootDir, task.subSessionId, assistantReply, attempt)
         if (assertionBlockedPrompt) {
           partialResult = assistantReply || partialResult
           if (attempt >= maxAttempts) {
