@@ -25,6 +25,14 @@ import {
 } from "../../../core/runtime/modelRegistry.ts"
 import { applyProfileToEnv, readModelSettings } from "../../../core/runtime/modelConfig.ts"
 import type { MenuState, MenuStep } from "./types.ts"
+import {
+  generatePKCE,
+  XAI_OAUTH_AUTHORIZE_URL,
+  XAI_OAUTH_CLIENT_ID,
+  XAI_OAUTH_SCOPE,
+  XAI_OAUTH_REDIRECT_PORT,
+  XAI_OAUTH_REDIRECT_PATH
+} from "../../../core/runtime/providers/grokAuth.ts"
 
 export type MenuResult = {
   /** Text to show in transcript as an event block */
@@ -144,8 +152,8 @@ export async function processMenuInput(input: string, state: MenuState): Promise
       return handleDeletePick(trimmed, state)
     case "delete-confirm":
       return handleDeleteConfirm(trimmed, state)
-    case "xai-oauth-pick":
-      return await handleXaiOAuthPick(trimmed, state)
+    case "xai-oauth-code":
+      return await handleXaiOAuthCode(trimmed, state)
     default:
       return exitMenu("Unknown state. Menu closed.")
   }
@@ -295,20 +303,36 @@ function handleAddProvider(input: string, state: MenuState): MenuResult {
     }
   }
   if (provider === "xai-oauth") {
+    const pkce = generatePKCE();
+    const redirectUri = `http://127.0.0.1:${XAI_OAUTH_REDIRECT_PORT}${XAI_OAUTH_REDIRECT_PATH}`;
+    const authUrl = `${XAI_OAUTH_AUTHORIZE_URL}?response_type=code&client_id=${XAI_OAUTH_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(XAI_OAUTH_SCOPE)}&code_challenge=${pkce.code_challenge}&code_challenge_method=S256&state=${pkce.state}&nonce=${pkce.nonce}&plan=generic&referrer=hermes-agent`;
+
     const lines = [
-      `Provider: ${provider}`,
+      `[+] Configurando Grok OAuth (xai-oauth)`,
       "",
-      "This provider uses secure OAuth authentication.",
-      "Select login mode:",
-      "  1. Active loopback listener (automatic via browser)",
-      "  2. Manual callback paste (--manual-paste, SSH/remote)",
-      "  0. Back",
+      "1. Abre este enlace en tu navegador para iniciar sesión:",
+      `\x1b[36m${authUrl}\x1b[0m`,
       "",
-      "Enter option number:",
+      "2. Una vez autorizado, el navegador intentará redirigir.",
+      "Copia el código ('code=...') o la URL de redirección completa fallida.",
+      "",
+      "Introduce el código o la URL aquí para completar la vinculación (0 para volver):",
     ]
+
     return {
       output: lines.join("\n"),
-      nextState: { ...state!, step: "xai-oauth-pick", draft: { ...state!.draft, provider } },
+      nextState: {
+        step: "xai-oauth-code",
+        draft: {
+          provider,
+          baseUrl: "https://api.x.ai",
+          apiKey: "",
+          model: "grok-4.3",
+        },
+        targetId: pkce.code_verifier,
+        editField: pkce.code_challenge,
+        availableModels: [pkce.state],
+      },
       tone: "info",
     }
   }
@@ -739,42 +763,95 @@ async function handleOllamaDiscover(): Promise<MenuResult> {
   }
 }
 
-async function handleXaiOAuthPick(input: string, state: MenuState): Promise<MenuResult> {
+async function handleXaiOAuthCode(input: string, state: MenuState): Promise<MenuResult> {
   if (input === "0") return openModelMenu()
-  if (input === "1" || input === "2") {
-    const manualPaste = input === "2"
-    const { runGrokOAuthLogin } = await import("../auth.ts")
+  const cleanedInput = input.trim()
+  if (!cleanedInput) {
+    return {
+      output: "El código no puede estar vacío. Introduce el código de autorización o URL:",
+      nextState: state,
+      tone: "error",
+    }
+  }
+
+  const provider = state!.draft.provider as ModelProvider
+  const code_verifier = state!.targetId!
+  const code_challenge = state!.editField!
+  const expectedState = state!.availableModels?.[0] ?? ""
+
+  let incomingCode: string | null = null;
+  let incomingState: string | null = null;
+  let incomingError: string | null = null;
+
+  if (cleanedInput.startsWith("http://") || cleanedInput.startsWith("https://")) {
     try {
-      // Execute the login flow
-      await runGrokOAuthLogin(false, manualPaste)
-
-      // Create the profile and activate it
-      const draft: ModelProfileDraft = {
-        name: "Grok SuperGrok (OAuth)",
-        provider: "xai-oauth",
-        baseUrl: "https://api.x.ai",
-        apiKey: "",
-        model: "grok-4.3",
-      }
-      const profile = addProfile(draft)
-      const profiles = listProfiles()
-      const idx = profiles.findIndex(p => p.id === profile.id)
-      if (idx >= 0) activateProfileByIndex(idx)
-      applyProfileToEnv(process.env, profile)
-
-      return openModelMenu(`Profile "${profile.name}" created and activated successfully!`, "success", true)
+      const urlObj = new URL(cleanedInput);
+      incomingCode = urlObj.searchParams.get("code");
+      incomingState = urlObj.searchParams.get("state");
+      incomingError = urlObj.searchParams.get("error");
     } catch (err) {
       return {
-        output: `Error de autenticación: ${err instanceof Error ? err.message : String(err)}\n\nPresione Enter para volver al menú principal:`,
-        nextState: { ...state!, step: "main" },
+        output: `Error al analizar la URL: ${err instanceof Error ? err.message : String(err)}\n\nIntroduce el código o la URL de nuevo:`,
+        nextState: state,
         tone: "error",
       }
     }
+  } else {
+    // Treat as raw authorization code
+    incomingCode = cleanedInput;
+    incomingState = expectedState; // bypass state check by matching current state
   }
-  return {
-    output: "Invalid option. Enter 1 (loopback), 2 (manual paste), or 0 (back):",
-    nextState: state,
-    tone: "error",
+
+  if (incomingError) {
+    return {
+      output: `El servidor OAuth devolvió un error: ${incomingError}\n\nIntroduce el código o la URL de nuevo:`,
+      nextState: state,
+      tone: "error",
+    }
+  }
+  if (incomingState !== expectedState) {
+    return {
+      output: "Mismatched OAuth state parameter (posible CSRF).\n\nIntroduce el código o la URL de nuevo:",
+      nextState: state,
+      tone: "error",
+    }
+  }
+  if (!incomingCode) {
+    return {
+      output: "No se pudo extraer el código de autorización de la entrada provista.\n\nIntroduce el código o la URL de nuevo:",
+      nextState: state,
+      tone: "error",
+    }
+  }
+
+  const { exchangeCodeForTokens, saveGrokTokens } = await import("../../../core/runtime/providers/grokAuth.ts")
+  const redirectUri = `http://127.0.0.1:${XAI_OAUTH_REDIRECT_PORT}${XAI_OAUTH_REDIRECT_PATH}`;
+
+  try {
+    const tokens = await exchangeCodeForTokens(incomingCode, code_verifier, code_challenge, redirectUri);
+    await saveGrokTokens(tokens);
+
+    // Create the profile and activate it
+    const draft: ModelProfileDraft = {
+      name: "Grok SuperGrok (OAuth)",
+      provider: "xai-oauth",
+      baseUrl: "https://api.x.ai",
+      apiKey: "",
+      model: "grok-4.3",
+    }
+    const profile = addProfile(draft)
+    const profiles = listProfiles()
+    const idx = profiles.findIndex(p => p.id === profile.id)
+    if (idx >= 0) activateProfileByIndex(idx)
+    applyProfileToEnv(process.env, profile)
+
+    return openModelMenu(`Profile "${profile.name}" created and activated successfully!`, "success", true)
+  } catch (err) {
+    return {
+      output: `Error de intercambio de tokens: ${err instanceof Error ? err.message : String(err)}\n\nIntroduce el código o la URL de nuevo:`,
+      nextState: state,
+      tone: "error",
+    }
   }
 }
 

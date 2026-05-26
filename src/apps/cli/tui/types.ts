@@ -20,7 +20,8 @@ export type MenuStep =
   | "edit-value"     // Enter new value for field
   | "delete-pick"    // Pick profile to delete
   | "delete-confirm" // Confirm deletion
-  | "xai-oauth-pick" // xAI Grok OAuth mode picker
+  | "xai-oauth-pick" // xAI Grok OAuth mode picker (CLI command proxy)
+  | "xai-oauth-code" // xAI Grok OAuth code pasting step
   // Channel menu steps
   | "chan-main"      // Channel main menu
   | "chan-tel-token" // Set Telegram bot token
