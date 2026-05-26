@@ -64,15 +64,30 @@ export async function runGrokOAuthLogin(noBrowser: boolean, manualPaste: boolean
     try {
       console.log("Iniciando en modo de PEGA MANUAL (sin levantar puertos locales).");
       console.log("Completa la autenticación en tu navegador.");
-      console.log("Cuando intente redirigir y falle en tu navegador, copia la URL completa de la barra de direcciones.");
+      console.log("Cuando intente redirigir y falle, copia el código ('code=...') o la URL de callback completa.");
       console.log();
-      const inputUrl = await rl.question("Pega la URL de callback fallida (comienza con http://127.0.0.1...): ");
+      const inputRaw = await rl.question("Pega la URL de callback completa o el código de autorización ('code'): ");
       console.log();
 
-      const urlObj = new URL(inputUrl.trim());
-      const incomingCode = urlObj.searchParams.get("code");
-      const incomingState = urlObj.searchParams.get("state");
-      const incomingError = urlObj.searchParams.get("error");
+      const cleanedInput = inputRaw.trim();
+      let incomingCode: string | null = null;
+      let incomingState: string | null = null;
+      let incomingError: string | null = null;
+
+      if (cleanedInput.startsWith("http://") || cleanedInput.startsWith("https://")) {
+        try {
+          const urlObj = new URL(cleanedInput);
+          incomingCode = urlObj.searchParams.get("code");
+          incomingState = urlObj.searchParams.get("state");
+          incomingError = urlObj.searchParams.get("error");
+        } catch (err) {
+          throw new Error(`Error al analizar la URL: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } else {
+        // Treat as raw authorization code
+        incomingCode = cleanedInput;
+        incomingState = state; // bypass state check by matching current state
+      }
 
       if (incomingError) {
         throw new Error(`El servidor OAuth devolvió un error: ${incomingError}`);
@@ -81,7 +96,7 @@ export async function runGrokOAuthLogin(noBrowser: boolean, manualPaste: boolean
         throw new Error("Mismatched OAuth state parameter (posible CSRF)");
       }
       if (!incomingCode) {
-        throw new Error("No se pudo extraer el código de autorización de la URL provista.");
+        throw new Error("No se pudo extraer el código de autorización de la entrada provista.");
       }
 
       console.log("Intercambiando código de autorización por tokens...");
