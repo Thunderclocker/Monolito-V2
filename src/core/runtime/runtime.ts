@@ -1619,6 +1619,7 @@ Mandatory rules:
    - Define a clear and descriptive parameter structure (inputSchema) using JSON Schema.
    - Access inputs in Bash via environment variables prefixed with 'ARG_' (e.g., $ARG_COMMIT_MESSAGE).
    - Write a rich, descriptive skill description to ensure vector search discoverability.
+   - CRITICAL WARNING: Bash scripts run in an ordinary Linux shell. Monolito internal tools (like ImageSearch, DownloadFile, TelegramSendPhoto, WebSearch, etc.) are NOT available as commands in the terminal. To download files, you must use 'curl' or 'wget'. To interact with Telegram or external APIs, you must perform direct HTTP requests (e.g., using 'curl' to Telegram API with the bot token). NEVER attempt to call Monolito tools as terminal commands inside Bash scripts.
 5. Self-Healing & Telemetry Audit:
    - Pay special attention to any skills listed by ListSkills where 'telemetry.failure_count > 0'.
    - Analyze the conversation history, terminal command logs, or typical inputs to understand why it failed.

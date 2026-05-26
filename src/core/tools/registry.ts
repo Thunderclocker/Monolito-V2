@@ -3926,7 +3926,7 @@ Actions:
   {
     name: "CreateSkill",
     permissionTier: "edit",
-    description: "Crea o actualiza un skill dinámico (habilidad) basado en scripts ejecutables de Bash. El skill será registrado semánticamente y estará disponible de inmediato para todos los perfiles de Monolito.",
+    description: "Crea o actualiza un skill dinámico (habilidad) basado en scripts ejecutables de Bash. El skill será registrado semánticamente y estará disponible de inmediato para todos los perfiles de Monolito. ADVERTENCIA CRÍTICA: Los scripts de Bash se ejecutan en una shell de Linux ordinaria. Las herramientas de Monolito (como ImageSearch, DownloadFile, TelegramSendPhoto, WebSearch, etc.) NO están disponibles como comandos en la terminal. Para descargar archivos, utiliza 'curl' o 'wget'. Para interactuar con Telegram o APIs externas en un script de Bash, realiza peticiones HTTP directas (ej: curl contra la API de Telegram usando el bot token). NO intentes llamar a las herramientas del registro como comandos de terminal.",
     inputSchema: {
       type: "object",
       properties: {
