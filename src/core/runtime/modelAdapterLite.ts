@@ -672,7 +672,7 @@ export async function* runAgentLoop(
 
   const lastUserText = getLastUserMessage(session)
   let allowedToolNames: string[] | undefined = undefined
-  if (lastUserText && lastUserText.trim().length > 0) {
+  if (lastUserText && lastUserText.trim().length >= 25) {
     try {
       const { querySemanticTools } = await import("../session/store.ts")
       const queryPromise = querySemanticTools(rootDir, lastUserText, 5)

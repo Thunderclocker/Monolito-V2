@@ -4144,6 +4144,8 @@ export function listModelTools(isSubAgent = false, lastUserText?: string, allowe
     "AgentStop",
     "TelegramSend",
     "TelegramSendPhoto",
+    "ImageSearch",
+    "DownloadFile",
   ])
 
   const staticMapped = tools
