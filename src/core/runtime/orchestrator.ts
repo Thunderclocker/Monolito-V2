@@ -114,6 +114,149 @@ function checkDynamicRalphRules(
   return null
 }
 
+function checkAssertionRalphRules(
+  rootDir: string,
+  sessionId: string,
+  assistantReply: string,
+  attempt: number
+): string | null {
+  try {
+    const events = tailEvents(rootDir, sessionId, 80)
+    const normalizedReply = normalizeForIntent(assistantReply)
+
+    // Rule 1: Telegram media delivery (photos/images/gomas/tetas)
+    const hasSendPhotoClaim = /(?:te (?:envié|mandé|pasé|subí|adjunté|compartí)|ahí te (?:va|van|mando|envío)|acá (?:tenés|tienen|está|están))\b/i.test(normalizedReply) &&
+      /(?:foto|imagen|goma|teta|captura|pic|img)\b/i.test(normalizedReply)
+    
+    if (hasSendPhotoClaim) {
+      const sentPhoto = events.some(e =>
+        e.type === "tool.finish" &&
+        e.ok === true &&
+        ["TelegramSendPhoto", "TelegramSendDocument"].includes(e.tool)
+      )
+      if (!sentPhoto) {
+        appendWorklog(rootDir, sessionId, {
+          type: "note",
+          summary: `[Ralph Loop] Blocked premature completion on attempt ${attempt}: claimed to send photo/image, but TelegramSendPhoto/TelegramSendDocument did not run successfully.`,
+        })
+        return [
+          "[Ralph Loop] SYSTEM ALERT",
+          "Afirmaste en tu mensaje que enviaste una foto o imagen por Telegram, pero la herramienta 'TelegramSendPhoto' o 'TelegramSendDocument' no se ejecutó con éxito (o falló con algún error de ruta/API).",
+          "Es obligatorio realizar el envío efectivo del archivo antes de dar por terminada la tarea.",
+          "Por favor, revisá por qué falló el envío (ej: rutas duplicadas, imágenes no descargadas), corregí el error y realizá el envío por Telegram antes de responder.",
+          "",
+          `Último intento rechazado: ${clip(assistantReply, 500)}`,
+        ].join("\n")
+      }
+    }
+
+    // Rule 2: Telegram file delivery
+    const hasSendFileClaim = /(?:te (?:envié|mandé|pasé|subí|adjunté|compartí)|ahí te (?:va|van|mando|envío)|acá (?:tenés|tienen|está|están))\b/i.test(normalizedReply) &&
+      /(?:archivo|documento|pdf|zip|tar|rar|plan|txt)\b/i.test(normalizedReply)
+    
+    if (hasSendFileClaim) {
+      const sentFile = events.some(e =>
+        e.type === "tool.finish" &&
+        e.ok === true &&
+        ["TelegramSendDocument", "TelegramSendPhoto"].includes(e.tool)
+      )
+      if (!sentFile) {
+        appendWorklog(rootDir, sessionId, {
+          type: "note",
+          summary: `[Ralph Loop] Blocked premature completion on attempt ${attempt}: claimed to send file/document, but TelegramSendDocument did not run successfully.`,
+        })
+        return [
+          "[Ralph Loop] SYSTEM ALERT",
+          "Afirmaste en tu mensaje que enviaste un archivo o documento por Telegram, pero la herramienta 'TelegramSendDocument' no se ejecutó con éxito.",
+          "Es obligatorio realizar el envío efectivo del documento antes de dar por terminada la tarea.",
+          "Por favor, ejecutá el envío por Telegram con la herramienta adecuada antes de responder.",
+          "",
+          `Último intento rechazado: ${clip(assistantReply, 500)}`,
+        ].join("\n")
+      }
+    }
+
+    // Rule 3: Telegram message delivery (fallback for general "te mandé un mensaje")
+    const hasSendMessageClaim = /(?:te (?:envié|mandé|pasé|escribí|avisé)|ahí te (?:mando|envío))\b/i.test(normalizedReply) &&
+      /(?:mensaje|texto|chat|telegram)\b/i.test(normalizedReply)
+    
+    if (hasSendMessageClaim) {
+      const sentMsg = events.some(e =>
+        e.type === "tool.finish" &&
+        e.ok === true &&
+        ["TelegramSend", "TelegramSendPhoto", "TelegramSendAudio", "TelegramSendVoice", "TelegramSendDocument"].includes(e.tool)
+      )
+      if (!sentMsg) {
+        appendWorklog(rootDir, sessionId, {
+          type: "note",
+          summary: `[Ralph Loop] Blocked premature completion on attempt ${attempt}: claimed to send message/notify, but no TelegramSend* tools ran successfully.`,
+        })
+        return [
+          "[Ralph Loop] SYSTEM ALERT",
+          "Afirmaste en tu mensaje que enviaste un mensaje o notificación por Telegram, pero ninguna herramienta de envío de Telegram ('TelegramSend', 'TelegramSendPhoto', etc.) se ejecutó con éxito.",
+          "Es obligatorio interactuar con el canal de Telegram si decís que lo hiciste.",
+          "Por favor, ejecutá el envío por Telegram correspondiente antes de responder.",
+          "",
+          `Último intento rechazado: ${clip(assistantReply, 500)}`,
+        ].join("\n")
+      }
+    }
+
+    // Rule 4: File modification claims
+    const hasFileModificationClaim = /(?:creé el archivo|guardé en|modifiqué el archivo|escribí en|actualicé el archivo|agregué al archivo|eliminé el archivo)\b/i.test(normalizedReply)
+    if (hasFileModificationClaim) {
+      const modifiedFile = events.some(e =>
+        e.type === "tool.finish" &&
+        e.ok === true &&
+        ["Write", "Edit", "MultiEdit", "replace_file_content", "multi_replace_file_content", "WriteFile", "EditFile", "Bash"].includes(e.tool)
+      )
+      if (!modifiedFile) {
+        appendWorklog(rootDir, sessionId, {
+          type: "note",
+          summary: `[Ralph Loop] Blocked premature completion on attempt ${attempt}: claimed to modify files, but no writing/editing tool ran successfully.`,
+        })
+        return [
+          "[Ralph Loop] SYSTEM ALERT",
+          "Afirmaste en tu mensaje que creaste, modificaste o escribiste en un archivo, pero ninguna herramienta de escritura/edición ('Write', 'Edit', etc.) se ejecutó con éxito.",
+          "No podés finalizar si decís que modificaste archivos en el workspace pero no realizaste la acción efectiva.",
+          "Por favor, editá o escribí los archivos correspondientes en el workspace usando las herramientas antes de responder.",
+          "",
+          `Último intento rechazado: ${clip(assistantReply, 500)}`,
+        ].join("\n")
+      }
+    }
+
+    // Rule 5: Web Search claims
+    const hasSearchClaim = /(?:busqué en la web|busqué en internet|busqué en searxng|busqué en google|investigué en la web)\b/i.test(normalizedReply)
+    if (hasSearchClaim) {
+      const searched = events.some(e =>
+        e.type === "tool.finish" &&
+        e.ok === true &&
+        ["WebSearch", "WebFetch", "ImageSearch", "search_web"].includes(e.tool)
+      )
+      if (!searched) {
+        appendWorklog(rootDir, sessionId, {
+          type: "note",
+          summary: `[Ralph Loop] Blocked premature completion on attempt ${attempt}: claimed to perform web search, but no search tool ran successfully.`,
+        })
+        return [
+          "[Ralph Loop] SYSTEM ALERT",
+          "Afirmaste en tu mensaje que realizaste una búsqueda en la web o internet, pero ninguna herramienta de búsqueda ('WebSearch', etc.) se ejecutó con éxito.",
+          "Si afirmás que buscaste información en internet, debés haber llamado a una herramienta de búsqueda.",
+          "Por favor, ejecutá la búsqueda web correspondiente antes de responder.",
+          "",
+          `Último intento rechazado: ${clip(assistantReply, 500)}`,
+        ].join("\n")
+      }
+    }
+
+  } catch (err) {
+    logger.error(`Error executing assertion Ralph rules: ${err}`)
+  }
+  return null
+}
+
+
 
 function extractPartialImageEvidence(rootDir: string, sessionId: string) {
   const events = tailEvents(rootDir, sessionId, 80)
@@ -770,6 +913,18 @@ export class AgentOrchestrator {
             throw new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts with failing dynamic verification rules`)
           }
           currentText = dynamicBlockedPrompt
+          attempt++
+          continue
+        }
+
+        // 5. Assertion-based verification check (checks assistant claims vs actual tool executions)
+        const assertionBlockedPrompt = checkAssertionRalphRules(runtime.rootDir, task.subSessionId, assistantReply, attempt)
+        if (assertionBlockedPrompt) {
+          partialResult = assistantReply || partialResult
+          if (attempt >= maxAttempts) {
+            throw new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts with failing assertion verification rules`)
+          }
+          currentText = assertionBlockedPrompt
           attempt++
           continue
         }
