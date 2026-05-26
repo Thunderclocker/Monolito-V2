@@ -2812,15 +2812,39 @@ Please analyze the preceding conversation, tool usage logs, and terminal outputs
     if (!action || action === "info" || action === "show" || action === "status") {
       const storedSettings = readModelSettings()
       const effective = getEffectiveModelConfig()
-      return [
+      const lines = [
         `Protocol: ${storedSettings.modelConfig.protocol}`,
         `Base URL: ${effective.baseUrl || "(system/default)"}`,
         `API key: ${maskApiKey(effective.apiKey)}`,
         `Model: ${effective.model || "(unset)"}`,
-        "",
-        "Persisted settings:",
-        JSON.stringify(redactSensitiveModelSettings(storedSettings), null, 2),
-      ].join("\n")
+        `Provider: ${effective.provider || "anthropic_compatible"}`,
+      ]
+
+      if (effective.provider === "xai-oauth") {
+        const { loadGrokTokens } = await import("./providers/grokAuth.ts")
+        const tokens = await loadGrokTokens()
+        if (tokens) {
+          const now = Math.floor(Date.now() / 1000)
+          const valid = tokens.expires_at > now
+          const statusStr = valid ? "Authenticated (active)" : "Authenticated (token expired, will auto-refresh)"
+          lines.push(`Grok OAuth: ${statusStr}`)
+          lines.push(`Expires at: ${new Date(tokens.expires_at * 1000).toLocaleString()}`)
+        } else {
+          lines.push("Grok OAuth: Not authenticated. Please run 'monolito auth xai-oauth' to log in.")
+        }
+      }
+
+      lines.push("")
+      lines.push("Persisted settings:")
+      lines.push(JSON.stringify(redactSensitiveModelSettings(storedSettings), null, 2))
+      return lines.join("\n")
+    }
+    if (action === "login") {
+      const provider = (rest[1] ?? "").trim()
+      if (provider === "xai-oauth") {
+        return "To authenticate with Grok OAuth, please run this command in your terminal:\n  monolito auth xai-oauth"
+      }
+      return "Usage: /model login xai-oauth"
     }
     if (action === "reset") {
       const settings = draftToSettings(

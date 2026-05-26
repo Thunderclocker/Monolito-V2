@@ -8,7 +8,7 @@ import { coerceConfigRecord } from "../config/wingValue.ts"
 // Types
 // ---------------------------------------------------------------------------
 
-export type ModelProvider = "minimax" | "ollama" | "openai_compatible" | "anthropic_compatible"
+export type ModelProvider = "minimax" | "ollama" | "openai_compatible" | "anthropic_compatible" | "xai-oauth"
 
 export type ModelProfile = {
   id: string
@@ -50,6 +50,7 @@ const PROVIDER_DEFAULTS: Record<ModelProvider, { baseUrl: string; needsApiKey: b
   ollama: { baseUrl: "http://localhost:11434", needsApiKey: false },
   openai_compatible: { baseUrl: "https://api.openai.com", needsApiKey: true },
   anthropic_compatible: { baseUrl: "", needsApiKey: true },
+  "xai-oauth": { baseUrl: "https://api.x.ai", needsApiKey: false },
 }
 
 export function getProviderDefaults(provider: ModelProvider) {
@@ -57,7 +58,7 @@ export function getProviderDefaults(provider: ModelProvider) {
 }
 
 export function getAvailableProviders(): ModelProvider[] {
-  return ["openai_compatible", "anthropic_compatible", "ollama", "minimax"]
+  return ["openai_compatible", "anthropic_compatible", "ollama", "minimax", "xai-oauth"]
 }
 
 // ---------------------------------------------------------------------------

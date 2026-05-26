@@ -20,10 +20,24 @@ export async function runCliCommand(client: DaemonClient, args: CliArgs) {
   const { command, rest, prompt } = args
 
   if (command === "--help") {
-    writeLine("monolito [sessions|resume <id>|logs <id>|status <id>|history <id>|ask <prompt>|/command [args]] [-p <prompt>]")
+    writeLine("monolito [sessions|resume <id>|logs <id>|status <id>|history <id>|ask <prompt>|auth <provider>|/command [args]] [-p <prompt>]")
     writeLine("Without arguments, opens the Monolito terminal client and starts the daemon if needed.")
     writeLine("  ask <prompt>    Send a prompt to Monolito via Unix socket (no TUI)")
+    writeLine("  auth xai-oauth  Authenticate with Grok OAuth (SuperGrok / X Premium+)")
     writeLine("  /command        Run daemon command directly: /help /status /update /reset /model /channels")
+    return
+  }
+
+  if (command === "auth") {
+    const subCommand = (rest[0] ?? "").trim().toLowerCase()
+    if (subCommand === "xai-oauth" || subCommand === "grok-oauth") {
+      const { runGrokOAuthLogin } = await import("./auth.ts")
+      const noBrowser = rest.includes("--no-browser")
+      const manualPaste = rest.includes("--manual-paste")
+      await runGrokOAuthLogin(noBrowser, manualPaste)
+      return
+    }
+    writeLine("Usage: monolito auth xai-oauth [--no-browser] [--manual-paste]")
     return
   }
 

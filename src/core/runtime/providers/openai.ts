@@ -18,6 +18,10 @@ export async function callOpenAiCompatibleApi(
     authorization: `Bearer ${config.apiKey}`,
   }
 
+  if ((config.provider === "xai-oauth" || config.baseUrl.includes("x.ai")) && config.sessionId) {
+    headers["x-grok-conv-id"] = config.sessionId
+  }
+
   const data = await callJsonApi(`${config.baseUrl}/v1/chat/completions`, {
     method: "POST",
     headers,

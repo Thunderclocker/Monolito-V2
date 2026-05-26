@@ -144,6 +144,8 @@ export async function processMenuInput(input: string, state: MenuState): Promise
       return handleDeletePick(trimmed, state)
     case "delete-confirm":
       return handleDeleteConfirm(trimmed, state)
+    case "xai-oauth-pick":
+      return await handleXaiOAuthPick(trimmed, state)
     default:
       return exitMenu("Unknown state. Menu closed.")
   }
@@ -290,6 +292,24 @@ function handleAddProvider(input: string, state: MenuState): MenuResult {
       output: `Invalid option "${input}".\n\nEnter provider number:`,
       nextState: state,
       tone: "error",
+    }
+  }
+  if (provider === "xai-oauth") {
+    const lines = [
+      `Provider: ${provider}`,
+      "",
+      "This provider uses secure OAuth authentication.",
+      "Select login mode:",
+      "  1. Active loopback listener (automatic via browser)",
+      "  2. Manual callback paste (--manual-paste, SSH/remote)",
+      "  0. Back",
+      "",
+      "Enter option number:",
+    ]
+    return {
+      output: lines.join("\n"),
+      nextState: { ...state!, step: "xai-oauth-pick", draft: { ...state!.draft, provider } },
+      tone: "info",
     }
   }
   const defaults = getProviderDefaults(provider)
@@ -716,6 +736,45 @@ async function handleOllamaDiscover(): Promise<MenuResult> {
     output: lines.join("\n"),
     nextState: { step: "select", draft: {} },
     tone: "success",
+  }
+}
+
+async function handleXaiOAuthPick(input: string, state: MenuState): Promise<MenuResult> {
+  if (input === "0") return openModelMenu()
+  if (input === "1" || input === "2") {
+    const manualPaste = input === "2"
+    const { runGrokOAuthLogin } = await import("../auth.ts")
+    try {
+      // Execute the login flow
+      await runGrokOAuthLogin(false, manualPaste)
+
+      // Create the profile and activate it
+      const draft: ModelProfileDraft = {
+        name: "Grok SuperGrok (OAuth)",
+        provider: "xai-oauth",
+        baseUrl: "https://api.x.ai",
+        apiKey: "",
+        model: "grok-4.3",
+      }
+      const profile = addProfile(draft)
+      const profiles = listProfiles()
+      const idx = profiles.findIndex(p => p.id === profile.id)
+      if (idx >= 0) activateProfileByIndex(idx)
+      applyProfileToEnv(process.env, profile)
+
+      return openModelMenu(`Profile "${profile.name}" created and activated successfully!`, "success", true)
+    } catch (err) {
+      return {
+        output: `Error de autenticación: ${err instanceof Error ? err.message : String(err)}\n\nPresione Enter para volver al menú principal:`,
+        nextState: { ...state!, step: "main" },
+        tone: "error",
+      }
+    }
+  }
+  return {
+    output: "Invalid option. Enter 1 (loopback), 2 (manual paste), or 0 (back):",
+    nextState: state,
+    tone: "error",
   }
 }
 

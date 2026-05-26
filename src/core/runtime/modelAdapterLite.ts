@@ -591,7 +591,7 @@ async function* callProviderWithRetry(config: ProviderConfig, prompt: ReturnType
         if (authAttempts > 0) throw error
         authAttempts++
         loadAndApplyModelSettings(process.env)
-        currentConfig = { ...getEffectiveModelConfig() }
+        currentConfig = { ...getEffectiveModelConfig(), sessionId: config.sessionId }
         continue
       }
 
@@ -660,7 +660,7 @@ export async function* runAgentLoop(
   const startedAt = options?.turnStartedAt ?? Date.now()
   const maxIterations = options?.maxIterations ?? MAX_TURN_ITERATIONS
   const maxTurnDurationMs = options?.maxTurnDurationMs ?? DEFAULT_MAX_TURN_DURATION_MS
-  let config = { ...getEffectiveModelConfig() }
+  let config = { ...getEffectiveModelConfig(), sessionId: session.id }
   const isSubAgent = session.id.startsWith("agent-")
   let activeSession = session
   let compacted = false
