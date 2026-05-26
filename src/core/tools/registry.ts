@@ -209,14 +209,14 @@ function buildTelegramPhotoWorkerTask(task: string, parentSessionId: string, lat
   const shouldVerify = requiresImageVerificationText(`${latestUserText}\n${task}`)
   const imageHandlingSteps = shouldVerify
     ? [
-        "2. Como el pedido exige verificacion visual, validá cada candidato con AnalyzeImage. Descartá cualquier resultado sin descripción útil o que no coincida con el pedido.",
+        "2. Como el pedido exige verificacion visual, validá cada candidato prioritariamente con VisionAnalyze (usando la API del modelo activo en la nube) para que sea instantáneo. Si falla o no está disponible, usá la herramienta local AnalyzeImage como fallback. Descartá cualquier resultado sin descripción útil o que no coincida con el pedido.",
         "3. NO envíes mensajes ni archivos al usuario. Tu salida es solo para el coordinador.",
-        "4. Devolvé los local_path validados por AnalyzeImage y una descripción breve de cada imagen.",
+        "4. Devolvé los local_path validados por la herramienta y una descripción breve de cada imagen.",
         "5. No devuelvas solo URLs si el usuario pidió verificación; el coordinador necesita local_path validado.",
         "6. Si no lográs validar ninguna foto, respondé claramente que no hay local_path validado y por qué.",
       ]
     : [
-        "2. NO uses AnalyzeImage salvo que el pedido original solicite verificacion/analisis visual.",
+        "2. NO uses AnalyzeImage ni VisionAnalyze salvo que el pedido original solicite verificacion/analisis visual.",
         "3. NO uses WebFetch ni scraping de paginas fuente. Usá directamente los `image_url` que devuelve ImageSearch.",
         "4. NO envíes mensajes ni archivos al usuario. Tu salida es solo para el coordinador.",
         "5. Devolvé las mejores `image_url` directas, con título/fuente si están disponibles.",
@@ -3486,6 +3486,7 @@ Actions:
       
       let buffer: Buffer
       let mediaType = "image/jpeg"
+      let localPath = ""
       
       if (url) {
         if (url.toLowerCase().endsWith(".png")) mediaType = "image/png"
@@ -3495,6 +3496,11 @@ Actions:
         const response = await fetch(url, { signal: context.abortSignal })
         if (!response.ok) return formatToolError(`Error descargando imagen desde URL: HTTP ${response.status}`)
         buffer = Buffer.from(await response.arrayBuffer())
+
+        const scratchpadDir = join(MONOLITO_ROOT, "scratchpad")
+        mkdirSync(scratchpadDir, { recursive: true })
+        localPath = join(scratchpadDir, `vision-${randomUUID()}.${mediaType === "image/png" ? "png" : "jpg"}`)
+        writeFileSync(localPath, buffer)
       } else if (pathArg) {
         if (pathArg.toLowerCase().endsWith(".png")) mediaType = "image/png"
         else if (pathArg.toLowerCase().endsWith(".webp")) mediaType = "image/webp"
@@ -3503,6 +3509,7 @@ Actions:
         const absolutePath = resolve(context.cwd, pathArg)
         if (!existsSync(absolutePath)) return formatToolError(`Archivo no encontrado: ${absolutePath}`)
         buffer = readFileSync(absolutePath)
+        localPath = absolutePath
       } else {
         return formatToolError("Debes proporcionar 'url' o 'path'.")
       }
@@ -3579,7 +3586,7 @@ Actions:
           const localDescription = await analyzeManagedImage(tmpPath, visionConfig)
           return { ok: true, description: localDescription, local_path: tmpPath }
         }
-        return { ok: true, description }
+        return { ok: true, description, local_path: localPath }
       } else {
         const endpoint = baseUrl ? `${baseUrl}/v1/chat/completions` : "https://api.openai.com/v1/chat/completions"
         
@@ -3627,7 +3634,7 @@ Actions:
           const localDescription = await analyzeManagedImage(tmpPath, visionConfig)
           return { ok: true, description: localDescription, local_path: tmpPath }
         }
-        return { ok: true, description }
+        return { ok: true, description, local_path: localPath }
       }
     },
   },

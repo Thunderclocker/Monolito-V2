@@ -378,13 +378,13 @@ function buildSystemPrompt(args: {
     "## Visual & Media Processing Protocol",
     isSubAgent
       ? [
-          "- To analyze or describe visual content of an image when explicitly requested, you MUST use the AnalyzeImage tool with the URL. Never write a Python script calling external vision APIs.",
+          "- To analyze or describe visual content of an image when explicitly requested, you MUST use the VisionAnalyze tool (using the cloud API model) or the AnalyzeImage tool (local fallback). Never write a Python script calling external vision APIs.",
           isImageIntent
             ? "- To analyze images, first use WebSearch/WebFetch to obtain them, then invoke the VisionAnalyze / AnalyzeImage tool. NEVER use Bash."
             : "- For simple image searches, use ImageSearch and return direct image_urls. Do not use WebFetch or scrape source pages.",
           "- If the task requires photos for Telegram without asking for visual verification, return direct image_urls; the coordinator will handle delivery.",
-          "- If the task requires visual verification of photos for Telegram, each valid image must pass through AnalyzeImage. Return the validated local_path; the coordinator will handle delivery.",
-          "- If AnalyzeImage fails (service down, timeout), report the error explicitly. Do not attempt workarounds via Bash.",
+          "- If the task requires visual verification of photos for Telegram, each valid image must pass through VisionAnalyze (or AnalyzeImage as fallback). Return the validated local_path; the coordinator will handle delivery.",
+          "- If VisionAnalyze or AnalyzeImage fails, report the error explicitly. Do not attempt workarounds via Bash.",
         ].join("\n")
       : [
           "- PHOTO ANTI-HALLUCINATION RULE: If the user asks to send images and you have image_url or local_path available, you MUST execute TelegramSendPhoto BEFORE emitting any text response. NEVER reply with a list or text description of photos assuming that equals sending them.",
