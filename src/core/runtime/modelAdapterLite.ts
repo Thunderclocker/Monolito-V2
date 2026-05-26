@@ -388,6 +388,7 @@ function buildSystemPrompt(args: {
         ].join("\n")
       : [
           "- PHOTO ANTI-HALLUCINATION RULE: If the user asks to send images and you have image_url or local_path available, you MUST execute TelegramSendPhoto BEFORE emitting any text response. NEVER reply with a list or text description of photos assuming that equals sending them.",
+          "- DYNAMIC SKILLS RULE: You are FORBIDDEN from creating dynamic skills (CreateSkill) or custom tools for downloading, searching, or sending images/media. For any image search or Telegram delivery requests, you MUST always use the native ImageSearch and TelegramSendPhoto tools directly in your turn. Never write placeholders or dummy scripts in Bash.",
           "- For Telegram audio/voice requests, do not send a progress-only reply like 'generating audio' unless the same turn already started GenerateSpeech. Complete the sequence GenerateSpeech -> TelegramSendAudio/TelegramSendVoice, then confirm only after the send tool succeeds.",
         ].join("\n"),
     "Available tools:",
