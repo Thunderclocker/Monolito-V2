@@ -18,13 +18,34 @@ import type { AgentYieldEvent } from "./types.ts"
 import { checkTurnCommitmentSemantic, logBrokenPromise } from "./commitmentGuard.ts"
 import { checkTurnCoherence, logCoherenceBreach } from "./coherenceGuard.ts"
 
+import { getContextBudget } from "../context/contextLimits.ts"
+import { truncateHeadTail, calculateToolResultBudget } from "../context/toolResultGuard.ts"
+import { saveEmergencySnapshot } from "../context/contextSnapshot.ts"
+import { smartCompactSession, compactInMemoryTier1 } from "../context/smartCompactor.ts"
+
 const defaultLogger = createLogger("modelAdapterLite")
 const MAX_TURN_ITERATIONS = 16
 const DEFAULT_MAX_TURN_DURATION_MS = 120_000
 const MAX_BACKGROUND_TOKENS = 3_000
-const MAX_TOOL_RESULT_CHARS = 10_000
 const MAX_RATE_LIMIT_RETRIES = 5
 const MAX_OVERLOAD_RETRIES = 3
+
+const CHARS_PER_TOKEN = 3.5
+const TOOL_RESULT_CHARS_PER_TOKEN = 3.0
+
+export function estimateContextTokens(
+  systemPrompt: string,
+  messages: ConversationMessage[]
+): number {
+  let chars = systemPrompt.length
+  for (const msg of messages) {
+    const ratio = msg.role === "tool" ? TOOL_RESULT_CHARS_PER_TOKEN : CHARS_PER_TOKEN
+    chars += (msg.content?.length ?? 0) / ratio * CHARS_PER_TOKEN
+  }
+  chars += messages.length * 4 * CHARS_PER_TOKEN
+  return Math.ceil(chars / CHARS_PER_TOKEN)
+}
+
 
 export type AssistantTurnStep =
   | { type: "tool"; id?: string; tool: string; input: Record<string, unknown> }
@@ -136,13 +157,19 @@ function stringifyToolResult(value: unknown) {
     }
   }
   serialized = redactSensitiveText(serialized)
-  if (serialized.length <= MAX_TOOL_RESULT_CHARS) {
-    return truncate(serialized, MAX_TOOL_RESULT_CHARS)
+
+  const activeModel = getEffectiveModelConfig().model
+  const budget = getContextBudget(activeModel)
+  const toolResultBudget = calculateToolResultBudget(budget.windowTokens)
+
+  if (serialized.length <= toolResultBudget) {
+    return truncateHeadTail(serialized, toolResultBudget)
   }
+
   const monolitoRoot = ensureMonolitoRoot()
   const outputPath = join(monolitoRoot, "scratchpad", `tool-output-${randomUUID()}.txt`)
   writeFileSync(outputPath, serialized, "utf8")
-  const preview = truncate(serialized, MAX_TOOL_RESULT_CHARS)
+  const preview = truncateHeadTail(serialized, toolResultBudget)
   return `${preview}\n\n[... TRUNCADO: La salida superó el límite de seguridad de memoria. Usa comandos más específicos (ej. grep, head) o afina tu búsqueda.]\nFull output saved to: ${outputPath}\nUse the Read tool with offset/line_limit to inspect the rest.`
 }
 
@@ -637,6 +664,8 @@ export async function* runAgentLoop(
   const isSubAgent = session.id.startsWith("agent-")
   let activeSession = session
   let compacted = false
+  let compactionCount = 0
+  const MAX_COMPACTIONS_PER_TURN = 3
   let usage: TurnUsage | undefined
   const steps: AssistantTurnStep[] = []
   const messages = sessionToMessages(session)
@@ -721,14 +750,44 @@ export async function* runAgentLoop(
       return result
     }
     try {
-      const estimatedTokens = messages.reduce((sum, m) => sum + (m.content?.length ?? 0), 0) / 4
-      if (estimatedTokens > 24000) {
-        yield { type: "recoverable_error", sessionId: session.id, iteration, action: "compact_context", error: `Proactive context compaction (Estimated tokens: ${Math.round(estimatedTokens)})` }
-        compactSession(rootDir, session.id)
-        const refreshed = getSession(rootDir, session.id)
-        if (refreshed) {
-          activeSession = refreshed
-          messages.splice(0, messages.length, ...sessionToMessages(refreshed))
+      const budget = getContextBudget(config.model)
+      const estimatedTokens = estimateContextTokens(prompt.system, messages)
+      if (estimatedTokens > budget.compactTriggerTokens) {
+        if (compactionCount < MAX_COMPACTIONS_PER_TURN) {
+          compactionCount++
+          yield {
+            type: "recoverable_error",
+            sessionId: session.id,
+            iteration,
+            action: "compact_context",
+            error: `Proactive smart context compaction (Estimated tokens: ${estimatedTokens} > ${budget.compactTriggerTokens})`
+          }
+
+          // Step 1: In-memory Tier 1 compaction of tool results
+          const inMemBudgetChars = budget.compactTriggerTokens * 3.5
+          const inMemResult = compactInMemoryTier1(messages, inMemBudgetChars)
+          if (inMemResult.freedChars > 0) {
+            messages.splice(0, messages.length, ...inMemResult.messages)
+            logger.info(`[context-engine] Proactive Tier 1 (in-memory) freed ${inMemResult.freedChars} chars.`)
+          }
+
+          // Step 2: Proactive Tier 2 (LLM Summary of DB messages)
+          const currentEstimated = estimateContextTokens(prompt.system, messages)
+          if (currentEstimated > budget.compactTriggerTokens) {
+            logger.info(`[context-engine] Proactive Tier 1 not enough (${currentEstimated} > ${budget.compactTriggerTokens}). Launching Tier 2 DB compaction...`)
+            const compResult = await smartCompactSession(rootDir, session.id)
+            if (compResult.compacted) {
+              const refreshed = getSession(rootDir, session.id)
+              if (refreshed) {
+                activeSession = refreshed
+                // Reload DB history but preserve current turn's assistant and tool messages!
+                const currentTurnMessages = messages.filter(m => m.role === "assistant" || m.role === "tool")
+                messages.splice(0, messages.length, ...sessionToMessages(refreshed), ...currentTurnMessages)
+              }
+            }
+          }
+        } else {
+          logger.warn(`[context-engine] Proactive compaction skipped: reached MAX_COMPACTIONS_PER_TURN (${MAX_COMPACTIONS_PER_TURN})`)
         }
       }
 
@@ -870,16 +929,40 @@ Por favor, corregí este error de inmediato y reescribí tu respuesta respetando
         yield { type: "done", sessionId: session.id, result }
         return result
       }
-      if (error instanceof ContextOverflowError && !compacted) {
-        yield { type: "recoverable_error", sessionId: session.id, iteration, action: "compact_context", error: error.message }
-        compactSession(rootDir, session.id)
-        const refreshed = getSession(rootDir, session.id)
-        if (refreshed) {
-          activeSession = refreshed
-          messages.splice(0, messages.length, ...sessionToMessages(refreshed))
+      if (error instanceof ContextOverflowError) {
+        if (compactionCount < MAX_COMPACTIONS_PER_TURN) {
+          compactionCount++
+          yield { type: "recoverable_error", sessionId: session.id, iteration, action: "compact_context", error: `ContextOverflowError: ${error.message}. Running smart recovery cascade (${compactionCount}/${MAX_COMPACTIONS_PER_TURN})...` }
+          
+          logger.info(`[context-engine] ContextOverflowError caught. Initiating smart DB Tier 2 compaction...`)
+          const compResult = await smartCompactSession(rootDir, session.id, { forceTier2: true })
+          if (compResult.compacted) {
+            logger.info(`[context-engine] DB compaction freed ${compResult.freedChars} chars.`)
+          }
+
+          // In-memory Tier 1 compaction of tool results to be absolutely sure we fit
+          const budget = getContextBudget(config.model)
+          const inMemBudgetChars = budget.compactTriggerTokens * 3.5
+          const inMemResult = compactInMemoryTier1(messages, inMemBudgetChars)
+          if (inMemResult.freedChars > 0) {
+            messages.splice(0, messages.length, ...inMemResult.messages)
+            logger.info(`[context-engine] In-memory Tier 1 compaction freed ${inMemResult.freedChars} chars.`)
+          }
+
+          const refreshed = getSession(rootDir, session.id)
+          if (refreshed) {
+            activeSession = refreshed
+            const currentTurnMessages = messages.filter(m => m.role === "assistant" || m.role === "tool")
+            messages.splice(0, messages.length, ...sessionToMessages(refreshed), ...currentTurnMessages)
+          }
+          compacted = true
+          continue
+        } else {
+          // Anti-thrash threshold reached
+          const snapshotPath = saveEmergencySnapshot(rootDir, session.id, messages)
+          logger.error(`[context-engine] Context overflow unrecoverable after ${MAX_COMPACTIONS_PER_TURN} compaction attempts. Session snapshot saved to: ${snapshotPath}`)
+          throw new Error(`Context overflow unrecoverable after ${MAX_COMPACTIONS_PER_TURN} compaction attempts. Session snapshot saved to: ${snapshotPath}`)
         }
-        compacted = true
-        continue
       }
       if (error instanceof AbortError) throw error
       logger.error("assistant turn failed", { error: error instanceof Error ? error.message : String(error), sessionId: session.id })

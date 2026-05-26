@@ -2261,5 +2261,39 @@ export function isSessionResearchSilent(rootDir: string, sessionId: string, prof
   return row?.content === "true"
 }
 
+export function getRawMessagesForSession(rootDir: string, sessionId: string): Array<{ id: number; role: string; text: string; at: string; is_compacted: number }> {
+  const db = getDb(rootDir)
+  return db.prepare(`SELECT id, role, text, at, is_compacted FROM messages WHERE session_id = ? ORDER BY id ASC`).all(sessionId) as any[]
+}
+
+export function rewriteMessageInPlace(rootDir: string, messageId: number, text: string, isCompacted: number = 1) {
+  const db = getDb(rootDir)
+  db.prepare(`UPDATE messages SET text = ?, is_compacted = ? WHERE id = ?`).run(text, isCompacted, messageId)
+  try {
+    db.prepare(`DELETE FROM vec_messages WHERE id = ?`).run(BigInt(messageId))
+  } catch {}
+}
+
+export function deleteMessages(rootDir: string, messageIds: number[]) {
+  if (messageIds.length === 0) return
+  const db = getDb(rootDir)
+  db.exec("BEGIN TRANSACTION")
+  try {
+    const stmtDel = db.prepare(`DELETE FROM messages WHERE id = ?`)
+    const stmtDelVec = db.prepare(`DELETE FROM vec_messages WHERE id = ?`)
+    for (const id of messageIds) {
+      stmtDel.run(id)
+      try {
+        stmtDelVec.run(BigInt(id))
+      } catch {}
+    }
+    db.exec("COMMIT")
+  } catch (err) {
+    db.exec("ROLLBACK")
+    throw err
+  }
+}
+
+
 
 
