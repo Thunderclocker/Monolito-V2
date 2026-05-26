@@ -141,7 +141,8 @@ export async function checkTurnCommitmentSemantic(
   }
 
   // 2. Multilingual keyword pre-filter to avoid LLM calls on plain statements.
-  if (!hasCommitmentKeywords(modelText)) {
+  // Bypassed if toolsCalledInTurn is empty to ensure complete semantic accuracy without hardcoded slang keywords.
+  if (toolsCalledInTurn.length > 0 && !hasCommitmentKeywords(modelText)) {
     return {
       hasCommitmentLanguage: false,
       detectedPattern: null,

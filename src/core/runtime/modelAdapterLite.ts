@@ -854,13 +854,39 @@ Por favor, corregí este error de inmediato y reescribí tu respuesta respetando
         }
         // --- END OF COHERENCE GUARD ---
 
-        checkTurnCommitmentSemantic(rootDir, response.text, [], runBackgroundTextTask)
-          .then((result) => {
-            if (result.severity !== "none") {
-              logBrokenPromise(rootDir, session.id, result, response.text)
-            }
-          })
-          .catch(() => {/* silent */})
+        // --- COMMITMENT GUARD VERIFICATION ---
+        try {
+          const commitment = await checkTurnCommitmentSemantic(
+            rootDir,
+            response.text,
+            [],
+            runBackgroundTextTask
+          );
+
+          if (commitment.severity === "broken") {
+            logBrokenPromise(rootDir, session.id, commitment, response.text);
+
+            yield {
+              type: "recoverable_error",
+              sessionId: session.id,
+              iteration,
+              action: "commitment_correction" as any,
+              error: `Respuesta rechazada por promesa rota: no se llamó a ninguna herramienta para cumplir el compromiso.`
+            };
+
+            messages.push({
+              role: "user",
+              content: `[SYSTEM ALERT - COMMITMENT GUARD] Tu respuesta anterior fue RECHAZADA.
+Promesa rota/falsa detectada: Prometiste realizar una acción, buscar información, enviar archivos o realizar una tarea (ej. "Buscando ahora mismo...", "Dame un toque", "En un momento te las mando", "revisando...", etc.) pero finalizaste el turno sin ejecutar ninguna herramienta ni delegar la tarea.
+Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas correspondientes (ej. ImageSearch, TelegramSendPhoto, Bash, etc.) en este mismo turno ANTES de dar tu respuesta final. Si es una acción diferida, debés usar delegate_background_task o schedule_task. No hagas promesas vacías en tu texto final.`
+            });
+
+            continue;
+          }
+        } catch (commitmentErr) {
+          logger.warn(`Commitment guard check failed: ${commitmentErr}`);
+        }
+        // --- END OF COMMITMENT GUARD ---
 
         const finalizeResult = finalize(response.text, steps, startedAt, iteration, usage)
         yield { type: "done", sessionId: session.id, result: finalizeResult }
