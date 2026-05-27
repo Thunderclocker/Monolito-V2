@@ -2141,16 +2141,7 @@ Please analyze the preceding conversation, tool usage logs, and terminal outputs
           Promise.resolve(getDateContext()),
           Promise.resolve(getWorkspaceContext(this.rootDir, profileId, { isMainSession })),
         ])
-        let systemDirective: string | undefined = undefined
-        if (preparedUserText.includes('<attachment kind="photo"')) {
-          systemDirective = [
-            "[SYSTEM DIRECTIVE — FORBIDDEN TO DESCRIBE IMAGE]",
-            "El mensaje del usuario incluye un archivo adjunto de imagen/foto.",
-            "Como eres el coordinador principal y eres ciego a las imágenes (no recibes los bytes binarios), tienes COMPLETAMENTE PROHIBIDO describir, adivinar o comentar el contenido de la imagen en tu respuesta de texto.",
-            "Para responder la consulta del usuario, DEBES invocar la herramienta 'delegate_background_task' de inmediato indicándole en la tarea que analice, verifique o describa visualmente la imagen (menciona la ruta local_path especificada en el attachment).",
-            "Si no delegas, cometerás una alucinación grave. Tu única respuesta alternativa permitida es avisar que no puedes ver la imagen directamente y pedir autorización para iniciar el análisis en segundo plano."
-          ].join("\n")
-        }
+
 
         const webSearchConfig = readWebSearchConfig()
         const turn = await this.consumeAgentLoop(
@@ -2178,7 +2169,6 @@ Please analyze the preceding conversation, tool usage logs, and terminal outputs
                 stallAlert: this.consumeStallAlert(sessionId),
                 activeTasks: this.orchestrator.getTaskSnapshot(sessionId).filter(t => t.status === "pending" || t.status === "running"),
                 taskNotifications: collectAllRecentTaskNotifications(ragSession),
-                systemDirective,
               },
               costState: this.costState,
               abortSignal: abortController.signal,

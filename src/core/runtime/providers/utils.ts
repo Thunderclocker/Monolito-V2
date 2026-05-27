@@ -1,8 +1,29 @@
-import type { MessageParam } from "@anthropic-ai/sdk/resources/messages"
+import type { ContentBlockParam, MessageParam } from "@anthropic-ai/sdk/resources/messages"
+import { existsSync, readFileSync } from "node:fs"
 import { ContextOverflowError, ProviderOverloadedError, RateLimitError } from "../../errors.ts"
 import { listModelTools } from "../../tools/registry.ts"
 import { normalizeToolInputPayload } from "../toolInput.ts"
 import type { ConversationMessage } from "./types.ts"
+
+/**
+ * Extracts all photo attachment local_path values from a message content string.
+ * Returns an array of { localPath, mediaType } for each detected attachment.
+ */
+export function extractPhotoAttachments(content: string): Array<{ localPath: string; mediaType: string }> {
+  const results: Array<{ localPath: string; mediaType: string }> = []
+  const regex = /<attachment\s+kind="photo"[^>]*\blocal_path="([^"]+)"[^>]*\/?\s*>/gi
+  let match: RegExpExecArray | null
+  while ((match = regex.exec(content)) !== null) {
+    const localPath = match[1]
+    const lower = localPath.toLowerCase()
+    let mediaType = "image/jpeg"
+    if (lower.endsWith(".png")) mediaType = "image/png"
+    else if (lower.endsWith(".webp")) mediaType = "image/webp"
+    else if (lower.endsWith(".gif")) mediaType = "image/gif"
+    results.push({ localPath, mediaType })
+  }
+  return results
+}
 
 export function buildAnthropicMessages(messages: ConversationMessage[]): MessageParam[] {
   return messages.flatMap<MessageParam>(message => {
@@ -23,6 +44,27 @@ export function buildAnthropicMessages(messages: ConversationMessage[]): Message
         content.push({ type: "tool_use" as const, id: toolCall.id, name: toolCall.name, input: toolCall.input })
       }
       return [{ role: "assistant", content }]
+    }
+    // Native multimodal: inject image base64 for user messages with photo attachments
+    if (message.role === "user") {
+      const attachments = extractPhotoAttachments(message.content)
+      const validAttachments = attachments.filter(a => existsSync(a.localPath))
+      if (validAttachments.length > 0) {
+        const contentBlocks: ContentBlockParam[] = []
+        for (const att of validAttachments) {
+          try {
+            const base64Data = readFileSync(att.localPath).toString("base64")
+            contentBlocks.push({
+              type: "image",
+              source: { type: "base64", media_type: att.mediaType as "image/jpeg" | "image/png" | "image/gif" | "image/webp", data: base64Data },
+            })
+          } catch {
+            // If read fails, skip the image — the model will still see the XML tag
+          }
+        }
+        contentBlocks.push({ type: "text", text: message.content })
+        return [{ role: "user" as const, content: contentBlocks }]
+      }
     }
     return [{ role: message.role, content: message.content }]
   })
@@ -46,6 +88,28 @@ export function buildOpenAiMessages(system: string, messages: ConversationMessag
         })),
       })
       continue
+    }
+    // Native multimodal: inject image base64 for user messages with photo attachments
+    if (message.role === "user") {
+      const attachments = extractPhotoAttachments(message.content)
+      const validAttachments = attachments.filter(a => existsSync(a.localPath))
+      if (validAttachments.length > 0) {
+        const contentParts: Array<Record<string, unknown>> = []
+        for (const att of validAttachments) {
+          try {
+            const base64Data = readFileSync(att.localPath).toString("base64")
+            contentParts.push({
+              type: "image_url",
+              image_url: { url: `data:${att.mediaType};base64,${base64Data}` },
+            })
+          } catch {
+            // If read fails, skip — the model will still see the XML tag
+          }
+        }
+        contentParts.push({ type: "text", text: message.content })
+        output.push({ role: "user", content: contentParts })
+        continue
+      }
     }
     output.push({ role: message.role, content: message.content })
   }

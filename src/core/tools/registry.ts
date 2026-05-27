@@ -3384,7 +3384,7 @@ Actions:
   {
     name: "AnalyzeImage",
     permissionTier: "read",
-    description: "Descarga una imagen de una URL, la analiza con visión local y devuelve la descripción visual junto con la ruta local del archivo (local_path). Ideal para validar empíricamente resultados de ImageSearch y obtener el archivo local para enviarlo vía TelegramSendPhoto. ATENCIÓN: Herramienta computacionalmente pesada (~60s por imagen). REGLA ESTRICTA: NO uses esta herramienta en la sesión principal bajo ninguna circunstancia. Para cualquier análisis visual (incluso una sola foto), DEBÉS invocar delegate_background_task para hacer este trabajo en background y avisarle al usuario inmediatamente.",
+    description: "Descarga una imagen de una URL o analiza un path local usando el motor de visión local (Ollama/moondream). Devuelve la descripción visual y la ruta local del archivo (local_path). ATENCIÓN: Herramienta computacionalmente pesada (~60s por imagen en CPU). Usá esta herramienta como fallback únicamente si VisionAnalyze (nube) falla o no está disponible. Para análisis visual rápido preferí siempre VisionAnalyze primero. Para tareas masivas de imágenes o procesamiento paralelo extenso, delegá con delegate_background_task.",
     inputSchema: {
       type: "object",
       properties: {
@@ -3401,9 +3401,6 @@ Actions:
       return null
     },
     async run(input, context) {
-      if (!context.sessionId?.startsWith("agent-")) {
-        return formatToolError("REGLA ESTRICTA: Tareas visuales prohibidas en hilo principal. Debés delegar usando delegate_background_task.")
-      }
       const url = optionalString(input, "url")
       const pathArg = optionalString(input, "path")
       const config = readChannelsConfig()
@@ -3467,7 +3464,7 @@ Actions:
   {
     name: "VisionAnalyze",
     permissionTier: "read",
-    description: "Analiza una imagen desde una URL o un path local utilizando el modelo de visión del proveedor configurado.",
+    description: "Analiza una imagen desde una URL o un path local utilizando la API de visión del modelo de nube activo (Anthropic, OpenAI, Grok). Rápido (~3-5s). Es la herramienta preferida para análisis visual directo. Si la API de nube falla o devuelve resultado vacío, ejecuta fallback automático al motor de visión local. Retorna { description, local_path }. Usá esta herramienta directamente cuando el usuario pide describir, analizar o verificar el contenido de una imagen — no es necesario delegar a un sub-agente para casos simples.",
     inputSchema: {
       type: "object",
       properties: {
@@ -3484,9 +3481,6 @@ Actions:
       return null
     },
     async run(input, context) {
-      if (!context.sessionId?.startsWith("agent-")) {
-        return formatToolError("REGLA ESTRICTA: Tareas visuales prohibidas en hilo principal. Debés delegar usando delegate_background_task.")
-      }
       const url = optionalString(input, "url")
       const pathArg = optionalString(input, "path")
       
@@ -4117,7 +4111,6 @@ export function listModelTools(isSubAgent = false, lastUserText?: string, allowe
     "TelegramDownloadFile"
   ])
   const hiddenFromMainSession = new Set([
-    "AnalyzeImage",
     "TelegramDownloadFile"
   ])
 
