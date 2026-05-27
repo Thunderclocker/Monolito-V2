@@ -3541,6 +3541,15 @@ Actions:
         model = settings.env.ANTHROPIC_MODEL.trim()
       }
 
+      if (provider === "xai-oauth") {
+        try {
+          const { resolveGrokAccessToken } = await import("../runtime/providers/grokAuth.ts")
+          apiKey = await resolveGrokAccessToken()
+        } catch (err) {
+          context.logger?.error(`Error resolving Grok access token in VisionAnalyze: ${err}`)
+        }
+      }
+
       if (provider === "anthropic_compatible" || provider === "minimax") {
         const cleanBaseUrl = baseUrl.replace(/\/v1\/messages\/?$/, "")
         const endpoint = cleanBaseUrl ? `${cleanBaseUrl}/v1/messages` : "https://api.anthropic.com/v1/messages"
