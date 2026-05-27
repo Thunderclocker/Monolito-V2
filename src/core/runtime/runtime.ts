@@ -44,6 +44,7 @@ import {
   syncMissingEmbeddings,
   getDynamicSkill,
   recallMemory,
+  isMainSession,
 } from "../session/store.ts"
 import { generateEmbedding, isEmbeddingsUnavailableError } from "../session/embeddings.ts"
 import { getTool, listTools, type ToolContext, type ToolInputSchema } from "../tools/registry.ts"
@@ -1407,6 +1408,10 @@ IMPORTANT: The human user did NOT send or write this message. Do not reference t
     const failureNote = effectiveStatus === "failed" || effectiveStatus === "killed"
       ? sanitizeWorkerFailureNote(rawResult, effectiveStatus)
       : ""
+    const directive = isMainSession(sessionId)
+      ? `\n\n[SYSTEM DIRECTIVE]\nA background worker task has completed. Retrieve the Result above, translate it to your normal assistant voice, and deliver a direct update/response to the user now answering their immediate query. Do not mention XML tags, agent-ids, or background workers. Keep the execution details private.`
+      : `\n\n[SYSTEM DIRECTIVE]\nA sub-agent task has completed. Convert this completion into a concise internal orchestration update for your parent agent in your own words. Do not mention XML tags or system/log details.`
+
     const xmlPayload = [
       "<task-notification>",
       `Internal task ID: ${task.id}`,
@@ -1414,7 +1419,7 @@ IMPORTANT: The human user did NOT send or write this message. Do not reference t
       effectiveStatus === "completed" && looksLikeAck ? "Note: Internal task returned only an ACK. Do not present this as a final answer." : "",
       failureNote,
       effectiveStatus === "completed" && !looksLikeAck ? `Result: ${rawResult}` : "",
-      "</task-notification>"
+      `</task-notification>${directive}`
     ].filter(Boolean).join("\n")
 
     appendMessage(this.rootDir, sessionId, "user", xmlPayload)
