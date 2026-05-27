@@ -692,7 +692,7 @@ function getTelegramChatId(sessionId: string) {
 
 function isTaskNotificationText(text: string) {
   const normalized = text.trim()
-  return normalized.startsWith("<task-notification>") && normalized.endsWith("</task-notification>")
+  return normalized.startsWith("<task-notification>") && normalized.includes("</task-notification>")
 }
 
 function extractXmlTagValue(text: string, tag: string) {

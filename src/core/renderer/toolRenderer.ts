@@ -39,7 +39,7 @@ export function renderToolStartText(line: ToolRenderLine, detailPrefix = "  â””â
 
 export function parseTaskNotification(text: string): TaskNotificationSummary | null {
   const normalized = text.trim()
-  if (!normalized.startsWith("<task-notification>") || !normalized.endsWith("</task-notification>")) return null
+  if (!normalized.startsWith("<task-notification>") || !normalized.includes("</task-notification>")) return null
 
   const readTag = (tag: string) => normalized.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`))?.[1]?.trim()
   const totalTokensRaw = readTag("total_tokens")
