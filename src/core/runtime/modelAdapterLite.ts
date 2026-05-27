@@ -3,7 +3,7 @@ import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { SessionRecord } from "../ipc/protocol.ts"
 import { type ToolContext, isToolConcurrencySafe, listModelTools } from "../tools/registry.ts"
-import { BOOT_WING_DESCRIPTION, type BootWingEntry } from "../bootstrap/bootWings.ts"
+import { BOOT_WING_DESCRIPTION, type BootWingEntry, BOOT_WING_ORDER, isBootWingName, type BootWingName } from "../bootstrap/bootWings.ts"
 import type { WorkspaceBootstrapContext } from "../context/workspaceContext.ts"
 import { estimateTurnCostUSD, type CostState, type TurnUsage } from "../cost/tracker.ts"
 import { AbortError, ApiError, ContextOverflowError, HttpError, ProviderOverloadedError, RateLimitError } from "../errors.ts"
@@ -308,7 +308,8 @@ function buildToolSummary(isSubAgent: boolean, lastUserMessage?: string, allowed
 function describeBootEntries(entries: BootWingEntry[]) {
   if (entries.length === 0) return ""
   return entries
-    .map(entry => `## ${entry.wing}\n${BOOT_WING_DESCRIPTION[entry.wing]}\n${truncate(entry.content, 2_500)}`)
+    .filter(entry => isBootWingName(entry.wing))
+    .map(entry => `## ${entry.wing}\n${BOOT_WING_DESCRIPTION[entry.wing as BootWingName]}\n${truncate(entry.content, 2_500)}`)
     .join("\n\n")
 }
 

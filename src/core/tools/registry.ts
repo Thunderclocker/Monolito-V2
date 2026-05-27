@@ -73,6 +73,7 @@ import {
 } from "../stt/managed.ts"
 import { analyzeManagedImage, deployManagedVisionContainer, normalizeVisionConfig } from "../vision/managed.ts"
 import { deploySearxng, SEARXNG_URL } from "../websearch/managed.ts"
+import { isBootWingName, BOOT_WING_ORDER } from "../bootstrap/bootWings.ts"
 
 const execFileAsync = promisify(execFile)
 const DEFAULT_GREP_LIMIT = 250
@@ -2700,6 +2701,12 @@ Actions:
       try {
         const parsed = parseZod(bootCreateWingInputZod, input, "BootCreateWing input")
         const wing = parsed.wing.trim()
+        if (!isBootWingName(wing)) {
+          return formatToolError(
+            `Cannot create custom BOOT wing "${wing}". Only standard wings are allowed: ${BOOT_WING_ORDER.join(", ")}. ` +
+            `For custom episodic data, use WorkspaceMemoryFiling instead.`
+          )
+        }
         const profile = context.profileId ?? "default"
         if (bootWingExists(context.rootDir, wing, profile)) {
           return formatToolError(`BOOT wing ${wing} already exists in profile ${profile}. Use BootWrite to update it.`)

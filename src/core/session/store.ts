@@ -369,10 +369,12 @@ export function deleteSessionTask(
   ).run(now, PALACE_NAMESPACE.chatHistory, "active_tasks", sessionId, taskId, profileScope)
 }
 
-function ensureKernelSeededDb(db: Database.Database, profileId = "default") {
+function ensureKernelSeededDb(db: Database.Database, _profileId = "default") {
   ensurePalaceSchema(db)
   const now = new Date().toISOString()
-  const profileScope = palaceProfileScope(profileId)
+  // Boot wings are seeded ONLY for the "default" profile.
+  // Other profiles fall back to default via readLatestPalaceContent's includeGlobalFallback.
+  const bootProfileScope = palaceProfileScope("default")
   const existingStmt = db.prepare(`
     SELECT COUNT(*) as count
     FROM palace_nodes
@@ -386,14 +388,14 @@ function ensureKernelSeededDb(db: Database.Database, profileId = "default") {
   db.exec("BEGIN TRANSACTION")
   try {
     for (const wing of BOOT_WING_ORDER) {
-      const existing = existingStmt.get(PALACE_NAMESPACE.boot, profileScope, wing, wing) as { count: number }
+      const existing = existingStmt.get(PALACE_NAMESPACE.boot, bootProfileScope, wing, wing) as { count: number }
       if (existing.count === 0) {
         upsertMutablePalaceNode(db, {
           namespace: PALACE_NAMESPACE.boot,
           wing,
           room: BOOTSTRAP_SOURCE_ROOM,
           nodeKey: wing,
-          profileId,
+          profileId: "default",
           subjectType: "boot_wing",
           subjectId: wing,
           contentType: "text/markdown",
@@ -663,9 +665,10 @@ export function ensureKernelSeeded(rootDir: string, profileId = "default") {
   }
 }
 
-export function ensureBootWings(rootDir: string, profileId = "default") {
+export function ensureBootWings(rootDir: string, _profileId = "default") {
   const db = getDb(rootDir)
-  ensureKernelSeededDb(db, profileId)
+  // Always seed under "default" — other profiles use global fallback
+  ensureKernelSeededDb(db, "default")
 }
 
 export function ensureConfigWings(rootDir: string) {

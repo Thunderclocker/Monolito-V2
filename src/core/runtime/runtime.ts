@@ -1497,7 +1497,10 @@ Mandatory rules:
 1. Immediately analyze the available messages.
 2. Identify valuable information: user identity data, stable preferences, personality rules, commitments, important decisions, and relevant project context.
 3. Always save using the correct tool:
-   - For identity data, name, pronouns or permanent user rules → use BootWrite (in BOOT_USER, BOOT_IDENTITY or BOOT_PERSONALITY).
+   - For user identity, human profile details, pronouns, timezone, and permanent user rules → use BootWrite in BOOT_USER.
+   - For agent identity, assistant name (Amanda), bio, creature type, and vibe → use BootWrite in BOOT_IDENTITY.
+   - For agent behavioral rules, tone, and permanent personality constraints → use BootWrite in BOOT_SOUL.
+   - Never create or write to BOOT_PERSONALITY. Only use the standard wings.
    - For general information, commitments, tasks or thematic context → use WorkspaceMemoryFiling.
 4. In WorkspaceMemoryFiling always reuse an existing room if the topic already has one (e.g. preferences, tasks, architecture, projects). Create a new room only if the topic is entirely different.
 5. It is mandatory to execute the tools. Do not consider your task complete until you have persisted everything important.
