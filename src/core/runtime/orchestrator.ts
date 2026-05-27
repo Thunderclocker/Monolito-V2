@@ -34,8 +34,9 @@ const SUBAGENT_HARD_TIMEOUT_MS = 15 * 60 * 1000
 const WORKER_IMAGE_EXECUTION_POLICY = [
   "Image-search execution policy:",
   "- Para busquedas simples de imagenes, usa ImageSearch y devuelve `image_url` directas. No uses WebFetch ni scraping de paginas fuente.",
-  "- Solo usa AnalyzeImage cuando la tarea pida explicitamente verificar, validar, analizar o describir el contenido visual.",
-  "- Si AnalyzeImage confirma que la imagen no coincide, descarta ese resultado y proba la siguiente `image_url` de la lista.",
+  "- Para verificar, validar, analizar o describir el contenido visual, debés utilizar prioritariamente la herramienta VisionAnalyze (en la nube).",
+  "- Usá la herramienta local AnalyzeImage como fallback únicamente si VisionAnalyze no está disponible o falla.",
+  "- Si la herramienta confirma que la imagen no coincide, descarta ese resultado y proba la siguiente `image_url` de la lista.",
   "- No crees perfiles, archivos de plan ni tareas auxiliares para buscar imagenes. Ejecuta el camino mas corto.",
 ].join("\n")
 
