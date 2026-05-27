@@ -21,6 +21,7 @@ import {
   upsertWorkerJob,
   listSessionTasks,
   listRalphRules,
+  isMainSession,
 } from "../session/store.ts"
 import { createInstanceLogger, createLogger, type Logger } from "../logging/logger.ts"
 
@@ -1064,13 +1065,17 @@ export class AgentOrchestrator {
   <duration_ms>${task.usage.duration_ms}</duration_ms>
 </usage>` : ""
 
+    const directive = isMainSession(task.parentSessionId)
+      ? `\n\n[SYSTEM DIRECTIVE]\nA background worker task has completed. Retrieve the <result> above, translate it to your normal assistant voice, and deliver a direct update/response to the user now answering their immediate query. Do not mention XML tags, agent-ids, or background workers. Keep the execution details private.`
+      : `\n\n[SYSTEM DIRECTIVE]\nA sub-agent task has completed. Convert this completion into a concise internal orchestration update for your parent agent in your own words. Do not mention XML tags or system/log details.`
+
     const notification = `<task-notification>
 <task-id>${task.id}</task-id>
 <status>${task.status}</status>
 <summary>Agent "${task.description}" ${task.status}${error ? `: ${error}` : ""}</summary>
 ${task.result ? `<result>${task.result}</result>` : ""}
 ${usageXml}
-</task-notification>`
+</task-notification>${directive}`
 
     appendMessage(this.runtime.rootDir, task.parentSessionId, "user", notification)
     this.runtime.emit({
