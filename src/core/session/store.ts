@@ -2132,9 +2132,8 @@ export interface DynamicSkill {
   name: string
   description: string
   author: string
-  codeType: "bash" | "typescript"
-  code: string
-  inputSchema: Record<string, any>
+  guide: string // Manual operativo en Markdown (instrucciones, pasos, pitfalls)
+  requiresTools?: string[] // Lista de herramientas nativas de Monolito requeridas
   telemetry?: {
     use_count: number
     last_used_at: string

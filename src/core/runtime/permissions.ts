@@ -194,20 +194,6 @@ function evaluateMode(mode: PermissionMode, toolName: string, input: Record<stri
     return { behavior: "allow", source: "mode" }
   }
   let tool = getTool(toolName)
-  if (!tool && toolName.startsWith("skill_") && rootDir) {
-    try {
-      const skill = getDynamicSkill(rootDir, toolName)
-      if (skill && skill.active) {
-        tool = {
-          name: skill.name,
-          permissionTier: "edit",
-          description: skill.description,
-          inputSchema: skill.inputSchema as any,
-          run: async () => "",
-        }
-      }
-    } catch {}
-  }
   if (tool?.permissionTier === "read") {
     return { behavior: "allow", source: "mode" }
   }

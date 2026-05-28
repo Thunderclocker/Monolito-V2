@@ -3942,7 +3942,7 @@ Actions:
   {
     name: "CreateSkill",
     permissionTier: "edit",
-    description: "Crea o actualiza un skill dinámico (habilidad) basado en scripts ejecutables de Bash. El skill será registrado semánticamente y estará disponible de inmediato para todos los perfiles de Monolito. ADVERTENCIA CRÍTICA: Los scripts de Bash se ejecutan en una shell de Linux ordinaria. Las herramientas de Monolito (como ImageSearch, DownloadFile, TelegramSendPhoto, WebSearch, etc.) NO están disponibles como comandos en la terminal. Para descargar archivos, utiliza 'curl' o 'wget'. Para interactuar con Telegram o APIs externas en un script de Bash, realiza peticiones HTTP directas (ej: curl contra la API de Telegram usando el bot token). NO intentes llamar a las herramientas del registro como comandos de terminal.",
+    description: "Crea o actualiza un skill dinámico (habilidad) que proporciona una guía instructiva procedimental (SOP - Standard Operating Procedure) detallada en Markdown sobre cómo encadenar herramientas nativas de Monolito para realizar tareas complejas de forma robusta. Los skills NO son scripts ejecutables. Son manuales operativos que el asistente puede descubrir y leer a través de la herramienta `skill_view` para evitar errores comunes y aplicar mejores prácticas. Si el skill requiere herramientas nativas específicas (ej: ['VisionAnalyze']), decláralas en el array requiresTools.",
     inputSchema: {
       type: "object",
       properties: {
@@ -3952,18 +3952,19 @@ Actions:
         },
         description: {
           type: "string",
-          description: "Una descripción clara y descriptiva del propósito y funcionamiento del skill. Servirá para la búsqueda vectorial."
+          description: "Una descripción clara y concisa del propósito del skill. Se inyecta en el prompt del sistema y se usa para la búsqueda vectorial."
         },
-        code: {
+        guide: {
           type: "string",
-          description: "El código o script en Bash a ejecutar. Los parámetros de entrada serán inyectados como variables de entorno con prefijo ARG_ (ej: si se define 'commit_message', leerlo en Bash con $ARG_COMMIT_MESSAGE)."
+          description: "Manual detallado en Markdown (instrucciones paso a paso, numbered steps, herramientas a usar, pitfalls y mitigaciones) sobre cómo resolver el flujo."
         },
-        inputSchema: {
-          type: "object",
-          description: "Definición del esquema de entrada JSON para los parámetros usando JSON Schema."
+        requiresTools: {
+          type: "array",
+          items: { type: "string" },
+          description: "Array opcional de nombres de herramientas nativas de Monolito requeridas para ejecutar este skill (ej: ['VisionAnalyze', 'TelegramSendPhoto'])."
         }
       },
-      required: ["name", "description", "code", "inputSchema"],
+      required: ["name", "description", "guide"],
       additionalProperties: false,
     },
     concurrencySafe: true,
@@ -3974,27 +3975,17 @@ Actions:
           return { ok: false, error: "El nombre del skill debe empezar con 'skill_'." }
         }
         const description = String(input.description).trim()
-        const code = String(input.code)
-        let schema = input.inputSchema
-        if (typeof schema === "string") {
-          try {
-            schema = JSON.parse(schema)
-          } catch (e) {
-            return { ok: false, error: "El inputSchema proporcionado es un string que no se puede parsear como JSON válido." }
-          }
-        }
-
-        if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
-          return { ok: false, error: "El inputSchema debe ser un objeto JSON válido." }
-        }
+        const guide = String(input.guide)
+        const requiresTools = Array.isArray(input.requiresTools)
+          ? input.requiresTools.map(t => String(t).trim())
+          : undefined
 
         const skill = {
           name,
           description,
           author: context.sessionId?.startsWith("agent-") ? "sub-agent" : "coordinator",
-          codeType: "bash" as const,
-          code,
-          inputSchema: schema as Record<string, any>,
+          guide,
+          requiresTools,
           active: true,
         }
 
@@ -4057,7 +4048,7 @@ Actions:
   - Autor: ${s.author}
   - Usos: ${telemetry.use_count} | Fallos: ${telemetry.failure_count}
   - Último Uso: ${telemetry.last_used_at}
-  - Parámetros: ${JSON.stringify(s.inputSchema?.properties || {})}`
+  - Herramientas Requeridas: ${s.requiresTools && s.requiresTools.length > 0 ? s.requiresTools.join(", ") : "Ninguna"}`
         }).join("\n\n")
         return `Skills dinámicos registrados:\n\n${formatted}`
       } catch (err: any) {
@@ -4272,6 +4263,38 @@ Actions:
       }
     }
   },
+  {
+    name: "skill_view",
+    permissionTier: "read",
+    description: "Recupera las instrucciones procedimentales detalladas (SOP - Standard Operating Procedure) de un skill dinámico específico por su nombre.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "Nombre del skill a consultar (debe empezar con 'skill_', ej: 'skill_commit_build')."
+        }
+      },
+      required: ["name"],
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    async run(input, context) {
+      try {
+        const name = String(input.name).trim()
+        const skill = getDynamicSkill(context.rootDir, name)
+        if (!skill) {
+          return `El skill '${name}' no existe en el registro.`
+        }
+        if (!skill.active) {
+          return `El skill '${name}' existe pero está inactivo en este momento.`
+        }
+        return `# Skill: ${skill.name} (SOP Manual)\n\n${skill.guide}`
+      } catch (err: any) {
+        return `Error al consultar el skill: ${err.message}`
+      }
+    }
+  },
 ]
 
 const tools: ToolDefinition[] = rawTools.map(withSafeToolFailure)
@@ -4390,23 +4413,7 @@ export function listModelTools(isSubAgent = false, lastUserText?: string, allowe
       description: tool.description,
       input_schema: tool.inputSchema,
     }))
-
-  try {
-    const activeSkills = listDynamicSkills(rootDir || MONOLITO_ROOT).filter(s => s.active)
-    const skillMapped = activeSkills
-      .filter(skill => {
-        if (allowedToolNames && !allowedToolNames.includes(skill.name)) return false;
-        return true;
-      })
-      .map(skill => ({
-        name: skill.name,
-        description: skill.description,
-        input_schema: skill.inputSchema as ToolInputSchema,
-      }))
-    return [...staticMapped, ...skillMapped]
-  } catch {
-    return staticMapped
-  }
+  return staticMapped
 }
 
 export function getTool(name: string) {

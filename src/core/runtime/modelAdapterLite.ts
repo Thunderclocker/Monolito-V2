@@ -10,7 +10,7 @@ import { AbortError, ApiError, ContextOverflowError, HttpError, ProviderOverload
 import { createLogger, type Logger } from "../logging/logger.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider } from "./modelRegistry.ts"
-import { compactSession, getSession, readSessionSources, updateWorkerJobStatus, upsertWorkerJob, tailEvents, listSessionTasks } from "../session/store.ts"
+import { compactSession, getSession, readSessionSources, updateWorkerJobStatus, upsertWorkerJob, tailEvents, listSessionTasks, listDynamicSkills } from "../session/store.ts"
 import { callProvider, type ConversationMessage, type ProviderConfig, type ProviderResponse, type ToolCall } from "./providers/index.ts"
 import { ensureMonolitoRoot } from "../system/root.ts"
 import { redactSensitiveText } from "../security/redact.ts"
@@ -328,6 +328,40 @@ function buildSystemPrompt(args: {
   const isSubAgent = args.session.id.startsWith("agent-")
   const isImageIntent = lastUserMessage && /imagen|imagenes|foto|fotos|picture|pictures|image|images|vision|visual/i.test(lastUserMessage)
   const exposeTelegramDownload = args.session.messages.some(m => m.text.includes('status="size_limit_exceeded"'))
+
+  let skillsBlock = ""
+  try {
+    const allSkills = listDynamicSkills(args.rootDir)
+    const availableToolsList = listModelTools(isSubAgent, lastUserMessage, args.allowedToolNames, args.rootDir, exposeTelegramDownload)
+    const availableToolNamesSet = new Set(availableToolsList.map(t => t.name))
+
+    const filteredSkills = allSkills.filter(skill => {
+      if (!skill.active) return false
+      if (args.allowedToolNames && !args.allowedToolNames.includes(skill.name)) return false
+      if (skill.requiresTools && skill.requiresTools.length > 0) {
+        for (const reqTool of skill.requiresTools) {
+          if (!availableToolNamesSet.has(reqTool)) {
+            return false
+          }
+        }
+      }
+      return true
+    })
+
+    if (filteredSkills.length > 0) {
+      skillsBlock = [
+        "## Available Skills (Procedural SOPs)",
+        "The following dynamic skills are registered in the system. They represent proven standard operating procedures (SOPs) for resolving complex tasks using system tools:",
+        "<available_skills>",
+        filteredSkills.map(s => `- ${s.name}: ${s.description}`).join("\n"),
+        "</available_skills>",
+        "IMPORTANT: If the user's task or any intermediate step aligns with any of the available skills listed above, you MUST call the `skill_view` tool (e.g., `skill_view({ name: \"skill_name\" })`) to fetch and follow the detailed step-by-step instructions. Do NOT try to invent your own procedure or guess the tools to chain; always read the SOP first.",
+      ].join("\n")
+    }
+  } catch (err) {
+    // Fail-safe
+  }
+
   const staticSystem = [
     "You are Monolito V2, a local assistant with tool access.",
     "Use tools when the answer depends on current files, system state, internal task status, or external resources.",
@@ -396,6 +430,7 @@ function buildSystemPrompt(args: {
         ].join("\n"),
     "Available tools:",
     buildToolSummary(isSubAgent, lastUserMessage, args.allowedToolNames, args.rootDir, exposeTelegramDownload),
+    skillsBlock,
     bootstrap ? describeBootEntries(bootstrap.entries) : "",
     isSubAgent ? "" : [
       "<JERARQUIA_DE_DIRECTIVAS>",

@@ -383,28 +383,24 @@ test("clearMemoryPalace removes profile memory while preserving configuration", 
   }
 })
 
-test("Dynamic Skills System lifecycle: CreateSkill, ListSkills, listModelTools, executeDynamicSkill, and DeleteSkill", async () => {
+test("Dynamic Skills System lifecycle: CreateSkill, ListSkills, skill_view, and DeleteSkill", async () => {
   const rootDir = createRootDir()
   try {
     const createTool = getTool("CreateSkill")
     const listTool = getTool("ListSkills")
     const deleteTool = getTool("DeleteSkill")
+    const viewTool = getTool("skill_view")
     assert.ok(createTool)
     assert.ok(listTool)
     assert.ok(deleteTool)
+    assert.ok(viewTool)
 
     // 1. Create a dynamic skill
     const createResult = await createTool.run({
       name: "skill_test_hello",
       description: "Outputs a welcome message",
-      code: "echo \"Hello, ${ARG_NAME}!\"",
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: { type: "string" }
-        },
-        required: ["name"]
-      }
+      guide: "# Welcome SOP\n1. Say hello\n2. Enjoy!",
+      requiresTools: ["Bash", "VisionAnalyze"]
     }, {
       rootDir,
       cwd: rootDir
@@ -416,23 +412,19 @@ test("Dynamic Skills System lifecycle: CreateSkill, ListSkills, listModelTools, 
     const listResult = await listTool.run({}, { rootDir, cwd: rootDir }) as string
     assert.match(listResult, /skill_test_hello/)
     assert.match(listResult, /Outputs a welcome message/)
+    assert.match(listResult, /Bash, VisionAnalyze/)
 
-    // 3. Retrieve dynamic skill and verify listModelTools merges it
-    const { listModelTools } = await import("./registry.ts")
-    const tools = listModelTools(false, undefined, undefined, rootDir)
-    const matching = tools.find(t => t.name === "skill_test_hello")
-    assert.ok(matching)
-    assert.equal(matching.description, "Outputs a welcome message")
+    // 3. View dynamic skill guide using skill_view
+    const viewResult = await viewTool.run({ name: "skill_test_hello" }, { rootDir, cwd: rootDir }) as string
+    assert.match(viewResult, /Welcome SOP/)
+    assert.match(viewResult, /Say hello/)
 
-    // 4. Execute dynamic skill directly using dynamic runner
-    const { executeDynamicSkill } = await import("./dynamicRunner.ts")
+    // 4. Retrieve dynamic skill from store
     const { getDynamicSkill } = await import("../session/store.ts")
     const skill = getDynamicSkill(rootDir, "skill_test_hello")
     assert.ok(skill)
-
-    const execResult = await executeDynamicSkill(rootDir, skill, { name: "Cristian" }, { cwd: rootDir })
-    assert.equal(execResult.ok, true)
-    assert.equal(execResult.output.trim(), "Hello, Cristian!")
+    assert.equal(skill.guide, "# Welcome SOP\n1. Say hello\n2. Enjoy!")
+    assert.deepEqual(skill.requiresTools, ["Bash", "VisionAnalyze"])
 
     // 5. Delete the skill
     const deleteResult = await deleteTool.run({ name: "skill_test_hello" }, { rootDir, cwd: rootDir }) as { ok: boolean }

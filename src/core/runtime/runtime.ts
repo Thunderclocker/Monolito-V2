@@ -1608,30 +1608,27 @@ Please analyze the preceding conversation and run your memory consolidation tool
 
       const promptOverride = `You are SkillsAgent, a silent and automatic software automation and skill lifecycle agent of Monolito V2.
 
-Your mission is to manage the complete lifecycle of dynamic skills (habilidades) in this session: synthesize new skills to automate repetitive tasks, identify and merge redundant skills, archive/delete obsolete ones, and update existing skills to adapt to new paradigms or execution requirements.
+Your mission is to manage the complete lifecycle of dynamic skills (habilidades) in this session: synthesize new skills to automate or guide repetitive tasks, identify and merge redundant skills, archive/delete obsolete ones, and update existing skills to adapt to new paradigms or execution requirements.
 
 Mandatory rules:
 1. First, list and analyze all existing dynamic skills in the session using the ListSkills tool to understand the current skill library.
 2. Analyze the recent conversation, terminal history (Bash commands), and tool logs:
-   - Identify repetitive actions that would benefit from automation.
-   - Look for changes in project architecture, package managers (e.g. npm to pnpm), or files that make older skills obsolete.
+   - Identify repetitive actions or complex multi-tool sequences that would benefit from procedural guidance.
+   - Look for changes in project architecture or APIs that make older skills obsolete.
 3. Perform the appropriate action using the skill management tools:
-   - CREATE new skills for unautomated repetitive sequences using CreateSkill.
-   - MERGE redundant, overlapping, or narrow near-duplicate skills under a single, well-structured "umbrella" skill (use CreateSkill to write the broad skill and DeleteSkill to prune the absorbed micro-skills).
-   - UPDATE existing skills using CreateSkill if they need improvements, parameter expansion, or updates to fit new project paradigms (e.g., updating commands from npm to pnpm).
-   - ARCHIVE/DELETE obsolete or non-functional skills using DeleteSkill if they are no longer relevant to the project or have high failure rates.
+   - CREATE new skills using CreateSkill.
+   - MERGE redundant, overlapping, or narrow near-duplicate skills under a single, well-structured "umbrella" skill (use CreateSkill to write the broad skill and DeleteSkill to prune the absorbed ones).
+   - UPDATE existing skills using CreateSkill if they need improvements, parameter expansion, or updates.
+   - ARCHIVE/DELETE obsolete or non-functional skills using DeleteSkill.
 4. Rules for creating/updating skills:
+   - DYNAMIC SKILLS ARE PROCEDURAL SOPs (Standard Operating Procedures) IN MARKDOWN. THEY ARE NOT BASH SCRIPTS OR EXECUTABLE CODE.
+   - Use CreateSkill to declare a 'guide' (rich Markdown guide explaining step-by-step instructions on how to chain system tools to solve a specific problem) and optional 'requiresTools' (the native tools that the assistant must have to complete this guide).
+   - ABSOLUTE PROHIBITION OF PLACEHOLDERS: Do NOT create placeholder skills or write stubs. Every skill must represent a real, comprehensive, and highly helpful operational manual. If you cannot describe a robust solution using existing native core tools, do NOT create the skill.
    - The skill name must begin with 'skill_' and use snake_case (e.g., 'skill_verify_build').
-   - Use 'bash' as codeType.
-   - Write clean, robust, and parameterized Bash scripts.
-   - Define a clear and descriptive parameter structure (inputSchema) using JSON Schema.
-   - Access inputs in Bash via environment variables prefixed with 'ARG_' (e.g., $ARG_COMMIT_MESSAGE).
    - Write a rich, descriptive skill description to ensure vector search discoverability.
-   - CRITICAL WARNING: Bash scripts run in an ordinary Linux shell. Monolito internal tools (like ImageSearch, DownloadFile, TelegramSendPhoto, WebSearch, etc.) are NOT available as commands in the terminal. To download files, you must use 'curl' or 'wget'. To interact with Telegram or external APIs, you must perform direct HTTP requests (e.g., using 'curl' to Telegram API with the bot token). NEVER attempt to call Monolito tools as terminal commands inside Bash scripts.
 5. Self-Healing & Telemetry Audit:
    - Pay special attention to any skills listed by ListSkills where 'telemetry.failure_count > 0'.
-   - Analyze the conversation history, terminal command logs, or typical inputs to understand why it failed.
-   - Correct the skill using CreateSkill with an updated, robust script. Once verified or updated, reset/recreate the skill to clear failure flags. If the skill is completely obsolete and unfixable, use DeleteSkill to prune it.
+   - Analyze why it failed (e.g., incomplete guidelines, changed APIs) and update it using CreateSkill with improved SOP steps.
 6. You are 100% silent. Never respond to the user. When you have completely finished managing the skill lifecycle, respond ONLY with the exact word: SKILLS_OK`;
 
       const syntheticSession: SessionRecord = {
@@ -2563,42 +2560,6 @@ Please analyze the preceding conversation, tool usage logs, and terminal outputs
     profileId?: string,
   ) {
     let tool = getTool(toolName)
-    if (!tool && toolName.startsWith("skill_")) {
-      const skill = getDynamicSkill(this.rootDir, toolName)
-      if (skill && skill.active) {
-        tool = {
-          name: skill.name,
-          permissionTier: "edit",
-          description: skill.description,
-          inputSchema: skill.inputSchema as ToolInputSchema,
-          concurrencySafe: true,
-          async run(input, ctx) {
-            const { executeDynamicSkill } = await import("../tools/dynamicRunner.ts")
-            const { incrementSkillTelemetry } = await import("../session/store.ts")
-            const result = await executeDynamicSkill(
-              ctx.rootDir,
-              skill,
-              input,
-              { cwd: ctx.rootDir, sessionId: ctx.sessionId }
-            )
-            try {
-              await incrementSkillTelemetry(ctx.rootDir, skill.name, result.ok)
-            } catch {}
-            if (!result.ok) {
-              throw new Error(
-                `[${skill.name} Failed]\n` +
-                `stdout: ${result.output}\n` +
-                `stderr: ${result.stderr}\n\n` +
-                `[SYSTEM RESILIENCE HINT]: The dynamic skill failed. Do NOT get stuck or retry it. ` +
-                `Instead, FALLBACK and complete the intended action manually using Core tools (e.g. Bash, Write, Edit, MultiEdit). ` +
-                `A background ticket has been logged to self-heal this skill during idle heartbeat.`
-              )
-            }
-            return result.output
-          }
-        }
-      }
-    }
     if (!tool) throw new Error(`Unknown tool: ${toolName}`)
     const normalizedInput = normalizeToolInputPayload(input) as Record<string, unknown>
     const permission = await checkToolPermission(tool.name, normalizedInput, {
