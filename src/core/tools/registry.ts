@@ -3357,8 +3357,15 @@ Actions:
       if (!deploy.ok) return formatToolError(`Error auto-desplegando SearxNG: ${deploy.message}`)
 
       // 3. Search
+      let safesearch = "1" // Default to moderate
+      if (context.sessionId && context.runtime && typeof (context.runtime as any).hasAdultMode === "function") {
+        const isAdult = (context.runtime as any).hasAdultMode(context.sessionId)
+        if (isAdult) {
+          safesearch = "0" // None (disabled)
+        }
+      }
       const encoded = encodeURIComponent(query)
-      const searchUrl = `${SEARXNG_URL}/search?q=${encoded}&categories=images&format=json`
+      const searchUrl = `${SEARXNG_URL}/search?q=${encoded}&categories=images&format=json&safesearch=${safesearch}`
       try {
         const res = await fetch(searchUrl, { signal: AbortSignal.timeout(15_000) })
         if (!res.ok) {
