@@ -776,7 +776,7 @@ function formatSemanticContext(rows: ReturnType<typeof getSemanticMessageContext
 
 function formatSemanticFacts(recalled: any[]) {
   const filtered = recalled
-    .filter(row => row.distance === undefined || row.distance < 0.65)
+    .filter(row => row.distance === undefined || row.distance < 0.95)
     .slice(0, 3)
 
   if (filtered.length === 0) return null

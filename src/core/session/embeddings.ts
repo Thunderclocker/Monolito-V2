@@ -23,6 +23,19 @@ let detectedModel: string | null = null
 
 const activeRequests = new Map<string, Promise<Float32Array>>()
 
+function normalize(vector: Float32Array): Float32Array {
+  let sum = 0
+  for (let i = 0; i < vector.length; i++) {
+    sum += vector[i] * vector[i]
+  }
+  const magnitude = Math.sqrt(sum)
+  if (magnitude === 0) return vector
+  for (let i = 0; i < vector.length; i++) {
+    vector[i] /= magnitude
+  }
+  return vector
+}
+
 function computeTextHash(text: string): string {
   return crypto.createHash("sha256").update(text).digest("hex")
 }
@@ -237,7 +250,7 @@ export async function generateEmbedding(text: string): Promise<Float32Array> {
               UPDATE embedding_cache SET updated_at = ? 
               WHERE provider = 'ollama' AND model = ? AND hash = ?
             `).run(Date.now(), OLLAMA_MODEL, hash)
-            return Float32Array.from(parsed)
+            return normalize(Float32Array.from(parsed))
           }
         }
       } catch (err) {
@@ -259,7 +272,7 @@ export async function generateEmbedding(text: string): Promise<Float32Array> {
         throw new Error(`Expected ${EMBEDDING_DIMENSIONS} dimensions from ${OLLAMA_MODEL}, got ${payload.embedding.length}`)
       }
       
-      const floatArray = Float32Array.from(payload.embedding)
+      const floatArray = normalize(Float32Array.from(payload.embedding))
 
       // Save to SQLite cache asynchronously
       if (semanticDb) {
@@ -271,7 +284,7 @@ export async function generateEmbedding(text: string): Promise<Float32Array> {
               embedding = excluded.embedding,
               dims = excluded.dims,
               updated_at = excluded.updated_at
-          `).run(OLLAMA_MODEL, hash, JSON.stringify(payload.embedding), EMBEDDING_DIMENSIONS, Date.now())
+          `).run(OLLAMA_MODEL, hash, JSON.stringify(Array.from(floatArray)), EMBEDDING_DIMENSIONS, Date.now())
           pruneEmbeddingCacheIfNeeded()
         } catch {
           // Fail-safe

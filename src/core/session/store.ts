@@ -1969,6 +1969,28 @@ export function queryGraphEntity(
 export async function syncMissingEmbeddings(rootDir: string) {
   const db = getDb(rootDir)
   
+  // Automated migration: Check if vectors are normalized
+  try {
+    const sampleDrawer = db.prepare(`SELECT embedding FROM vec_drawers LIMIT 1`).get() as { embedding: Buffer } | undefined
+    const sampleMessage = db.prepare(`SELECT embedding FROM vec_messages LIMIT 1`).get() as { embedding: Buffer } | undefined
+    const sample = sampleDrawer ?? sampleMessage
+    if (sample?.embedding) {
+      const floatArray = new Float32Array(sample.embedding.buffer, sample.embedding.byteOffset, sample.embedding.byteLength / 4)
+      let sum = 0
+      for (let i = 0; i < floatArray.length; i++) {
+        sum += floatArray[i] * floatArray[i]
+      }
+      const magnitude = Math.sqrt(sum)
+      if (Math.abs(magnitude - 1.0) > 0.05) {
+        logger.info("Unnormalized vectors detected in vector database. Wiping tables for automated regeneration...")
+        db.prepare("DELETE FROM vec_drawers").run()
+        db.prepare("DELETE FROM vec_messages").run()
+      }
+    }
+  } catch (error) {
+    logger.error(`Failed to run automated vector normalization check: ${error}`)
+  }
+
   // 1. Find missing message embeddings
   const missingMessages = db.prepare(`
     SELECT id, text 
