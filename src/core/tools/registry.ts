@@ -4386,6 +4386,8 @@ export function listModelTools(isSubAgent = false, lastUserText?: string, allowe
     "ImageSearch",
     "DownloadFile",
     "GenerateImage",
+    "AnalyzeImage",
+    "VisionAnalyze",
   ])
 
   const staticMapped = tools
