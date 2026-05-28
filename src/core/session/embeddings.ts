@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import type Database from "better-sqlite3"
+import crypto from "node:crypto"
 
 const execFileAsync = promisify(execFile)
 
@@ -19,6 +20,34 @@ let lastError: string | null = null
 let pending: Promise<void> | null = null
 let semanticDb: Database.Database | null = null
 let detectedModel: string | null = null
+
+const activeRequests = new Map<string, Promise<Float32Array>>()
+
+function computeTextHash(text: string): string {
+  return crypto.createHash("sha256").update(text).digest("hex")
+}
+
+function pruneEmbeddingCacheIfNeeded() {
+  if (!semanticDb) return
+  try {
+    const maxEntries = 10000
+    const row = semanticDb.prepare(`SELECT COUNT(*) as c FROM embedding_cache`).get() as { c: number } | undefined
+    const count = row?.c ?? 0
+    if (count > maxEntries) {
+      const excess = count - maxEntries
+      semanticDb.prepare(`
+        DELETE FROM embedding_cache 
+        WHERE rowid IN (
+          SELECT rowid FROM embedding_cache 
+          ORDER BY updated_at ASC 
+          LIMIT ?
+        )
+      `).run(excess)
+    }
+  } catch {
+    // Fail-safe
+  }
+}
 
 function toEmbeddingsError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error)
@@ -179,21 +208,87 @@ export async function initEmbeddingEngine(): Promise<{ ok: boolean; state: Embed
 }
 
 export async function generateEmbedding(text: string): Promise<Float32Array> {
-  try {
-    await ensureEmbeddingsReady()
-    const response = await ollamaFetch("/api/embeddings", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: OLLAMA_MODEL, prompt: text }),
-    })
-    const payload = await response.json() as { embedding?: number[] }
-    if (!Array.isArray(payload.embedding)) throw new Error("Ollama embedding response did not include an embedding array")
-    if (payload.embedding.length !== EMBEDDING_DIMENSIONS) {
-      throw new Error(`Expected ${EMBEDDING_DIMENSIONS} dimensions from ${OLLAMA_MODEL}, got ${payload.embedding.length}`)
+  const normalizedText = text.trim()
+  if (!normalizedText) {
+    return new Float32Array(EMBEDDING_DIMENSIONS)
+  }
+
+  const hash = computeTextHash(normalizedText)
+
+  // 1. Check in-memory de-duplication first
+  if (activeRequests.has(hash)) {
+    return await activeRequests.get(hash)!
+  }
+
+  const promise = (async () => {
+    // 2. Check SQLite cache
+    if (semanticDb) {
+      try {
+        const row = semanticDb.prepare(`
+          SELECT embedding FROM embedding_cache 
+          WHERE provider = 'ollama' AND model = ? AND hash = ?
+          LIMIT 1
+        `).get(OLLAMA_MODEL, hash) as { embedding: string } | undefined
+        if (row?.embedding) {
+          const parsed = JSON.parse(row.embedding)
+          if (Array.isArray(parsed) && parsed.length === EMBEDDING_DIMENSIONS) {
+            // Update updated_at for LRU eviction
+            semanticDb.prepare(`
+              UPDATE embedding_cache SET updated_at = ? 
+              WHERE provider = 'ollama' AND model = ? AND hash = ?
+            `).run(Date.now(), OLLAMA_MODEL, hash)
+            return Float32Array.from(parsed)
+          }
+        }
+      } catch (err) {
+        // Fallback to Ollama if cache query fails
+      }
     }
-    return Float32Array.from(payload.embedding)
-  } catch (error) {
-    throw toEmbeddingsError(error)
+
+    // 3. Fallback to Ollama fetch (cache miss)
+    try {
+      await ensureEmbeddingsReady()
+      const response = await ollamaFetch("/api/embeddings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: OLLAMA_MODEL, prompt: normalizedText }),
+      })
+      const payload = await response.json() as { embedding?: number[] }
+      if (!Array.isArray(payload.embedding)) throw new Error("Ollama embedding response did not include an embedding array")
+      if (payload.embedding.length !== EMBEDDING_DIMENSIONS) {
+        throw new Error(`Expected ${EMBEDDING_DIMENSIONS} dimensions from ${OLLAMA_MODEL}, got ${payload.embedding.length}`)
+      }
+      
+      const floatArray = Float32Array.from(payload.embedding)
+
+      // Save to SQLite cache asynchronously
+      if (semanticDb) {
+        try {
+          semanticDb.prepare(`
+            INSERT INTO embedding_cache (provider, model, hash, embedding, dims, updated_at)
+            VALUES ('ollama', ?, ?, ?, ?, ?)
+            ON CONFLICT(provider, model, hash) DO UPDATE SET
+              embedding = excluded.embedding,
+              dims = excluded.dims,
+              updated_at = excluded.updated_at
+          `).run(OLLAMA_MODEL, hash, JSON.stringify(payload.embedding), EMBEDDING_DIMENSIONS, Date.now())
+          pruneEmbeddingCacheIfNeeded()
+        } catch {
+          // Fail-safe
+        }
+      }
+
+      return floatArray
+    } catch (error) {
+      throw toEmbeddingsError(error)
+    }
+  })()
+
+  activeRequests.set(hash, promise)
+  try {
+    return await promise
+  } finally {
+    activeRequests.delete(hash)
   }
 }
 

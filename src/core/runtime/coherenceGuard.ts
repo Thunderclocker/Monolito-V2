@@ -18,7 +18,8 @@ export async function checkTurnCoherence(
     system: string,
     userPrompt: string,
     options?: { model?: string; maxTokens?: number }
-  ) => Promise<{ text: string }>
+  ) => Promise<{ text: string }>,
+  recentMessages?: Array<{ role: string; text: string }>
 ): Promise<CoherenceCheckResult> {
   if (!modelText || modelText.trim().length < 15) {
     return { coherent: true }
@@ -42,11 +43,21 @@ export async function checkTurnCoherence(
       // Fallback silencioso si RAG semántico no está listo
     }
 
+    let recentChatContext = ""
+    if (recentMessages && recentMessages.length > 0) {
+      recentChatContext = [
+        "=== CONVERSACIÓN RECIENTE (CHAT) ===",
+        recentMessages.map(m => `[${m.role.toUpperCase()}]: ${m.text}`).join("\n"),
+        ""
+      ].join("\n")
+    }
+
     // 3. Prompt de verificación basado puramente en coherencia lógica universal
-    const systemPrompt = `Actúas como el validador universal de consistencia lógica para la respuesta propuesta por el asistente. Tu única función es determinar si existe algún conflicto lógico, contradicción o incompatibilidad (directa o indirecta) entre las afirmaciones de la respuesta propuesta y la información de referencia suministrada (perfil del usuario y hechos de la memoria).
+    const systemPrompt = `Actúas como el validador universal de consistencia lógica para la respuesta propuesta por el asistente. Tu única función es determinar si existe algún conflicto lógico, contradicción o incompatibilidad (directa o indirecta) entre las afirmaciones de la respuesta propuesta y la información de referencia suministrada (conversación reciente, perfil del usuario y hechos de la memoria).
 
 REGLA FUNDACIONAL:
 - Si la respuesta propuesta asume condiciones, procedimientos, hechos o entornos que entran en conflicto con las restricciones, realidades o información explícita detallada en la referencia, la respuesta debe considerarse INCOHERENTE.
+- REGLA DE CONTEXTO: Las directivas condicionales del perfil del usuario (como 'responder solo con descripción literal ante fotos', 'no meta respuestas', etc.) SOLO deben exigirse si la conversación reciente de este turno cumple activamente con esa condición (ej: que el usuario haya enviado una imagen). No rechaces respuestas que discutan recuerdos, reglas o mascotas en una conversación general de memoria si el usuario te lo está pidiendo en su prompt del chat.
 
 Responde estrictamente en formato JSON:
 {
@@ -54,7 +65,7 @@ Responde estrictamente en formato JSON:
   "reason": "Explicación breve, objetiva y lógica en español de la contradicción detectada si coherent es false, de lo contrario vacío"
 }`;
 
-    const userPrompt = `=== PERFIL DEL USUARIO (BOOT_USER) ===
+    const userPrompt = `${recentChatContext}=== PERFIL DEL USUARIO (BOOT_USER) ===
 ${bootUser}
 
 === MEMORIAS SEMÁNTICAS RELACIONADAS ===

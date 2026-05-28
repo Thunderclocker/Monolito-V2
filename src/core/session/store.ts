@@ -89,6 +89,18 @@ function ensureVectorSchema(db: Database.Database) {
     `)
   }
   db.exec(VECTOR_SCHEMA_SQL)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS embedding_cache (
+      provider TEXT,
+      model TEXT,
+      hash TEXT,
+      embedding TEXT,
+      dims INTEGER,
+      updated_at INTEGER,
+      PRIMARY KEY (provider, model, hash)
+    );
+    CREATE INDEX IF NOT EXISTS idx_embedding_cache_updated_at ON embedding_cache(updated_at);
+  `)
 }
 
 function readLatestPalaceContent(

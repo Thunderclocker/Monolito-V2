@@ -10,7 +10,7 @@ import { AbortError, ApiError, ContextOverflowError, HttpError, ProviderOverload
 import { createLogger, type Logger } from "../logging/logger.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider } from "./modelRegistry.ts"
-import { compactSession, getSession, readSessionSources, updateWorkerJobStatus, upsertWorkerJob, tailEvents, listSessionTasks, listDynamicSkills } from "../session/store.ts"
+import { compactSession, getSession, readSessionSources, updateWorkerJobStatus, upsertWorkerJob, tailEvents, listSessionTasks, listDynamicSkills, appendWorklog } from "../session/store.ts"
 import { callProvider, type ConversationMessage, type ProviderConfig, type ProviderResponse, type ToolCall } from "./providers/index.ts"
 import { ensureMonolitoRoot } from "../system/root.ts"
 import { redactSensitiveText } from "../security/redact.ts"
@@ -704,6 +704,7 @@ export async function* runAgentLoop(
   let activeSession = session
   let compacted = false
   let compactionCount = 0
+  let coherenceFailureCount = 0
   const MAX_COMPACTIONS_PER_TURN = 3
   let usage: TurnUsage | undefined
   const steps: AssistantTurnStep[] = []
@@ -867,28 +868,38 @@ export async function* runAgentLoop(
           rootDir,
           response.text,
           profileId,
-          runBackgroundTextTask
+          runBackgroundTextTask,
+          session.messages.slice(-3)
         );
 
         if (!coherence.coherent) {
-          logCoherenceBreach(rootDir, session.id, coherence.reason ?? "Incoherencia de perfil", response.text);
+          coherenceFailureCount++
+          if (coherenceFailureCount >= 3) {
+            logger.warn(`Coherence guard bypassed for session ${session.id} after 3 failed corrections to prevent hard timeout. Reason: ${coherence.reason}`);
+            appendWorklog(rootDir, session.id, {
+              type: "note",
+              summary: `COHERENCE_GUARD_BYPASSED: Bypassed after 3 consecutive rejections to prevent turn timeout. Last reason: "${coherence.reason}"`,
+            });
+          } else {
+            logCoherenceBreach(rootDir, session.id, coherence.reason ?? "Incoherencia de perfil", response.text);
 
-          yield {
-            type: "recoverable_error",
-            sessionId: session.id,
-            iteration,
-            action: "coherence_correction" as any,
-            error: `Respuesta rechazada por coherencia: ${coherence.reason}`
-          };
+            yield {
+              type: "recoverable_error",
+              sessionId: session.id,
+              iteration,
+              action: "coherence_correction" as any,
+              error: `Respuesta rechazada por coherencia: ${coherence.reason}`
+            };
 
-          messages.push({
-            role: "user",
-            content: `[SYSTEM ALERT - COHERENCE GUARD] Tu respuesta anterior fue RECHAZADA.
+            messages.push({
+              role: "user",
+              content: `[SYSTEM ALERT - COHERENCE GUARD] Tu respuesta anterior fue RECHAZADA.
 Contradicción detectada: ${coherence.reason}
 Por favor, corregí este error de inmediato y reescribí tu respuesta respetando estrictamente tu memoria.`
-          });
+            });
 
-          continue;
+            continue;
+          }
         }
         // --- END OF COHERENCE GUARD ---
 
