@@ -4065,6 +4065,213 @@ Actions:
       }
     }
   },
+  {
+    name: "GenerateImage",
+    permissionTier: "edit",
+    description: "Genera una imagen a partir de una descripción detallada (prompt). Soporta xAI Grok (grok-imagine-image) por defecto si la sesión está autenticada, o DALL-E si está configurado.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        prompt: { type: "string", description: "Descripción detallada de la imagen a generar (ej: 'Un gato de estilo cyberpunk con ojos de neón brillante')." },
+        aspect_ratio: { type: "string", enum: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], description: "Relación de aspecto de la imagen generada. Por defecto es '1:1'." },
+        quality: { type: "string", enum: ["standard", "quality"], description: "Calidad de generación. Por defecto es 'standard'. 'quality' produce mayor nivel de detalle (solo soportado por Grok)." },
+        provider: { type: "string", enum: ["xai", "openai"], description: "Forzar un proveedor específico. Por defecto detecta automáticamente basándose en las credenciales del perfil activo." }
+      },
+      required: ["prompt"],
+      additionalProperties: false
+    },
+    concurrencySafe: true,
+    validate: input => {
+      if (typeof input.prompt !== "string" || input.prompt.trim().length === 0) {
+        return "El prompt de generación no puede estar vacío."
+      }
+      return null
+    },
+    async run(input, context) {
+      try {
+        const prompt = requireString(input, "prompt")
+        const aspect_ratio = optionalString(input, "aspect_ratio") || "1:1"
+        const quality = optionalString(input, "quality") || "standard"
+        const providerOverride = optionalString(input, "provider")
+
+        // 1. Resolve Provider and Credentials
+        let provider = "xai"
+        let baseUrl = "https://api.x.ai/v1"
+        let apiKey = ""
+        let model = ""
+
+        const activeProfile = getActiveProfile()
+
+        if (providerOverride === "xai") {
+          provider = "xai"
+        } else if (providerOverride === "openai") {
+          provider = "openai"
+        } else {
+          // Auto-detect
+          if (activeProfile && ((activeProfile.provider as string) === "xai-oauth" || (activeProfile.provider as string) === "xai" || activeProfile.baseUrl.includes("x.ai"))) {
+            provider = "xai"
+          } else {
+            const { loadGrokTokens } = await import("../runtime/providers/grokAuth.ts")
+            const hasGrokTokens = await loadGrokTokens().then(t => !!t).catch(() => false)
+            const hasGrokEnv = !!process.env.XAI_API_KEY
+            if (hasGrokTokens || hasGrokEnv) {
+              provider = "xai"
+            } else if (activeProfile && (activeProfile.provider === "openai_compatible" || activeProfile.provider === "anthropic_compatible")) {
+              provider = "openai"
+            } else {
+              provider = "xai"
+            }
+          }
+        }
+
+        // Resolve credentials
+        if (provider === "xai") {
+          baseUrl = "https://api.x.ai/v1"
+          if (activeProfile && ((activeProfile.provider as string) === "xai-oauth" || (activeProfile.provider as string) === "xai")) {
+            apiKey = activeProfile.apiKey.trim()
+            if ((activeProfile.provider as string) === "xai-oauth") {
+              try {
+                const { resolveGrokAccessToken } = await import("../runtime/providers/grokAuth.ts")
+                apiKey = await resolveGrokAccessToken()
+              } catch (err) {
+                context.logger?.error(`Error resolving Grok access token: ${err}`)
+              }
+            }
+          } else {
+            if (process.env.XAI_API_KEY) {
+              apiKey = process.env.XAI_API_KEY.trim()
+            } else {
+              try {
+                const { resolveGrokAccessToken } = await import("../runtime/providers/grokAuth.ts")
+                apiKey = await resolveGrokAccessToken()
+              } catch (err) {
+                // Ignore, we fail later
+              }
+            }
+          }
+          model = quality === "quality" ? "grok-imagine-image-quality" : "grok-imagine-image"
+        } else {
+          // OpenAI
+          if (activeProfile) {
+            baseUrl = activeProfile.baseUrl.trim().replace(/\/+$/, "")
+            apiKey = activeProfile.apiKey.trim()
+            model = activeProfile.model.trim() || "dall-e-3"
+          } else {
+            baseUrl = process.env.OPENAI_BASE_URL?.trim() || "https://api.openai.com/v1"
+            apiKey = process.env.OPENAI_API_KEY?.trim() || ""
+            model = "dall-e-3"
+          }
+        }
+
+        if (!apiKey) {
+          return formatToolError(
+            `No se encontraron credenciales válidas para el proveedor '${provider}'. ` +
+            `Por favor, configura xAI Grok OAuth ejecutando 'monolito auth xai-oauth' en tu terminal, ` +
+            `o configura la variable de entorno XAI_API_KEY / OPENAI_API_KEY.`
+          )
+        }
+
+        // 2. Prepare Endpoint and Payload
+        let endpoint = `${baseUrl.replace(/\/+$/, "")}/images/generations`
+        let payload: Record<string, any> = {}
+
+        if (provider === "xai" || baseUrl.includes("x.ai")) {
+          payload = {
+            model: model,
+            prompt: prompt,
+            aspect_ratio: aspect_ratio,
+            resolution: "1k"
+          }
+        } else {
+          let size = "1024x1024"
+          if (aspect_ratio === "16:9") {
+            size = "1792x1024"
+          } else if (aspect_ratio === "9:16") {
+            size = "1024x1792"
+          } else if (aspect_ratio === "4:3") {
+            size = "1024x768"
+          } else if (aspect_ratio === "3:4") {
+            size = "768x1024"
+          }
+          payload = {
+            model: model || "dall-e-3",
+            prompt: prompt,
+            size: size,
+            n: 1
+          }
+        }
+
+        context.logger?.info(`Iniciando generación de imagen con '${provider}' y modelo '${model}'...`)
+
+        // 3. Request
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${apiKey}`
+          },
+          body: JSON.stringify(payload),
+          signal: context.abortSignal
+        })
+
+        if (!response.ok) {
+          const errorText = await response.text()
+          return formatToolError(`La API de generación de imágenes falló (${response.status}): ${errorText}`)
+        }
+
+        const result = await response.json() as any
+        const data = result.data || []
+        if (data.length === 0) {
+          return formatToolError("La API no devolvió ninguna imagen en la respuesta.")
+        }
+
+        const first = data[0]
+        const b64 = first.b64_json
+        const imageUrl = first.url
+
+        // 4. Save Locally
+        const scratchpadDir = join(MONOLITO_ROOT, "scratchpad")
+        mkdirSync(scratchpadDir, { recursive: true })
+
+        let localPath = ""
+        let isPng = true
+
+        if (b64) {
+          const buffer = Buffer.from(b64, "base64")
+          localPath = join(scratchpadDir, `img-gen-${randomUUID()}.png`)
+          writeFileSync(localPath, buffer)
+        } else if (imageUrl) {
+          const imgResponse = await fetch(imageUrl, { signal: context.abortSignal })
+          if (!imgResponse.ok) {
+            return formatToolError(`No se pudo descargar la imagen generada desde la URL: HTTP ${imgResponse.status}`)
+          }
+          const buffer = Buffer.from(await imgResponse.arrayBuffer())
+          if (imageUrl.toLowerCase().endsWith(".jpg") || imageUrl.toLowerCase().endsWith(".jpeg")) {
+            isPng = false
+          }
+          localPath = join(scratchpadDir, `img-gen-${randomUUID()}.${isPng ? "png" : "jpg"}`)
+          writeFileSync(localPath, buffer)
+        } else {
+          return formatToolError("La respuesta no contiene ni 'b64_json' ni 'url'.")
+        }
+
+        context.logger?.info(`Imagen generada exitosamente en: ${localPath}`)
+
+        return JSON.stringify({
+          success: true,
+          local_path: localPath,
+          url: imageUrl || null,
+          provider: provider,
+          model: model,
+          prompt: prompt,
+          aspect_ratio: aspect_ratio
+        }, null, 2)
+
+      } catch (err: any) {
+        return formatToolError(`Error durante la generación de la imagen: ${err.message}`)
+      }
+    }
+  },
 ]
 
 const tools: ToolDefinition[] = rawTools.map(withSafeToolFailure)
@@ -4155,6 +4362,7 @@ export function listModelTools(isSubAgent = false, lastUserText?: string, allowe
     "TelegramSendPhoto",
     "ImageSearch",
     "DownloadFile",
+    "GenerateImage",
   ])
 
   const staticMapped = tools
