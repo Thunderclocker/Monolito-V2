@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { type MonolitoV2Runtime } from "./runtime.ts"
-import { runBackgroundTextTask } from "./modelAdapterLite.ts"
+import { runBackgroundTextTask } from "./modelAdapter.ts"
 import { ensureDirs } from "../ipc/protocol.ts"
 import {
   appendMessage,

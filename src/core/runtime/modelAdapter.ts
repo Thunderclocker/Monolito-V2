@@ -23,7 +23,7 @@ import { truncateHeadTail, calculateToolResultBudget } from "../context/toolResu
 import { saveEmergencySnapshot } from "../context/contextSnapshot.ts"
 import { smartCompactSession, compactInMemoryTier1 } from "../context/smartCompactor.ts"
 
-const defaultLogger = createLogger("modelAdapterLite")
+const defaultLogger = createLogger("modelAdapter")
 const MAX_TURN_ITERATIONS = 16
 const DEFAULT_MAX_TURN_DURATION_MS = 120_000
 const MAX_BACKGROUND_TOKENS = 3_000

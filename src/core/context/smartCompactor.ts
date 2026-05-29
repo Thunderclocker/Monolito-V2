@@ -134,7 +134,7 @@ export async function smartCompactSession(
 
   try {
     // Avoid circular imports by dynamically importing runBackgroundTextTask
-    const { runBackgroundTextTask } = await import("../runtime/modelAdapterLite.ts");
+    const { runBackgroundTextTask } = await import("../runtime/modelAdapter.ts");
 
     let userProfileFacts = "";
     try {

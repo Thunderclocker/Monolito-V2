@@ -136,7 +136,7 @@ Sensitive values such as API keys are masked in user-facing output.
 
 ## Provider recovery state machine
 
-`src/core/runtime/modelAdapterLite.ts` uses a stateful `callProviderWithRetry` loop instead of a flat retry counter.
+`src/core/runtime/modelAdapter.ts` uses a stateful `callProviderWithRetry` loop instead of a flat retry counter.
 
 Current behavior:
 
