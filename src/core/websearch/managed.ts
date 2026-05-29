@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process"
-import { mkdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import { MONOLITO_ROOT } from "../system/root.ts"
@@ -152,11 +152,22 @@ export function withManagedSearxngSettings(content: string) {
   return updated
 }
 
-export async function ensureSearxngSettingsFile(): Promise<{ ok: boolean; message?: string }> {
-  mkdirSync(SEARXNG_SETTINGS_DIR, { recursive: true })
-  writeFileSync(SEARXNG_SETTINGS_FILE, MANAGED_SEARXNG_SETTINGS, "utf8")
-  return { ok: true }
-
+export async function ensureSearxngSettingsFile(): Promise<{ ok: boolean; changed: boolean; message?: string }> {
+  try {
+    mkdirSync(SEARXNG_SETTINGS_DIR, { recursive: true })
+    let existingContent = ""
+    if (existsSync(SEARXNG_SETTINGS_FILE)) {
+      existingContent = readFileSync(SEARXNG_SETTINGS_FILE, "utf8")
+    }
+    const hasChanged = existingContent !== MANAGED_SEARXNG_SETTINGS
+    if (hasChanged) {
+      writeFileSync(SEARXNG_SETTINGS_FILE, MANAGED_SEARXNG_SETTINGS, "utf8")
+    }
+    return { ok: true, changed: hasChanged }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { ok: false, changed: false, message: `Error escribiendo configuración: ${msg}` }
+  }
 }
 
 export async function probeSearxngJsonApi() {
@@ -177,17 +188,19 @@ export async function deploySearxng(): Promise<{ ok: boolean; message: string }>
     return { ok: false, message: "Docker is unavailable or not running." }
   }
 
-  const ourStatus = await getOurContainerStatus()
-  if (ourStatus === "running") {
-    try {
-      const probe = await fetch(`${SEARXNG_URL}/healthz`, { signal: AbortSignal.timeout(3000) })
-      if (probe.ok && await probeSearxngJsonApi()) return { ok: true, message: "SearxNG is already running and responding." }
-    } catch {}
-  }
-
   const settings = await ensureSearxngSettingsFile()
   if (!settings.ok) {
     return { ok: false, message: settings.message ?? "Could not prepare the SearxNG configuration." }
+  }
+
+  const ourStatus = await getOurContainerStatus()
+  if (ourStatus === "running") {
+    if (!settings.changed) {
+      try {
+        const probe = await fetch(`${SEARXNG_URL}/healthz`, { signal: AbortSignal.timeout(3000) })
+        if (probe.ok && await probeSearxngJsonApi()) return { ok: true, message: "SearxNG is already running and responding." }
+      } catch {}
+    }
   }
 
   const allContainers = await findAllSearxngContainers()
@@ -203,7 +216,7 @@ export async function deploySearxng(): Promise<{ ok: boolean; message: string }>
   }
 
   const portCheck = await isPortInUse()
-  if (portCheck.inUse) {
+  if (portCheck.inUse && ourStatus !== "running") {
     return {
       ok: false,
       message: [
