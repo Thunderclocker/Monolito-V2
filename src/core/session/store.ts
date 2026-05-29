@@ -2330,6 +2330,59 @@ export function deleteMessages(rootDir: string, messageIds: number[]) {
   }
 }
 
+export async function recallProfileFacts(rootDir: string, query: string, profileId = "default"): Promise<string[]> {
+  try {
+    let userText = ""
+    let memText = ""
+    let identityText = ""
+    try { userText = readBootWing(rootDir, "BOOT_USER", profileId) ?? "" } catch {}
+    try { memText = readBootWing(rootDir, "BOOT_MEMORY", profileId) ?? "" } catch {}
+    try { identityText = readBootWing(rootDir, "BOOT_IDENTITY", profileId) ?? "" } catch {}
+    
+    const combinedText = `${userText}\n\n${memText}\n\n${identityText}`
+    
+    // Split into meaningful paragraphs or bullet points
+    const paragraphs = combinedText
+      .split(/\n+/)
+      .map(p => p.trim())
+      .filter(p => p.length > 10 && !p.startsWith("#") && !p.startsWith("---"))
+      
+    if (paragraphs.length === 0) return []
+    
+    const queryVec = await generateEmbedding(query)
+    const matches: Array<{ text: string; score: number }> = []
+    
+    for (const paragraph of paragraphs) {
+      try {
+        const paragraphVec = await generateEmbedding(paragraph)
+        const score = cosineSimilarity(queryVec, paragraphVec)
+        matches.push({ text: paragraph, score })
+      } catch (err) {
+        // Skip individual failure
+      }
+    }
+    
+    // Sort by score descending and take the ones above 0.55 threshold
+    return matches
+      .sort((a, b) => b.score - a.score)
+      .filter(m => m.score > 0.55)
+      .slice(0, 3)
+      .map(m => m.text)
+  } catch (error) {
+    logger.error("Error recalling profile facts semantically:", error)
+    return []
+  }
+}
 
-
+function cosineSimilarity(a: Float32Array, b: Float32Array): number {
+  let dotProduct = 0
+  let normA = 0
+  let normB = 0
+  for (let i = 0; i < a.length; i++) {
+    dotProduct += a[i] * b[i]
+    normA += a[i] * a[i]
+    normB += b[i] * b[i]
+  }
+  return normA === 0 || normB === 0 ? 0 : dotProduct / (Math.sqrt(normA) * Math.sqrt(normB))
+}
 

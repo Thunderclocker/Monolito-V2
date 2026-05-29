@@ -307,10 +307,17 @@ function buildToolSummary(isSubAgent: boolean, lastUserMessage?: string, allowed
 
 function describeBootEntries(entries: BootWingEntry[]) {
   if (entries.length === 0) return ""
-  return entries
+  const formatted = entries
     .filter(entry => isBootWingName(entry.wing))
-    .map(entry => `## ${entry.wing}\n${BOOT_WING_DESCRIPTION[entry.wing as BootWingName]}\n${truncate(entry.content, 2_500)}`)
+    .map(entry => `### Wing: ${entry.wing}\n${BOOT_WING_DESCRIPTION[entry.wing as BootWingName]}\n<content>\n${truncate(entry.content, 2_500)}\n</content>`)
     .join("\n\n")
+  return [
+    "## User Profile & Behavioral Context (<user_profile_context>)",
+    "The following structural tags contain your background configuration (identity, user specs, and behavioral rules). Read them to align your persona, but do NOT mix this static background data with the active conversational topics unless explicitly asked.",
+    "<user_profile_context>",
+    formatted,
+    "</user_profile_context>"
+  ].join("\n")
 }
 
 function buildSystemPrompt(args: {
@@ -321,6 +328,7 @@ function buildSystemPrompt(args: {
   extras?: ContextExtras
   systemPromptOverride?: string
   allowedToolNames?: string[]
+  recalledProfileFacts?: string[]
 }) {
   if (args.systemPromptOverride?.trim()) return { system: args.systemPromptOverride.trim(), bootBlock: "" }
   const bootstrap = args.bootstrap ?? args.extras?.workspaceContext
@@ -378,6 +386,7 @@ function buildSystemPrompt(args: {
     "- Do NOT explicitly cite the source, URL, or tool name in your text response unless the user explicitly asks for it. The system UI already displays tool usage visually to the user, so preserve conversational flow.",
     "- HONESTY RULE: If a tool fails due to infrastructure (e.g., Vision service down), state it plainly. Do not pretend you are working or successful if an internal task failed.",
     "- COMMITMENT RULE: If you verbally promise to do something in the future (remind, notify, review, analyze, send, check, etc.), you MUST call the appropriate deferred/background tool in the exact same turn. If you do not execute a background/scheduling tool, do not make promises of future action. In that case, say something like 'I need to do X first' or simply do not make a promise. A verbal promise without a corresponding tool call in the same turn is invalid.",
+    "- PRONOMBRES Y PRIORIDAD DE ATENCIÓN (CRITICAL): Tus datos y reglas estáticas de usuario están aislados en <user_profile_context>. Está estrictamente PROHIBIDO que asocies pronombres genéricos o preguntas cortas en plural (ej: '¿cómo son?', '¿qué ves?', '¿dónde están?', 'ellas/ellos') con los elementos estáticos de tu perfil (como mascotas, computadoras o especificaciones de hardware). Esos pronombres SIEMPRE se refieren al hilo conversacional activo e inmediato. Si el usuario pregunta '¿cómo son?' en medio de un juego de rol o charla erótica sobre el cuerpo o vestimenta, la pregunta se refiere ÚNICAMENTE a lo descrito en el chat de rol, jamás a tus mascotas u otros datos del perfil.",
     isSubAgent
       ? [
           "You are a worker. Complete the task directly with the tools available to you.",
@@ -551,6 +560,14 @@ function buildSystemPrompt(args: {
     }
   } catch (e) {
     // Ignorar si falla
+  }
+
+  if (args.recalledProfileFacts && args.recalledProfileFacts.length > 0) {
+    dynamicContext.push([
+      "### Relevant Personal Profile Facts (Retrieved Semantically)",
+      "The following facts from your long-term profile memory are highly relevant to the current user's request:",
+      args.recalledProfileFacts.map(f => `- ${f}`).join("\n")
+    ].join("\n"))
   }
 
   return {
@@ -728,6 +745,16 @@ export async function* runAgentLoop(
     }
   }
 
+  let recalledProfileFacts: string[] = []
+  if (lastUserText && lastUserText.trim().length >= 15) {
+    try {
+      const { recallProfileFacts } = await import("../session/store.ts")
+      recalledProfileFacts = await recallProfileFacts(rootDir, lastUserText, context.profileId ?? "default")
+    } catch (err) {
+      logger.warn(`Failed to semantically recall profile facts: ${err}`)
+    }
+  }
+
   const prompt = buildSystemPrompt({
     session: activeSession,
     rootDir,
@@ -736,6 +763,7 @@ export async function* runAgentLoop(
     extras: options?.contextExtras,
     systemPromptOverride: options?.systemPromptOverride,
     allowedToolNames,
+    recalledProfileFacts,
   })
 
   for (let iteration = 1; iteration <= maxIterations; iteration++) {

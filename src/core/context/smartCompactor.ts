@@ -1,4 +1,4 @@
-import { getRawMessagesForSession, rewriteMessageInPlace, deleteMessages, appendWorklog } from "../session/store.ts";
+import { getRawMessagesForSession, rewriteMessageInPlace, deleteMessages, appendWorklog, getSession, readBootWing } from "../session/store.ts";
 
 export interface SmartCompactOptions {
   protectTailTurns?: number;
@@ -136,13 +136,37 @@ export async function smartCompactSession(
     // Avoid circular imports by dynamically importing runBackgroundTextTask
     const { runBackgroundTextTask } = await import("../runtime/modelAdapterLite.ts");
 
-    const summaryPrompt = `Genera un resumen conciso, factual y sumamente estructurado del historial intermedio de este chat.
+    let userProfileFacts = "";
+    try {
+      const session = getSession(rootDir, sessionId);
+      const profileId = session?.profileId || "default";
+      const userText = readBootWing(rootDir, "BOOT_USER", profileId) ?? "";
+      const memText = readBootWing(rootDir, "BOOT_MEMORY", profileId) ?? "";
+      
+      const facts = [];
+      if (userText.trim()) facts.push(`BOOT_USER:\n${userText.trim()}`);
+      if (memText.trim()) facts.push(`BOOT_MEMORY:\n${memText.trim()}`);
+      
+      if (facts.length > 0) {
+        userProfileFacts = facts.join("\n\n");
+      }
+    } catch (err) {
+      console.error(`[smart-compactor] Failed to read user profile facts: ${err}`);
+    }
+
+    let summaryPrompt = `Genera un resumen conciso, factual y sumamente estructurado del historial intermedio de este chat.
 Preservá de forma muy precisa:
 1. Hechos concretos, decisiones tomadas y acuerdos.
 2. Rutas de archivos, nombres de herramientas usadas y códigos de error encontrados.
 3. El estado actual de la tarea y qué falta por hacer.
 4. NO repitas detalles de implementación redundantes ni introducciones.
 Responde en el mismo idioma de los mensajes intermedios. Máximo 500 palabras.`;
+
+    if (userProfileFacts) {
+      summaryPrompt += `\n\nATENCIÓN - HECHOS DE PERFIL DE USUARIO (VERDAD FUNDACIONAL INMUTABLE):
+Usa la siguiente información del perfil del usuario para guiar la interpretación del resumen del historial, asegurando la coherencia y evitando cualquier contradicción o alucinación respecto a estos hechos inmutables (ej. si el historial menciona mascotas u otros detalles, deben coincidir exactamente con los declarados abajo):
+${userProfileFacts}`;
+    }
 
     const summaryResult = await runBackgroundTextTask(
       rootDir,
