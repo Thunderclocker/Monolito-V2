@@ -1,7 +1,7 @@
 import { join } from "node:path"
 import Database from "better-sqlite3"
 import * as sqliteVec from "sqlite-vec"
-import { randomUUID } from "node:crypto"
+import { randomUUID, createHash } from "node:crypto"
 import {
   type AgentEvent,
   type SessionRecord,
@@ -2384,5 +2384,104 @@ function cosineSimilarity(a: Float32Array, b: Float32Array): number {
     normB += b[i] * b[i]
   }
   return normA === 0 || normB === 0 ? 0 : dotProduct / (Math.sqrt(normA) * Math.sqrt(normB))
+}
+
+export async function saveResolvedError(
+  rootDir: string,
+  errorSnippet: string,
+  solutionSnippet: string
+): Promise<void> {
+  const db = getDb(rootDir)
+  const wing = "CONF_ERRORS"
+  const room = "resolved_errors"
+  const now = new Date().toISOString()
+  
+  const content = JSON.stringify({ error: errorSnippet, solution: solutionSnippet })
+  const memoryKey = createHash("sha256").update(errorSnippet.trim()).digest("hex")
+
+  // Check if it already exists to avoid duplicate work/vector inserts
+  const existing = db.prepare(`
+    SELECT rowid, id FROM memory_drawers
+    WHERE wing = ? AND room = ? AND memory_key = ?
+    LIMIT 1
+  `).get(wing, room, memoryKey) as { rowid: number; id: string } | undefined
+
+  if (existing) {
+    db.prepare(`
+      UPDATE memory_drawers
+      SET content = ?, created_at = ?
+      WHERE id = ?
+    `).run(content, now, existing.id)
+    
+    try {
+      const floatArray = await generateEmbedding(errorSnippet)
+      db.prepare(`INSERT OR REPLACE INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(existing.rowid), floatArray)
+    } catch (err) {
+      logger.error(`Failed to update resolved error embedding: ${err}`)
+    }
+    return
+  }
+
+  // Create new
+  const id = randomUUID()
+  const result = db.prepare(`
+    INSERT INTO memory_drawers (id, profile_id, wing, room, memory_key, content, created_at)
+    VALUES (?, NULL, ?, ?, ?, ?, ?)
+  `).run(id, wing, room, memoryKey, content, now)
+
+  try {
+    const floatArray = await generateEmbedding(errorSnippet)
+    db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(result.lastInsertRowid), floatArray)
+  } catch (err) {
+    logger.error(`Failed to generate resolved error embedding: ${err}`)
+  }
+}
+
+export async function querySimilarErrors(
+  rootDir: string,
+  errorSnippet: string,
+  limit = 1
+): Promise<{ error: string; solution: string } | null> {
+  const db = getDb(rootDir)
+  const wing = "CONF_ERRORS"
+  const room = "resolved_errors"
+
+  try {
+    const queryVector = await generateEmbedding(errorSnippet)
+    
+    // 1. Vector similarity query using MATCH
+    const matches = db.prepare(`
+      SELECT v.id as row_id, v.distance
+      FROM vec_drawers v
+      WHERE v.embedding MATCH ? AND v.k = ?
+      ORDER BY v.distance ASC
+    `).all(queryVector, limit + 5) as Array<{ row_id: number; distance: number }>
+
+    if (matches.length === 0) return null
+
+    // 2. Resolve matching rowids to memory drawers
+    for (const match of matches) {
+      const drawer = db.prepare(`
+        SELECT content FROM memory_drawers
+        WHERE rowid = ? AND wing = ? AND room = ?
+        LIMIT 1
+      `).get(BigInt(match.row_id), wing, room) as { content: string } | undefined
+
+      if (drawer?.content) {
+        // Cosine distance is returned by match distance.
+        // Let's filter to make sure similarity is high enough (distance < 0.40)
+        if (match.distance < 0.40) {
+          try {
+            return JSON.parse(drawer.content) as { error: string; solution: string }
+          } catch {
+            // Skip invalid JSON
+          }
+        }
+      }
+    }
+  } catch (err) {
+    logger.error(`Failed to query similar errors semantically: ${err}`)
+  }
+  return null
 }
 

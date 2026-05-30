@@ -220,7 +220,16 @@ export async function initEmbeddingEngine(): Promise<{ ok: boolean; state: Embed
   }
 }
 
+let mockGenerator: ((text: string) => Promise<Float32Array>) | null = null
+
+export function setMockEmbeddingGenerator(mock: typeof mockGenerator) {
+  mockGenerator = mock
+}
+
 export async function generateEmbedding(text: string): Promise<Float32Array> {
+  if (mockGenerator) {
+    return mockGenerator(text)
+  }
   const normalizedText = text.trim()
   if (!normalizedText) {
     return new Float32Array(EMBEDDING_DIMENSIONS)

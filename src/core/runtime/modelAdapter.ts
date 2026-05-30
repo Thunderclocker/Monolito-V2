@@ -10,7 +10,7 @@ import { AbortError, ApiError, ContextOverflowError, HttpError, ProviderOverload
 import { createLogger, type Logger } from "../logging/logger.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider } from "./modelRegistry.ts"
-import { compactSession, getSession, readSessionSources, updateWorkerJobStatus, upsertWorkerJob, tailEvents, listSessionTasks, listDynamicSkills, appendWorklog } from "../session/store.ts"
+import { compactSession, getSession, readSessionSources, updateWorkerJobStatus, upsertWorkerJob, tailEvents, listSessionTasks, listDynamicSkills, appendWorklog, saveResolvedError, querySimilarErrors } from "../session/store.ts"
 import { callProvider, type ConversationMessage, type ProviderConfig, type ProviderResponse, type ToolCall } from "./providers/index.ts"
 import { ensureMonolitoRoot } from "../system/root.ts"
 import { redactSensitiveText } from "../security/redact.ts"
@@ -892,6 +892,7 @@ export async function* runAgentLoop(
       if (response.toolCalls.length === 0) {
         // --- TDD FINALIZATION GUARD ---
         let lastFailureTool = ""
+        let failureSnippet = ""
         for (let i = messages.length - 1; i >= 0; i--) {
           const msg = messages[i]
           if (msg.role === "user") break
@@ -901,11 +902,13 @@ export async function* runAgentLoop(
               const isZero = msg.content.includes('"exitCode": 0')
               if (hasExitCode && !isZero) {
                 lastFailureTool = "Bash"
+                failureSnippet = extractErrorText(msg.content)
               }
               break
             }
             if (msg.content.includes('status="error"')) {
               lastFailureTool = msg.toolName
+              failureSnippet = extractErrorText(msg.content)
               break
             }
             break
@@ -921,11 +924,23 @@ export async function* runAgentLoop(
             error: `Intento de finalización bloqueado preventivamente por fallo no resuelto en la herramienta "${lastFailureTool}".`
           }
           logger.warn(`[tdd-react] Rejecting turn finalization because of unresolved tool failure in "${lastFailureTool}".`)
+          
+          let semanticHelper = ""
+          try {
+            const matched = await querySimilarErrors(rootDir, failureSnippet)
+            if (matched) {
+              semanticHelper = `\n\n[PALACE MEMORY]: Un error similar ocurrió en el pasado y fue resuelto con éxito.
+- Error Histórico: "${matched.error}"
+- Solución Aplicada: "${matched.solution}"
+Considera esta estrategia de solución.`
+            }
+          } catch {}
+
           messages.push({
             role: "user",
             content: `[SYSTEM ALERT - TDD FAIL-SAFE] Tu respuesta ha sido RECHAZADA.
 No puedes dar por finalizada la tarea porque el último comando o prueba ejecutada en este turno falló (error de herramienta "${lastFailureTool}" o exitCode != 0).
-Debes corregir el código del workspace y ejecutar con éxito las pruebas correspondientes antes de responder al usuario.`
+Debes corregir el código del workspace y ejecutar con éxito las pruebas correspondientes antes de responder al usuario.${semanticHelper}`
           })
           continue
         }
@@ -1005,6 +1020,7 @@ Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas c
         }
         // --- END OF COMMITMENT GUARD ---
 
+        await detectAndSaveLearning(rootDir, messages, logger)
         const finalizeResult = finalize(response.text, steps, startedAt, iteration, usage)
         yield { type: "done", sessionId: session.id, result: finalizeResult }
         return finalizeResult
@@ -1111,16 +1127,19 @@ Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas c
       // --- TDD-REACT FAIL-SAFE ALERTS ---
       let commandOrTestFailure = false
       let failedToolName = ""
+      let failureSnippet = ""
       for (const res of toolResults) {
         if (!res) continue
         if (res.toolName === "Bash" && (res.content.includes('"exitCode":') && !res.content.includes('"exitCode": 0'))) {
           commandOrTestFailure = true
           failedToolName = "Bash"
+          failureSnippet = extractErrorText(res.content)
           break
         }
         if (res.content.includes('status="error"')) {
           commandOrTestFailure = true
           failedToolName = res.toolName
+          failureSnippet = extractErrorText(res.content)
           break
         }
       }
@@ -1133,11 +1152,26 @@ Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas c
           action: "tdd_correction",
           error: `Fallo detectado en la ejecución de la herramienta "${failedToolName}".`
         }
-        logger.warn(`[tdd-react] Execution failure detected on tool "${failedToolName}". Injecting corrective fail-safe guide.`)
+        logger.warn(`[tdd-react] Execution failure detected on tool "${failedToolName}". Querying Memory Palace...`)
+        
+        let semanticHelper = ""
+        try {
+          const matched = await querySimilarErrors(rootDir, failureSnippet)
+          if (matched) {
+            semanticHelper = `\n\n[PALACE MEMORY]: Un error similar ocurrió en el pasado y fue resuelto con éxito.
+- Error Histórico: "${matched.error}"
+- Solución Aplicada: "${matched.solution}"
+Considera esta estrategia de solución.`
+            logger.info(`[tdd-react] Semantic error recovery found a matching solution for "${failedToolName}".`)
+          }
+        } catch (err) {
+          logger.warn(`Failed semantic query for tool failure: ${err}`)
+        }
+
         messages.push({
           role: "user",
           content: `[SYSTEM ALERT - TDD-REACT FAIL-SAFE] Se detectó un fallo de ejecución en la herramienta "${failedToolName}".
-Si esto corresponde a un error de compilación, una excepción no controlada o una prueba unitaria rota (FAIL/tests failed), debes analizar con absoluta precisión el log de error anterior, localizar el archivo fuente correspondiente en el workspace y aplicar la corrección técnica en este mismo turno. No ignores el error ni finalices el turno diciendo que completaste la tarea sin haber resuelto y verificado exitosamente el problema.`
+Si esto corresponde a un error de compilación, una excepción no controlada o una prueba unitaria rota (FAIL/tests failed), debes analizar con absoluta precisión el log de error anterior, localizar el archivo fuente correspondiente en el workspace y aplicar la corrección técnica en este mismo turno. No ignores el error ni finalices el turno diciendo que completaste la tarea sin haber resuelto y verificado exitosamente el problema.${semanticHelper}`
         })
       }
 
@@ -1228,6 +1262,74 @@ export function isToolCallStalled(
   }
 
   return { stalled: count >= 3, count }
+}
+
+function extractErrorText(content: string): string {
+  const stderrMatch = content.match(/"stderr":\s*"([\s\S]*?)"/)
+  if (stderrMatch && stderrMatch[1]) {
+    try {
+      const decoded = JSON.parse(`"${stderrMatch[1]}"`)
+      if (decoded.trim()) return decoded.trim()
+    } catch {
+      return stderrMatch[1].trim()
+    }
+  }
+  const lines = content.split("\n")
+  return lines.slice(-10).join("\n").trim()
+}
+
+async function detectAndSaveLearning(rootDir: string, messages: ConversationMessage[], logger: Logger) {
+  try {
+    let userMessageIndex = -1
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user") {
+        userMessageIndex = i
+        break
+      }
+    }
+    if (userMessageIndex === -1) return
+
+    const turnMessages = messages.slice(userMessageIndex + 1)
+    
+    let firstFailedError = ""
+    let hasEdits = false
+    let lastSuccessCmd = ""
+    let editSummaries: string[] = []
+
+    for (const msg of turnMessages) {
+      if (msg.role === "assistant" && "toolCalls" in msg) {
+        const astMsg = msg as { toolCalls?: ToolCall[] }
+        if (astMsg.toolCalls) {
+          for (const tc of astMsg.toolCalls) {
+            if (tc.name === "Write" || tc.name === "Edit") {
+              hasEdits = true
+              editSummaries.push(`${tc.name} en ${(tc.input as any).path ?? "archivo"}`)
+            }
+          }
+        }
+      }
+      if (msg.role === "tool") {
+        const toolRes = msg as { toolName?: string; content: string }
+        const isFail = toolRes.content.includes('status="error"') || (toolRes.toolName === "Bash" && toolRes.content.includes('"exitCode":') && !toolRes.content.includes('"exitCode": 0'))
+        const isSuccess = toolRes.toolName === "Bash" && toolRes.content.includes('"exitCode": 0')
+        
+        if (isFail && !firstFailedError) {
+          firstFailedError = extractErrorText(toolRes.content)
+        }
+        if (isSuccess && firstFailedError && hasEdits) {
+          lastSuccessCmd = `Ejecución exitosa de comando: ${toolRes.toolName ?? "Bash"}`
+        }
+      }
+    }
+
+    if (firstFailedError && hasEdits && lastSuccessCmd) {
+      const solutionSummary = `Se solucionó aplicando: ${editSummaries.join(", ")}. Verificado con: ${lastSuccessCmd}.`
+      logger.info(`[tdd-react] Learning loop detected a resolved issue! Saving to Memory Palace...`)
+      await saveResolvedError(rootDir, firstFailedError, solutionSummary)
+    }
+  } catch (err) {
+    logger.warn(`Failed to detect/save learning from turn: ${err}`)
+  }
 }
 
 export async function runAssistantTurn(
