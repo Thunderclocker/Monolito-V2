@@ -1,16 +1,17 @@
 import { appendActionLog, readConfigWing, writeConfigWing } from "../session/store.ts"
 
-export type WebSearchProvider = "default" | "searxng"
+export type WebSearchProvider = "default" | "searxng" | "brave" | "serper" | "tavily"
 
 export type WebSearchConfig = {
   provider: WebSearchProvider
+  apiKey?: string
 }
 
 export function readWebSearchConfig(): WebSearchConfig {
   const raw = readConfigWing(process.cwd(), "CONF_WEBSEARCH") as Partial<WebSearchConfig>
   const provider = raw.provider
-  if (provider === "default" || provider === "searxng") {
-    return { provider }
+  if (provider === "default" || provider === "searxng" || provider === "brave" || provider === "serper" || provider === "tavily") {
+    return { provider, apiKey: raw.apiKey }
   }
   return { provider: "default" }
 }
