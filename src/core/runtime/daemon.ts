@@ -269,13 +269,24 @@ export class MonolitoV2Daemon {
         const daemonPath = `${this.rootDir}/src/apps/daemon.ts`
         const restartState = readUpdateRestartState(this.rootDir)
         const restartStatePath = `${paths.runDir}/update-restart.json`
+
+        let useSystemdRun = false
+        try {
+          execFileSync("systemctl", ["--user", "is-enabled", "monolito.service"], { stdio: "ignore" })
+          useSystemdRun = true
+        } catch {}
+
         // Prefer restarting via systemd so the new daemon PID stays tracked by the
         // service manager. Fall back to direct spawn when systemd is unavailable
         // (e.g. local dev, Docker, non-systemd environments).
+        // Under systemd service units, we MUST spawn via systemd-run to escape the
+        // parent service cgroup and survive its termination.
         const restartScript = [
+          "exec >> \"$8\" 2>&1",
           "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done",
           // --- systemd path ---
           "if systemctl --user is-enabled monolito.service > /dev/null 2>&1; then",
+          "  systemctl --user daemon-reload",
           "  systemctl --user start monolito.service",
           "  sleep 3",
           "  if systemctl --user is-active monolito.service > /dev/null 2>&1; then rm -f \"$7\"; exit 0; fi",
@@ -283,6 +294,7 @@ export class MonolitoV2Daemon {
           "  if [ -n \"$4\" ]; then git -C \"$5\" reset --hard \"$4\" || true; git -C \"$5\" clean -fd || true; fi",
           "  if [ -n \"$6\" ]; then stash_ref=$(git -C \"$5\" stash list --format='%gd\t%s' | awk -F '\t' -v label=\"$6\" '$2==label { print $1; exit }'); if [ -n \"$stash_ref\" ]; then git -C \"$5\" stash apply --index \"$stash_ref\" || true; git -C \"$5\" stash drop \"$stash_ref\" || true; fi; fi",
           "  rm -f \"$7\"",
+          "  systemctl --user daemon-reload",
           "  systemctl --user start monolito.service",
           "  exit $?",
           "fi",
@@ -297,24 +309,46 @@ export class MonolitoV2Daemon {
           "rm -f \"$7\"",
           "exec \"$2\" --experimental-strip-types \"$3\" --foreground",
         ].join("\n")
-        const child = spawn("sh", [
-          "-lc",
-          restartScript,
-          "monolito-restart",
-          String(process.pid),
-          process.execPath,
-          daemonPath,
-          restartState?.currentHead ?? "",
-          this.rootDir,
-          restartState?.stashLabel ?? "",
-          restartStatePath,
-        ], {
+
+        const spawnCmd = useSystemdRun ? "systemd-run" : "sh"
+        const spawnArgs = useSystemdRun
+          ? [
+              "--user",
+              "--description=Monolito Self-Restart Helper",
+              "sh",
+              "-lc",
+              restartScript,
+              "monolito-restart",
+              String(process.pid),
+              process.execPath,
+              daemonPath,
+              restartState?.currentHead ?? "",
+              this.rootDir,
+              restartState?.stashLabel ?? "",
+              restartStatePath,
+              paths.daemonLog,
+            ]
+          : [
+              "-lc",
+              restartScript,
+              "monolito-restart",
+              String(process.pid),
+              process.execPath,
+              daemonPath,
+              restartState?.currentHead ?? "",
+              this.rootDir,
+              restartState?.stashLabel ?? "",
+              restartStatePath,
+              paths.daemonLog,
+            ]
+
+        const child = spawn(spawnCmd, spawnArgs, {
           cwd: this.rootDir,
           detached: true,
           stdio: ["ignore", stdout, stderr],
         })
         child.unref()
-        this.writeDaemonLog(`daemon self-restart spawned child pid ${child.pid ?? "unknown"}`)
+        this.writeDaemonLog(`daemon self-restart spawned child via ${spawnCmd} pid ${child.pid ?? "unknown"}`)
         this.stop()
       } catch (error) {
         clearUpdateRestartState(this.rootDir)
