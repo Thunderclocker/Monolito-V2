@@ -119,7 +119,8 @@ const systemConfigZod = z.object({
   }).strict(),
 }).strict()
 const webSearchConfigZod = z.object({
-  provider: z.enum(["default", "searxng"]),
+  provider: z.enum(["default", "searxng", "brave", "serper", "tavily"]),
+  apiKey: z.string().optional(),
 }).strict()
 const hookMatcherZod = z.object({
   tool: z.string().optional(),
