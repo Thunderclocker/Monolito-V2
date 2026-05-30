@@ -8,6 +8,7 @@ import { promisify } from "node:util"
 import { existsSync } from "node:fs"
 import { mkdir, rm } from "node:fs/promises"
 import { join } from "node:path"
+import { randomUUID } from "node:crypto"
 import { ensureMonolitoRoot } from "../system/root.ts"
 
 const execFileAsync = promisify(execFile)
@@ -95,4 +96,43 @@ export function getLocalISODate(): string {
 
 export function getDateContext(): string {
   return `Today's date is ${getLocalISODate()}.`
+}
+
+export async function createCheckpointCommit(rootDir: string): Promise<string> {
+  const status = await runGit(["status", "--porcelain"], rootDir)
+  if (!status.trim()) {
+    // Repository is clean, no checkpoint commit needed
+    return await runGit(["rev-parse", "HEAD"], rootDir, { throwOnError: true })
+  }
+
+  const checkpointId = randomUUID().slice(0, 8)
+  await runGit(["add", "-A"], rootDir, { throwOnError: true })
+  await runGit([
+    "-c", "user.name=Monolito Agent",
+    "-c", "user.email=agent@monolito.local",
+    "commit",
+    "-m", `temp: checkpoint commit for multiverse ${checkpointId}`
+  ], rootDir, { throwOnError: true })
+
+  return await runGit(["rev-parse", "HEAD"], rootDir, { throwOnError: true })
+}
+
+export async function commitWorktreeChanges(worktreePath: string, message: string): Promise<void> {
+  await runGit(["add", "-A"], worktreePath, { throwOnError: true })
+  await runGit([
+    "-c", "user.name=Monolito Agent",
+    "-c", "user.email=agent@monolito.local",
+    "commit",
+    "-m", message
+  ], worktreePath, { throwOnError: true })
+}
+
+export async function mergeBranchIntoRoot(rootDir: string, branchName: string): Promise<void> {
+  await runGit([
+    "-c", "user.name=Monolito Agent",
+    "-c", "user.email=agent@monolito.local",
+    "merge",
+    branchName,
+    "--no-edit"
+  ], rootDir, { throwOnError: true })
 }

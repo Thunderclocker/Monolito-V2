@@ -267,31 +267,58 @@ function finalize(finalText: string, steps: AssistantTurnStep[], startedAt: numb
   }
 }
 
-function compileHandoffContext(session: SessionRecord, steps: AssistantTurnStep[], goalExplanation: string): string {
+export function compileHandoffTranscript(session: SessionRecord, messages: ConversationMessage[], goalExplanation: string): string {
   const lastUserMsg = session.messages.filter(m => m.role === "user").slice(-1)[0]?.text ?? "Tarea original";
-  const toolExecs = steps
-    .filter(s => s.type === "tool")
-    .map(s => `- Ejecutó la herramienta **${s.tool}** con argumentos: ${JSON.stringify(s.input)}`)
-    .join("\n");
+  
+  const transcriptLines: string[] = [];
+  
+  for (const msg of messages) {
+    if (msg.role === "user") {
+      transcriptLines.push(`[USER]: ${msg.content.slice(0, 500)}`);
+    } else if (msg.role === "assistant") {
+      if (msg.content) {
+        transcriptLines.push(`[ASSISTANT]: ${msg.content.slice(0, 400)}`);
+      }
+      if ("toolCalls" in msg && msg.toolCalls?.length) {
+        for (const tc of msg.toolCalls) {
+          transcriptLines.push(`  → LLAMADA HERRAMIENTA: ${tc.name}(${JSON.stringify(tc.input).slice(0, 300)})`);
+        }
+      }
+    } else if (msg.role === "tool") {
+      const isError = msg.content.includes('status="error"') || (msg.content.includes('"exitCode":') && !msg.content.includes('"exitCode": 0'));
+      const statusLabel = isError ? "FALLO" : "OK";
+      
+      let contentSnippet = "";
+      if (isError) {
+        contentSnippet = extractErrorText(msg.content);
+      } else {
+        contentSnippet = msg.content.length > 300 ? `${msg.content.slice(0, 300)}... (truncado)` : msg.content;
+      }
+      transcriptLines.push(`  ← RESPUESTA [${statusLabel}]: ${contentSnippet}`);
+    }
+  }
+
+  const formattedTranscript = transcriptLines.join("\n");
 
   return [
-    `# RESUMEN DE TRASPASO POR LÍMITE DE TURNOS SÍNCRONOS`,
-    `El coordinador principal inició el trabajo y se quedó sin turnos en el chat síncrono. Tu misión es continuar y completar la tarea original desde este punto.`,
+    `# TRASPASO DETALLADO (HIGH-FIDELITY HANDOFF) POR LÍMITE DE TURNOS`,
+    `El coordinador principal inició el trabajo y se quedó sin turnos en el chat interactivo. Tu misión es continuar y completar la tarea original desde este punto.`,
     ``,
     `## Objetivo Técnico a Completar:`,
     goalExplanation.trim(),
     ``,
-    `## Tarea Original del Usuario (Último Mensaje):`,
+    `## Tarea Original del Usuario:`,
     `"${lastUserMsg}"`,
     ``,
-    `## Acciones y Herramientas Ejecutadas en este Turno:`,
-    toolExecs || "Ninguna herramienta ejecutada antes del traspaso.",
+    `## Historial de Pasos y Salidas Técnicas del Turno Anterior:`,
+    formattedTranscript || "Ninguna acción registrada antes del traspaso.",
     ``,
     `## Misión Restante Obligatoria:`,
     `1. Analiza el estado actual de los archivos y del workspace (usa view_file, list_dir, grep_search, etc.).`,
-    `2. Completa los requisitos faltantes de la tarea original.`,
-    `3. Compila, testea y valida empíricamente que tu código funciona sin errores.`,
-    `4. IMPORTANTE: Una vez que termines por completo, finaliza tu respuesta agregando exactamente el tag: <verified>SUCCESS</verified>`,
+    `2. Revisa el historial de pasos anterior para no repetir los mismos errores ni comandos atascados.`,
+    `3. Completa los requisitos faltantes de la tarea original.`,
+    `4. Compila, testea y valida empíricamente que tu código funciona sin errores.`,
+    `5. IMPORTANTE: Una vez que termines por completo, finaliza tu respuesta agregando exactamente el tag: <verified>SUCCESS</verified>`,
   ].join("\n");
 }
 
@@ -784,7 +811,7 @@ export async function* runAgentLoop(
             { logger }
           ).then(r => r.text).catch(() => "Completar la tarea original solicitada por el usuario en el chat.");
 
-          const handoffContext = compileHandoffContext(session, steps, goalExplanation);
+          const handoffContext = compileHandoffTranscript(session, messages, goalExplanation);
           const spawned = await context.orchestrator.spawnBackgroundTask(
             session.id,
             context.profileId ?? "default",

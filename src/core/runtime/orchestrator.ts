@@ -538,6 +538,7 @@ export type DelegationTask = {
   error?: string
   logger?: Logger
   cwd?: string
+  branchName?: string
 }
 
 export type SpawnAgentResult = {
@@ -740,8 +741,15 @@ export class AgentOrchestrator {
       : null
 
     if (options.isolation === "worktree") {
-      const branchName = `monolito-worker-${randomUUID()}`
+      try {
+        const { createCheckpointCommit } = await import("../context/gitContext.ts")
+        await createCheckpointCommit(rootDir)
+      } catch (err) {
+        logger.warn(`Failed to create checkpoint commit: ${err}`)
+      }
+      const branchName = `monolito-worker-${randomUUID().slice(0, 8)}`
       delegationTask.cwd = await createAgentWorktree(rootDir, branchName)
+      delegationTask.branchName = branchName
     }
 
     if (bgTaskId) {
@@ -763,6 +771,14 @@ export class AgentOrchestrator {
     if (this.runningWorkerCount >= MAX_CONCURRENT_WORKERS) {
       if (delegationTask.cwd) {
         await removeAgentWorktree(rootDir, delegationTask.cwd).catch(() => {})
+        if (delegationTask.branchName) {
+          try {
+            const { execFile } = await import("node:child_process")
+            const { promisify } = await import("node:util")
+            const execAsync = promisify(execFile)
+            await execAsync("git", ["branch", "-D", delegationTask.branchName], { cwd: rootDir })
+          } catch {}
+        }
       }
       updateWorkerJobStatus(rootDir, delegationTask.id, "failed", { errorText: `Concurrency limit reached (${MAX_CONCURRENT_WORKERS} workers running).` })
       return {
@@ -1010,9 +1026,47 @@ export class AgentOrchestrator {
   private async notifyParent(task: DelegationTask, error?: string) {
     if (task.cwd) {
       const worktreePath = task.cwd
+      const branchName = task.branchName
       task.cwd = undefined
+      task.branchName = undefined
+      
       try {
+        if (task.status === "completed" && branchName) {
+          try {
+            const { commitWorktreeChanges, mergeBranchIntoRoot } = await import("../context/gitContext.ts")
+            await commitWorktreeChanges(worktreePath, `feat: completed task ${task.id} in worktree`)
+            await mergeBranchIntoRoot(this.runtime.rootDir, branchName)
+            task.logger?.info(`Successfully committed worktree changes and merged branch ${branchName} into root repository.`)
+            
+            // If it belongs to a jobGroupId, abort any running sibling workers
+            if (task.jobGroupId) {
+              for (const sibling of Array.from(this.activeTasks.values())) {
+                if (sibling.jobGroupId === task.jobGroupId && sibling.id !== task.id) {
+                  if (sibling.status === "running" || sibling.status === "pending") {
+                    task.logger?.info(`Cancelling sibling worker ${sibling.id} from group ${task.jobGroupId} (won by ${task.id}).`)
+                    this.stopAgent(sibling.id, `Sibling worker ${task.id} won the multiverse race`).catch(err => {
+                      task.logger?.warn(`Failed to stop sibling worker ${sibling.id}: ${err}`)
+                    })
+                  }
+                }
+              }
+            }
+          } catch (gitErr) {
+            task.logger?.error(`Failed to commit/merge worktree changes: ${gitErr}`)
+          }
+        }
+
         await removeAgentWorktree(this.runtime.rootDir, worktreePath)
+
+        if (branchName) {
+          try {
+            const { execFile } = await import("node:child_process")
+            const { promisify } = await import("node:util")
+            const execAsync = promisify(execFile)
+            const deleteFlag = task.status === "completed" ? "-d" : "-D"
+            await execAsync("git", ["branch", deleteFlag, branchName], { cwd: this.runtime.rootDir })
+          } catch {}
+        }
       } catch (cleanupError) {
         const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
         task.logger?.warn(`Failed to remove agent worktree ${worktreePath}: ${message}`)
