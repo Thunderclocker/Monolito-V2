@@ -4020,7 +4020,7 @@ Actions:
   {
     name: "tool_manage_config",
     permissionTier: "edit",
-    description: "Read or update technical configuration stored in SQLite CONF_* wings. Use this instead of reading or writing JSON config files manually. ALWAYS wrap channel settings inside their provider key (e.g., { 'telegram': { 'enabled': true } }).",
+    description: "Read or update technical configuration stored in SQLite CONF_* wings. Use this instead of reading or writing JSON config files manually. ALWAYS wrap channel settings inside their provider key (e.g., { 'telegram': { 'enabled': true } }).\n\nSchemas for wings:\n- CONF_WEBSEARCH: { provider: 'default' | 'searxng' | 'brave' | 'serper' | 'tavily', apiKey?: string } (Brave, Serper and Tavily are cloud search provider APIs)\n- CONF_CHANNELS: { telegram: { enabled: boolean, token?: string, ... }, ... }\n- CONF_SYSTEM: System environment variables\n- CONF_MODELS: Models and provider configuration",
     inputSchema: {
       type: "object",
       properties: {
