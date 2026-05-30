@@ -67,7 +67,7 @@ export type AssistantTurnResult = {
   }
 }
 
-export type AgentLoopRecoverableAction = "backoff" | "compact_context" | "reload_auth"
+export type AgentLoopRecoverableAction = "backoff" | "compact_context" | "reload_auth" | "stall_blocking" | "tdd_correction"
 
 export type AgentLoopEvent =
   | { type: "setup"; sessionId: string; iteration: number; model: string; maxIterations: number; maxTurnDurationMs: number }
@@ -890,6 +890,46 @@ export async function* runAgentLoop(
       const toolsThisTurn = response.toolCalls.map((tc) => tc.name)
 
       if (response.toolCalls.length === 0) {
+        // --- TDD FINALIZATION GUARD ---
+        let lastFailureTool = ""
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const msg = messages[i]
+          if (msg.role === "user") break
+          if (msg.role === "tool") {
+            if (msg.toolName === "Bash") {
+              const hasExitCode = msg.content.includes('"exitCode":')
+              const isZero = msg.content.includes('"exitCode": 0')
+              if (hasExitCode && !isZero) {
+                lastFailureTool = "Bash"
+              }
+              break
+            }
+            if (msg.content.includes('status="error"')) {
+              lastFailureTool = msg.toolName
+              break
+            }
+            break
+          }
+        }
+
+        if (lastFailureTool) {
+          yield {
+            type: "recoverable_error",
+            sessionId: session.id,
+            iteration,
+            action: "tdd_correction",
+            error: `Intento de finalización bloqueado preventivamente por fallo no resuelto en la herramienta "${lastFailureTool}".`
+          }
+          logger.warn(`[tdd-react] Rejecting turn finalization because of unresolved tool failure in "${lastFailureTool}".`)
+          messages.push({
+            role: "user",
+            content: `[SYSTEM ALERT - TDD FAIL-SAFE] Tu respuesta ha sido RECHAZADA.
+No puedes dar por finalizada la tarea porque el último comando o prueba ejecutada en este turno falló (error de herramienta "${lastFailureTool}" o exitCode != 0).
+Debes corregir el código del workspace y ejecutar con éxito las pruebas correspondientes antes de responder al usuario.`
+          })
+          continue
+        }
+
         // --- COHERENCE GUARD VERIFICATION ---
         const profileId = context.profileId || "default";
         const coherence = await checkTurnCoherence(
@@ -985,10 +1025,28 @@ Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas c
       }
       const safeResults = await Promise.all(
         safeToolCalls.map(async ({ toolCall, index }) => {
+          const stall = isToolCallStalled(messages, toolCall.name, toolCall.input)
+          if (stall.stalled) {
+            const content = formatToolEvidenceResult(toolCall, "error", {
+              error: `SYSTEM BLOCK: La herramienta '${toolCall.name}' ha sido bloqueada preventivamente por el motor de Monolito V2 tras ${stall.count} ejecuciones idénticas en este turno. Cambia de estrategia.`
+            })
+            return {
+              index,
+              toolCall,
+              stalled: true,
+              message: {
+                role: "tool" as const,
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+                content,
+              },
+            }
+          }
           const result = await executeToolCall(toolCall, executeTool, context)
           return {
             index,
             toolCall,
+            stalled: false,
             message: {
               role: "tool" as const,
               toolCallId: result.toolCall.id,
@@ -999,11 +1057,41 @@ Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas c
         }),
       )
       for (const result of safeResults) {
+        if (result.stalled) {
+          yield {
+            type: "recoverable_error",
+            sessionId: session.id,
+            iteration,
+            action: "stall_blocking",
+            error: `Bloqueo preventivo de Stall Guard en herramienta "${result.toolCall.name}"`
+          }
+        }
         yield { type: "tool_execute_end", sessionId: session.id, iteration, toolUseId: result.toolCall.id, tool: result.toolCall.name, ok: !result.message.content.includes('status="error"') }
         toolResults[result.index] = result.message
       }
 
       for (const { toolCall, index } of unsafeToolCalls) {
+        const stall = isToolCallStalled(messages, toolCall.name, toolCall.input)
+        if (stall.stalled) {
+          const content = formatToolEvidenceResult(toolCall, "error", {
+            error: `SYSTEM BLOCK: La herramienta '${toolCall.name}' ha sido bloqueada preventivamente por el motor de Monolito V2 tras ${stall.count} ejecuciones idénticas en este turno. Cambia de estrategia.`
+          })
+          yield {
+            type: "recoverable_error",
+            sessionId: session.id,
+            iteration,
+            action: "stall_blocking",
+            error: `Bloqueo preventivo de Stall Guard en herramienta "${toolCall.name}"`
+          }
+          toolResults[index] = {
+            role: "tool",
+            toolCallId: toolCall.id,
+            toolName: toolCall.name,
+            content,
+          }
+          continue
+        }
+
         yield { type: "tool_execute_start", sessionId: session.id, iteration, toolUseId: toolCall.id, tool: toolCall.name, input: toolCall.input }
         const result = await executeToolCall(toolCall, executeTool, context)
         yield { type: "tool_execute_end", sessionId: session.id, iteration, toolUseId: toolCall.id, tool: toolCall.name, ok: !result.content.includes('status="error"') }
@@ -1018,6 +1106,39 @@ Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas c
       for (const toolResult of toolResults) {
         if (!toolResult) continue
         messages.push(toolResult)
+      }
+
+      // --- TDD-REACT FAIL-SAFE ALERTS ---
+      let commandOrTestFailure = false
+      let failedToolName = ""
+      for (const res of toolResults) {
+        if (!res) continue
+        if (res.toolName === "Bash" && (res.content.includes('"exitCode":') && !res.content.includes('"exitCode": 0'))) {
+          commandOrTestFailure = true
+          failedToolName = "Bash"
+          break
+        }
+        if (res.content.includes('status="error"')) {
+          commandOrTestFailure = true
+          failedToolName = res.toolName
+          break
+        }
+      }
+
+      if (commandOrTestFailure) {
+        yield {
+          type: "recoverable_error",
+          sessionId: session.id,
+          iteration,
+          action: "tdd_correction",
+          error: `Fallo detectado en la ejecución de la herramienta "${failedToolName}".`
+        }
+        logger.warn(`[tdd-react] Execution failure detected on tool "${failedToolName}". Injecting corrective fail-safe guide.`)
+        messages.push({
+          role: "user",
+          content: `[SYSTEM ALERT - TDD-REACT FAIL-SAFE] Se detectó un fallo de ejecución en la herramienta "${failedToolName}".
+Si esto corresponde a un error de compilación, una excepción no controlada o una prueba unitaria rota (FAIL/tests failed), debes analizar con absoluta precisión el log de error anterior, localizar el archivo fuente correspondiente en el workspace y aplicar la corrección técnica en este mismo turno. No ignores el error ni finalices el turno diciendo que completaste la tarea sin haber resuelto y verificado exitosamente el problema.`
+        })
       }
 
       checkTurnCommitmentSemantic(rootDir, response.text, toolsThisTurn, runBackgroundTextTask)
@@ -1079,6 +1200,34 @@ Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas c
   const result = finalize("", steps, startedAt, maxIterations, usage, "Max iterations reached", "max_iterations")
   yield { type: "done", sessionId: session.id, result }
   return result
+}
+
+export function isToolCallStalled(
+  messages: ConversationMessage[],
+  toolName: string,
+  toolInput: Record<string, unknown>
+): { stalled: boolean; count: number } {
+  const targetArgs = JSON.stringify(toolInput)
+  let count = 0
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg.role === "user") {
+      break // Reseteo de contexto en cada frontera de mensaje del usuario real
+    }
+    if (msg.role === "assistant" && "toolCalls" in msg) {
+      const assistantMsg = msg as { toolCalls?: any[] }
+      if (assistantMsg.toolCalls && assistantMsg.toolCalls.length > 0) {
+        for (const tc of assistantMsg.toolCalls) {
+          if (tc.name === toolName && JSON.stringify(tc.input) === targetArgs) {
+            count++
+          }
+        }
+      }
+    }
+  }
+
+  return { stalled: count >= 3, count }
 }
 
 export async function runAssistantTurn(
