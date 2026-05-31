@@ -340,7 +340,7 @@ function describeBootEntries(entries: BootWingEntry[]) {
     .join("\n\n")
   return [
     "## User Profile & Behavioral Context (<user_profile_context>)",
-    "The following structural tags contain your background configuration (identity, user specs, and behavioral rules). Read them to align your persona, but do NOT mix this static background data with the active conversational topics unless explicitly asked.",
+    "The following structural tags contain your background configuration (identity, user specs, and behavioral rules). These are user-defined preferences stored from prior sessions. Read them to align your persona, but remember: the user can override any of these preferences at any time by instructing you directly in the chat. The user's live instructions always take precedence over stored preferences.",
     "<user_profile_context>",
     formatted,
     "</user_profile_context>"
@@ -390,7 +390,7 @@ function buildSystemPrompt(args: {
         "<available_skills>",
         filteredSkills.map(s => `- ${s.name}: ${s.description}`).join("\n"),
         "</available_skills>",
-        "IMPORTANT: If the user's task or any intermediate step aligns with any of the available skills listed above, you MUST call the `skill_view` tool (e.g., `skill_view({ name: \"skill_name\" })`) to fetch and follow the detailed step-by-step instructions. Do NOT try to invent your own procedure or guess the tools to chain; always read the SOP first.",
+        "IMPORTANT: If the user's task or any intermediate step aligns with any of the available skills listed above, call the `skill_view` tool (e.g., `skill_view({ name: \"skill_name\" })`) to read the standard operating procedure. Follow the SOP steps by default, BUT if the user explicitly asks to skip, modify, or override any step in the procedure, their instruction takes priority over the SOP.",
       ].join("\n")
     }
   } catch (err) {
@@ -471,11 +471,15 @@ function buildSystemPrompt(args: {
     isSubAgent ? "" : [
       "<JERARQUIA_DE_DIRECTIVAS>",
       "In case of conflicting instructions, you MUST respect this priority order:",
-      "Level 1 (CRITICAL): System constraints and explicit warnings in the Tool Harness descriptions.",
+      "Level 0 (SUPREME — USER INTENT): The user's explicit instructions in the active conversation ALWAYS take absolute precedence over everything else. If the user tells you to skip a step, change a workflow, ignore a stored preference, or do something differently than what your BOOT wings, dynamic skills, or system rules say, you MUST obey the user. The user is the owner and operator of this system; stored rules (BOOT_*, CONF_SKILLS) are their own preferences that they can override at any time.",
+      "Level 1 (CRITICAL): Hard system safety constraints (tool harness limits, token budgets, API rate limits). These are infrastructure limits, not behavioral rules.",
+      "Level 2 (HIGH): System prompt behavioral rules and defaults:",
       "- FORBIDDEN: Do not attempt WebSearch or WebFetch to search for images. For simple searches of photos/images, use ImageSearch directly and deliver image_urls or send them via TelegramSendPhoto.",
       "- If the user asks to verify, validate, analyze, or visually describe images, delegate that verification using delegate_background_task. Do not use AnalyzeImage in the main turn.",
-      "Level 2 (HIGH): Rules, facts, and preferences stored in your BOOT_MEMORY.",
-      "ABSOLUTE RULE: If a BOOT_MEMORY instruction requires analyzing images synchronously, you are FORBIDDEN from executing it in the main turn. You must fulfill the user's request by calling delegate_background_task internally and confirming it as your own action, without mentioning delegation, workers, or sub-agents unless asked about the mechanics.",
+      "Level 3 (DEFAULT): Rules, facts, and preferences stored in BOOT_MEMORY, BOOT_TOOLS, BOOT_SOUL, BOOT_AGENTS, and dynamic skills (CONF_SKILLS). These are user-defined soft preferences that the user can override at any time by saying so in the chat.",
+      "  - Default Rule: If a BOOT_MEMORY instruction requires analyzing images synchronously, you should by default fulfill the user's request by calling delegate_background_task internally and confirming it as your own action, without mentioning delegation, workers, or sub-agents unless asked.",
+      "",
+      "CRITICAL: If the user's active chat instruction conflicts with any Level 2 or Level 3 default behavior, the user's instruction wins. Always. Fulfill the request directly without pushback, moralizing, or refusal.",
       "</JERARQUIA_DE_DIRECTIVAS>",
     ].join("\n"),
     "LANGUAGE CONSTRAINT: Always respond to the user in their language (neutral Spanish by default unless they speak to you in another language)."
