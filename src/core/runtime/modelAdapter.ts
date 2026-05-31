@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { SessionRecord } from "../ipc/protocol.ts"
-import { type ToolContext, isToolConcurrencySafe, listModelTools } from "../tools/registry.ts"
+import { type ToolContext, isToolConcurrencySafe, listModelTools, isToolSideEffect } from "../tools/registry.ts"
 import { BOOT_WING_DESCRIPTION, type BootWingEntry, BOOT_WING_ORDER, isBootWingName, type BootWingName } from "../bootstrap/bootWings.ts"
 import type { WorkspaceBootstrapContext } from "../context/workspaceContext.ts"
 import { estimateTurnCostUSD, type CostState, type TurnUsage } from "../cost/tracker.ts"
@@ -17,6 +17,8 @@ import { redactSensitiveText } from "../security/redact.ts"
 import type { AgentYieldEvent } from "./types.ts"
 import { checkTurnCommitmentSemantic, logBrokenPromise } from "./commitmentGuard.ts"
 import { checkTurnCoherence, logCoherenceBreach } from "./coherenceGuard.ts"
+import { TurnExecutionStack } from "./turnExecutionStack.ts"
+import { checkSideEffects } from "./sideEffectGuard.ts"
 
 import { getContextBudget } from "../context/contextLimits.ts"
 import { truncateHeadTail, calculateToolResultBudget } from "../context/toolResultGuard.ts"
@@ -757,6 +759,7 @@ export async function* runAgentLoop(
   let usage: TurnUsage | undefined
   const steps: AssistantTurnStep[] = []
   const messages = sessionToMessages(session)
+  const executionStack = new TurnExecutionStack()
 
   const lastUserText = getLastUserMessage(session)
   let allowedToolNames: string[] | undefined = undefined
@@ -1068,10 +1071,31 @@ Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas c
       const toolResults = new Array<{ role: "tool"; toolCallId: string; toolName: string; content: string }>(response.toolCalls.length)
 
       for (const { toolCall } of safeToolCalls) {
-        yield { type: "tool_execute_start", sessionId: session.id, iteration, toolUseId: toolCall.id, tool: toolCall.name, input: toolCall.input }
+        if (!isToolSideEffect(toolCall.name)) {
+          yield { type: "tool_execute_start", sessionId: session.id, iteration, toolUseId: toolCall.id, tool: toolCall.name, input: toolCall.input }
+        }
       }
       const safeResults = await Promise.all(
         safeToolCalls.map(async ({ toolCall, index }) => {
+          if (isToolSideEffect(toolCall.name)) {
+            executionStack.push(toolCall, index)
+            const content = formatToolEvidenceResult(toolCall, "success", {
+              status: "buffered",
+              message: `Herramienta '${toolCall.name}' encolada. Se ejecutará tras validación.`
+            })
+            return {
+              index,
+              toolCall,
+              stalled: false,
+              buffered: true,
+              message: {
+                role: "tool" as const,
+                toolCallId: toolCall.id,
+                toolName: toolCall.name,
+                content,
+              },
+            }
+          }
           const stall = isToolCallStalled(messages, toolCall.name, toolCall.input)
           if (stall.stalled) {
             const content = formatToolEvidenceResult(toolCall, "error", {
@@ -1081,6 +1105,7 @@ Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas c
               index,
               toolCall,
               stalled: true,
+              buffered: false,
               message: {
                 role: "tool" as const,
                 toolCallId: toolCall.id,
@@ -1094,6 +1119,7 @@ Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas c
             index,
             toolCall,
             stalled: false,
+            buffered: false,
             message: {
               role: "tool" as const,
               toolCallId: result.toolCall.id,
@@ -1113,11 +1139,33 @@ Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas c
             error: `Bloqueo preventivo de Stall Guard en herramienta "${result.toolCall.name}"`
           }
         }
-        yield { type: "tool_execute_end", sessionId: session.id, iteration, toolUseId: result.toolCall.id, tool: result.toolCall.name, ok: !result.message.content.includes('status="error"') }
+        if (result.buffered) {
+          // No yield start/end yet
+        } else {
+          yield { type: "tool_execute_end", sessionId: session.id, iteration, toolUseId: result.toolCall.id, tool: result.toolCall.name, ok: !result.message.content.includes('status="error"') }
+          if (!result.message.content.includes('status="error"')) {
+            executionStack.recordSuccess(result.toolCall.name)
+          }
+        }
         toolResults[result.index] = result.message
       }
 
       for (const { toolCall, index } of unsafeToolCalls) {
+        if (isToolSideEffect(toolCall.name)) {
+          executionStack.push(toolCall, index)
+          const content = formatToolEvidenceResult(toolCall, "success", {
+            status: "buffered",
+            message: `Herramienta '${toolCall.name}' encolada. Se ejecutará tras validación.`
+          })
+          toolResults[index] = {
+            role: "tool",
+            toolCallId: toolCall.id,
+            toolName: toolCall.name,
+            content,
+          }
+          continue
+        }
+
         const stall = isToolCallStalled(messages, toolCall.name, toolCall.input)
         if (stall.stalled) {
           const content = formatToolEvidenceResult(toolCall, "error", {
@@ -1142,12 +1190,66 @@ Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas c
         yield { type: "tool_execute_start", sessionId: session.id, iteration, toolUseId: toolCall.id, tool: toolCall.name, input: toolCall.input }
         const result = await executeToolCall(toolCall, executeTool, context)
         yield { type: "tool_execute_end", sessionId: session.id, iteration, toolUseId: toolCall.id, tool: toolCall.name, ok: !result.content.includes('status="error"') }
+        if (!result.content.includes('status="error"')) {
+          executionStack.recordSuccess(toolCall.name)
+        }
         toolResults[index] = {
           role: "tool",
           toolCallId: result.toolCall.id,
           toolName: result.toolCall.name,
           content: result.content,
         }
+      }
+
+      // Evaluador de side effects
+      if (executionStack.hasPending()) {
+        const evaluation = await checkSideEffects(
+          rootDir,
+          executionStack.pending().map(b => ({
+            name: b.toolCall.name,
+            input: b.toolCall.input,
+          })),
+          executionStack.executedTools(),
+          context.profileId || "default",
+          lastUserText || "",
+          runBackgroundTextTask,
+        )
+
+        if (evaluation.approved) {
+          // ✅ Flush: ejecutar todas las buffereadas
+          for (const buffered of executionStack.pending()) {
+            yield { type: "tool_execute_start", sessionId: session.id, iteration, toolUseId: buffered.toolCall.id, tool: buffered.toolCall.name, input: buffered.toolCall.input }
+            const result = await executeToolCall(buffered.toolCall, executeTool, context)
+            yield { type: "tool_execute_end", sessionId: session.id, iteration, toolUseId: buffered.toolCall.id, tool: buffered.toolCall.name, ok: !result.content.includes('status="error"') }
+            // Reemplazar placeholder con resultado real
+            toolResults[buffered.index] = {
+              role: "tool",
+              toolCallId: result.toolCall.id,
+              toolName: result.toolCall.name,
+              content: result.content,
+            }
+            if (!result.content.includes('status="error"')) {
+              executionStack.recordSuccess(buffered.toolCall.name)
+            }
+          }
+        } else {
+          // ❌ Rechazado: reemplazar placeholders con error de policy
+          for (const buffered of executionStack.pending()) {
+            toolResults[buffered.index] = {
+              role: "tool",
+              toolCallId: buffered.toolCall.id,
+              toolName: buffered.toolCall.name,
+              content: formatToolEvidenceResult(buffered.toolCall, "error", {
+                error: `[Side-Effect Guard] Ejecución bloqueada: ${evaluation.reason}`
+              }),
+            }
+          }
+          appendWorklog(rootDir, session.id, {
+            type: "note",
+            summary: `SIDE_EFFECT_GUARD_BLOCKED: ${evaluation.reason}`,
+          })
+        }
+        executionStack.clearBuffer()
       }
 
       for (const toolResult of toolResults) {

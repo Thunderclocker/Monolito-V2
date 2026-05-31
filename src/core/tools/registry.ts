@@ -275,6 +275,7 @@ export type ToolDefinition = {
   description: string
   inputSchema: ToolInputSchema
   concurrencySafe?: boolean | ((input: Record<string, unknown>) => boolean)
+  sideEffect?: boolean
   validate?: (input: Record<string, unknown>) => string | null
   run: (input: Record<string, unknown>, context: ToolContext) => Promise<unknown>
 }
@@ -2227,6 +2228,7 @@ Actions:
       additionalProperties: false,
     },
     concurrencySafe: true,
+    sideEffect: true,
     validate: input => {
       if (typeof input.chat_id !== "number") return "chat_id must be a number"
       if (typeof input.text !== "string" || input.text.length === 0) return "text must be a non-empty string"
@@ -2273,6 +2275,7 @@ Actions:
       additionalProperties: false,
     },
     concurrencySafe: true,
+    sideEffect: true,
     validate: input => {
       if (typeof input.chat_id !== "number") return "chat_id must be a number"
       if (typeof input.audio !== "string" || input.audio.length === 0) return "audio must be a non-empty string"
@@ -2318,6 +2321,7 @@ Actions:
       additionalProperties: false,
     },
     concurrencySafe: true,
+    sideEffect: true,
     validate: input => {
       if (typeof input.chat_id !== "number") return "chat_id must be a number"
       if (typeof input.voice !== "string" || input.voice.length === 0) return "voice must be a non-empty string"
@@ -2359,6 +2363,7 @@ Actions:
       additionalProperties: false,
     },
     concurrencySafe: true,
+    sideEffect: true,
     validate: input => {
       if (typeof input.chat_id !== "number") return "chat_id must be a number"
       if (typeof input.photo !== "string" || input.photo.length === 0) return "photo must be a non-empty string"
@@ -2411,6 +2416,7 @@ Actions:
       additionalProperties: false,
     },
     concurrencySafe: true,
+    sideEffect: true,
     validate: input => {
       if (typeof input.chat_id !== "number") return "chat_id must be a number"
       if (typeof input.document !== "string" || input.document.length === 0) return "document must be a non-empty string"
@@ -4605,6 +4611,11 @@ export function isToolConcurrencySafe(name: string, input: Record<string, unknow
   if (!tool) return false
   if (typeof tool.concurrencySafe === "function") return tool.concurrencySafe(input)
   return tool.concurrencySafe === true
+}
+
+export function isToolSideEffect(name: string): boolean {
+  const tool = getTool(name)
+  return tool?.sideEffect === true
 }
 
 export async function indexToolsInPalace(rootDir: string) {
