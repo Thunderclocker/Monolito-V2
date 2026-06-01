@@ -111,11 +111,22 @@ function isConversationRole(role: SessionRecord["messages"][number]["role"]): ro
 }
 
 function sessionToMessages(session: SessionRecord): ConversationMessage[] {
-  return session.messages
+  const filtered = session.messages
     .filter((message): message is SessionRecord["messages"][number] & { role: "user" | "assistant" } =>
       isConversationRole(message.role) && !shouldSkipMessage(message.text),
     )
     .map(message => ({ role: message.role, content: message.text } as ConversationMessage))
+
+  const merged: ConversationMessage[] = []
+  for (const msg of filtered) {
+    const prev = merged[merged.length - 1]
+    if (prev && prev.role === msg.role) {
+      prev.content = `${prev.content}\n\n${msg.content}`
+    } else {
+      merged.push({ ...msg })
+    }
+  }
+  return merged
 }
 
 function getLastUserMessage(session: SessionRecord) {

@@ -1136,7 +1136,7 @@ export function listSessionRecords(rootDir: string): SessionRecord[] {
 export function getSemanticMessageContext(rootDir: string, vector: number[] | Float32Array, limit = 10) {
   const db = getDb(rootDir)
   const rows = db.prepare(`
-    SELECT m.id, m.session_id, m.role, m.text, m.at
+    SELECT m.id, m.session_id, m.role, m.text, m.at, v.distance
     FROM vec_messages v
     JOIN messages m ON m.id = v.id
     WHERE v.embedding MATCH ?
@@ -1144,7 +1144,7 @@ export function getSemanticMessageContext(rootDir: string, vector: number[] | Fl
       AND m.session_id NOT LIKE 'agent-%'
       AND m.session_id NOT LIKE 'worker-%'
     ORDER BY distance ASC
-  `).all(vector instanceof Float32Array ? vector : Float32Array.from(vector), limit) as Array<{ id: number; session_id: string; role: string; text: string; at: string }>
+  `).all(vector instanceof Float32Array ? vector : Float32Array.from(vector), limit) as Array<{ id: number; session_id: string; role: string; text: string; at: string; distance?: number }>
   return rows
 }
 

@@ -760,6 +760,7 @@ function formatSemanticContext(rows: ReturnType<typeof getSemanticMessageContext
   const lines: string[] = []
   for (const row of rows) {
     if (row.session_id === currentSessionId && row.role === "user" && row.text.trim() === normalizedCurrent) continue
+    if (row.distance !== undefined && row.distance >= 0.85) continue
     const text = row.text.replace(/\s+/g, " ").trim()
     if (!text) continue
     lines.push(`- [${row.at}] ${row.role}: ${text.length > 900 ? `${text.slice(0, 900).trimEnd()}...` : text}`)
@@ -813,9 +814,9 @@ async function prepareSemanticRagSession(rootDir: string, session: SessionRecord
 
     const boundedMessages = [
       ...messages.filter(message => message.role === "system"),
-      ...messages.filter((message, index) => index !== lastUserIndex && message.role !== "system" && isRagEligibleMessage(message)).slice(-8),
       ...(semanticContext ? [{ at: new Date().toISOString(), role: "user" as const, text: semanticContext }] : []),
       ...(semanticFactsContext ? [{ at: new Date().toISOString(), role: "user" as const, text: semanticFactsContext }] : []),
+      ...messages.filter((message, index) => index !== lastUserIndex && message.role !== "system" && isRagEligibleMessage(message)).slice(-8),
       lastUser,
     ]
     return { ...session, messages: boundedMessages }
