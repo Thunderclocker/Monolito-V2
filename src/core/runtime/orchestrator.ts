@@ -48,17 +48,17 @@ function normalizeForIntent(value: string) {
     .toLowerCase()
 }
 
-function checkDynamicRalphRules(
+async function checkDynamicRalphRules(
   rootDir: string,
   sessionId: string,
   taskText: string,
   descriptionText: string,
   assistantReply: string,
   attempt: number
-): string | null {
+): Promise<string | null> {
   try {
     const rules = listRalphRules(rootDir)
-    const combinedText = normalizeForIntent((taskText || "") + " " + (descriptionText || ""))
+    const combinedText = (taskText || "") + " " + (descriptionText || "")
 
     for (const row of rules) {
       try {
@@ -85,18 +85,42 @@ function checkDynamicRalphRules(
         }
 
         // Check for supreme user intent bypass/override of this specific rule (Level 0 Priority)
-        const bypassKeywords = ["sin", "no", "evitar", "obviar", "saltear", "ignorar", "skip", "without", "bypass"]
-        const hasBypassKeyword = bypassKeywords.some(kw => combinedText.includes(kw))
-        if (hasBypassKeyword) {
-          const hasBypassRequired = rule.requiredTools.some(tool => {
-            const toolLower = tool.toLowerCase()
-            const re = new RegExp(`\\b(${bypassKeywords.join("|")})\\b\\s*(?:a\\s+|la\\s+|las\\s+|los\\s+|mi\\s+|your\\s+|any\\s+|la\\s+tool\\s+|el\\s+tool\\s+|las\\s+tools\\s+|el\\s+uso\\s+de\\s+|la\\s+verificacion\\s+de\\s+)?\\b(${toolLower}|verif|valid|analiz|describ|confirm|vision|visual|real)`, "i")
-            return re.test(combinedText)
-          })
-          if (hasBypassRequired) {
-            logger.info(`[Ralph Loop] Bypassing rule '${rule.name || row.key}' due to explicit supreme user intent bypass: "${combinedText}"`)
-            continue
+        // Generalist semantic LLM validation
+        let hasBypassIntent = false
+        const broadBypassRegex = /\b(sin|no|evitar|obviar|saltear|ignorar|skip|without|bypass|desactivar|omitir|force|forzar|no\s+hagas|don't|dont|avoid)\b/i
+        if (broadBypassRegex.test(combinedText)) {
+          try {
+            const systemPrompt = `You are a silent runtime auditor. Your task is to analyze if the user's instructions explicitly request to bypass, skip, ignore, or perform a task WITHOUT using or running certain specific tools.
+            
+Required tools list: [${rule.requiredTools.join(", ")}]
+
+Respond strict JSON:
+{
+  "explicitBypass": boolean,
+  "reason": "brief explanation in English"
+}`
+            const userPrompt = `User instructions: "${combinedText}"`
+            const { text } = await runBackgroundTextTask(rootDir, systemPrompt, userPrompt, {
+              maxTokens: 100,
+            })
+            const parsed = JSON.parse(text.trim())
+            if (parsed.explicitBypass === true) {
+              hasBypassIntent = true
+            }
+          } catch (llmErr) {
+            // Broad regex fallback if LLM is unavailable
+            const bypassKeywords = ["sin", "no", "evitar", "obviar", "saltear", "ignorar", "skip", "without", "bypass"]
+            hasBypassIntent = rule.requiredTools.some(tool => {
+              const toolLower = tool.toLowerCase()
+              const re = new RegExp(`\\b(${bypassKeywords.join("|")})\\b\\s*(?:a\\s+|la\\s+|las\\s+|los\\s+|mi\\s+|your\\s+|any\\s+|la\\s+tool\\s+|el\\s+tool\\s+|las\\s+tools\\s+|el\\s+uso\\s+de\\s+|la\\s+verificacion\\s+de\\s+)?\\b(${toolLower}|verif|valid|analiz|describ|confirm|vision|visual|real)`, "i")
+              return re.test(combinedText)
+            })
           }
+        }
+
+        if (hasBypassIntent) {
+          logger.info(`[Ralph Loop] Bypassing rule '${rule.name || row.key}' due to explicit supreme user intent bypass: "${combinedText}"`)
+          continue
         }
 
         // Rule is active: check if any of the required tools were executed successfully
@@ -982,7 +1006,7 @@ export class AgentOrchestrator {
         }
 
         // 4. Dynamic Verification Rules check (SQLite Memory Palace backed)
-        const dynamicBlockedPrompt = checkDynamicRalphRules(runtime.rootDir, task.subSessionId, task.task, task.description || "", assistantReply, attempt)
+        const dynamicBlockedPrompt = await checkDynamicRalphRules(runtime.rootDir, task.subSessionId, task.task, task.description || "", assistantReply, attempt)
         if (dynamicBlockedPrompt) {
           partialResult = assistantReply || partialResult
           if (attempt >= maxAttempts) {
