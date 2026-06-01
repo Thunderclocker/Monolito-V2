@@ -84,6 +84,21 @@ function checkDynamicRalphRules(
           if (!requiredRe.test(combinedText)) continue
         }
 
+        // Check for supreme user intent bypass/override of this specific rule (Level 0 Priority)
+        const bypassKeywords = ["sin", "no", "evitar", "obviar", "saltear", "ignorar", "skip", "without", "bypass"]
+        const hasBypassKeyword = bypassKeywords.some(kw => combinedText.includes(kw))
+        if (hasBypassKeyword) {
+          const hasBypassRequired = rule.requiredTools.some(tool => {
+            const toolLower = tool.toLowerCase()
+            const re = new RegExp(`\\b(${bypassKeywords.join("|")})\\b\\s*(?:a\\s+|la\\s+|las\\s+|los\\s+|mi\\s+|your\\s+|any\\s+|la\\s+tool\\s+|el\\s+tool\\s+|las\\s+tools\\s+|el\\s+uso\\s+de\\s+|la\\s+verificacion\\s+de\\s+)?\\b(${toolLower}|verif|valid|analiz|describ|confirm|vision|visual|real)`, "i")
+            return re.test(combinedText)
+          })
+          if (hasBypassRequired) {
+            logger.info(`[Ralph Loop] Bypassing rule '${rule.name || row.key}' due to explicit supreme user intent bypass: "${combinedText}"`)
+            continue
+          }
+        }
+
         // Rule is active: check if any of the required tools were executed successfully
         const events = tailEvents(rootDir, sessionId, 80)
         const hasSuccessfulTool = events.some(e =>
