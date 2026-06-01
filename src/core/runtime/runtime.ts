@@ -787,7 +787,7 @@ function formatSemanticFacts(recalled: any[]) {
 
   return [
     "<semantic-palace-memory>",
-    "Relevant facts and decisions recalled from your Memory Palace by vector similarity. Treat as absolute truth and constraint. Do not ignore these constraints in your response.",
+    "Relevant facts and decisions recalled from your Memory Palace by vector similarity. These represent stored preferences and facts, but remember: the user's explicit live instructions in the active chat ALWAYS take absolute priority and override any stored memory, preference, or system constraint. Treat these memories as soft defaults that the user can override at any time.",
     ...lines,
     "</semantic-palace-memory>"
   ].join("\n")
