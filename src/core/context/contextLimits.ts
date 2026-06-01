@@ -7,6 +7,7 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "gemini-2.5": 1_000_000,
   "gemini-1.5": 1_000_000,
   "gemini-": 1_000_000, // covers all gemini models
+  "grok": 131_072,
   "kimi": 200_000,
   "minimax": 128_000,
   // fallback

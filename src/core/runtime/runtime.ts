@@ -2205,12 +2205,40 @@ Please analyze the preceding conversation, tool usage logs, and terminal outputs
           }
         }
 
-        const userFacingText = sanitizeExternalAssistantText(sessionId, turn.finalText, preparedUserText)
+        let userFacingText = sanitizeExternalAssistantText(sessionId, turn.finalText, preparedUserText)
+        const hasSideEffects = turn.steps?.some(step => step.type === "tool" && getTool(step.tool)?.sideEffect === true)
+
         if (shouldSuppressEmit(userFacingText)) {
-          appendWorklog(this.rootDir, sessionId, {
-            type: "note",
-            summary: "Suppressed empty assistant response",
-          })
+          if (hasSideEffects) {
+            userFacingText = "✅ ¡Acción completada con éxito! He procesado y enviado los archivos por Telegram."
+            appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
+            appendWorklog(this.rootDir, sessionId, {
+              type: "session",
+              summary: turn.error ? `Turn completed with model error: ${clipForWorklog(turn.error)}` : "Turn completed",
+            })
+            this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
+            this.emit({
+              type: "turn.completed",
+              sessionId,
+              role: "assistant",
+              durationMs: Date.now() - turnStartedAt,
+              usage: turn.usage,
+            })
+
+            await this.deliverText(sessionId, userFacingText, options?.delivery, "Failed to deliver assistant reply")
+          } else {
+            appendWorklog(this.rootDir, sessionId, {
+              type: "note",
+              summary: "Suppressed empty assistant response",
+            })
+            this.emit({
+              type: "turn.completed",
+              sessionId,
+              role: "assistant",
+              durationMs: Date.now() - turnStartedAt,
+              usage: turn.usage,
+            })
+          }
         } else {
           appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
           appendWorklog(this.rootDir, sessionId, {

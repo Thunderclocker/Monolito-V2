@@ -175,7 +175,7 @@ function stringifyToolResult(value: unknown) {
   return `${preview}\n\n[... TRUNCADO: La salida superó el límite de seguridad de memoria. Usa comandos más específicos (ej. grep, head) o afina tu búsqueda.]\nFull output saved to: ${outputPath}\nUse the Read tool with offset/line_limit to inspect the rest.`
 }
 
-function formatToolEvidenceResult(toolCall: ToolCall, status: "success" | "error", value: unknown) {
+function formatToolEvidenceResult(toolCall: ToolCall, status: "success" | "error" | "blocked", value: unknown) {
   const serialized = stringifyToolResult(value)
   return [
     `<tool-evidence tool="${toolCall.name}" status="${status}" tool_use_id="${toolCall.id}">`,
@@ -1239,7 +1239,7 @@ Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas c
               role: "tool",
               toolCallId: buffered.toolCall.id,
               toolName: buffered.toolCall.name,
-              content: formatToolEvidenceResult(buffered.toolCall, "error", {
+              content: formatToolEvidenceResult(buffered.toolCall, "blocked", {
                 error: `[Side-Effect Guard] Ejecución bloqueada: ${evaluation.reason}`
               }),
             }
