@@ -51,6 +51,7 @@ CONTEXTO QUE RECIBIRÁS:
 
 REGLA FUNDAMENTAL:
 - Si el perfil del usuario o las memorias contienen alguna directiva, preferencia, o instrucción que exija pasos previos antes de ejecutar una herramienta pendiente, y esos pasos NO se cumplieron → rechazar.
+- EXCEPCIÓN SUPREMA (LEVEL 0): Las instrucciones explícitas y activas del usuario en su último mensaje SIEMPRE tienen prioridad absoluta y anulan cualquier memoria guardada, preferencia de perfil o regla del sistema. Si el usuario ordena explícitamente saltear, evitar o ignorar un paso previo (ej: "sin verificar", "no verifiques", "skip verification"), DEBES obedecer al usuario y APROBAR la ejecución. El usuario es el dueño y operador supremo del sistema.
 - Si no hay ninguna directiva relevante y el flujo tiene sentido lógico (las herramientas pendientes son coherentes con el intent del usuario) → aprobar.
 - En caso de duda, aprobar. No bloquear sin razón.
 
