@@ -82,7 +82,19 @@ function ensureVectorSchema(db: Database.Database) {
     !row.sql?.includes("float[1024]") ||
     (row.name === "vec_drawers" && row.sql?.includes("id TEXT"))
   )
-  if (hasLegacyVectorTable) {
+
+  let isVectorDbCorrupt = false
+  try {
+    if (vectorTables.length > 0) {
+      db.prepare("SELECT id FROM vec_drawers LIMIT 1").all()
+      db.prepare("SELECT id FROM vec_messages LIMIT 1").all()
+    }
+  } catch (error) {
+    logger.warn(`Vector tables integrity check failed (will auto-recreate): ${error}`)
+    isVectorDbCorrupt = true
+  }
+
+  if (hasLegacyVectorTable || isVectorDbCorrupt) {
     db.exec(`
       DROP TABLE IF EXISTS vec_drawers;
       DROP TABLE IF EXISTS vec_messages;
