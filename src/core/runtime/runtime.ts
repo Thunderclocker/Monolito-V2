@@ -1511,7 +1511,8 @@ Mandatory rules:
    - If a task notification shows the task succeeded, treat it as resolved, not pending.
 8. Current task state:
    - Active tasks (pending/running): ${allTasks.filter(t => t.status === "pending" || t.status === "running").length}
-   - Recent task notifications: ${recentNotifications.length > 0 ? recentNotifications.join("; ") : "none"}`;
+   - Recent task notifications: ${recentNotifications.length > 0 ? recentNotifications.join("; ") : "none"}
+9. NEVER record or save rules or preferences stating that a rule or preference is "absolute", "cannot be overridden", "mandatory", "non-overridable", "cannot be bypassed", or similar. The user's active, direct commands always override any stored preference or system memory, and the memories you synthesize must reflect this hierarchy (e.g., "User prefers X, but can override at any time").`;
 
       const syntheticSession: SessionRecord = {
         ...session,
