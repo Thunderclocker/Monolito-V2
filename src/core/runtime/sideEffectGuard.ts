@@ -20,6 +20,12 @@ export async function checkSideEffects(
 ): Promise<SideEffectCheckResult> {
   if (pendingTools.length === 0) return { approved: true }
 
+  // Bypass inmediato si el usuario activa override explícito mediante palabras clave
+  const overrideRegex = /(envi[a|á]\s+(?:de\s+todos\s+modos|igual)|forza[r]?|ignora[r]?|skip|salte?a[r]?)/i
+  if (lastUserMessage && overrideRegex.test(lastUserMessage)) {
+    return { approved: true }
+  }
+
   // 1. Cargar perfil del usuario (contiene preferencias dictadas en lenguaje natural)
   const bootUser = readBootWing(rootDir, "BOOT_USER", profileId) ?? ""
 

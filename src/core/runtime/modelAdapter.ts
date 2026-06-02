@@ -738,6 +738,11 @@ export function getEffectiveModelConfig() {
   }
 }
 
+function isOperationalTool(toolName: string): boolean {
+  const technicalTools = ["Bash", "Write", "Edit", "Replace", "patch", "Delete", "Undo", "Save", "CreateSkill", "DeleteSkill"]
+  return !technicalTools.includes(toolName)
+}
+
 export async function* runAgentLoop(
   session: SessionRecord,
   rootDir: string,
@@ -771,6 +776,7 @@ export async function* runAgentLoop(
   const steps: AssistantTurnStep[] = []
   const messages = sessionToMessages(session)
   const executionStack = new TurnExecutionStack()
+  const operationalFailures = new Map<string, number>()
 
   const lastUserText = getLastUserMessage(session)
   let allowedToolNames: string[] | undefined = undefined
@@ -951,7 +957,7 @@ export async function* runAgentLoop(
               }
               break
             }
-            if (msg.content.includes('status="error"')) {
+            if (msg.content.includes('status="error"') && !isOperationalTool(msg.toolName)) {
               lastFailureTool = msg.toolName
               failureSnippet = extractErrorText(msg.content)
               break
@@ -1266,6 +1272,31 @@ Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas c
       for (const toolResult of toolResults) {
         if (!toolResult) continue
         messages.push(toolResult)
+
+        const isOp = isOperationalTool(toolResult.toolName)
+        const isFail = toolResult.content.includes('status="error"') || 
+                       (toolResult.toolName === "Bash" && toolResult.content.includes('"exitCode":') && !toolResult.content.includes('"exitCode": 0'))
+        
+        if (isFail && isOp) {
+          const count = (operationalFailures.get(toolResult.toolName) ?? 0) + 1
+          operationalFailures.set(toolResult.toolName, count)
+          if (count >= 2) {
+            yield {
+              type: "recoverable_error",
+              sessionId: session.id,
+              iteration,
+              action: "operational_interruption" as any,
+              error: `Interrupción operacional al alcanzar ${count} fallos consecutivos en "${toolResult.toolName}".`
+            }
+            messages.push({
+              role: "user",
+              content: `[SYSTEM ALERT - OPERATIONAL INTERRUPTION] La herramienta "${toolResult.toolName}" está fallando de forma persistente con el error: "${extractErrorText(toolResult.content)}".
+No intentes ejecutarla más en este turno. Por favor, detén la ejecución en este paso y explícale con total transparencia al usuario qué está pasando para que sea él quien decida cómo proceder.`
+            })
+          }
+        } else if (!isFail && isOp) {
+          operationalFailures.set(toolResult.toolName, 0)
+        }
       }
 
       // --- TDD-REACT FAIL-SAFE ALERTS ---
@@ -1280,7 +1311,7 @@ Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas c
           failureSnippet = extractErrorText(res.content)
           break
         }
-        if (res.content.includes('status="error"')) {
+        if (res.content.includes('status="error"') && !isOperationalTool(res.toolName)) {
           commandOrTestFailure = true
           failedToolName = res.toolName
           failureSnippet = extractErrorText(res.content)
