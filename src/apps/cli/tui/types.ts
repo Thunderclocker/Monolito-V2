@@ -63,6 +63,12 @@ export type ComposerState = {
   websearchMenuState: MenuState
   masterMenuState: MasterMenuState
   masterMenuEphemeral: boolean
+  permissionPrompt: {
+    permissionId: string
+    tool: string
+    path: string
+    reason: string
+  } | null
 }
 
 export type HeaderState = {

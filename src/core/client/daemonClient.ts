@@ -197,6 +197,10 @@ export class DaemonClient {
     return response
   }
 
+  async respondPermission(sessionId: string, permissionId: string, decision: "allow" | "deny" | "ask") {
+    return await this.request("permission.respond", { sessionId, permissionId, decision })
+  }
+
   private async request(type: ResponseRequestType, payload: Record<string, unknown>) {
     await this.connect()
     const id = randomUUID()
@@ -247,3 +251,4 @@ type ResponseRequestType =
   | "daemon.command"
   | "session.abort"
   | "session.clear"
+  | "permission.respond"

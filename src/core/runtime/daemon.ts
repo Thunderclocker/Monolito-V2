@@ -568,6 +568,11 @@ export class MonolitoV2Daemon {
           const data = await this.runtime.queryConfig(req.action, req.field, req.value)
           return { id: request.id, ok: true as const, data }
         }
+        case "permission.respond": {
+          const req = request as { permissionId: string; decision: "allow" | "deny" | "ask" }
+          const resolved = this.runtime.resolvePendingPermission(req.permissionId, req.decision)
+          return { id: request.id, ok: true as const, data: { resolved } }
+        }
       }
     } catch (error) {
       return { id: request.id, ok: false as const, error: error instanceof Error ? error.message : String(error) }

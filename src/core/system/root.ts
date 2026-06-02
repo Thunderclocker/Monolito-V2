@@ -1,8 +1,35 @@
-import { mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
-export const MONOLITO_ROOT = join(homedir(), ".monolito-v2")
+function loadEnvFile(envPath: string) {
+  if (!existsSync(envPath)) return
+  try {
+    const content = readFileSync(envPath, "utf8")
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.startsWith("#")) continue
+      const index = trimmed.indexOf("=")
+      if (index === -1) continue
+      const key = trimmed.slice(0, index).trim()
+      let val = trimmed.slice(index + 1).trim()
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1)
+      }
+      if (key) {
+        process.env[key] = val
+      }
+    }
+  } catch {}
+}
+
+const mode = process.env.MONOLITO_MODE || ""
+const defaultRoot = mode === "production" ? join(homedir(), ".monolito") : join(homedir(), ".monolito-v2")
+
+export const MONOLITO_ROOT = process.env.MONOLITO_ROOT || defaultRoot
+
+// Cargar variables del .env global
+loadEnvFile(join(MONOLITO_ROOT, ".env"))
 
 export function ensureMonolitoRoot() {
   mkdirSync(MONOLITO_ROOT, { recursive: true })

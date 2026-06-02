@@ -425,7 +425,7 @@ export async function ensureCliSession(client: DaemonClient, sessionId?: string)
 
 export async function openInteractiveSession(client: DaemonClient, sessionId?: string) {
   const rootDir = process.cwd()
-  const composer: ComposerState = { input: "", cursor: 0, busy: false, thinkingFrame: 0, thinkingVisible: false, suggestions: [], toolThinkingFrame: 0, toolThinkingText: "", menuState: null, channelMenuState: null, websearchMenuState: null, masterMenuState: null, masterMenuEphemeral: false }
+  const composer: ComposerState = { input: "", cursor: 0, busy: false, thinkingFrame: 0, thinkingVisible: false, suggestions: [], toolThinkingFrame: 0, toolThinkingText: "", menuState: null, channelMenuState: null, websearchMenuState: null, masterMenuState: null, masterMenuEphemeral: false, permissionPrompt: null }
   const history = createPromptHistory(rootDir)
   const completer = createInteractiveCompleter(rootDir)
   const formatter = new InteractiveTranscriptFormatter()
@@ -485,6 +485,18 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       if (blocks.length === 0) return
       transcript = appendTranscriptBlocks(transcript, blocks)
       if (pinnedToBottom) transcript.scrollOffset = 0
+      redraw()
+      return
+    }
+
+    if (event.type === "permission.request") {
+      composer.permissionPrompt = {
+        permissionId: event.permissionId,
+        tool: event.tool,
+        path: event.path,
+        reason: event.reason,
+      }
+      composer.busy = true
       redraw()
       return
     }
@@ -1201,6 +1213,36 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
   const onInputData = (chunk: Buffer | string) => {
     const rawChunk = typeof chunk === "string" ? chunk : chunk.toString("utf8")
     inputBuffer += rawChunk
+
+    if (composer.permissionPrompt) {
+      const prompt = composer.permissionPrompt
+      while (inputBuffer.length > 0) {
+        const char = inputBuffer[0]!.toLowerCase()
+        inputBuffer = inputBuffer.slice(1)
+        
+        if (char === "a" || char === "y") {
+          composer.permissionPrompt = null
+          composer.busy = false
+          void client.respondPermission(activeSessionId, prompt.permissionId, "ask")
+          redraw()
+          break
+        } else if (char === "s") {
+          composer.permissionPrompt = null
+          composer.busy = false
+          void client.respondPermission(activeSessionId, prompt.permissionId, "allow")
+          redraw()
+          break
+        } else if (char === "d" || char === "n" || char === "\u0003") {
+          composer.permissionPrompt = null
+          composer.busy = false
+          void client.respondPermission(activeSessionId, prompt.permissionId, "deny")
+          redraw()
+          break
+        }
+      }
+      return
+    }
+
     const controlMap: Record<string, () => void> = {
       "\u0001": () => {
         composer.cursor = 0

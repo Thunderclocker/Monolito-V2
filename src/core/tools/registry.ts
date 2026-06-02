@@ -254,6 +254,8 @@ export type ToolContext = {
     acquireJobGroupForBatch: (sessionId: string) => string
     getSystemStatus?: () => Promise<unknown>
     gracefulRestart?: (reason?: string) => void
+    registerPendingPermission?: (permissionId: string, resolve: (decision: "allow" | "deny" | "ask") => void) => void
+    emit?: (event: any) => void
   }
   querySessionStatus?: (sessionId: string) => string
   queryCost?: () => string
@@ -307,12 +309,70 @@ const optionalPathInputSchema: ToolInputSchema = {
   additionalProperties: false,
 }
 
-function resolveWorkspacePath(rootDir: string, cwd: string, target = ".") {
+async function resolveWorkspacePath(
+  rootDir: string,
+  cwd: string,
+  target = ".",
+  context?: ToolContext,
+  toolName?: string,
+) {
   const allowedRoots = [resolve(rootDir), resolve(MONOLITO_ROOT)]
   const absolute = resolve(cwd, target)
   const allowed = allowedRoots.some(root => absolute === root || absolute.startsWith(`${root}${sep}`))
   if (!allowed) {
-    throw new Error(`Path escapes workspace: ${target}`)
+    if (!context || !context.sessionId || !context.runtime) {
+      throw new Error(`Path escapes workspace: ${target}`)
+    }
+
+    const sessionId = context.sessionId
+    const runtime = context.runtime
+
+    const policy = readConfigWing(rootDir, "CONF_POLICY")
+    const rules = policy?.permissions?.rules || []
+    const ruleAllowed = rules.some((rule: any) => rule.action === "allow" && rule.input === absolute)
+    if (ruleAllowed) {
+      return absolute
+    }
+
+    if (!runtime.registerPendingPermission || !runtime.emit) {
+      throw new Error(`Permission denied: Path escapes workspace boundaries: ${absolute} (Prompting not supported by current runtime context)`)
+    }
+
+    const permissionId = randomUUID()
+    const decisionPromise = new Promise<"allow" | "deny" | "ask">((resolvePromise) => {
+      runtime.registerPendingPermission!(permissionId, resolvePromise)
+    })
+
+    runtime.emit({
+      type: "permission.request",
+      sessionId,
+      permissionId,
+      tool: toolName || "FileSystem",
+      path: absolute,
+      reason: `Acceso fuera de directorios permitidos por la herramienta ${toolName || "FileSystem"}.`,
+    })
+
+    const decision = await decisionPromise
+
+    if (decision === "allow" || decision === "ask") {
+      if (decision === "allow") {
+        const nextRules = [
+          ...rules,
+          { tool: toolName || "*", action: "allow" as const, input: absolute }
+        ]
+        const nextPolicy = {
+          ...policy,
+          permissions: {
+            ...policy.permissions,
+            rules: nextRules
+          }
+        }
+        writeConfigWing(rootDir, "CONF_POLICY", nextPolicy)
+      }
+      return absolute
+    } else {
+      throw new Error(`Permission denied: Path escapes workspace boundaries: ${absolute}`)
+    }
   }
   return absolute
 }
@@ -1230,7 +1290,7 @@ Actions:
     concurrencySafe: true,
     async run(input, context) {
       const target = normalizePathInput(input)
-      const directory = resolveWorkspacePath(context.rootDir, context.cwd, target)
+      const directory = await resolveWorkspacePath(context.rootDir, context.cwd, target, context, "list_files")
       return readdirSync(directory).map(name => {
         const absolute = join(directory, name)
         const stats = statSync(absolute)
@@ -1272,7 +1332,7 @@ Actions:
       const path = requireString(input, "path")
       const offset = optionalNumber(input, "offset") ?? 0
       const lineLimit = optionalNumber(input, "line_limit")
-      const file = resolveWorkspacePath(context.rootDir, context.cwd, path)
+      const file = await resolveWorkspacePath(context.rootDir, context.cwd, path, context, "Read")
       const content = readFileSync(file, "utf8")
       const lines = content.split("\n")
       const totalLines = lines.length
@@ -1311,7 +1371,7 @@ Actions:
     async run(input, context) {
       const path = requireString(input, "path")
       const content = requireString(input, "content")
-      const file = resolveWorkspacePath(context.rootDir, context.cwd, path)
+      const file = await resolveWorkspacePath(context.rootDir, context.cwd, path, context, "Write")
       mkdirSync(dirname(file), { recursive: true })
       const existed = existsSync(file)
       writeFileSync(file, content, "utf8")
@@ -1354,7 +1414,7 @@ Actions:
       const newString = requireString(input, "new_string")
       const replaceAll = optionalBoolean(input, "replace_all") ?? false
       const matchIndex = optionalNumber(input, "match_index")
-      const file = resolveWorkspacePath(context.rootDir, context.cwd, path)
+      const file = await resolveWorkspacePath(context.rootDir, context.cwd, path, context, "Edit")
       const original = readFileSync(file, "utf8")
       const matches = findStringOccurrences(original, oldString)
       const occurrences = matches.length
@@ -1412,7 +1472,7 @@ Actions:
       const target = normalizePathInput(input)
       const headLimit = optionalNumber(input, "head_limit") ?? 100
       const offset = optionalNumber(input, "offset") ?? 0
-      const absoluteTarget = resolveWorkspacePath(context.rootDir, context.cwd, target)
+      const absoluteTarget = await resolveWorkspacePath(context.rootDir, context.cwd, target, context, "Find")
       const relativeTarget = toWorkspaceRelative(context.rootDir, absoluteTarget)
       const result = await runRg(["--files", relativeTarget === "." ? "." : relativeTarget, "-g", pattern], context.rootDir)
       const matches = result.stdout.split("\n").map(line => line.trim()).filter(Boolean)
@@ -1453,7 +1513,7 @@ Actions:
     async run(input, context) {
       const pattern = requireString(input, "pattern")
       const target = normalizePathInput(input)
-      const absoluteTarget = resolveWorkspacePath(context.rootDir, context.cwd, target)
+      const absoluteTarget = await resolveWorkspacePath(context.rootDir, context.cwd, target, context, "Grep")
       const relativeTarget = toWorkspaceRelative(context.rootDir, absoluteTarget)
       const outputMode = optionalString(input, "output_mode") ?? "files_with_matches"
       const glob = optionalString(input, "glob")
@@ -1699,7 +1759,7 @@ Actions:
       const file = requireString(input, "file")
       const line = input.line as number
       const character = input.character as number
-      const absoluteFile = resolveWorkspacePath(context.rootDir, context.rootDir, file)
+      const absoluteFile = await resolveWorkspacePath(context.rootDir, context.rootDir, file, context, "LspNavigation")
       const relativeFile = toWorkspaceRelative(context.rootDir, absoluteFile)
       const fileUri = pathToFileURL(absoluteFile).href
       const client = await getSharedLspClient(context.rootDir)

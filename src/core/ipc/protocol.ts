@@ -26,6 +26,7 @@ export type AgentEvent =
   | { type: "mcp.connected"; sessionId: string; server: string }
   | { type: "mcp.called"; sessionId: string; server: string; tool: string }
   | { type: "agent.background.completed"; sessionId: string; agentId: string; status: "completed" | "failed" | "killed"; result?: string; error?: string }
+  | { type: "permission.request"; sessionId: string; permissionId: string; tool: string; path: string; reason: string }
 
 export type SessionSummary = {
   id: string
@@ -71,6 +72,7 @@ export type Request =
   | { id: string; type: "daemon.command"; command: string; args?: string[] }
   | { id: string; type: "session.abort"; sessionId: string }
   | { id: string; type: "session.clear"; sessionId: string }
+  | { id: string; type: "permission.respond"; sessionId: string; permissionId: string; decision: "allow" | "deny" | "ask" }
 
 export type Response =
   | { id: string; ok: true; data?: unknown }

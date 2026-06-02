@@ -1028,6 +1028,21 @@ export class MonolitoV2Runtime {
   private abortControllers = new Map<string, AbortController>()
   private costState = createCostState()
   private adultModeDisabledSessions = new Set<string>()
+  private pendingPermissions = new Map<string, { resolve: (decision: "allow" | "deny" | "ask") => void }>()
+
+  public registerPendingPermission(permissionId: string, resolve: (decision: "allow" | "deny" | "ask") => void) {
+    this.pendingPermissions.set(permissionId, { resolve })
+  }
+
+  public resolvePendingPermission(permissionId: string, decision: "allow" | "deny" | "ask") {
+    const pending = this.pendingPermissions.get(permissionId)
+    if (pending) {
+      pending.resolve(decision)
+      this.pendingPermissions.delete(permissionId)
+      return true
+    }
+    return false
+  }
 
   public hasAdultMode(sessionId: string): boolean {
     return !this.adultModeDisabledSessions.has(sessionId)

@@ -179,8 +179,21 @@ export function renderComposerLines(sessionId: string, composer: ComposerState, 
   const width = Math.max(20, cols)
   const innerWidth = Math.max(1, width - 4)
   const prompt = getPromptLabel(sessionId)
-  const inputLinesPlain = wrapPlainText(`${prompt.plain}${composer.input}`, innerWidth)
+  
+  let inputLinesPlain: string[]
+  if (composer.permissionPrompt) {
+    const p = composer.permissionPrompt
+    inputLinesPlain = [
+      `${ANSI.yellow}${ANSI.bold}⚠️ PERMISSION REQUEST:${ANSI.reset} Tool ${p.tool} wants to access path:`,
+      `  ${ANSI.cyan}${p.path}${ANSI.reset}`,
+      `  [A]llow once  ·  [S]ave always  ·  [D]eny`,
+    ]
+  } else {
+    inputLinesPlain = wrapPlainText(`${prompt.plain}${composer.input}`, innerWidth)
+  }
+
   const inputLines = inputLinesPlain.map((line, index) => {
+    if (composer.permissionPrompt) return line
     if (index === 0 && line.startsWith(prompt.plain)) {
       return `${prompt.styled}${line.slice(prompt.plain.length)}`
     }
@@ -263,7 +276,9 @@ export function renderScreen(header: HeaderState, transcript: TranscriptViewport
     }
     frame = buf
   }
-  const cursor = `\u001b[${cursorRow};${Math.max(3, cursorCol + 3)}H${ANSI.showCursor}${ANSI.esu}`
+  const cursor = composer.permissionPrompt
+    ? `${ANSI.hideCursor}`
+    : `\u001b[${cursorRow};${Math.max(3, cursorCol + 3)}H${ANSI.showCursor}${ANSI.esu}`
   stdout.write(`${frame}${cursor}`)
 }
 
