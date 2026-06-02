@@ -1,11 +1,17 @@
-import test from "node:test"
+import test, { after } from "node:test"
 import assert from "node:assert/strict"
 import { randomUUID } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { getTool } from "./registry.ts"
-import {
+
+// Set isolated environment root before importing Monolito core modules
+const testMonolitoRoot = mkdtempSync(join(tmpdir(), "monolito-registry-test-root-"))
+process.env.MONOLITO_ROOT = testMonolitoRoot
+
+// Dynamically import the core modules so they pick up the environment variable
+const { getTool } = await import("./registry.ts")
+const {
   addGraphTriple,
   appendEvent,
   appendMessage,
@@ -19,7 +25,11 @@ import {
   recallMemory,
   writeBootWing,
   writeConfigWing,
-} from "../session/store.ts"
+} = await import("../session/store.ts")
+
+after(() => {
+  rmSync(testMonolitoRoot, { recursive: true, force: true })
+})
 
 function createRootDir() {
   return mkdtempSync(join(tmpdir(), "monolito-tools-test-"))

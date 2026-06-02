@@ -37,8 +37,8 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=${process.cwd()}
-ExecStart=${process.execPath} --experimental-strip-types ${process.cwd()}/src/apps/daemon.ts --foreground
+WorkingDirectory="${process.cwd()}"
+ExecStart="${process.execPath}" --experimental-strip-types "${process.cwd()}/src/apps/daemon.ts" --foreground
 Restart=on-failure
 RestartSec=5
 StandardOutput=append:${daemonLog}

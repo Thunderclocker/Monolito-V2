@@ -1,11 +1,22 @@
-import test from "node:test"
+import test, { after } from "node:test"
 import assert from "node:assert/strict"
-import { rmSync, mkdirSync } from "node:fs"
+import { rmSync, mkdirSync, mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { setMockEmbeddingGenerator } from "../session/embeddings.ts"
-import { saveResolvedError, querySimilarErrors, getDb } from "../session/store.ts"
 
-const TEST_ROOT = join(process.cwd(), "scratch", "test-palace-db-fase2")
+// Set isolated environment root before importing Monolito core modules
+const testMonolitoRoot = mkdtempSync(join(tmpdir(), "monolito-recovery-test-root-"))
+process.env.MONOLITO_ROOT = testMonolitoRoot
+
+// Dynamically import the core modules so they pick up the environment variable
+const { setMockEmbeddingGenerator } = await import("../session/embeddings.ts")
+const { saveResolvedError, querySimilarErrors, getDb } = await import("../session/store.ts")
+
+const TEST_ROOT = testMonolitoRoot
+
+after(() => {
+  rmSync(testMonolitoRoot, { recursive: true, force: true })
+})
 
 // Configurar un Mock Generator de embeddings de 1024 dimensiones
 setMockEmbeddingGenerator(async (text) => {

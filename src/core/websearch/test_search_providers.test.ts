@@ -1,16 +1,23 @@
-import test from "node:test"
+import test, { after } from "node:test"
 import assert from "node:assert/strict"
-import { rmSync, mkdirSync } from "node:fs"
+import { rmSync, mkdirSync, mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { readWebSearchConfig, writeWebSearchConfig } from "./config.ts"
-import { getTool } from "../tools/registry.ts"
+
+// Set isolated environment root before importing Monolito core modules
+const testMonolitoRoot = mkdtempSync(join(tmpdir(), "monolito-search-test-root-"))
+process.env.MONOLITO_ROOT = testMonolitoRoot
+
+// Dynamically import the core modules so they pick up the environment variable
+const { readWebSearchConfig, writeWebSearchConfig } = await import("./config.ts")
+const { getTool } = await import("../tools/registry.ts")
 import type { ToolContext } from "../tools/registry.ts"
 
-const TEST_ROOT = join(process.cwd(), "scratch", "test-search-providers-db")
+const TEST_ROOT = testMonolitoRoot
 
-// Override process.cwd() for testing config db location
-const originalCwd = process.cwd
-process.cwd = () => TEST_ROOT
+after(() => {
+  rmSync(testMonolitoRoot, { recursive: true, force: true })
+})
 
 // Mock variables to inspect request payloads
 let lastFetchUrl = ""
@@ -288,6 +295,5 @@ test("Search Providers API Integration", async (t) => {
 
   // Cleanup
   globalThis.fetch = originalFetch
-  process.cwd = originalCwd
   rmSync(TEST_ROOT, { force: true, recursive: true })
 })

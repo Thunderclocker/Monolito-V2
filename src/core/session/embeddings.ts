@@ -2,6 +2,9 @@ import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import type Database from "better-sqlite3"
 import crypto from "node:crypto"
+import { createLogger } from "../logging/logger.ts"
+
+const logger = createLogger("embeddings")
 
 const execFileAsync = promisify(execFile)
 
@@ -226,6 +229,14 @@ export function setMockEmbeddingGenerator(mock: typeof mockGenerator) {
   mockGenerator = mock
 }
 
+function sanitizeTextForOllama(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
 export async function generateEmbedding(text: string): Promise<Float32Array> {
   if (mockGenerator) {
     return mockGenerator(text)
@@ -270,18 +281,60 @@ export async function generateEmbedding(text: string): Promise<Float32Array> {
     // 3. Fallback to Ollama fetch (cache miss)
     try {
       await ensureEmbeddingsReady()
-      const response = await ollamaFetch("/api/embeddings", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ model: OLLAMA_MODEL, prompt: normalizedText }),
-      })
-      const payload = await response.json() as { embedding?: number[] }
-      if (!Array.isArray(payload.embedding)) throw new Error("Ollama embedding response did not include an embedding array")
-      if (payload.embedding.length !== EMBEDDING_DIMENSIONS) {
-        throw new Error(`Expected ${EMBEDDING_DIMENSIONS} dimensions from ${OLLAMA_MODEL}, got ${payload.embedding.length}`)
+      let embeddingArray: number[]
+      try {
+        const res = await ollamaFetch("/api/embeddings", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: OLLAMA_MODEL, prompt: normalizedText }),
+        })
+        const payload = await res.json() as { embedding?: number[] }
+        if (!Array.isArray(payload.embedding)) {
+          throw new Error("Ollama embedding response did not include an embedding array")
+        }
+        if (payload.embedding.length !== EMBEDDING_DIMENSIONS) {
+          throw new Error(`Expected ${EMBEDDING_DIMENSIONS} dimensions from ${OLLAMA_MODEL}, got ${payload.embedding.length}`)
+        }
+        if (payload.embedding.some(v => typeof v !== "number" || Number.isNaN(v))) {
+          throw new Error("Ollama embedding response contains NaN values")
+        }
+        embeddingArray = payload.embedding
+      } catch (firstError) {
+        const errorMsg = firstError instanceof Error ? firstError.message : String(firstError)
+        if (errorMsg.includes("500") || errorMsg.includes("NaN") || errorMsg.includes("Ollama")) {
+          const sanitized = sanitizeTextForOllama(normalizedText)
+          if (sanitized && sanitized !== normalizedText) {
+            try {
+              const res = await ollamaFetch("/api/embeddings", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ model: OLLAMA_MODEL, prompt: sanitized }),
+              })
+              const payload = await res.json() as { embedding?: number[] }
+              if (!Array.isArray(payload.embedding)) {
+                throw new Error("Ollama embedding response did not include an embedding array")
+              }
+              if (payload.embedding.length !== EMBEDDING_DIMENSIONS) {
+                throw new Error(`Expected ${EMBEDDING_DIMENSIONS} dimensions from ${OLLAMA_MODEL}, got ${payload.embedding.length}`)
+              }
+              if (payload.embedding.some(v => typeof v !== "number" || Number.isNaN(v))) {
+                throw new Error("Ollama embedding response contains NaN values")
+              }
+              embeddingArray = payload.embedding
+            } catch (secondError) {
+              logger.warn(`Failed to generate embedding for prompt after sanitization. Returning zero-vector. Error: ${secondError}`)
+              return new Float32Array(EMBEDDING_DIMENSIONS)
+            }
+          } else {
+            logger.warn(`Failed to generate embedding for prompt (cannot sanitize further). Returning zero-vector. Error: ${firstError}`)
+            return new Float32Array(EMBEDDING_DIMENSIONS)
+          }
+        } else {
+          throw firstError
+        }
       }
-      
-      const floatArray = normalize(Float32Array.from(payload.embedding))
+
+      const floatArray = normalize(Float32Array.from(embeddingArray))
 
       // Save to SQLite cache asynchronously
       if (semanticDb) {

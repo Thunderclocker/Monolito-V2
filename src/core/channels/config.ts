@@ -1,4 +1,5 @@
 import { appendActionLog, readConfigWing, writeConfigWing } from "../session/store.ts"
+import { MONOLITO_ROOT } from "../system/root.ts"
 
 export type TelegramConfig = {
   token: string
@@ -207,13 +208,13 @@ export function normalizeChannelsConfigForWrite(config: unknown): ChannelsConfig
 }
 
 export function readChannelsConfig(): ChannelsConfig {
-  return normalizeChannelsConfig(readConfigWing(process.cwd(), "CONF_CHANNELS"))
+  return normalizeChannelsConfig(readConfigWing(MONOLITO_ROOT, "CONF_CHANNELS"))
 }
 
 export function writeChannelsConfig(config: ChannelsConfig) {
   const normalized = normalizeChannelsConfig(config)
-  writeConfigWing(process.cwd(), "CONF_CHANNELS", normalized)
-  appendActionLog(process.cwd(), "Configuracion de canales actualizada", {
+  writeConfigWing(MONOLITO_ROOT, "CONF_CHANNELS", normalized)
+  appendActionLog(MONOLITO_ROOT, "Configuracion de canales actualizada", {
     wing: "CONF_CHANNELS",
     telegramEnabled: normalized.telegram?.enabled ?? false,
   })

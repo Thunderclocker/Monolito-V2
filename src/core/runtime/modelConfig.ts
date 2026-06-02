@@ -52,7 +52,7 @@ export function createDefaultSettings(): ModelSettings {
 
 export function readModelSettings(): ModelSettings {
   const defaults = createDefaultSettings()
-  const raw = coerceConfigRecord(readConfigWing(process.cwd(), "CONF_SYSTEM")) as Partial<ModelSettings> | null
+  const raw = coerceConfigRecord(readConfigWing(MONOLITO_ROOT, "CONF_SYSTEM")) as Partial<ModelSettings> | null
   return {
     modelConfig: {
       protocol: normalizeString(raw?.modelConfig?.protocol) || defaults.modelConfig.protocol,
@@ -108,8 +108,8 @@ export function validateModelDraft(draft: ModelDraft) {
 }
 
 export function saveModelSettings(settings: ModelSettings) {
-  writeConfigWing(process.cwd(), "CONF_SYSTEM", settings)
-  appendActionLog(process.cwd(), "Cambio de configuracion del sistema", {
+  writeConfigWing(MONOLITO_ROOT, "CONF_SYSTEM", settings)
+  appendActionLog(MONOLITO_ROOT, "Cambio de configuracion del sistema", {
     wing: "CONF_SYSTEM",
     model: settings.env.ANTHROPIC_MODEL,
     baseUrl: settings.env.ANTHROPIC_BASE_URL,

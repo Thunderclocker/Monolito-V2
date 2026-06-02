@@ -70,7 +70,7 @@ function createEmptyRegistry(): ModelRegistry {
 }
 
 export function readRegistry(): ModelRegistry {
-  const raw = coerceConfigRecord(readConfigWing(process.cwd(), "CONF_MODELS")) as Partial<ModelRegistry> | null
+  const raw = coerceConfigRecord(readConfigWing(MONOLITO_ROOT, "CONF_MODELS")) as Partial<ModelRegistry> | null
   try {
     if (!raw || !Array.isArray(raw.profiles)) return createEmptyRegistry()
     return {
@@ -83,7 +83,7 @@ export function readRegistry(): ModelRegistry {
 }
 
 export function saveRegistry(registry: ModelRegistry) {
-  writeConfigWing(process.cwd(), "CONF_MODELS", registry)
+  writeConfigWing(MONOLITO_ROOT, "CONF_MODELS", registry)
 }
 
 function normalizeProfile(raw: unknown): ModelProfile | null {
@@ -145,7 +145,7 @@ export function addProfile(draft: ModelProfileDraft): ModelProfile {
   }
   registry.profiles.push(profile)
   saveRegistry(registry)
-  appendActionLog(process.cwd(), "Perfil de modelo creado", {
+  appendActionLog(MONOLITO_ROOT, "Perfil de modelo creado", {
     profileId: profile.id,
     name: profile.name,
     provider: profile.provider,
@@ -169,7 +169,7 @@ export function updateProfile(id: string, draft: Partial<ModelProfileDraft>): Mo
   }
   registry.profiles[index] = updated
   saveRegistry(registry)
-  appendActionLog(process.cwd(), "Perfil de modelo actualizado", {
+  appendActionLog(MONOLITO_ROOT, "Perfil de modelo actualizado", {
     profileId: updated.id,
     name: updated.name,
     provider: updated.provider,
@@ -190,7 +190,7 @@ export function deleteProfile(id: string): string {
     registry.profiles[0]!.active = true
   }
   saveRegistry(registry)
-  appendActionLog(process.cwd(), "Perfil de modelo eliminado", {
+  appendActionLog(MONOLITO_ROOT, "Perfil de modelo eliminado", {
     profileId: removed.id,
     name: removed.name,
   })
@@ -205,7 +205,7 @@ export function activateProfile(id: string): ModelProfile {
     profile.active = profile.id === id
   }
   saveRegistry(registry)
-  appendActionLog(process.cwd(), "Cambio de modelo exitoso", {
+  appendActionLog(MONOLITO_ROOT, "Cambio de modelo exitoso", {
     profileId: target.id,
     name: target.name,
     provider: target.provider,
@@ -222,7 +222,7 @@ export function activateProfileByIndex(index: number): ModelProfile {
     profile.active = profile.id === target.id
   }
   saveRegistry(registry)
-  appendActionLog(process.cwd(), "Cambio de modelo exitoso", {
+  appendActionLog(MONOLITO_ROOT, "Cambio de modelo exitoso", {
     profileId: target.id,
     name: target.name,
     provider: target.provider,
