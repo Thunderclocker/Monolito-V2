@@ -6,6 +6,8 @@ import { existsSync } from "node:fs";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { parse as parseUrl } from "node:url";
 
+import { MONOLITO_ROOT } from "../../system/root.ts";
+
 // =============================================================================
 // Constants
 // =============================================================================
@@ -27,7 +29,7 @@ export interface GrokTokens {
 // Storage Functions
 // =============================================================================
 export function getGrokTokenPath(): string {
-  return join(os.homedir(), ".monolito-v2", "grok_oauth.json");
+  return join(MONOLITO_ROOT, "grok_oauth.json");
 }
 
 export async function loadGrokTokens(): Promise<GrokTokens | null> {
@@ -43,7 +45,7 @@ export async function loadGrokTokens(): Promise<GrokTokens | null> {
 
 export async function saveGrokTokens(tokens: GrokTokens): Promise<void> {
   const path = getGrokTokenPath();
-  const dir = join(os.homedir(), ".monolito-v2");
+  const dir = MONOLITO_ROOT;
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path, JSON.stringify(tokens, null, 2), "utf-8");
 }
