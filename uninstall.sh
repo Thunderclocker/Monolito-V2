@@ -3,8 +3,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STATE_DIR="${HOME}/.monolito-v2"
-LEGACY_STATE_DIR="${HOME}/.monolito"
+STATE_DIR="${HOME}/.monolito"
 LOCAL_STATE_DIR="${ROOT_DIR}/.monolito-v2"
 NODE_MODULES_DIR="${ROOT_DIR}/node_modules"
 BIN_DIR="${HOME}/.local/bin"
@@ -77,7 +76,6 @@ confirm() {
   printf '%s\n' "This will remove all Monolito traces from:"
   printf '  - %s\n' "${LAUNCHER_PATH}"
   printf '  - %s\n' "${STATE_DIR}"
-  printf '  - %s\n' "${LEGACY_STATE_DIR}"
   printf '  - %s\n' "${LOCAL_STATE_DIR}"
   printf '  - %s\n' "${NODE_MODULES_DIR}"
   printf '  - %s\n' "${SOCKET_GLOB}"
@@ -203,7 +201,6 @@ cleanup_docker_artifacts() {
 cleanup_filesystem_artifacts() {
   remove_if_exists "${LAUNCHER_PATH}"
   remove_if_exists "${STATE_DIR}"
-  remove_if_exists "${LEGACY_STATE_DIR}"
   remove_if_exists "${LOCAL_STATE_DIR}"
   remove_if_exists "${NODE_MODULES_DIR}"
   remove_if_exists "${LOCK_FILE}"

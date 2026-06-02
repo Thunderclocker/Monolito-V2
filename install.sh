@@ -2,11 +2,12 @@
 
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_NAME="$(basename "${ROOT_DIR}")"
-STATE_DIR="${HOME}/.monolito-v2"
+MONOLITO_DIR="${HOME}/.monolito"
+APP_DIR="${MONOLITO_DIR}/app"
+WORKSPACE_DIR="${MONOLITO_DIR}/workspace"
 BIN_DIR="${HOME}/.local/bin"
 LAUNCHER_PATH="${BIN_DIR}/monolito"
+REPO_URL="https://github.com/Thunderclocker/Monolito-V2.git"
 
 log() {
   printf '[monolito-install] %s\n' "$1"
@@ -44,7 +45,7 @@ install_apt() {
 }
 
 ensure_system_deps() {
-  # 1. Check curl (needed for NodeSource script)
+  # 1. Check curl
   if ! command -v curl >/dev/null 2>&1; then
     if command -v apt-get >/dev/null 2>&1; then
       install_apt curl
@@ -62,7 +63,7 @@ ensure_system_deps() {
     fi
   fi
 
-  # 3. Check build-essential (crucial for native compilations like better-sqlite3)
+  # 3. Check build-essential (crucial for better-sqlite3 compilation)
   if ! dpkg -s build-essential >/dev/null 2>&1; then
     if command -v apt-get >/dev/null 2>&1; then
       install_apt build-essential
@@ -100,48 +101,66 @@ ensure_system_deps() {
 }
 
 main() {
-  log "Starting Monolito V2 installation"
-
-  if [[ -d "${ROOT_DIR}/${ROOT_NAME}/.git" ]]; then
-    fail "Detected a nested git clone at ${ROOT_DIR}/${ROOT_NAME}. Remove or move that duplicate directory before installing."
-  fi
+  log "Starting Monolito V2 production installation"
 
   log "Verifying system dependencies..."
   ensure_system_deps
 
-  log "Installing npm dependencies in ${ROOT_DIR}"
-  cd "${ROOT_DIR}"
+  log "Creating directory layout in ${MONOLITO_DIR}"
+  mkdir -p "${MONOLITO_DIR}"
+  mkdir -p "${WORKSPACE_DIR}"
+
+  if [ -d "${APP_DIR}" ]; then
+    log "Monolito directory already exists in ${APP_DIR}. Updating repository..."
+    cd "${APP_DIR}"
+    git pull origin main
+  else
+    log "Cloning Monolito V2 repository into ${APP_DIR}..."
+    git clone "${REPO_URL}" "${APP_DIR}"
+    cd "${APP_DIR}"
+  fi
+
+  log "Installing npm dependencies in ${APP_DIR}"
   npm install
 
-  log "Creating local state directory at ${STATE_DIR}"
-  mkdir -p "${STATE_DIR}"
+  # Initialize default .env file in ~/.monolito/.env if not present
+  if [ ! -f "${MONOLITO_DIR}/.env" ]; then
+    log "Creating default configuration in ${MONOLITO_DIR}/.env"
+    if [ -f "${APP_DIR}/.env.example" ]; then
+      cp "${APP_DIR}/.env.example" "${MONOLITO_DIR}/.env"
+    else
+      touch "${MONOLITO_DIR}/.env"
+    fi
+  fi
 
   log "Installing launcher at ${LAUNCHER_PATH}"
   mkdir -p "${BIN_DIR}"
   cat > "${LAUNCHER_PATH}" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-cd "${ROOT_DIR}"
+export MONOLITO_MODE=production
+cd "${APP_DIR}"
 exec node --experimental-strip-types src/apps/cli.ts "\$@"
 EOF
   chmod +x "${LAUNCHER_PATH}"
 
   cat <<EOF
 
-Monolito V2 installed successfully.
+Monolito V2 has been installed successfully in production mode!
+
+Install path:     ${APP_DIR}
+Launcher path:    ${LAUNCHER_PATH}
+Workspace path:   ${WORKSPACE_DIR}
+Config path:      ${MONOLITO_DIR}/.env
 
 Next steps:
-  1. Run the CLI:
+  1. Add ${BIN_DIR} to your PATH env var if you haven't already.
+  2. Run the CLI:
      monolito
-
-  2. Configure a model profile from the CLI:
+  3. Configure a model profile inside the CLI:
      /model
 
-Notes:
-  - The CLI starts the daemon automatically when needed.
-  - Runtime state inside the repo is created under .monolito-v2/ on first run.
-  - Global model/channel settings are stored under ${STATE_DIR}/
-  - If "monolito" is not found, add ${BIN_DIR} to your PATH.
+Enjoy Monolito V2!
 EOF
 }
 
