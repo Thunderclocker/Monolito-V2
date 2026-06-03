@@ -42,16 +42,14 @@ Monolito is a local AI orchestration runtime with SQLite-backed persistence and 
   3. Last executed terminal command (`Bash` tool run) returning a non-zero exit code.
 - **Self-Correction loops**: If any of these checks fail, the sub-agent is automatically locked inside a correction loop with systemic feedback until it resolves all errors and marks its tasks as completed.
 
-## Semantic Tool Routing & Discoverability
+## Full Tool Access Model
 
-Monolito V2 uses vector similarity search via `sqlite-vec` in the Memory Palace (`CONF_TOOLS` memory wing) to dynamically pre-filter and route tools based on user intent semantic matching, reducing system prompt token overhead and improving tool-selection accuracy.
+Monolito V2 implements a full tool access model. Instead of dynamically pre-filtering and limiting tool availability at the start of each turn using semantic search (RAG), the orchestrator exposes the complete catalog of active system tools to the LLM on every call.
 
 ### Core Mechanics
-1. **Dynamic Tool Indexing**: At daemon startup, all system tool definitions (name, description, input schema) are synchronized and embedded into the Memory Palace using the local `nomic-embed-text` engine.
-2. **Turn pre-filtering**: At the beginning of each turn execution in `runAssistantTurn`, a cosine similarity vector query searches for the top 5 most relevant tools for the user request.
-3. **Resilience & Timeout Fallback**: The query runs in a parallel `Promise.race` with a **strict 200ms timeout**. If embeddings generation or the database query takes longer or fails, the orchestrator automatically falls back to full tool availability.
-4. **Core-Tool Pinning**: Essential core tools (e.g. `Bash`, `Write`, `Edit`, `TodoWrite`, `TodoList`, `TodoUpdate`, `delegate_background_task`, `search_tools`) are *always* preserved in the tool list regardless of vector search results, ensuring the agent is never isolated from coordination or editing abilities.
-5. **Meta-Tool Discovery (`search_tools`)**: If a specific tool is omitted from the pre-filtered context, the agent can dynamically call `search_tools` with a natural language search query to query the complete database registry and discover other tools on-the-fly.
+1. **Full Tool Exposure**: The agent has immediate and direct access to all system tools (such as `Bash`, `system_status`, `tool_manage_config`, `TelegramSend`, etc.) at all times, preventing tool-blindness and eliminating intermediate workaround scripts.
+2. **Static Scope Filtering**: Tools are still filtered statically based on security context (e.g. hiding management or daemon controls from worker sub-agents or specific channel environments).
+3. **Dynamic Tool Indexing**: System tool definitions and active dynamic skills are still synchronized and indexed semantically at daemon startup in the Memory Palace (`CONF_TOOLS` memory wing). This supports meta-queries and interactive CLI tools.
 
 ## Runtime vs Local (Operational)
 

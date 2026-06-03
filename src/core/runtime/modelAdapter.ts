@@ -781,22 +781,10 @@ export async function* runAgentLoop(
   const operationalFailures = new Map<string, number>()
 
   const lastUserText = getLastUserMessage(session)
-  let allowedToolNames: string[] | undefined = undefined
-  if (lastUserText && lastUserText.trim().length >= 25) {
-    try {
-      const { querySemanticTools } = await import("../session/store.ts")
-      const queryPromise = querySemanticTools(rootDir, lastUserText, 5)
-      const timeoutPromise = new Promise<string[]>(resolve => {
-        setTimeout(() => resolve([]), 200)
-      })
-      const results = await Promise.race([queryPromise, timeoutPromise])
-      if (results.length > 0) {
-        allowedToolNames = results
-      }
-    } catch (err) {
-      logger.warn(`Semantic tool query failed: ${err}`)
-    }
-  }
+  // Full Tool Access Model: Expose all tools directly to the agent.
+  // We completely disable RAG semantic tool pre-filtering to prevent tool-blindness.
+  let allowedToolNames: string[] | undefined = undefined;
+
 
   let recalledProfileFacts: string[] = []
   if (lastUserText && lastUserText.trim().length >= 15) {
