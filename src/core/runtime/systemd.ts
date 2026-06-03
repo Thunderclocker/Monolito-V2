@@ -31,14 +31,17 @@ export function ensureSystemdService(logger: SystemdLogger): void {
     const servicePath = join(configDir, "monolito.service")
     const daemonLog = join(os.homedir(), ".monolito-v2", "logs", "monolitod.log")
 
+    // Escape double quotes in paths if any exist (highly unlikely, but makes it robust)
+    const escapedCwd = process.cwd().replace(/"/g, '\\"')
+    const escapedExecPath = process.execPath.replace(/"/g, '\\"')
+
     const serviceContent = `[Unit]
 Description=Monolito V2 - AI Orchestration Daemon
 After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory="${process.cwd()}"
-ExecStart="${process.execPath}" --experimental-strip-types "${process.cwd()}/src/apps/daemon.ts" --foreground
+ExecStart=/bin/sh -c 'cd "${escapedCwd}" && exec "${escapedExecPath}" --experimental-strip-types src/apps/daemon.ts --foreground'
 Restart=on-failure
 RestartSec=5
 StandardOutput=append:${daemonLog}
@@ -50,6 +53,13 @@ WantedBy=default.target
 `
 
     writeFileSync(servicePath, serviceContent)
+    try {
+      execSync("systemctl --user daemon-reload", { stdio: "ignore" })
+    } catch (err) {
+      logger.warn("Failed to run systemctl --user daemon-reload after service update", {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
     logger.info("Systemd user service installed", { path: servicePath })
   } catch (error) {
     logger.warn("Failed to setup systemd service (non-critical)", {
