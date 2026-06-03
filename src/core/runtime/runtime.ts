@@ -3186,13 +3186,80 @@ Please analyze the preceding conversation, tool usage logs, and terminal outputs
   private async runUpdate(): Promise<string> {
     const lock = acquireUpdateLock(this.rootDir)
     if (!lock.ok) return lock.message
+    const updateLog = (msg: string) => logger.info(`[update] ${msg}`)
     try {
-      await runGitCommand(this.rootDir, ["fetch", "origin", "main"])
+      // 1. Fetch from origin. A failed fetch is an explicit error, not a
+      //    silent "already up to date".
+      try {
+        await runGitCommand(this.rootDir, ["fetch", "origin", "main"])
+      } catch (fetchError) {
+        const message = fetchError instanceof Error ? fetchError.message : String(fetchError)
+        return [
+          "Update failed: git fetch origin main falló.",
+          message,
+          "",
+          "Verificá tu conexión y que el remote 'origin' apunte al repo correcto.",
+        ].join("\n")
+      }
+
+      // 2. Compare local HEAD vs origin/main with ahead/behind counts.
       const localHash = await runGitCommand(this.rootDir, ["rev-parse", "HEAD"])
       const remoteHash = await runGitCommand(this.rootDir, ["rev-parse", "origin/main"])
-      if (localHash === remoteHash) {
+      const aheadBehind = await runGitCommand(this.rootDir, [
+        "rev-list",
+        "--left-right",
+        "--count",
+        `origin/main...HEAD`,
+      ])
+      const [behindToken, aheadToken] = aheadBehind.split(/\s+/)
+      const behind = Number.parseInt(behindToken ?? "", 10)
+      const ahead = Number.parseInt(aheadToken ?? "", 10)
+      const safeBehind = Number.isFinite(behind) ? behind : 0
+      const safeAhead = Number.isFinite(ahead) ? ahead : 0
+      updateLog(
+        `local=${localHash.slice(0, 7)} origin=${remoteHash.slice(0, 7)} ahead=${safeAhead} behind=${safeBehind}`,
+      )
+
+      // 3. Local is ahead of origin (commits made locally, never pushed).
+      //    Try to push so the next /update runs against a consistent remote.
+      if (safeAhead > 0 && safeBehind === 0) {
+        updateLog(`local is ${safeAhead} commit(s) ahead of origin — pushing`)
+        try {
+          await runGitCommand(this.rootDir, ["push", "origin", "main"])
+          return [
+            `Pusheé ${safeAhead} commit(s) locales a origin/main.`,
+            "HEAD y origin ahora coinciden — no hay nada más para bajar.",
+            "Si querés reiniciar el daemon con el código nuevo, ejecutá /update otra vez (esta vez va a hacer el fast-forward).",
+          ].join("\n")
+        } catch (pushError) {
+          const message = pushError instanceof Error ? pushError.message : String(pushError)
+          return [
+            `Update failed: local tiene ${safeAhead} commit(s) sin pushear y el push automático falló.`,
+            "",
+            `Error: ${message}`,
+            "",
+            "Hacé 'git push origin main' manualmente desde el repo del runtime y volvé a correr /update.",
+            "Si falla por auth, configurá el remote (HTTPS con token o SSH con key).",
+          ].join("\n")
+        }
+      }
+
+      // 4. Diverged: local and origin each have commits the other does not.
+      //    Refuse to silently drop either side.
+      if (safeAhead > 0 && safeBehind > 0) {
+        return [
+          `Update failed: tu rama local está ${safeAhead} commit(s) adelante Y ${safeBehind} commit(s) atrás de origin/main.`,
+          "Las ramas divergieron. Resolvé manualmente con 'git rebase' o 'git merge' antes de correr /update.",
+        ].join("\n")
+      }
+
+      // 5. Already in sync.
+      if (safeBehind === 0) {
         return "Ya estás en la última versión. No hay nada que actualizar."
       }
+
+      // 6. Local is behind — fast-forward and reinstall.
+      updateLog(`local is ${safeBehind} commit(s) behind origin — fast-forwarding`)
       await runGitCommand(this.rootDir, ["reset", "--hard", "origin/main"])
       await runGitCommand(this.rootDir, ["clean", "-fd"])
       const nodeBinDir = dirname(process.execPath)
@@ -3220,7 +3287,7 @@ Please analyze the preceding conversation, tool usage logs, and terminal outputs
         },
       })
       this.restartRequested = true
-      return "Monolito sincronizado 1:1 desde origin/main. Entorno local purgado. Reiniciando daemon..."
+      return `Monolito sincronizado 1:1 desde origin/main (${safeBehind} commit(s) nuevo(s)). Entorno local purgado. Reiniciando daemon...`
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       return `Update failed: ${message}`
