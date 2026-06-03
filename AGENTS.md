@@ -130,11 +130,11 @@ npm run db:migrate
 
 ## Key Paths & Files
 
-- **Runtime state**: `.monolito-v2/` relative to project root.
-- **Local memory DB**: `.monolito-v2/memory/memory.sqlite`
-- **Daemon log**: `.monolito-v2/logs/monolitod.log`
-- **Worker logs**: `.monolito-v2/logs/instances/worker-*.log`
-- **On VPS**: same layout but under `~/.monolito-v2/`
+- **Local runtime state**: `~/.monolito/`
+- **Local memory DB**: `~/.monolito/memory/memory.sqlite`
+- **Local daemon log**: `~/.monolito/logs/monolitod.log`
+- **Local worker logs**: `~/.monolito/logs/instances/worker-*.log`
+- **On VPS**: legacy production runtime lives under `~/.monolito-v2/`; do not edit VPS files directly.
 - **Local PC Workspace**: `/home/cristian/.claude/workspace/proyectos/Monolito V2`
 - **Local PC Production/Service App**: `/home/cristian/.monolito/app`
 
@@ -158,7 +158,7 @@ npm run db:migrate
 
 Monolito V2 supports dynamic browser-based OAuth authentication for personal X Premium+ (SuperGrok) accounts.
 - **CLI Command**: `monolito auth xai-oauth` spins up a secure temporary HTTP loopback listener at `127.0.0.1:56121/callback`, opens the system browser, captures the code, and exchanges it for tokens. On success, it automatically registers and activates a new `"xai-oauth"` model profile.
-- **Token Cache**: Persisted at `~/.monolito-v2/grok_oauth.json` containing access, id, and refresh tokens.
+- **Token Cache**: Persisted locally at `~/.monolito/grok_oauth.json` containing access, id, and refresh tokens.
 - **Auto-Refresh Lifecycle**: Resolved dynamically at runtime inside the main API execution loops by `resolveGrokAccessToken()` in `src/core/runtime/providers/grokAuth.ts`. It transparently checks validity and refreshes using the OIDC token endpoint before making calls.
 - **Prompt Caching**: Enabled automatically for both `"xai"` and `"xai-oauth"` providers by injecting the `x-grok-conv-id` header matching the current active `sessionId`.
 

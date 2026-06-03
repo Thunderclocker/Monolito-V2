@@ -51,7 +51,7 @@ Worker isolation is implemented in `src/core/context/gitContext.ts` and `src/cor
 When `AgentSpawn` is called with `isolation: "worktree"`:
 
 1. Monolito creates a temporary branch such as `monolito-worker-<uuid>`.
-2. It creates a Git Worktree under `~/.monolito-v2/run/worktrees/`.
+2. It creates a Git Worktree under `~/.monolito/run/worktrees/`.
 3. The worker turn runs with that worktree as its effective `cwd`.
 4. The parent workspace remains untouched by direct worker writes.
 5. When the worker completes, fails, or is stopped, the worktree is removed.

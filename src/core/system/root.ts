@@ -23,8 +23,7 @@ function loadEnvFile(envPath: string) {
   } catch {}
 }
 
-const mode = process.env.MONOLITO_MODE || ""
-const defaultRoot = mode === "production" ? join(homedir(), ".monolito") : join(homedir(), ".monolito-v2")
+const defaultRoot = join(homedir(), ".monolito")
 
 export const MONOLITO_ROOT = process.env.MONOLITO_ROOT || defaultRoot
 

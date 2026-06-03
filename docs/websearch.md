@@ -37,7 +37,7 @@ When `searxng` is selected, Monolito:
 
 The generated settings file is stored at:
 
-`~/.monolito-v2/searxng/settings.yml`
+`~/.monolito/searxng/settings.yml`
 
 This matters because the stock SearxNG image can come up with HTML-only formats enabled; Monolito patches the config so `format=json` works for internal tooling.
 
@@ -83,8 +83,8 @@ Button actions are translated internally into runtime operations, but the user-f
 Web search functionality uses:
 
 - `CONF_WEBSEARCH`
-- `~/.monolito-v2/searxng/settings.yml`
+- `~/.monolito/searxng/settings.yml`
 
 Operational logs for the running daemon still go to:
 
-- `.monolito-v2/logs/monolitod-v2.log`
+- `~/.monolito/logs/monolitod.log`

@@ -126,4 +126,4 @@ The current managed STT flow uses a Docker-backed Whisper webservice with `faste
 
 - `CONF_CHANNELS`
 - `CONF_WEBSEARCH`
-- `.monolito-v2/logs/monolitod-v2.log`
+- `~/.monolito/logs/monolitod.log`

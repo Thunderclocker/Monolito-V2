@@ -13,7 +13,7 @@ Runtime configuration is stored in SQLite Memory Palace `CONF_*` wings:
 
 Managed SearxNG still uses:
 
-- `~/.monolito-v2/searxng/settings.yml`
+- `~/.monolito/searxng/settings.yml`
 
 ## Configuration scope
 

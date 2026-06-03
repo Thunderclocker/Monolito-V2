@@ -44,6 +44,7 @@ export class MonolitoV2Daemon {
   async start() {
     const paths = ensureDirs(this.rootDir)
     await this.acquireOwnership(paths)
+    await this.terminateDuplicateDaemons()
     cleanupScratchpad()
     if (existsSync(paths.socketPath)) unlinkSync(paths.socketPath)
     writeFileSync(paths.pidFile, String(process.pid))
@@ -76,7 +77,6 @@ export class MonolitoV2Daemon {
       })
       this.writeDaemonLog(`monolitod-v2 listening on tcp ${paths.tcpHost}:${paths.tcpPort}`)
     }
-    await this.terminateDuplicateDaemons()
     this.startOwnershipMonitor()
     void this.startEmbeddingsWarmup()
     startChannels(this.runtime, { onRestartRequested: () => this.scheduleSelfRestart() })

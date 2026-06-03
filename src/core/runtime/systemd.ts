@@ -2,6 +2,7 @@ import { execSync } from "node:child_process"
 import { accessSync, mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import os from "node:os"
+import { MONOLITO_ROOT } from "../system/root.ts"
 
 interface SystemdLogger {
   warn: (message: string, data?: unknown) => void
@@ -29,7 +30,7 @@ export function ensureSystemdService(logger: SystemdLogger): void {
     mkdirSync(configDir, { recursive: true })
 
     const servicePath = join(configDir, "monolito.service")
-    const daemonLog = join(os.homedir(), ".monolito-v2", "logs", "monolitod.log")
+    const daemonLog = join(MONOLITO_ROOT, "logs", "monolitod.log")
 
     // Escape double quotes in paths if any exist (highly unlikely, but makes it robust)
     const escapedCwd = process.cwd().replace(/"/g, '\\"')
@@ -47,6 +48,7 @@ RestartSec=5
 StandardOutput=append:${daemonLog}
 StandardError=append:${daemonLog}
 Environment=NODE_ENV=production
+Environment=MONOLITO_MODE=production
 
 [Install]
 WantedBy=default.target

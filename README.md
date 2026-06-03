@@ -35,7 +35,7 @@ Monolito is split into a few main layers:
 - channels: Telegram ingestion/reply flow plus media handling
 - managed services: optional local TTS, STT, and SearxNG lifecycle helpers
 
-The runtime does not rely on workspace markdown files for identity or memory. The operational state lives in SQLite `memory.sqlite`, plus runtime files under `~/.monolito-v2/` for logs, sockets, caches, and managed services.
+The runtime does not rely on workspace markdown files for identity or memory. The local production installation keeps operational state in SQLite `memory.sqlite`, plus runtime files under `~/.monolito/` for logs, sockets, caches, and managed services.
 
 ## Memory system
 
@@ -115,7 +115,7 @@ The runtime does not rely on workspace markdown files for identity or memory. Th
 - The menu can list detected SearxNG containers, stop the managed container, remove it, clean conflicting containers, and run a test query.
 - `ImageSearch` uses the same managed SearxNG backend as `/websearch`.
 - Web search mode is stored in the SQLite `CONF_WEBSEARCH` wing.
-- SearxNG settings are stored in `~/.monolito-v2/searxng/settings.yml`.
+- SearxNG settings are stored in `~/.monolito/searxng/settings.yml`.
 
 ## Interactive menus
 
@@ -223,8 +223,8 @@ monolito -p '/stt status'
 ## Notes
 
 - Runtime config lives in SQLite `CONF_*` wings: `CONF_SYSTEM`, `CONF_MODELS`, `CONF_CHANNELS`, `CONF_WEBSEARCH`
-- SearxNG settings: `~/.monolito-v2/searxng/settings.yml`
-- Session data: `.monolito-v2/` relative to the project root (created on first daemon start)
-- Local memory database: `.monolito-v2/memory/memory.sqlite`
-- Daemon log: `.monolito-v2/logs/monolitod.log`
-- Profile workspaces: `.monolito-v2/profiles/<profile-id>/workspace/`
+- SearxNG settings: `~/.monolito/searxng/settings.yml`
+- Session data: `~/.monolito/`
+- Local memory database: `~/.monolito/memory/memory.sqlite`
+- Daemon log: `~/.monolito/logs/monolitod.log`
+- Profile workspaces: `~/.monolito/profiles/<profile-id>/workspace/`
