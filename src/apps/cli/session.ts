@@ -84,8 +84,9 @@ function getTelegramSessionChatId(sessionId: string) {
 }
 
 function unwrapChannelMessage(text: string) {
-  const match = text.match(/^<channel\b[^>]*>\n?([\s\S]*?)\n?<\/channel>$/)
-  return match?.[1] ?? text
+  const clean = text.startsWith("<slash-reply>") ? text.slice("<slash-reply>".length) : text
+  const match = clean.match(/^<channel\b[^>]*>\n?([\s\S]*?)\n?<\/channel>$/)
+  return match?.[1] ?? clean
 }
 
 async function ensureDaemon(client: DaemonClient, rootDir: string) {
@@ -365,7 +366,7 @@ class InteractiveTranscriptFormatter {
           this.pendingMcpCall = null
           return [{ type: "event", label: "mcp", tone: "info", text: `${pending} · ${truncate(event.text, 180)}` }]
         }
-        return [{ type: "message", role: "assistant", text: event.text }]
+        return [{ type: "message", role: "assistant", text: unwrapChannelMessage(event.text) }]
       case "turn.completed":
         return [{ type: "assistant-meta", text: `${formatDuration(event.durationMs)} · ${formatUsage(event.usage)}` }]
       case "tool.start": {

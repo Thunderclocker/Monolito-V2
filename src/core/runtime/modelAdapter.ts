@@ -104,7 +104,9 @@ function compactWhitespace(value: string) {
 
 function shouldSkipMessage(text: string) {
   const normalized = text.trim()
-  return normalized.startsWith("/") || normalized.startsWith("<task-notification>")
+  return normalized.startsWith("/") || 
+         normalized.startsWith("<task-notification>") ||
+         normalized.startsWith("<slash-reply>")
 }
 
 function isConversationRole(role: SessionRecord["messages"][number]["role"]): role is "user" | "assistant" {

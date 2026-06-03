@@ -2092,12 +2092,12 @@ Please analyze the preceding conversation, tool usage logs, and terminal outputs
           await this.processSessionStartup(sessionId, startupPrompt, { logger: instanceLogger, delivery: options?.delivery })
           return { finalText: "", usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } }
         }
-        appendMessage(this.rootDir, sessionId, "assistant", reply)
+        appendMessage(this.rootDir, sessionId, "assistant", `<slash-reply>${reply}`)
         appendWorklog(this.rootDir, sessionId, {
           type: "session",
           summary: "Turn completed (slash-command)",
         })
-        this.emit({ type: "message.received", sessionId, role: "assistant", text: reply })
+        this.emit({ type: "message.received", sessionId, role: "assistant", text: `<slash-reply>${reply}` })
         this.emit({
           type: "turn.completed",
           sessionId,
