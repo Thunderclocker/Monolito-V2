@@ -19,6 +19,7 @@ import { checkTurnCommitmentSemantic, logBrokenPromise } from "./commitmentGuard
 import { checkTurnCoherence, logCoherenceBreach } from "./coherenceGuard.ts"
 import { TurnExecutionStack } from "./turnExecutionStack.ts"
 import { checkSideEffects } from "./sideEffectGuard.ts"
+import { checkTurnVeracity, logVeracityBreach } from "./veracityGuard.ts"
 
 import { getContextBudget } from "../context/contextLimits.ts"
 import { truncateHeadTail, calculateToolResultBudget } from "../context/toolResultGuard.ts"
@@ -1075,6 +1076,44 @@ Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas c
           logger.warn(`Commitment guard check failed: ${commitmentErr}`);
         }
         // --- END OF COMMITMENT GUARD ---
+
+        // --- VERACITY GUARD VERIFICATION ---
+        try {
+          const toolsCalledInTurn = steps
+            .filter(step => step.type === "tool")
+            .map(step => (step as { type: "tool"; tool: string }).tool)
+
+          const veracity = await checkTurnVeracity(
+            rootDir,
+            response.text,
+            toolsCalledInTurn,
+            runBackgroundTextTask
+          );
+
+          if (!veracity.verified) {
+            logVeracityBreach(rootDir, session.id, veracity.reason ?? "Mismatch detectado", response.text);
+
+            yield {
+              type: "recoverable_error",
+              sessionId: session.id,
+              iteration,
+              action: "veracity_correction" as any,
+              error: `Respuesta rechazada por veracidad: ${veracity.reason}`
+            };
+
+            messages.push({
+              role: "user",
+              content: `[SYSTEM ALERT - VERACITY GUARD] Tu respuesta anterior fue RECHAZADA.
+Afirmas haber ejecutado comandos de consola, scripts, o transferencias de archivos en este turno, pero no realizaste las llamadas a herramientas reales correspondientes.
+No inventes ni alucines resultados. Por favor, ejecuta las herramientas reales (como Bash) para realizar la acción, o corrige tu respuesta para reflejar lo que realmente hiciste.`
+            });
+
+            continue;
+          }
+        } catch (veracityErr) {
+          logger.warn(`Veracity guard check failed: ${veracityErr}`);
+        }
+        // --- END OF VERACITY GUARD ---
 
         await detectAndSaveLearning(rootDir, messages, logger)
         const finalizeResult = finalize(response.text, steps, startedAt, iteration, usage)
