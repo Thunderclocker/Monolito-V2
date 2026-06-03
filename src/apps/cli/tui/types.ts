@@ -91,7 +91,7 @@ export type PromptHistory = {
 export type TranscriptBlock =
   | { type: "message"; role: "user" | "assistant"; text: string }
   | { type: "assistant-meta"; text: string }
-  | { type: "event"; label: string; tone: "neutral" | "info" | "success" | "error"; text: string }
+  | { type: "event"; label: string; tone: "neutral" | "info" | "success" | "error"; text: string; replacesLastEvent?: boolean }
 
 export type TranscriptViewport = {
   blocks: TranscriptBlock[]

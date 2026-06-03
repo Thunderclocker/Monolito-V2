@@ -288,8 +288,9 @@ function renderExternalTelegramEvent(event: AgentEvent): TranscriptBlock[] {
       return [{
         type: "event",
         label: "telegram",
-        tone: line.tone,
+        tone: event.ok ? "info" : "error",
         text: `telegram ${chatId} ${line.text}`,
+        replacesLastEvent: true,
       }]
     }
     case "turn.completed":
@@ -379,7 +380,17 @@ class InteractiveTranscriptFormatter {
         }
         const line = renderToolFinish(event.tool, event.ok, event.output)
         if (line.text) {
-          return [{ type: "event", label: line.label, tone: line.tone, text: line.text }]
+          // Replace the in-flight `tool.start` block (same bullet, only the
+          // text changes) instead of appending a second one with a "done"
+          // label. Keeps a single colored bullet per tool call, like
+          // Claude Code's CLI.
+          return [{
+            type: "event",
+            label: "",
+            tone: event.ok ? "info" : "error",
+            text: line.text,
+            replacesLastEvent: true,
+          }]
         }
         return []
       }

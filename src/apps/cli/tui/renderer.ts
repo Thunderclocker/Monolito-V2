@@ -115,8 +115,20 @@ export function flattenCopyTranscript(blocks: TranscriptBlock[], width: number) 
 
 export function appendTranscriptBlocks(viewport: TranscriptViewport, blocks: TranscriptBlock[]) {
   if (blocks.length === 0) return viewport
+  let nextBlocks = viewport.blocks
+  for (const block of blocks) {
+    if (block.type === "event" && block.replacesLastEvent && nextBlocks.length > 0) {
+      // In-place mutation of the last event block (used by tool.finish so a
+      // single tool call shows as one bullet whose text updates when the
+      // tool returns, instead of two separate bullets with different colors).
+      const { replacesLastEvent: _drop, ...rest } = block
+      nextBlocks = [...nextBlocks.slice(0, -1), rest as TranscriptBlock]
+    } else {
+      nextBlocks = [...nextBlocks, block]
+    }
+  }
   return {
-    blocks: [...viewport.blocks, ...blocks].slice(-MAX_TRANSCRIPT_BLOCKS),
+    blocks: nextBlocks.slice(-MAX_TRANSCRIPT_BLOCKS),
     scrollOffset: viewport.scrollOffset,
   }
 }
