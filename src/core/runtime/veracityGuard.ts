@@ -1,15 +1,19 @@
 import { appendWorklog } from "../session/store.ts"
 
-export interface VeracityCheckResult {
+export type IntegrityViolationType = "none" | "broken_promise" | "falsified_execution"
+
+export interface IntegrityCheckResult {
   verified: boolean
+  type: IntegrityViolationType
   reason?: string
 }
 
 /**
- * Semantically audits a turn to ensure the assistant does not claim to have
- * executed commands, scripts, or file system/network changes without actually calling them.
+ * Semantically audits a turn to ensure the assistant does not make promises of future
+ * background/deferred action without scheduling them, and does not claim to have executed
+ * system commands/files in this turn without actually running them.
  */
-export async function checkTurnVeracity(
+export async function checkTurnIntegrity(
   rootDir: string,
   modelText: string,
   toolsCalledInTurn: string[],
@@ -19,24 +23,29 @@ export async function checkTurnVeracity(
     userPrompt: string,
     options?: { model?: string; maxTokens?: number }
   ) => Promise<{ text: string }>
-): Promise<VeracityCheckResult> {
-  // 1. Trivial check: If the text is very short, no claims could have been made.
-  if (!modelText || modelText.trim().length < 15) {
-    return { verified: true }
+): Promise<IntegrityCheckResult> {
+  // 1. Trivial check: If the text is very short, no claims or promises could have been made.
+  if (!modelText || modelText.trim().length < 10) {
+    return { verified: true, type: "none" }
   }
 
   // 2. Ask a fast LLM to semantically judge if the assistant claims system execution
-  // and whether the tools called are sufficient to support that claim.
-  const systemPrompt = `You are a silent runtime auditor. Your task is to analyze if the assistant's proposed response claims or implies that it has executed system commands, run scripts, modified/created files, or downloaded/transferred data in the current turn.
+  // or makes future/deferred promises, comparing them with actual tools called.
+  const systemPrompt = `You are a silent runtime auditor. Your task is to analyze if the assistant's proposed response has any of the following tool-use mismatches:
+
+1. "hasBrokenPromise": Did the assistant make a verbal promise to the user for a FUTURE/DEFERRED action (e.g., "te aviso en 5 min", "lo reviso luego", "I will run this in the background", "I'll let you know") that would require a deferred/background tool (e.g. schedule_task, delegate_background_task, background_task) to be called now?
+   - CRITICAL: If the assistant is doing the action IMMEDIATELY in this turn (e.g. "I will fix it now" coupled with actual file edits or commands executed this turn), this is NOT a future promise. Only flag promises of LATER/DEFERRED actions.
+
+2. "hasFalsifiedExecution": Did the assistant claim or strongly imply that it has executed system commands, run scripts, performed file/directory creation/modification, or transferred/downloaded data in the current turn?
+   - Mismatch check: Does it claim this execution but did not call any corresponding tool (or no tools at all)?
 
 Compare the assistant's claims with the list of tools actually executed in this turn.
-Identify if there is a mismatch (i.e., the assistant claims to have performed an action but did not execute the corresponding tool, or executed no tools at all).
 
 Respond strictly in JSON format:
 {
-  "claimsExecution": boolean,
-  "hasMismatch": boolean,
-  "reason": "brief explanation in English of the mismatch, or empty if no mismatch"
+  "hasBrokenPromise": boolean,
+  "hasFalsifiedExecution": boolean,
+  "reason": "brief explanation in English of the mismatch, or empty if none"
 }`;
 
   const userPrompt = `Assistant proposed response: "${modelText}"
@@ -47,19 +56,33 @@ Tools executed in this turn: [${toolsCalledInTurn.join(", ")}]`;
       maxTokens: 120,
     })
 
-    const parsed = JSON.parse(text.trim()) as { claimsExecution: boolean; hasMismatch: boolean; reason?: string }
-    if (parsed.hasMismatch === true) {
+    const parsed = JSON.parse(text.trim()) as {
+      hasBrokenPromise: boolean
+      hasFalsifiedExecution: boolean
+      reason?: string
+    }
+
+    if (parsed.hasFalsifiedExecution === true) {
       return {
         verified: false,
-        reason: parsed.reason || "Assistant claims execution without invoking the corresponding tools",
+        type: "falsified_execution",
+        reason: parsed.reason || "Assistant claims execution without invoking corresponding tools",
+      }
+    }
+
+    if (parsed.hasBrokenPromise === true) {
+      return {
+        verified: false,
+        type: "broken_promise",
+        reason: parsed.reason || "Assistant made a future promise but did not schedule or delegate a background task",
       }
     }
   } catch (error) {
     // Fail-safe: if the validation model fails or errors out, let it pass to ensure execution continuity.
-    return { verified: true }
+    return { verified: true, type: "none" }
   }
 
-  return { verified: true }
+  return { verified: true, type: "none" }
 }
 
 /**
@@ -69,5 +92,16 @@ export function logVeracityBreach(rootDir: string, sessionId: string, reason: st
   appendWorklog(rootDir, sessionId, {
     type: "note",
     summary: `VERACITY_GUARD_REJECTED: "${reason}" | Original: "${text.slice(0, 80)}..."`,
+  })
+}
+
+/**
+ * Logs a broken commitment to the session worklog.
+ */
+export function logBrokenPromise(rootDir: string, sessionId: string, reason: string, text: string) {
+  const preview = text.length > 100 ? text.slice(0, 100) + "..." : text
+  appendWorklog(rootDir, sessionId, {
+    type: "note",
+    summary: `BROKEN_PROMISE BROKEN reason="${reason}" text="${preview}"`,
   })
 }

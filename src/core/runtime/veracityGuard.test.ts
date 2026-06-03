@@ -1,17 +1,17 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { checkTurnVeracity } from "./veracityGuard.ts"
+import { checkTurnIntegrity } from "./veracityGuard.ts"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { writeConfigWing } from "../session/store.ts"
 
 // Set isolated environment root before importing Monolito core modules
-const testMonolitoRoot = mkdtempSync(join(tmpdir(), "monolito-veracity-test-root-"))
+const testMonolitoRoot = mkdtempSync(join(tmpdir(), "monolito-integrity-test-root-"))
 process.env.MONOLITO_ROOT = testMonolitoRoot
 
 function createRootDir() {
-  const root = mkdtempSync(join(tmpdir(), "monolito-veracity-test-"))
+  const root = mkdtempSync(join(tmpdir(), "monolito-integrity-test-"))
   writeConfigWing(root, "CONF_POLICY", {
     permissions: { mode: "acceptEdits", rules: [] },
     hooks: { PreToolUse: [], PostToolUse: [], SessionStart: [], SessionEnd: [] }
@@ -23,57 +23,74 @@ function cleanupRootDir(rootDir: string) {
   rmSync(rootDir, { recursive: true, force: true })
 }
 
-test("checkTurnVeracity - validates claims against tools called in turn", async () => {
+test("checkTurnIntegrity - validates both execution veracity and future commitments", async () => {
   const rootDir = createRootDir()
   try {
-    // Caso 1: Asistente dice que descargó/ejecutó algo, y de hecho llamó al tool Bash.
-    const mockRunBackgroundTextTask1 = async (system: string, user: string) => {
-      assert.ok(system.includes("silent runtime auditor"))
-      assert.ok(user.includes("Tools executed in this turn: [Bash]"))
-      return { text: JSON.stringify({ claimsExecution: true, hasMismatch: false, reason: "" }) }
+    // Caso 1: Asistente dice que ejecutó scp, y de hecho llamó al tool Bash.
+    const mockRun1 = async () => {
+      return { text: JSON.stringify({ hasBrokenPromise: false, hasFalsifiedExecution: false, reason: "" }) }
     }
-
-    const result1 = await checkTurnVeracity(
+    const res1 = await checkTurnIntegrity(
       rootDir,
-      "Ya descargué el archivo de base de datos desde la VPS usando scp a local.",
+      "Ya descargué el archivo de base de datos desde la VPS usando scp.",
       ["Bash"],
-      async (dir, system, user) => mockRunBackgroundTextTask1(system, user)
+      async () => mockRun1()
     )
-    assert.equal(result1.verified, true)
+    assert.equal(res1.verified, true)
+    assert.equal(res1.type, "none")
 
-    // Caso 2: Asistente dice que descargó algo, pero no ejecutó ninguna herramienta (hasMismatch: true)
-    const mockRunBackgroundTextTask2 = async (system: string, user: string) => {
-      assert.ok(user.includes("Tools executed in this turn: []"))
+    // Caso 2: Asistente dice que descargó algo, pero no ejecutó herramientas (falsified_execution)
+    const mockRun2 = async () => {
       return {
         text: JSON.stringify({
-          claimsExecution: true,
-          hasMismatch: true,
-          reason: "Assistant claims to have downloaded the database but no tools were executed."
+          hasBrokenPromise: false,
+          hasFalsifiedExecution: true,
+          reason: "Assistant claims to have downloaded database but did not invoke scp/Bash tools."
         })
       }
     }
-
-    const result2 = await checkTurnVeracity(
+    const res2 = await checkTurnIntegrity(
       rootDir,
       "Ya descargué la base de datos de la VPS en scratchpad/monolito_vps.db.",
       [],
-      async (dir, system, user) => mockRunBackgroundTextTask2(system, user)
+      async () => mockRun2()
     )
-    assert.equal(result2.verified, false)
-    assert.equal(result2.reason, "Assistant claims to have downloaded the database but no tools were executed.")
+    assert.equal(res2.verified, false)
+    assert.equal(res2.type, "falsified_execution")
+    assert.equal(res2.reason, "Assistant claims to have downloaded database but did not invoke scp/Bash tools.")
 
-    // Caso 3: Asistente da una respuesta general o explicativa sin afirmaciones de ejecución
-    const mockRunBackgroundTextTask3 = async (system: string, user: string) => {
-      return { text: JSON.stringify({ claimsExecution: false, hasMismatch: false, reason: "" }) }
+    // Caso 3: Asistente promete avisar luego pero no corre tools de background (broken_promise)
+    const mockRun3 = async () => {
+      return {
+        text: JSON.stringify({
+          hasBrokenPromise: true,
+          hasFalsifiedExecution: false,
+          reason: "Assistant promised to warn the user later but failed to schedule/delegate background task."
+        })
+      }
     }
-
-    const result3 = await checkTurnVeracity(
+    const res3 = await checkTurnIntegrity(
       rootDir,
-      "La base de datos local de Monolito siempre se almacena por defecto en ~/.monolito/memory/.",
+      "Te aviso en 5 minutos en cuanto termine de compilar en la VPS.",
       [],
-      async (dir, system, user) => mockRunBackgroundTextTask3(system, user)
+      async () => mockRun3()
     )
-    assert.equal(result3.verified, true)
+    assert.equal(res3.verified, false)
+    assert.equal(res3.type, "broken_promise")
+    assert.equal(res3.reason, "Assistant promised to warn the user later but failed to schedule/delegate background task.")
+
+    // Caso 4: Conversación general sin reclamos ni promesas
+    const mockRun4 = async () => {
+      return { text: JSON.stringify({ hasBrokenPromise: false, hasFalsifiedExecution: false, reason: "" }) }
+    }
+    const res4 = await checkTurnIntegrity(
+      rootDir,
+      "La base de datos de producción reside por defecto en ~/.monolito/memory/.",
+      [],
+      async () => mockRun4()
+    )
+    assert.equal(res4.verified, true)
+    assert.equal(res4.type, "none")
 
   } finally {
     cleanupRootDir(rootDir)

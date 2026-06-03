@@ -15,11 +15,10 @@ import { callProvider, type ConversationMessage, type ProviderConfig, type Provi
 import { ensureMonolitoRoot } from "../system/root.ts"
 import { redactSensitiveText } from "../security/redact.ts"
 import type { AgentYieldEvent } from "./types.ts"
-import { checkTurnCommitmentSemantic, logBrokenPromise } from "./commitmentGuard.ts"
 import { checkTurnCoherence, logCoherenceBreach } from "./coherenceGuard.ts"
 import { TurnExecutionStack } from "./turnExecutionStack.ts"
 import { checkSideEffects } from "./sideEffectGuard.ts"
-import { checkTurnVeracity, logVeracityBreach } from "./veracityGuard.ts"
+import { checkTurnIntegrity, logBrokenPromise, logVeracityBreach } from "./veracityGuard.ts"
 
 import { getContextBudget } from "../context/contextLimits.ts"
 import { truncateHeadTail, calculateToolResultBudget } from "../context/toolResultGuard.ts"
@@ -1043,77 +1042,62 @@ Por favor, corregí este error de inmediato y reescribí tu respuesta respetando
         }
         // --- END OF COHERENCE GUARD ---
 
-        // --- COMMITMENT GUARD VERIFICATION ---
-        try {
-          const commitment = await checkTurnCommitmentSemantic(
-            rootDir,
-            response.text,
-            [],
-            runBackgroundTextTask
-          );
-
-          if (commitment.severity === "broken") {
-            logBrokenPromise(rootDir, session.id, commitment, response.text);
-
-            yield {
-              type: "recoverable_error",
-              sessionId: session.id,
-              iteration,
-              action: "commitment_correction" as any,
-              error: `Respuesta rechazada por promesa rota: no se llamó a ninguna herramienta para cumplir el compromiso.`
-            };
-
-            messages.push({
-              role: "user",
-              content: `[SYSTEM ALERT - COMMITMENT GUARD] Tu respuesta anterior fue RECHAZADA.
-Promesa rota/falsa detectada: Prometiste realizar una acción, buscar información, enviar archivos o realizar una tarea (ej. "Buscando ahora mismo...", "Dame un toque", "En un momento te las mando", "revisando...", etc.) pero finalizaste el turno sin ejecutar ninguna herramienta ni delegar la tarea.
-Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas correspondientes (ej. ImageSearch, TelegramSendPhoto, Bash, etc.) en este mismo turno ANTES de dar tu respuesta final. Si es una acción diferida, debés usar delegate_background_task o schedule_task. No hagas promesas vacías en tu texto final.`
-            });
-
-            continue;
-          }
-        } catch (commitmentErr) {
-          logger.warn(`Commitment guard check failed: ${commitmentErr}`);
-        }
-        // --- END OF COMMITMENT GUARD ---
-
-        // --- VERACITY GUARD VERIFICATION ---
+        // --- UNIFIED INTEGRITY GUARD VERIFICATION ---
         try {
           const toolsCalledInTurn = steps
             .filter(step => step.type === "tool")
             .map(step => (step as { type: "tool"; tool: string }).tool)
 
-          const veracity = await checkTurnVeracity(
+          const integrity = await checkTurnIntegrity(
             rootDir,
             response.text,
             toolsCalledInTurn,
             runBackgroundTextTask
           );
 
-          if (!veracity.verified) {
-            logVeracityBreach(rootDir, session.id, veracity.reason ?? "Mismatch detectado", response.text);
+          if (!integrity.verified) {
+            if (integrity.type === "falsified_execution") {
+              logVeracityBreach(rootDir, session.id, integrity.reason ?? "Mismatch de ejecución detectado", response.text);
 
-            yield {
-              type: "recoverable_error",
-              sessionId: session.id,
-              iteration,
-              action: "veracity_correction" as any,
-              error: `Respuesta rechazada por veracidad: ${veracity.reason}`
-            };
+              yield {
+                type: "recoverable_error",
+                sessionId: session.id,
+                iteration,
+                action: "veracity_correction" as any,
+                error: `Respuesta rechazada por veracidad: ${integrity.reason}`
+              };
 
-            messages.push({
-              role: "user",
-              content: `[SYSTEM ALERT - VERACITY GUARD] Tu respuesta anterior fue RECHAZADA.
+              messages.push({
+                role: "user",
+                content: `[SYSTEM ALERT - VERACITY GUARD] Tu respuesta anterior fue RECHAZADA.
 Afirmas haber ejecutado comandos de consola, scripts, o transferencias de archivos en este turno, pero no realizaste las llamadas a herramientas reales correspondientes.
 No inventes ni alucines resultados. Por favor, ejecuta las herramientas reales (como Bash) para realizar la acción, o corrige tu respuesta para reflejar lo que realmente hiciste.`
-            });
+              });
+            } else if (integrity.type === "broken_promise") {
+              logBrokenPromise(rootDir, session.id, integrity.reason ?? "Promesa rota detectada", response.text);
+
+              yield {
+                type: "recoverable_error",
+                sessionId: session.id,
+                iteration,
+                action: "commitment_correction" as any,
+                error: `Respuesta rechazada por promesa rota: no se llamó a ninguna herramienta para cumplir el compromiso.`
+              };
+
+              messages.push({
+                role: "user",
+                content: `[SYSTEM ALERT - COMMITMENT GUARD] Tu respuesta anterior fue RECHAZADA.
+Promesa rota/falsa detectada: Prometiste realizar una acción, buscar información, enviar archivos o realizar una tarea (ej. "Buscando ahora mismo...", "Dame un toque", "En un momento te las mando", "revisando...", etc.) pero finalizaste el turno sin ejecutar ninguna herramienta ni delegar la tarea.
+Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas correspondientes (ej. ImageSearch, TelegramSendPhoto, Bash, etc.) en este mismo turno ANTES de dar tu respuesta final. Si es una acción diferida, debés usar delegate_background_task o schedule_task. No hagas promesas vacías en tu texto final.`
+              });
+            }
 
             continue;
           }
-        } catch (veracityErr) {
-          logger.warn(`Veracity guard check failed: ${veracityErr}`);
+        } catch (integrityErr) {
+          logger.warn(`Integrity guard check failed: ${integrityErr}`);
         }
-        // --- END OF VERACITY GUARD ---
+        // --- END OF UNIFIED INTEGRITY GUARD ---
 
         await detectAndSaveLearning(rootDir, messages, logger)
         const finalizeResult = finalize(response.text, steps, startedAt, iteration, usage)
@@ -1394,10 +1378,10 @@ Si esto corresponde a un error de compilación, una excepción no controlada o u
         })
       }
 
-      checkTurnCommitmentSemantic(rootDir, response.text, toolsThisTurn, runBackgroundTextTask)
+      checkTurnIntegrity(rootDir, response.text, toolsThisTurn, runBackgroundTextTask)
         .then((result) => {
-          if (result.severity !== "none") {
-            logBrokenPromise(rootDir, session.id, result, response.text)
+          if (!result.verified && result.type === "broken_promise") {
+            logBrokenPromise(rootDir, session.id, result.reason ?? "Promesa rota", response.text)
           }
         })
         .catch(() => {/* silent */})
