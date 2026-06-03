@@ -2102,7 +2102,7 @@ export async function upsertSemanticTool(rootDir: string, name: string, descript
 
   try {
     const floatArray = await generateEmbedding(description)
-    db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(result.lastInsertRowid), floatArray)
+    db.prepare(`INSERT OR REPLACE INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(result.lastInsertRowid), floatArray)
   } catch (err) {
     logger.error(`Failed to generate tool embedding for ${name}: ${err}`)
   }
@@ -2443,7 +2443,7 @@ export async function saveResolvedError(
 
   try {
     const floatArray = await generateEmbedding(errorSnippet)
-    db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(result.lastInsertRowid), floatArray)
+    db.prepare(`INSERT OR REPLACE INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(result.lastInsertRowid), floatArray)
   } catch (err) {
     logger.error(`Failed to generate resolved error embedding: ${err}`)
   }
