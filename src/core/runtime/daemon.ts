@@ -274,7 +274,12 @@ export class MonolitoV2Daemon {
         try {
           execFileSync("systemctl", ["--user", "is-enabled", "monolito.service"], { stdio: "ignore" })
           useSystemdRun = true
-        } catch {}
+        } catch {
+          try {
+            execFileSync("systemctl", ["--user", "is-active", "monolito.service"], { stdio: "ignore" })
+            useSystemdRun = true
+          } catch {}
+        }
 
         // Prefer restarting via systemd so the new daemon PID stays tracked by the
         // service manager. Fall back to direct spawn when systemd is unavailable
@@ -285,7 +290,7 @@ export class MonolitoV2Daemon {
           "exec >> \"$8\" 2>&1",
           "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done",
           // --- systemd path ---
-          "if systemctl --user is-enabled monolito.service > /dev/null 2>&1; then",
+          "if systemctl --user is-active monolito.service > /dev/null 2>&1 || systemctl --user is-enabled monolito.service > /dev/null 2>&1; then",
           "  systemctl --user daemon-reload",
           "  systemctl --user start monolito.service",
           "  sleep 3",
