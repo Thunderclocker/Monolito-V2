@@ -51,7 +51,7 @@ import { type Logger } from "../logging/logger.ts"
 import { CONFIG_WING_ORDER, type ConfigWingName } from "../config/configWings.ts"
 import { coerceConfigRecord } from "../config/wingValue.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "../runtime/modelConfig.ts"
-import { getActiveProfile } from "../runtime/modelRegistry.ts"
+import { getActiveProfile, activateProfile } from "../runtime/modelRegistry.ts"
 import {
   deployManagedTtsContainer,
   getManagedTtsBaseUrl,
@@ -157,15 +157,51 @@ const bootCreateWingInputZod = z.object({
   wing: z.string().min(1).regex(/^[A-Za-z][A-Za-z0-9_]*$/, "wing must be alphanumeric/snake_case and start with a letter"),
 }).strict()
 const manageConfigInputZod = z.object({
-  action: z.enum(["read", "write"]),
-  wing: configWingZod,
+  action: z.enum(["read", "write", "get", "set", "activate_model"]),
+  wing: configWingZod.optional(),
+  path: z.string().optional(),
   value: z.unknown().optional(),
 }).strict().superRefine((input, ctx) => {
+  if (input.action !== "activate_model" && !input.wing) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["wing"],
+      message: "wing is required for actions other than activate_model",
+    })
+  }
   if (input.action === "write" && input.value === undefined) {
     ctx.addIssue({
       code: "custom",
       path: ["value"],
       message: "value is required when action='write'",
+    })
+  }
+  if (input.action === "set" && input.path === undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["path"],
+      message: "path is required when action='set'",
+    })
+  }
+  if (input.action === "set" && input.value === undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["value"],
+      message: "value is required when action='set'",
+    })
+  }
+  if (input.action === "get" && input.path === undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["path"],
+      message: "path is required when action='get'",
+    })
+  }
+  if (input.action === "activate_model" && input.value === undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["value"],
+      message: "value (profileId) is required when action='activate_model'",
     })
   }
 })
@@ -4136,11 +4172,25 @@ Actions:
     inputSchema: {
       type: "object",
       properties: {
-        action: { type: "string", enum: ["read", "write"] },
-        wing: { type: "string", enum: [...CONFIG_WING_ORDER] },
-        value: {},
+        action: {
+          type: "string",
+          enum: ["read", "write", "get", "set", "activate_model"],
+          description: "La acción a realizar:\n- 'read': Lee el bloque completo de la sección (wing).\n- 'write': Escribe/reemplaza el bloque completo de la sección.\n- 'get': Lee una propiedad específica usando notación de puntos (ej: 'telegram.enabled').\n- 'set': Modifica una propiedad específica usando notación de puntos (ej: 'telegram.enabled').\n- 'activate_model': Cambia el modelo activo del sistema usando el ID del perfil."
+        },
+        wing: {
+          type: "string",
+          enum: [...CONFIG_WING_ORDER],
+          description: "La sección de configuración (requerido para 'read', 'write', 'get', 'set')."
+        },
+        path: {
+          type: "string",
+          description: "Ruta del valor a leer o modificar en notación de puntos (ej: 'telegram.enabled' o 'profiles.0.active'). Requerido para 'get' y 'set'."
+        },
+        value: {
+          description: "El valor a escribir. Puede ser un JSON string, objeto, array, número, booleano, etc. Requerido para 'write', 'set' y 'activate_model' (donde representa el ID del perfil)."
+        },
       },
-      required: ["action", "wing"],
+      required: ["action"],
       additionalProperties: false,
     },
     concurrencySafe: false,
@@ -4149,12 +4199,75 @@ Actions:
       const parsed = parseZod(manageConfigInputZod, input, "tool_manage_config input")
       const action = parsed.action
       const wing = parsed.wing
+
+      function getPathValue(obj: any, path: string): any {
+        if (!path) return obj
+        const parts = path.split(".")
+        let current = obj
+        for (const part of parts) {
+          if (current === null || current === undefined) return undefined
+          current = current[part]
+        }
+        return current
+      }
+
+      function setPathValue(obj: any, path: string, val: any): any {
+        if (!path) return val
+        const parts = path.split(".")
+        const last = parts.pop()!
+        let current = obj
+        for (const part of parts) {
+          if (current[part] === undefined || current[part] === null || typeof current[part] !== "object") {
+            current[part] = /^\d+$/.test(parts[parts.indexOf(part) + 1] || last) ? [] : {}
+          }
+          current = current[part]
+        }
+        current[last] = val
+        return obj
+      }
+
+      if (action === "activate_model") {
+        const profileId = String(parsed.value).trim()
+        const target = activateProfile(profileId)
+        loadAndApplyModelSettings(process.env)
+        return {
+          ok: true,
+          activeProfile: redactSensitiveValue(target),
+          effect: "model_config_reloaded",
+        }
+      }
+
+      if (!wing) {
+        return formatToolError("wing is required")
+      }
+
       if (action === "read") {
         return { wing, value: redactSensitiveValue(readConfigWing(context.rootDir, wing)) }
       }
-      const value = parseJsonStringValue(parsed.value)
-      if (value === undefined) return formatToolError("value is required when action='write'")
-      const normalizedValue = normalizeConfigWingValue(wing, value)
+
+      if (action === "get") {
+        const path = parsed.path || ""
+        const config = readConfigWing(context.rootDir, wing)
+        const redactedConfig = redactSensitiveValue(config)
+        const val = getPathValue(redactedConfig, path)
+        return { wing, path, value: val }
+      }
+
+      let valueToSave: unknown
+      if (action === "write") {
+        const val = parseJsonStringValue(parsed.value)
+        if (val === undefined) return formatToolError("value is required when action='write'")
+        valueToSave = val
+      } else if (action === "set") {
+        const path = parsed.path || ""
+        const val = parseJsonStringValue(parsed.value)
+        const currentConfig = JSON.parse(JSON.stringify(readConfigWing(context.rootDir, wing))) // deep copy
+        valueToSave = setPathValue(currentConfig, path, val)
+      } else {
+        return formatToolError(`Unsupported action: ${action}`)
+      }
+
+      const normalizedValue = normalizeConfigWingValue(wing, valueToSave)
       const result = writeConfigWing(context.rootDir, wing, normalizedValue as never)
       if (wing === "CONF_SYSTEM" || wing === "CONF_MODELS") {
         loadAndApplyModelSettings(process.env)
@@ -4162,9 +4275,11 @@ Actions:
       appendActionLog(context.rootDir, "Configuracion tecnica modificada", {
         wing,
         changed: result.changed,
+        path: action === "set" ? parsed.path : undefined,
       })
       return {
         wing,
+        path: action === "set" ? parsed.path : undefined,
         ok: true,
         changed: result.changed,
         bytes: result.bytes,

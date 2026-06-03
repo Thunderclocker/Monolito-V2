@@ -450,3 +450,104 @@ test("Dynamic Skills System lifecycle: CreateSkill, ListSkills, skill_view, and 
   }
 })
 
+test("tool_manage_config action 'get' reads nested configuration path", async () => {
+  const rootDir = createRootDir()
+  try {
+    const tool = getTool("tool_manage_config")
+    assert.ok(tool)
+
+    await tool.run({
+      action: "write",
+      wing: "CONF_CHANNELS",
+      value: "{\"telegram\":{\"token\":\"my-secret-token\",\"enabled\":true,\"allowedChats\":[123]}}",
+    }, { rootDir, cwd: rootDir })
+
+    const result = await tool.run({
+      action: "get",
+      wing: "CONF_CHANNELS",
+      path: "telegram.enabled",
+    }, { rootDir, cwd: rootDir }) as { wing: string, path: string, value: unknown }
+
+    assert.equal(result.wing, "CONF_CHANNELS")
+    assert.equal(result.path, "telegram.enabled")
+    assert.equal(result.value, true)
+
+    // Verify token is redacted in get
+    const tokenResult = await tool.run({
+      action: "get",
+      wing: "CONF_CHANNELS",
+      path: "telegram.token",
+    }, { rootDir, cwd: rootDir }) as { value: unknown }
+    assert.equal(tokenResult.value, "[REDACTED]")
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("tool_manage_config action 'set' updates nested configuration path", async () => {
+  const rootDir = createRootDir()
+  try {
+    const tool = getTool("tool_manage_config")
+    assert.ok(tool)
+
+    await tool.run({
+      action: "write",
+      wing: "CONF_CHANNELS",
+      value: "{\"telegram\":{\"token\":\"abc\",\"enabled\":false,\"allowedChats\":[]}}",
+    }, { rootDir, cwd: rootDir })
+
+    const result = await tool.run({
+      action: "set",
+      wing: "CONF_CHANNELS",
+      path: "telegram.enabled",
+      value: "true",
+    }, { rootDir, cwd: rootDir }) as { wing: string, path: string, ok: boolean }
+
+    assert.equal(result.wing, "CONF_CHANNELS")
+    assert.equal(result.path, "telegram.enabled")
+    assert.equal(result.ok, true)
+
+    const updated = readConfigWing(rootDir, "CONF_CHANNELS")
+    assert.equal(updated.telegram?.enabled, true)
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("tool_manage_config action 'activate_model' changes the active profile", async () => {
+  const rootDir = createRootDir()
+  try {
+    const tool = getTool("tool_manage_config")
+    assert.ok(tool)
+
+    // Write registry with profiles
+    const registry = {
+      version: 1,
+      profiles: [
+        { id: "profile-1", name: "P1", provider: "openai_compatible", baseUrl: "http://test", apiKey: "key1", model: "m1", active: true },
+        { id: "profile-2", name: "P2", provider: "openai_compatible", baseUrl: "http://test", apiKey: "key2", model: "m2", active: false }
+      ]
+    }
+    await tool.run({
+      action: "write",
+      wing: "CONF_MODELS",
+      value: JSON.stringify(registry),
+    }, { rootDir, cwd: rootDir })
+
+    const result = await tool.run({
+      action: "activate_model",
+      value: "profile-2",
+    }, { rootDir, cwd: rootDir }) as { ok: boolean, activeProfile: any }
+
+    assert.equal(result.ok, true)
+    assert.equal(result.activeProfile.id, "profile-2")
+    assert.equal(result.activeProfile.active, true)
+
+    // Verify it is updated in DB
+    const updatedRegistry = readConfigWing(rootDir, "CONF_MODELS")
+    const activeProfile = updatedRegistry.profiles.find((p: any) => p.active)
+    assert.equal(activeProfile?.id, "profile-2")
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
