@@ -2019,7 +2019,8 @@ export async function syncMissingEmbeddings(rootDir: string) {
   for (const row of missingMessages) {
     try {
       const embedding = await generateEmbedding(row.text)
-      db.prepare(`INSERT OR REPLACE INTO vec_messages (id, embedding) VALUES (?, ?)`).run(BigInt(row.id), embedding)
+      db.prepare(`DELETE FROM vec_messages WHERE id = ?`).run(BigInt(row.id))
+      db.prepare(`INSERT INTO vec_messages (id, embedding) VALUES (?, ?)`).run(BigInt(row.id), embedding)
       messagesSynced++
     } catch (error) {
       if (isEmbeddingsUnavailableError(error)) {
@@ -2043,7 +2044,8 @@ export async function syncMissingEmbeddings(rootDir: string) {
   for (const row of missingDrawers) {
     try {
       const embedding = await generateEmbedding(row.content)
-      db.prepare(`INSERT OR REPLACE INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(row.rowid), embedding)
+      db.prepare(`DELETE FROM vec_drawers WHERE id = ?`).run(BigInt(row.rowid))
+      db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(row.rowid), embedding)
       drawersSynced++
     } catch (error) {
       if (isEmbeddingsUnavailableError(error)) {
@@ -2086,7 +2088,8 @@ export async function upsertSemanticTool(rootDir: string, name: string, descript
     `).run(description, existing.id)
     try {
       const floatArray = await generateEmbedding(description)
-      db.prepare(`INSERT OR REPLACE INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(existing.rowid), floatArray)
+      db.prepare(`DELETE FROM vec_drawers WHERE id = ?`).run(BigInt(existing.rowid))
+      db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(existing.rowid), floatArray)
     } catch (err) {
       logger.error(`Failed to update tool embedding for ${name}: ${err}`)
     }
@@ -2102,7 +2105,8 @@ export async function upsertSemanticTool(rootDir: string, name: string, descript
 
   try {
     const floatArray = await generateEmbedding(description)
-    db.prepare(`INSERT OR REPLACE INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(result.lastInsertRowid), floatArray)
+    db.prepare(`DELETE FROM vec_drawers WHERE id = ?`).run(BigInt(result.lastInsertRowid))
+    db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(result.lastInsertRowid), floatArray)
   } catch (err) {
     logger.error(`Failed to generate tool embedding for ${name}: ${err}`)
   }
@@ -2427,7 +2431,8 @@ export async function saveResolvedError(
     
     try {
       const floatArray = await generateEmbedding(errorSnippet)
-      db.prepare(`INSERT OR REPLACE INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(existing.rowid), floatArray)
+      db.prepare(`DELETE FROM vec_drawers WHERE id = ?`).run(BigInt(existing.rowid))
+      db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(existing.rowid), floatArray)
     } catch (err) {
       logger.error(`Failed to update resolved error embedding: ${err}`)
     }
@@ -2443,7 +2448,8 @@ export async function saveResolvedError(
 
   try {
     const floatArray = await generateEmbedding(errorSnippet)
-    db.prepare(`INSERT OR REPLACE INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(result.lastInsertRowid), floatArray)
+    db.prepare(`DELETE FROM vec_drawers WHERE id = ?`).run(BigInt(result.lastInsertRowid))
+    db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(result.lastInsertRowid), floatArray)
   } catch (err) {
     logger.error(`Failed to generate resolved error embedding: ${err}`)
   }
