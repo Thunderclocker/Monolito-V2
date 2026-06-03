@@ -12,7 +12,10 @@
     "mcp:demo": "node --experimental-strip-types src/core/mcp/devServer.ts",
     "db:migrate": "node --experimental-strip-types scripts/db-migrate.ts",
     "build": "tsc --noEmit",
-    "check": "node bin/monolito.js --help"
+    "check": "node bin/monolito.js --help",
+    "test": "node --experimental-strip-types --test src/",
+    "test:guards": "node --experimental-strip-types --test src/core/runtime/veracityGuard.test.ts src/core/runtime/coherenceGuard.test.ts src/core/runtime/test_react_guards.test.ts src/core/runtime/test_semantic_recovery.test.ts src/core/runtime/test_multiverse.test.ts",
+    "test:tools": "node --experimental-strip-types --test src/core/tools/registry.test.ts src/core/tools/permissions.test.ts src/core/config/wingValue.test.ts src/core/logging/logger.test.ts src/core/websearch/test_search_providers.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.1",
