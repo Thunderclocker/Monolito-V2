@@ -1,7 +1,7 @@
 import { type Socket } from "node:net"
 import { execFile } from "node:child_process"
 import { existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
+import { join, dirname } from "node:path"
 import { promisify } from "node:util"
 import { getPaths, encodeEnvelope, type AgentEvent, type SessionRecord } from "../ipc/protocol.ts"
 import { createMcpClient, getDefaultMcpServers, type McpClient, type ResolvedMcpServerConfig } from "../mcp/client.ts"
@@ -3195,15 +3195,29 @@ Please analyze the preceding conversation, tool usage logs, and terminal outputs
       }
       await runGitCommand(this.rootDir, ["reset", "--hard", "origin/main"])
       await runGitCommand(this.rootDir, ["clean", "-fd"])
+      const nodeBinDir = dirname(process.execPath)
+      const pathSeparator = process.platform === "win32" ? ";" : ":"
+      const extendedPath = process.env.PATH
+        ? `${nodeBinDir}${pathSeparator}${process.env.PATH}`
+        : nodeBinDir
+
       await execFileAsync("npm", ["install", "--include=dev"], {
         cwd: this.rootDir,
         timeout: 120_000,
-        env: { ...process.env, NODE_ENV: "development" },
+        env: {
+          ...process.env,
+          PATH: extendedPath,
+          NODE_ENV: "development",
+        },
       })
       await execFileAsync(process.execPath, ["./node_modules/.bin/tsc", "--noEmit"], {
         cwd: this.rootDir,
         timeout: 60_000,
-        env: { ...process.env, NODE_ENV: "development" },
+        env: {
+          ...process.env,
+          PATH: extendedPath,
+          NODE_ENV: "development",
+        },
       })
       this.restartRequested = true
       return "Monolito sincronizado 1:1 desde origin/main. Entorno local purgado. Reiniciando daemon..."
