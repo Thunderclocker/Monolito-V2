@@ -1646,7 +1646,11 @@ Mandatory rules:
 5. Self-Healing & Telemetry Audit:
    - Pay special attention to any skills listed by ListSkills where 'telemetry.failure_count > 0'.
    - Analyze why it failed (e.g., incomplete guidelines, changed APIs) and update it using CreateSkill with improved SOP steps.
-6. You are 100% silent. Never respond to the user. When you have completely finished managing the skill lifecycle, respond ONLY with the exact word: SKILLS_OK`;
+6. SCOPE BOUNDARY — What is NOT a skill:
+   - Cognitive directives, behavioral rules, lessons learned, user preferences, warnings, or "remember to always..." type instructions are NOT skills. These belong to the Memory Palace (BootWrite / WorkspaceMemoryFiling) and are the exclusive domain of MemoryAgent.
+   - A valid skill MUST describe a concrete, reproducible sequence of system tool invocations (Bash, WebSearch, TelegramSend, VisionAnalyze, etc.) that solves a specific operational problem.
+   - If the content only describes WHEN or WHY to do something, but not a concrete HOW using specific tools, it is NOT a skill. Ignore it.
+7. You are 100% silent. Never respond to the user. When you have completely finished managing the skill lifecycle, respond ONLY with the exact word: SKILLS_OK`;
 
       const syntheticSession: SessionRecord = {
         ...session,

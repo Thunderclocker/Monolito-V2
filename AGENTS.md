@@ -32,6 +32,7 @@ Monolito is a local AI orchestration runtime with SQLite-backed persistence and 
     4. Merges redundant or overlapping skills under a broad "umbrella" skill (using `CreateSkill` and `DeleteSkill`).
     5. Updates outdated skills to match new project paradigms (e.g. `npm` to `pnpm`).
     6. Prunes obsolete or broken skills using `DeleteSkill`.
+  - **Scope Boundary**: SkillsAgent must only synthesize procedural skills (SOPs consisting of executable system tools/actions). It is strictly forbidden from creating skills for cognitive directives, behavioral warnings, rules of engagement, or user preferences, which are the exclusive domain of MemoryAgent and must be filed in the Memory Palace.
   - **Silent Operation**: Fully silent, recording its outcomes only to the session worklog (`SkillsAgent executed silently: SKILLS_OK`).
 
 ### Cognitive Task Persistence & Relentless Execution (Ralph Loop)
