@@ -74,14 +74,37 @@ async function checkDynamicRalphRules(
           continue
         }
 
-        // Match intent and requirements
-        if (rule.intentRegex) {
-          const intentRe = new RegExp(rule.intentRegex, "i")
-          if (!intentRe.test(combinedText)) continue
+        // Semantic intent and requirements matching via LLM classification
+        let isRuleApplicable = false
+        try {
+          const ruleDescriptionText = (rule as any).description || `Validates that the task executes at least one of these required tools: ${rule.requiredTools.join(", ")}`
+          const systemPrompt = `You are a silent runtime auditor. Your task is to analyze if the user's instructions match the intent of the following auditing rule.
+          
+Auditing Rule: "${rule.name}"
+Rule Description: "${ruleDescriptionText}"
+
+CRITICAL:
+- Do NOT match if the task only contains default system boilerplates, system-injected guidelines, or warnings. Only match if the user's actual requested objective aligns with the rule.
+- If the rule applies to the user's core request, output true.
+
+Respond strict JSON:
+{
+  "isApplicable": boolean,
+  "reason": "brief explanation in English"
+}`
+          const userPrompt = `User task: "${combinedText}"`
+          const { text } = await runBackgroundTextTask(rootDir, systemPrompt, userPrompt, { maxTokens: 100 })
+          const parsed = JSON.parse(text.trim())
+          isRuleApplicable = parsed.isApplicable === true
+        } catch (llmErr) {
+          // Fallback to regex if LLM is unavailable or fails
+          const intentRe = rule.intentRegex ? new RegExp(rule.intentRegex, "i") : null
+          const requiredRe = rule.requiredRegex ? new RegExp(rule.requiredRegex, "i") : null
+          isRuleApplicable = (!intentRe || intentRe.test(combinedText)) && (!requiredRe || requiredRe.test(combinedText))
         }
-        if (rule.requiredRegex) {
-          const requiredRe = new RegExp(rule.requiredRegex, "i")
-          if (!requiredRe.test(combinedText)) continue
+
+        if (!isRuleApplicable) {
+          continue
         }
 
         // Check for supreme user intent bypass/override of this specific rule (Level 0 Priority)

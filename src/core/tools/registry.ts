@@ -4592,7 +4592,7 @@ export function listTools() {
   return tools
 }
 
-export function listModelTools(isSubAgent = false, lastUserText?: string, allowedToolNames?: string[], rootDir?: string, exposeTelegramDownload = false) {
+export function listModelTools(isSubAgent = false, lastUserText?: string | boolean | string[], allowedToolNames?: string[], rootDir?: string, exposeTelegramDownload = false) {
   const hiddenFromSubAgents = new Set([
     "AgentSpawn",
     "AgentSendMessage",
@@ -4636,17 +4636,15 @@ export function listModelTools(isSubAgent = false, lastUserText?: string, allowe
     hiddenFromMainSession.delete("TelegramDownloadFile")
   }
 
-  const isImageIntent = lastUserText && /imagen|imagenes|foto|fotos|picture|pictures|image|images|vision|visual/i.test(lastUserText)
-  const imageWorkerBlockedTools = new Set([
-    "AgentList",
-    "ProfileCreate",
-    "Write",
-    "Edit",
-    "MultiEdit",
-    "Bash",
-    "TodoWrite",
-    "TodoUpdate",
-  ])
+  const blockedTools = Array.isArray(lastUserText)
+    ? lastUserText
+    : typeof lastUserText === "boolean"
+      ? (lastUserText ? ["AgentList", "ProfileCreate", "Write", "Edit", "MultiEdit", "Bash", "TodoWrite", "TodoUpdate"] : [])
+      : (typeof lastUserText === "string" && lastUserText === "true")
+        ? ["AgentList", "ProfileCreate", "Write", "Edit", "MultiEdit", "Bash", "TodoWrite", "TodoUpdate"]
+        : (typeof lastUserText === "string" && /imagen|imagenes|foto|fotos|picture|pictures|image|images|vision|visual/i.test(lastUserText))
+          ? ["AgentList", "ProfileCreate", "Write", "Edit", "MultiEdit", "Bash", "TodoWrite", "TodoUpdate"]
+          : []
 
   const CORE_TOOLS = new Set([
     "TodoWrite",
@@ -4675,7 +4673,7 @@ export function listModelTools(isSubAgent = false, lastUserText?: string, allowe
       // 1. Core Tools are ALWAYS included
       if (CORE_TOOLS.has(tool.name)) {
         if (isSubAgent && hiddenFromSubAgents.has(tool.name)) return false;
-        if (isSubAgent && isImageIntent && imageWorkerBlockedTools.has(tool.name)) return false;
+        if (isSubAgent && blockedTools.includes(tool.name)) return false;
         if (!isSubAgent && hiddenFromMainSession.has(tool.name)) return false;
         return true;
       }
@@ -4685,9 +4683,9 @@ export function listModelTools(isSubAgent = false, lastUserText?: string, allowe
 
       // 3. Apply standard static filters for all other tools
       if (isSubAgent && hiddenFromSubAgents.has(tool.name)) return false;
-      if (isSubAgent && isImageIntent && imageWorkerBlockedTools.has(tool.name)) return false;
+      if (isSubAgent && blockedTools.includes(tool.name)) return false;
       if (!isSubAgent && hiddenFromMainSession.has(tool.name)) return false;
-      if (!isSubAgent && isImageIntent && (tool.name === "WebSearch" || tool.name === "WebFetch")) return false;
+      if (!isSubAgent && blockedTools.includes("Bash") && (tool.name === "WebSearch" || tool.name === "WebFetch")) return false;
       return true;
     })
     .map(tool => ({
@@ -4748,6 +4746,7 @@ export async function indexToolsInPalace(rootDir: string) {
 export async function indexRalphRulesInPalace(rootDir: string) {
   const imageVerificationRule = {
     name: "Image Verification Rule",
+    description: "Checks if the task requests visual verification, validation, analysis, description, or confirmation of images, photos, screenshots, or visual assets.",
     intentRegex: "\\b(imagen(?:es)?|foto(?:s)?|picture(?:s)?|photo(?:s)?|image(?:s)?|vision|visual)\\b",
     requiredRegex: "\\b(verifica(?:r|me|las|los)?|valid(?:a|ar|ame|alas|alos)|analiza(?:r|me|las|los)?|describe(?:me|las|los)?|confirm(?:a|ar|ame)|vision|visual|coincid(?:e|an)|contenido|real(?:es)?|correct(?:a|as|o|os))\\b",
     requiredTools: ["AnalyzeImage", "VisionAnalyze"],

@@ -91,6 +91,7 @@ type ContextExtras = {
   stallAlert?: string
   activeTasks?: { agentId: string; description: string; status: string; progress?: string[] }[]
   systemDirective?: string
+  blockedTools?: string[]
 }
 
 function normalizeBaseUrl(value: string) {
@@ -339,8 +340,8 @@ function getLogger(context?: ToolContext, logger?: Logger) {
   return logger ?? context?.logger ?? defaultLogger
 }
 
-function buildToolSummary(isSubAgent: boolean, lastUserMessage?: string, allowedToolNames?: string[], rootDir?: string, exposeTelegramDownload = false) {
-  return listModelTools(isSubAgent, lastUserMessage, allowedToolNames, rootDir, exposeTelegramDownload)
+function buildToolSummary(isSubAgent: boolean, blockedTools?: string[], allowedToolNames?: string[], rootDir?: string, exposeTelegramDownload = false) {
+  return listModelTools(isSubAgent, blockedTools || [], allowedToolNames, rootDir, exposeTelegramDownload)
     .map(tool => `- ${tool.name}: ${tool.description}`)
     .join("\n")
 }
@@ -374,13 +375,14 @@ function buildSystemPrompt(args: {
   const bootstrap = args.bootstrap ?? args.extras?.workspaceContext
   const lastUserMessage = getLastUserMessage(args.session)
   const isSubAgent = args.session.id.startsWith("agent-")
-  const isImageIntent = lastUserMessage && /imagen|imagenes|foto|fotos|picture|pictures|image|images|vision|visual/i.test(lastUserMessage)
+  const isImageIntent = args.extras?.blockedTools?.includes("Bash") ?? false
   const exposeTelegramDownload = args.session.messages.some(m => m.text.includes('status="size_limit_exceeded"'))
 
   let skillsBlock = ""
   try {
     const allSkills = listDynamicSkills(args.rootDir)
-    const availableToolsList = listModelTools(isSubAgent, lastUserMessage, args.allowedToolNames, args.rootDir, exposeTelegramDownload)
+    const blockedTools = args.extras?.blockedTools || []
+    const availableToolsList = listModelTools(isSubAgent, blockedTools, args.allowedToolNames, args.rootDir, exposeTelegramDownload)
     const availableToolNamesSet = new Set(availableToolsList.map(t => t.name))
 
     const filteredSkills = allSkills.filter(skill => {
@@ -478,7 +480,7 @@ function buildSystemPrompt(args: {
           "- For Telegram audio/voice requests, do not send a progress-only reply like 'generating audio' unless the same turn already started GenerateSpeech. Complete the sequence GenerateSpeech -> TelegramSendAudio/TelegramSendVoice, then confirm only after the send tool succeeds.",
         ].join("\n"),
     "Available tools:",
-    buildToolSummary(isSubAgent, lastUserMessage, args.allowedToolNames, args.rootDir, exposeTelegramDownload),
+    buildToolSummary(isSubAgent, args.extras?.blockedTools || [], args.allowedToolNames, args.rootDir, exposeTelegramDownload),
     skillsBlock,
     bootstrap ? describeBootEntries(bootstrap.entries) : "",
     isSubAgent ? "" : [
@@ -806,12 +808,25 @@ export async function* runAgentLoop(
     }
   }
 
+  let blockedTools: string[] = []
+  if (isSubAgent && lastUserText) {
+    try {
+      const classification = await classifyTaskRequiredCapabilities(rootDir, lastUserText)
+      blockedTools = classification.blockedTools
+    } catch (err) {
+      logger.warn(`Failed to classify task required capabilities: ${err}`)
+    }
+  }
+
   const prompt = buildSystemPrompt({
     session: activeSession,
     rootDir,
     context,
     bootstrap: options?.bootstrap,
-    extras: options?.contextExtras,
+    extras: {
+      ...options?.contextExtras,
+      blockedTools
+    },
     systemPromptOverride: options?.systemPromptOverride,
     allowedToolNames,
     recalledProfileFacts,
@@ -1563,4 +1578,35 @@ export async function runBackgroundTextTask(
   }
   if (!finalResponse) throw new Error("Provider generator completed without a response")
   return { text: finalResponse.text, usage: finalResponse.usage }
+}
+
+export async function classifyTaskRequiredCapabilities(
+  rootDir: string,
+  taskDescription: string
+): Promise<{ blockedTools: string[] }> {
+  if (!taskDescription.trim()) return { blockedTools: [] }
+  try {
+    const systemPrompt = `You are a security and resource auditor for an AI agent runtime.
+Analyze the user's task description and determine if we should restrict/block certain powerful tools (like "Bash", "Write", "Edit", "MultiEdit") for safety, focus, or token budget.
+
+CRITICAL SECURITY RULES:
+- If the task is restricted, highly focused, or purely media/information gathering (e.g. searching/processing specific visual assets, transcription, speech generation) and does NOT require writing code, modifying workspace files, running builds, running tests, or executing shell commands, you should block the powerful technical tools: ["Bash", "Write", "Edit", "MultiEdit", "TodoWrite", "TodoUpdate"].
+- If the task requires system administration, SSH, running shell commands, writing/editing code, running tests, or modifying files, do NOT block "Bash", "Write", or "Edit".
+- Ignore default system boilerplate warnings or guidelines. Only analyze the user's core objective.
+
+Respond ONLY with a valid JSON object in this format:
+{
+  "blockedTools": ["ToolName1", "ToolName2"],
+  "reason": "brief explanation"
+}`
+    const userPrompt = `Task description: "${taskDescription}"`
+    const { text } = await runBackgroundTextTask(rootDir, systemPrompt, userPrompt, { maxTokens: 150 })
+    const parsed = JSON.parse(text.trim())
+    return {
+      blockedTools: Array.isArray(parsed.blockedTools) ? parsed.blockedTools : []
+    }
+  } catch (err) {
+    // Fail-safe: no herramientas bloqueadas si el clasificador falla
+    return { blockedTools: [] }
+  }
 }
