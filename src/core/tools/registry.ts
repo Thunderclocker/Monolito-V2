@@ -3047,13 +3047,56 @@ Actions:
       const requestedSessionId = optionalString(input, "sessionId") ?? context.sessionId
       const requestedIntent = resolveForensicsIntent(optionalString(input, "intent"))
       const question = optionalString(input, "question")
-      const messageLimit = Math.max(1, Math.min(12, optionalNumber(input, "messageLimit") ?? 6))
-      const worklogLimit = Math.max(1, Math.min(20, optionalNumber(input, "worklogLimit") ?? 8))
-      const eventLimit = Math.max(1, Math.min(30, optionalNumber(input, "eventLimit") ?? 12))
+
+      // Ampliación de límites máximos para SessionForensics
+      const messageLimit = Math.max(1, Math.min(40, optionalNumber(input, "messageLimit") ?? 6))
+      const worklogLimit = Math.max(1, Math.min(60, optionalNumber(input, "worklogLimit") ?? 8))
+      const eventLimit = Math.max(1, Math.min(80, optionalNumber(input, "eventLimit") ?? 12))
+
       const session = pickForensicsSession(context.rootDir, context.profileId, requestedSessionId)
-      const events = tailEvents(context.rootDir, session.id, eventLimit)
-      const recentMessages = session.messages.slice(-messageLimit)
-      const recentWorklog = session.worklog.slice(-worklogLimit)
+
+      // Extracción de palabras clave significativas (min. 3 caracteres)
+      const searchTerms = question
+        ? Array.from(new Set(question
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .toLowerCase()
+            .match(/[a-z0-9]{3,}/g) ?? []))
+            .filter(term => !["para", "por", "con", "una", "uno", "unos", "unas", "del", "las", "los", "the", "and", "for", "from", "that", "this", "sobre", "como", "cual", "que", "est", "este", "esta", "sus"].includes(term))
+        : []
+
+      let events: ReturnType<typeof tailEvents>
+      let recentMessages: typeof session.messages
+      let recentWorklog: typeof session.worklog
+
+      if (searchTerms.length > 0) {
+        // Filtrar todos los mensajes
+        const matchedMsgs = session.messages.filter(m => {
+          const textNorm = m.text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+          return searchTerms.some(term => textNorm.includes(term))
+        })
+        recentMessages = matchedMsgs.length > 0 ? matchedMsgs.slice(-messageLimit) : session.messages.slice(-messageLimit)
+
+        // Filtrar todos los worklogs
+        const matchedLogs = session.worklog.filter(l => {
+          const sumNorm = l.summary.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+          return searchTerms.some(term => sumNorm.includes(term))
+        })
+        recentWorklog = matchedLogs.length > 0 ? matchedLogs.slice(-worklogLimit) : session.worklog.slice(-worklogLimit)
+
+        // Filtrar eventos de un pool más amplio (100 eventos)
+        const allEvents = tailEvents(context.rootDir, session.id, 100)
+        const matchedEvts = allEvents.filter(e => {
+          const evtStr = JSON.stringify(e).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+          return searchTerms.some(term => evtStr.includes(term))
+        })
+        events = matchedEvts.length > 0 ? matchedEvts.slice(-eventLimit) : allEvents.slice(-eventLimit)
+      } else {
+        events = tailEvents(context.rootDir, session.id, eventLimit)
+        recentMessages = session.messages.slice(-messageLimit)
+        recentWorklog = session.worklog.slice(-worklogLimit)
+      }
+
       const effectiveIntent = requestedIntent === "auto" ? inferForensicsIntent(question) : requestedIntent
 
       const messageLines = recentMessages.map(message => `${message.at} ${message.role}: ${truncateText(message.text, 220)}`)

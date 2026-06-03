@@ -360,6 +360,40 @@ test("SessionForensics surfaces delegation evidence from events", async () => {
   }
 })
 
+test("SessionForensics performs keyword-based search across full history when question is supplied", async () => {
+  const rootDir = createRootDir()
+  try {
+    ensureSession(rootDir, "session-3", "Searchable Forensics Session")
+    
+    // Add multiple messages/worklogs, placing the target one far back in history
+    appendWorklog(rootDir, "session-3", { type: "tool", summary: "Step 1: Skill skill_acceder_vps created successfully" })
+    for (let i = 0; i < 30; i++) {
+      appendWorklog(rootDir, "session-3", { type: "tool", summary: `Unrelated step ${i}` })
+    }
+
+    const tool = getTool("SessionForensics")
+    assert.ok(tool)
+
+    // Running standard search without question would cut off the target log (limit is 8 by default)
+    const resultNormal = await tool.run({
+      sessionId: "session-3",
+      intent: "actions",
+    }, { rootDir, cwd: rootDir }) as { evidence: string[] }
+
+    assert.ok(!resultNormal.evidence.some(line => line.includes("skill_acceder_vps")))
+
+    // Running search with a question matching the keyword should locate it
+    const resultSearch = await tool.run({
+      sessionId: "session-3",
+      intent: "actions",
+      question: "tell me about skill_acceder_vps dynamic skills testing",
+    }, { rootDir, cwd: rootDir }) as { evidence: string[] }
+
+    assert.ok(resultSearch.evidence.some(line => line.includes("skill_acceder_vps")))
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
 
 test("clearMemoryPalace removes profile memory while preserving configuration", async () => {
   const rootDir = createRootDir()
