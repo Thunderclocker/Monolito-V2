@@ -60,7 +60,7 @@ export function getManagedSttBaseUrl(config: SttConfig) {
   return `http://127.0.0.1:${config.port}`
 }
 
-async function probeManagedStt(config: SttConfig) {
+export async function probeManagedStt(config: SttConfig) {
   try {
     const response = await fetch(`${getManagedSttBaseUrl(config)}/openapi.json`, {
       signal: AbortSignal.timeout(4_000),
@@ -251,7 +251,8 @@ export async function deployManagedSttContainer(config: SttConfig): Promise<{ ok
       continue
     }
 
-    for (let i = 0; i < 45; i++) {
+    const maxProbes = 300 // 5 minutos de margen para descargar el modelo
+    for (let i = 0; i < maxProbes; i++) {
       await new Promise(resolve => setTimeout(resolve, 1000))
       if (await probeManagedStt(config)) {
         const suffix = candidateModel === config.model
@@ -261,7 +262,7 @@ export async function deployManagedSttContainer(config: SttConfig): Promise<{ ok
       }
     }
 
-    failures.push(`${candidateModel}: no respondió dentro de 45s`)
+    failures.push(`${candidateModel}: no respondió dentro de ${maxProbes}s`)
     await removeManagedSttContainer(config, config.containerName).catch(() => {})
   }
 

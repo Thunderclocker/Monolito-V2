@@ -6,7 +6,7 @@ import { readWebSearchConfig, writeWebSearchConfig } from "../websearch/config.t
 import { createTelegramPoller, type TelegramCallbackQuery, type TelegramMessage, type TelegramPoller } from "./telegramPoller.ts"
 import type { MonolitoV2Runtime } from "../runtime/runtime.ts"
 import { ensureDirs } from "../ipc/protocol.ts"
-import { deployManagedSttContainer, normalizeSttConfig, transcribeManagedAudioFile } from "../stt/managed.ts"
+import { deployManagedSttContainer, getManagedSttStatus, normalizeSttConfig, probeManagedStt, transcribeManagedAudioFile } from "../stt/managed.ts"
 
 const logger = createLogger("channels")
 let activePoller: TelegramPoller | null = null
@@ -217,8 +217,23 @@ async function maybeTranscribeTelegramAudio(token: string, rootDir: string, msg:
   const stt = normalizeSttConfig(config.stt)
   if (!stt.autoTranscribe) return null
   if (stt.managed && stt.autoDeploy) {
+    const isRunning = (await getManagedSttStatus(stt)) === "running" && (await probeManagedStt(stt))
+    if (!isRunning) {
+      await sendTelegramText(
+        token,
+        msg.chat.id,
+        "Un momento, por favor. Estoy preparando el servicio de transcripción de voz local (esto puede tardar unos minutos si es la primera vez que se descarga el modelo Whisper)..."
+      ).catch(() => {})
+    }
     const deploy = await deployManagedSttContainer(stt)
     if (!deploy.ok) throw new Error(deploy.message)
+    if (!isRunning) {
+      await sendTelegramText(
+        token,
+        msg.chat.id,
+        "¡Listo! El servicio de voz se ha iniciado correctamente. Procedo a transcribir y analizar tu audio..."
+      ).catch(() => {})
+    }
   }
   const localPath = await downloadTelegramFile(token, fileId, rootDir, `telegram-audio-${msg.chat.id}-${fileId.slice(0, 8)}`)
   return await transcribeManagedAudioFile(localPath, stt)
