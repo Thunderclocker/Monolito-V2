@@ -28,7 +28,7 @@ test("checkTurnCoherence - autonomous execution validation", async () => {
   try {
     // Caso de prueba 1: El asistente es coherente (está haciendo el trabajo de forma autónoma)
     const mockRunBackgroundTextTask1 = async (system: string, user: string) => {
-      assert.ok(system.includes("REGLA DE AUTONOMÍA Y EJECUCIÓN"))
+      assert.ok(system.includes("AUTONOMY AND EXECUTION RULE"))
       return { text: JSON.stringify({ coherent: true, reason: "" }) }
     }
 
@@ -43,7 +43,7 @@ test("checkTurnCoherence - autonomous execution validation", async () => {
 
     // Caso de prueba 2: El asistente es incoherente (está pidiendo al usuario que ejecute comandos)
     const mockRunBackgroundTextTask2 = async (system: string, user: string) => {
-      assert.ok(system.includes("REGLA DE AUTONOMÍA Y EJECUCIÓN"))
+      assert.ok(system.includes("AUTONOMY AND EXECUTION RULE"))
       return {
         text: JSON.stringify({
           coherent: false,
@@ -60,7 +60,7 @@ test("checkTurnCoherence - autonomous execution validation", async () => {
       []
     )
     assert.equal(result2.coherent, false)
-    assert.match(result2.reason || "", /delegando/i)
+    assert.ok(result2.reason && result2.reason.length > 0, "reason should be non-empty when incoherent")
 
   } finally {
     cleanupRootDir(rootDir)

@@ -74,6 +74,49 @@ additions and `PATCH` on fixes that do not change behavior.
   actual `bge-m3` model used by `src/core/session/embeddings.ts`,
   `src/core/session/store.ts`, `docs/architecture.md`, `docs/memory.md`
   and `.env.example`. README now correctly says `bge-m3`.
+- **Coherence Guard language-agnostic** (`coherenceGuard.ts`): the LLM-judge
+  prompt was rewritten in English with examples covering Spanish, English,
+  and other languages. The judge now reasons semantically (not by Spanish
+  keyword) over patterns like "deferred decision to the user", "success
+  report without tool evidence", "sub-agent asking for escalation", and
+  "report framing unchanged state as positive outcome when the user asked
+  for a state change".
+- **Verified-tag cap per session** (`orchestrator.ts`): the
+  `<verified>SUCCESS</verified>` tag can now be emitted at most 2 times
+  per session. On the 3rd emission, the Ralph Loop forces a terminal
+  failure and emits a snapshot for forensic review. Stops the pattern of
+  agents re-stamping the tag without doing new work.
+- **No-op success claim rejected** (`orchestrator.ts`): if a worker
+  emits the verification tag without ANY successful `tool.finish` event
+  in the recent turn, the Ralph Loop rejects it as a no-op success claim
+  and forces a real tool execution. Catches the "INTACTO / done" pattern
+  where the agent reports work that was never done.
+- **Coherence Guard bypass is now visible and once-per-turn**
+  (`modelAdapter.ts`): the bypass threshold dropped from 3 to 2
+  consecutive rejections, and the bypass now injects a visible warning
+  block to the user (`COHERENCE GUARD BYPASS WARNING`) and an explicit
+  `COHERENCE_GUARD_BYPASSED:VISIBLE` worklog entry. Stops silent
+  fallback abuse.
+- **Sub-agent insufficient-tools handling** (`modelAdapter.ts`): the
+  sub-agent system prompt now instructs workers to report
+  `TASK_FAILED:INSUFFICIENT_TOOLS` instead of asking for delegation,
+  exiting with fake success, or emitting the verification tag after
+  declaring failure. Language-agnostic examples in the prompt.
+- **Failed-tools block in dynamic context** (`modelAdapter.ts`): a new
+  helper `getRecentFailedToolNames` collects the set of tools that
+  produced `ok=false` events in the session and injects them into the
+  system prompt so the agent does not propose plans that depend on
+  known-broken tools. The block is structural (uses runtime-defined tool
+  names) and language-agnostic.
+- **Side-Effect Guard Level 0 override is now LLM-judged**
+  (`sideEffectGuard.ts`): the hardcoded Spanish/English keyword regex
+  (`enviá|forzá|ignorá|skip|salteá`) was removed. The bypass is now
+  decided by the LLM-judge, which evaluates whether the user's current
+  message contains an explicit, contextual, imperative-form override of
+  the pending tool's prerequisite. Past, hypothetical, or third-party
+  references do NOT count as overrides. The new `level0OverrideDetected`
+  field on the result allows the caller to log every Level 0 bypass to
+  the worklog for auditability.
 
 ---
 

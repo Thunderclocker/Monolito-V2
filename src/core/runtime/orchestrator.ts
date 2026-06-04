@@ -995,6 +995,59 @@ export class AgentOrchestrator {
           continue
         }
 
+        // Verified-tag cap: track how many times the tag has been emitted in
+        // this session. If we've already seen the tag emitted MAX_VERIFIED_TAGS
+        // times in prior assistant messages, the next emission is suspicious
+        // (agent is just re-stamping SUCCESS without doing new work). Force
+        // a terminal failure and snapshot the session for forensic review.
+        const MAX_VERIFIED_TAGS_PER_SESSION = 2
+        if (session) {
+          const priorVerifiedCount = session.messages.filter(
+            (m: { role: string; text: string }) =>
+              m.role === "assistant" &&
+              typeof m.text === "string" &&
+              hasVerificationTag(m.text),
+          ).length
+          if (priorVerifiedCount >= MAX_VERIFIED_TAGS_PER_SESSION) {
+            appendWorklog(runtime.rootDir, task.subSessionId, {
+              type: "note",
+              summary: `[Ralph Loop] Verified-tag cap reached: ${priorVerifiedCount} prior emissions in this session. Agent is re-stamping <verified>SUCCESS</verified> without new work. Forcing terminal failure.`,
+            })
+            throw new Error(`[Ralph Loop] Verified-tag cap (${MAX_VERIFIED_TAGS_PER_SESSION}) reached in session. Agent emitted the verification tag ${priorVerifiedCount} times without new tool execution evidence. Emergency snapshot required.`)
+          }
+        }
+
+        // No-op detection: a worker that emits the verification tag without
+        // ANY successful tool.finish event in the current turn is claiming
+        // success on work that did not happen. This is structural (no
+        // language dependency — the verification tag is the agent's own
+        // protocol). Reject the success claim and force a real execution.
+        const recentEvents = tailEvents(runtime.rootDir, task.subSessionId, 40)
+        const hasSuccessfulToolInTurn = recentEvents.some(
+          (e: { type: string; ok?: boolean }) => e.type === "tool.finish" && e.ok === true,
+        )
+        if (!hasSuccessfulToolInTurn) {
+          appendWorklog(runtime.rootDir, task.subSessionId, {
+            type: "note",
+            summary: `[Ralph Loop] Blocked premature completion on attempt ${attempt}: worker emitted verification tag without any successful tool execution in this turn (no-op success claim).`,
+          })
+          partialResult = assistantReply || partialResult
+          if (attempt >= maxAttempts) {
+            throw new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts claiming success without executing any tool.`)
+          }
+          currentText = [
+            task.task.trim(),
+            "",
+            "[Ralph Loop] NO-OP SUCCESS REJECTED",
+            "Your final response included the verification tag but NO tool was actually executed successfully in this turn. The tag is reserved for work that has been empirically performed. Either:",
+            "1. Execute the required tool(s) now and produce real evidence (file paths, command output, tool results), then re-emit the tag.",
+            "2. If the task does not require tool execution, do NOT emit the tag — return a structured response explaining the limitation and what tool you would need.",
+            `Technical error: claimed success on attempt ${attempt} with zero successful tool.finish events.`,
+          ].join("\n")
+          attempt++
+          continue
+        }
+
         // 2. Cognitive Task Persistence (Memory Palace) check
         const activeTasksList = listSessionTasks(runtime.rootDir, task.subSessionId, task.profileId)
         const unfinishedTasks = activeTasksList.filter(t => t.status === "pending" || t.status === "in_progress")

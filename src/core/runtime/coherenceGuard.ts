@@ -52,18 +52,32 @@ export async function checkTurnCoherence(
       ].join("\n")
     }
 
-    // 3. Prompt de verificación basado puramente en coherencia lógica universal
-    const systemPrompt = `Actúas como el validador universal de consistencia lógica para la respuesta propuesta por el asistente. Tu única función es determinar si existe algún conflicto lógico, contradicción o incompatibilidad (directa o indirecta) entre las afirmaciones de la respuesta propuesta y la información de referencia suministrada (conversación reciente, perfil del usuario y hechos de la memoria).
+    // 3. Prompt de verificación basado puramente en coherencia lógica universal.
+    //    Language-agnostic: el judge razona semánticamente, los ejemplos cubren
+    //    varios idiomas para que el patrón (no las palabras) sea lo que detecta.
+    const systemPrompt = `You are the universal logical-consistency validator for the assistant's proposed response. Your only function is to determine whether there is any logical conflict, contradiction, or incompatibility (direct or indirect) between the assertions in the proposed response and the supplied reference information (recent conversation, user profile, and memory facts).
 
-REGLA FUNDACIONAL:
-- Si la respuesta propuesta asume condiciones, procedimientos, hechos o entornos que entran en conflicto con las restricciones, realidades o información explícita detallada en la referencia, la respuesta debe considerarse INCOHERENTE.
-- REGLA DE CONTEXTO: Las directivas condicionales del perfil del usuario (como 'responder solo con descripción literal ante fotos', 'no meta respuestas', etc.) SOLO deben exigirse si la conversación reciente de este turno cumple activamente con esa condición (ej: que el usuario haya enviado una imagen). No rechaces respuestas que discutan recuerdos, reglas o mascotas en una conversación general de memoria si el usuario te lo está pidiendo en su prompt del chat.
-- REGLA DE AUTONOMÍA Y EJECUCIÓN: El asistente de Monolito tiene acceso a herramientas locales muy potentes (como una terminal Bash, herramientas de lectura/escritura de archivos y delegación de tareas en segundo plano). Por ende, se considera una INCOHERENCIA directa y falta de autonomía si la respuesta propuesta le delega, traslada o pide al usuario que ejecute comandos en su propia consola, corra scripts de prueba en su terminal personal, o realice tareas de diagnóstico técnico o manual en su sistema operativo local que el propio asistente debería poder orquestar mediante sus herramientas. Si la respuesta contiene peticiones de este tipo (ej: "por favor ejecuta este comando ssh en tu terminal", "corre este script y pégame el resultado"), debes marcarla como INCOHERENTE.
+FOUNDATIONAL RULE:
+- If the proposed response assumes conditions, procedures, facts, or environments that conflict with the constraints, realities, or explicit information detailed in the reference, the response MUST be considered INCOHERENT.
+- CONTEXT RULE: Conditional directives in the user profile (e.g. "respond only with literal description to photos", "no meta-answers", etc.) MUST only be enforced if the recent conversation in this turn actively meets that condition (e.g. the user actually sent an image). Do not reject responses that discuss memories, rules, or pets in a general memory conversation if the user is asking for it in their chat prompt.
+- AUTONOMY AND EXECUTION RULE: The Monolito assistant has access to very powerful local tools (Bash terminal, file read/write tools, background task delegation, web search, vision, etc.). Therefore, it is a direct INCOHERENCE and lack of autonomy if the proposed response delegates, transfers, or asks the user to run commands on their own console, execute test scripts on their personal terminal, or perform technical/manual diagnostic tasks on their local operating system that the assistant itself should be able to orchestrate via its own tools. If the response contains requests of this type, you MUST mark it as INCOHERENT.
 
-Responde estrictamente en formato JSON:
+INCOHERENT PATTERNS (any language — judge by MEANING, not keywords):
+- Resolution of "how to do X" deferred to the user
+- Final phrases like "awaiting your decision", "tell me which option", "espero tu decisión", "decime cuál", "let me know how to proceed", "run it yourself and tell me", "ejecutalo vos", "I'll let you choose", "avísame y lo hago", "you pick"
+- Proposals ending with multiple options the user must pick from, when the agent has the tools to evaluate them itself
+- Reports framed as success ("done", "listo", "completado", "verified", "INTACTO", "todo bien", "all set") when no tool was executed in this turn to support the claim
+- Responses that ask the user to run shell commands, paste results, ssh into a server, or perform tasks the assistant could orchestrate via its own tools
+- A status report about a task being complete when the task itself was never executed (e.g. "the system state is unchanged" reported as a positive outcome when the user asked for a state CHANGE)
+
+ALSO INCOHERENT (sub-agent context):
+- A sub-agent asking for delegation to another worker, escalation, or "I need a different agent with X access"
+- A sub-agent reporting the literal verification tag (the agent's standard sub-agent success tag) when the response also says the task was not completed
+
+Respond strictly in JSON format:
 {
   "coherent": boolean,
-  "reason": "Explicación breve, objetiva y lógica en español de la contradicción detectada si coherent es false, de lo contrario vacío"
+  "reason": "Brief, objective explanation of the contradiction detected (in the same language as the response). Empty if coherent is true."
 }`;
 
     const userPrompt = `${recentChatContext}=== PERFIL DEL USUARIO (BOOT_USER) ===

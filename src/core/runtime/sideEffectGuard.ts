@@ -1,8 +1,14 @@
-import { readBootWing, recallMemory, appendWorklog } from "../session/store.ts"
+import { readBootWing, recallMemory } from "../session/store.ts"
 
 export interface SideEffectCheckResult {
   approved: boolean
   reason?: string
+  /**
+   * If the Level 0 user override was explicitly detected by the LLM-judge,
+   * this flag is set to true so the audit trail records WHY the guard let
+   * a side-effect tool through despite a profile-level directive.
+   */
+  level0OverrideDetected?: boolean
 }
 
 export async function checkSideEffects(
@@ -20,11 +26,14 @@ export async function checkSideEffects(
 ): Promise<SideEffectCheckResult> {
   if (pendingTools.length === 0) return { approved: true }
 
-  // Bypass inmediato si el usuario activa override explícito mediante palabras clave
-  const overrideRegex = /(envi[a|á]\s+(?:de\s+todos\s+modos|igual)|forza[r]?|ignora[r]?|skip|salte?a[r]?)/i
-  if (lastUserMessage && overrideRegex.test(lastUserMessage)) {
-    return { approved: true }
-  }
+  // NOTE: The previous version of this function had a hardcoded keyword
+  // regex (enviá|forzá|ignorá|skip|salteá) that bypassed the guard for any
+  // user message containing those words. That was language-fragile and
+  // allowed accidental bypasses (e.g. a user discussing "skip verification"
+  // in a past context would trigger the override). The bypass is now the
+  // exclusive responsibility of the LLM-judge below — it reasons
+  // semantically over the user's full message and the pending tools, so
+  // only a clear, contextual Level 0 override is honored.
 
   // 1. Cargar perfil del usuario (contiene preferencias dictadas en lenguaje natural)
   const bootUser = readBootWing(rootDir, "BOOT_USER", profileId) ?? ""
@@ -45,51 +54,60 @@ export async function checkSideEffects(
     // Fallback silencioso si RAG semántico no está listo
   }
 
-  // 3. LLM evaluation
-  const systemPrompt = `Eres el validador de side-effects del runtime Monolito V2. Tu función es decidir si las herramientas con efectos externos irreversibles (envíos por Telegram, llamadas a APIs externas, etc.) deben ejecutarse ahora o si falta algún paso previo que el usuario o las buenas prácticas exigen.
+  // 3. LLM evaluation. The judge is fully language-agnostic: it reasons
+  // about the user's intent in any language and only honors a Level 0
+  // override when the user EXPLICITLY (in the current turn) directs the
+  // agent to skip or bypass a prerequisite. Hypothetical, past, or
+  // third-party references do NOT count as overrides.
+  const systemPrompt = `You are the side-effect validator for the Monolito V2 runtime. Your job is to decide whether external irreversible-effect tools (Telegram sends, external API calls, etc.) should execute now, or whether a prerequisite the user or best practices require is missing.
 
-CONTEXTO QUE RECIBIRÁS:
-- Perfil del usuario con sus preferencias y reglas personales
-- Memorias relevantes del historial
-- Lista de herramientas YA ejecutadas con éxito en este turno
-- Lista de herramientas con side-effect PENDIENTES de ejecutar
-- Último mensaje del usuario (intent)
+INPUT YOU WILL RECEIVE:
+- User profile with personal preferences and rules
+- Relevant historical memories
+- Tools that have ALREADY executed successfully this turn
+- Tools with side-effect PENDING execution
+- The user's most recent message (intent)
 
-REGLA FUNDAMENTAL:
-- Si el perfil del usuario o las memorias contienen alguna directiva, preferencia, o instrucción que exija pasos previos antes de ejecutar una herramienta pendiente, y esos pasos NO se cumplieron → rechazar.
-- EXCEPCIÓN SUPREMA (LEVEL 0): Las instrucciones explícitas y activas del usuario en su último mensaje SIEMPRE tienen prioridad absoluta y anulan cualquier memoria guardada, preferencia de perfil o regla del sistema. Si el usuario ordena explícitamente saltear, evitar o ignorar un paso previo (ej: "sin verificar", "no verifiques", "skip verification"), DEBES obedecer al usuario y APROBAR la ejecución. El usuario es el dueño y operador supremo del sistema.
-- Si no hay ninguna directiva relevante y el flujo tiene sentido lógico (las herramientas pendientes son coherentes con el intent del usuario) → aprobar.
-- En caso de duda, aprobar. No bloquear sin razón.
+CORE RULE:
+- If the user profile or the memories contain a directive, preference, or instruction that requires prerequisite steps before executing a pending tool, and those steps were NOT done → reject.
+- SUPREME EXCEPTION (LEVEL 0): The user's explicit and ACTIVE instructions in their most recent message ALWAYS take absolute priority and override any stored memory, profile preference, or system rule. If the user explicitly orders the agent to skip, avoid, or ignore a prerequisite (any language — e.g. "send it anyway", "no verifiques", "skip verification", "force it", "without checking", "no me importa, mandá"), you MUST obey the user and APPROVE execution. The user is the supreme owner and operator of this system.
+- LEVEL 0 OVERRIDE STRICT CRITERIA: The override must be in the user's CURRENT turn, addressed to the assistant in imperative form, and clearly refer to the pending tool or its prerequisite. Hypothetical, past, or third-party references do NOT count. Examples that ARE overrides: "send it without checking", "no verifiques, mandá ya", "force send the message", "no me importa, hazlo". Examples that are NOT overrides: "last time I told you to skip verification", "users sometimes want to skip checks", "the docs say you can skip".
+- If no relevant directive exists and the flow makes logical sense (the pending tools are coherent with the user's intent) → approve.
+- In doubt, approve. Do not block without reason.
 
-Responde SOLO en JSON:
+Respond ONLY in JSON:
 {
   "approved": boolean,
-  "reason": "Explicación breve en español si approved es false, vacío si es true"
+  "level0Override": boolean,
+  "reason": "Brief explanation in the same language as the user's message. Empty if approved is true."
 }`
 
-  const userPrompt = `=== PERFIL DEL USUARIO ===
-${bootUser || "(Sin perfil)"}
+  const userPrompt = `=== USER PROFILE (BOOT_USER) ===
+${bootUser || "(No profile)"}
 
-=== MEMORIAS RELEVANTES ===
-${semanticMemories || "(Ninguna)"}
+=== RELEVANT MEMORIES ===
+${semanticMemories || "(None)"}
 
-=== HERRAMIENTAS YA EJECUTADAS ===
-${executedTools.length > 0 ? executedTools.join(", ") : "(Ninguna)"}
+=== TOOLS ALREADY EXECUTED ===
+${executedTools.length > 0 ? executedTools.join(", ") : "(None)"}
 
-=== HERRAMIENTAS PENDIENTES (SIDE-EFFECTS) ===
+=== PENDING TOOLS (SIDE-EFFECTS) ===
 ${pendingTools.map(t => `${t.name}(${JSON.stringify(t.input).slice(0, 200)})`).join("\n")}
 
-=== ÚLTIMO MENSAJE DEL USUARIO ===
+=== USER'S MOST RECENT MESSAGE ===
 "${lastUserMessage}"`
 
   try {
     const { text } = await runBackgroundTextTask(rootDir, systemPrompt, userPrompt, {
-      maxTokens: 120,
+      maxTokens: 200,
     })
     const parsed = JSON.parse(text.trim())
+    const approved = parsed.approved !== false
+    const level0Override = parsed.level0Override === true
     return {
-      approved: parsed.approved !== false,
+      approved,
       reason: parsed.reason || undefined,
+      level0OverrideDetected: level0Override || undefined,
     }
   } catch (e) {
     // Fail-safe: aprobar si el guard falla (mismo principio que coherenceGuard)
