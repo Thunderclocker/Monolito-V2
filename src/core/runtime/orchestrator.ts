@@ -490,15 +490,81 @@ function clip(value: string, max = 500) {
   return normalized.length <= max ? normalized : `${normalized.slice(0, max - 3)}...`
 }
 
-function buildSubagentRetryPrompt(task: string, error: unknown, partialResult?: string) {
+function buildAttemptHistorySection(history: Array<{ attempt: number; kind: string; summary: string }>): string {
+  if (history.length === 0) return ""
+  const recent = history.slice(-3)
+  return [
+    "## PRIOR ATTEMPTS (do NOT repeat these approaches)",
+    recent.map(h => `- [attempt ${h.attempt}] [${h.kind}] ${clip(h.summary, 200)}`).join("\n"),
+    "",
+  ].join("\n")
+}
+
+function buildSameErrorNudge(repeatCount: number): string {
+  if (repeatCount < 2) return ""
+  return [
+    `## SAME-ERROR DETECTION`,
+    `This is the ${repeatCount}-th consecutive attempt failing with the same error signature.`,
+    "STOP and reconsider before retrying:",
+    "1. Is the failing tool fundamentally unable to do what you need? (e.g. trying to use Bash to call an LLM API — use the right tool)",
+    "2. Is your INPUT to the tool wrong? (wrong path, wrong arg, wrong syntax — re-read the tool schema and the error message carefully)",
+    "3. Is the WORKSPACE state wrong? (missing file, stale state — check `ls`, `pwd`, recent `git status` before retrying)",
+    "4. Is the APPROACH wrong? (e.g. you keep editing a file but the bug is in a different file — re-read the task carefully and trace the actual data flow)",
+    "Try a SUBSTANTIALLY DIFFERENT approach. Do not retry the identical input — that is what got you here.",
+    "",
+  ].join("\n")
+}
+
+function buildEscapeHatchSection(attempt: number, escapeAt: number, history: Array<{ attempt: number; kind: string; summary: string }>): string {
+  if (attempt < escapeAt) return ""
+  const remaining = 20 - attempt
+  const recent = history.slice(-5)
+  return [
+    `## ESCAPE HATCH (attempt ${attempt}/20, ${remaining} remaining)`,
+    "You have iterated many times. Before the next attempt, you MUST surface the blocker with structure:",
+    "1. WHAT YOU TRIED — list the approaches you actually attempted (not just rejected attempts)",
+    "2. WHAT FAILED — for each, the specific failure mode (exit code, error message, missing data)",
+    "3. WHAT YOU NEED — is it a tool you don't have? a permission? information only the user has? a structural issue in the codebase?",
+    "4. WHY YOU CAN'T PROCEED — be honest. 'The task is impossible as specified' is a valid answer if it's true.",
+    "",
+    "You will have one more attempt after this. Make it count by either:",
+    "(a) trying a fundamentally different approach informed by the above, OR",
+    "(b) returning a structured failure with the data above so the orchestrator can re-delegate or surface to the user.",
+    "",
+    "Recent attempts:",
+    recent.map(h => `- [${h.attempt}] ${h.kind}: ${clip(h.summary, 150)}`).join("\n"),
+    "",
+  ].join("\n")
+}
+
+function buildSubagentRetryPrompt(
+  task: string,
+  error: unknown,
+  partialResult: string | undefined,
+  history: Array<{ attempt: number; kind: string; summary: string }>,
+  sameErrorRepeatCount: number,
+  attempt: number,
+  escapeAt: number,
+): string {
   const message = error instanceof Error ? error.message : String(error)
   return [
     task.trim(),
     "",
     WORKER_IMAGE_EXECUTION_POLICY,
     "",
-    "Retry the same task with a smaller, more direct execution path.",
+    `[Ralph Loop] ATTEMPT ${attempt}/20 — a tool execution failed.`,
     `Technical error: ${clip(message, 240)}`,
+    "",
+    "PERSISTENCE GUIDANCE (read before retrying):",
+    "1. Read the error message carefully. The data is there. What specifically failed?",
+    "2. Do NOT retry the identical input. If the same command with the same args failed once, it will fail again.",
+    "3. Form a hypothesis about WHY it failed (missing file? wrong path? permissions? tool limitation?) and change the approach accordingly.",
+    "4. If a different tool would be more appropriate, use that tool instead.",
+    "5. If you can fix the underlying state and retry, do that.",
+    "",
+    buildSameErrorNudge(sameErrorRepeatCount),
+    buildAttemptHistorySection(history),
+    buildEscapeHatchSection(attempt, escapeAt, history),
     partialResult?.trim() ? `Partial result to keep: ${clip(partialResult, 500)}` : "",
   ].filter(Boolean).join("\n")
 }
@@ -507,54 +573,132 @@ function hasVerificationTag(text: string | undefined) {
   return typeof text === "string" && text.trimEnd().endsWith(SUBAGENT_VERIFICATION_TAG)
 }
 
-function buildRalphLoopPrompt(task: string, assistantReply: string) {
+/**
+ * Compute a stable signature for an error so the orchestrator can detect
+ * "same error N times in a row". The signature is (kind, normalizedDetail)
+ * where kind is a coarse category and normalizedDetail is the error message
+ * with volatile parts (paths, line numbers, exit codes that change between
+ * attempts) stripped. Two errors that share the same kind+detail almost
+ * certainly mean the agent is doing the same thing wrong repeatedly.
+ */
+function computeErrorSignature(error: unknown): { kind: string; detail: string } {
+  const raw = error instanceof Error ? error.message : String(error)
+  // Coarse category
+  let kind = "unknown"
+  if (/max iterations reached/i.test(raw)) kind = "max-iterations"
+  else if (/turn duration exceeded/i.test(raw)) kind = "timeout"
+  else if (/context overflow/i.test(raw)) kind = "context-overflow"
+  else if (/auth|401|403/i.test(raw)) kind = "auth"
+  else if (/rate.?limit|429/i.test(raw)) kind = "rate-limit"
+  else if (/timeout|etimedout|aborted/i.test(raw)) kind = "timeout"
+  else if (/permission|eacces|eperm/i.test(raw)) kind = "permission"
+  else if (/not found|enoent/i.test(raw)) kind = "not-found"
+  else if (/syntax|parse/i.test(raw)) kind = "syntax"
+  // Strip volatile parts: numbers, hex ids, absolute paths
+  const normalized = raw
+    .replace(/\b[0-9a-f]{8,}\b/gi, "<id>")
+    .replace(/\b\d+\b/g, "<n>")
+    .replace(/\/[^\s]+/g, "<path>")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 200)
+  return { kind, detail: normalized }
+}
+
+function buildRalphLoopPrompt(
+  task: string,
+  assistantReply: string,
+  history: Array<{ attempt: number; kind: string; summary: string }>,
+  attempt: number,
+  escapeAt: number,
+): string {
   return [
     task.trim(),
     "",
-    "[Ralph Loop] SYSTEM ALERT",
-    `Intentaste finalizar sin incluir ${SUBAGENT_VERIFICATION_TAG}.`,
-    "No podes cerrar la tarea todavia.",
-    "Volvé a trabajar desde evidencia real del workspace o de herramientas ejecutadas en esta sesion.",
-    "Si algo no fue verificado, decilo, corregilo y recien despues responde.",
-    "No mientas para escapar del loop.",
-    "Tu proxima respuesta final debe incluir exactamente el tag requerido.",
+    `[Ralph Loop] ATTEMPT ${attempt}/20 — you tried to finalize without the required verification tag.`,
     "",
-    `Ultimo intento rechazado: ${clip(assistantReply, 500)}`,
-  ].join("\n")
+    "Why this is not a workaround for the verification tag:",
+    `- The tag (${SUBAGENT_VERIFICATION_TAG}) is the runtime's way to know that the work has actually been performed with real tool evidence.`,
+    "- Emitting it without doing the work creates a no-op success claim that the Coherence Guard and the veracity checks will catch downstream.",
+    "- The tag is reserved for genuine completion. A task you cannot complete should return a structured failure instead of a fake success.",
+    "",
+    "To satisfy the tag legitimately, you need to demonstrate (with real tool calls) that the work was done. Possible paths:",
+    "1. Actually execute the missing tool calls and re-emit the tag once they succeed.",
+    "2. If the task doesn't require tool execution, return a STRUCTURED FAILURE (TASK_FAILED:<reason>) explaining why instead of the success tag.",
+    "3. If a sub-agent, report TASK_FAILED:INSUFFICIENT_TOOLS — the orchestrator will re-delegate with the right toolset.",
+    "",
+    buildAttemptHistorySection(history),
+    buildEscapeHatchSection(attempt, escapeAt, history),
+    "Your last rejected response (DO NOT repeat the same response, even with a different preamble):",
+    clip(assistantReply, 500),
+  ].filter(Boolean).join("\n")
 }
 
 
-function buildRalphLoopUnfinishedTasksPrompt(task: string, unfinished: Array<{ content: string; status: string }>, assistantReply: string) {
+function buildRalphLoopUnfinishedTasksPrompt(
+  task: string,
+  unfinished: Array<{ content: string; status: string }>,
+  assistantReply: string,
+  history: Array<{ attempt: number; kind: string; summary: string }>,
+  attempt: number,
+  escapeAt: number,
+): string {
   const listStr = unfinished.map(t => `- [${t.status.toUpperCase()}] ${t.content}`).join("\n")
   return [
     task.trim(),
     "",
-    "[Ralph Loop] SYSTEM ALERT",
-    "Intentaste finalizar pero aún tenés tareas pendientes o en progreso en la base de datos cognitiva (Memory Palace):",
+    `[Ralph Loop] ATTEMPT ${attempt}/20 — you tried to finalize while the cognitive task list has pending or in-progress items.`,
+    "",
+    "The task list is the orchestrator's source of truth for what you committed to do. Closing the turn while items remain in_progress means you're claiming success on incomplete work.",
+    "",
+    "Items still open:",
     listStr,
     "",
-    "No podés cerrar la tarea principal hasta que completes todas las tareas de tu lista.",
-    "Para actualizar el estado, llamá a TodoWrite con la lista completa (cada item con su status actualizado).",
-    "Si ya las completaste físicamente, acordate de actualizar su estado en la DB antes de salir.",
+    "To close the loop, you have two valid paths:",
+    "1. COMPLETE THE WORK: for each pending item, actually do the work, then call TodoWrite with the full updated list marking them as completed. The verification tag is required ONLY when the work is genuinely done.",
+    "2. RESTRUCTURE: if the work breakdown was wrong, call TodoWrite with a corrected list (add blockers as new in_progress items, mark abandoned items as completed with a note in activeForm explaining why, etc.).",
+    "3. STRUCTURED FAILURE: if the work cannot be completed, return TASK_FAILED:<reason> instead of the success tag.",
     "",
-    `Último intento rechazado: ${clip(assistantReply, 500)}`,
-  ].join("\n")
+    "Do NOT mark items as completed without doing the work. The Coherence Guard treats that as INCOHERENT.",
+    "",
+    buildAttemptHistorySection(history),
+    buildEscapeHatchSection(attempt, escapeAt, history),
+    "Your last rejected response (DO NOT repeat the same response):",
+    clip(assistantReply, 500),
+  ].filter(Boolean).join("\n")
 }
 
-function buildRalphLoopFailingBashPrompt(task: string, command: string, exitCode: number, assistantReply: string) {
+function buildRalphLoopFailingBashPrompt(
+  task: string,
+  command: string,
+  exitCode: number,
+  assistantReply: string,
+  history: Array<{ attempt: number; kind: string; summary: string }>,
+  attempt: number,
+  escapeAt: number,
+): string {
   return [
     task.trim(),
     "",
-    "[Ralph Loop] SYSTEM ALERT",
-    "Intentaste finalizar pero el último comando ejecutado falló:",
+    `[Ralph Loop] ATTEMPT ${attempt}/20 — you tried to finalize but the last verification command failed.`,
     `Comando: ${command}`,
     `Código de salida: ${exitCode}`,
     "",
-    "No podés terminar el trabajo si el último comando de verificación (tests, compilación, etc.) falló.",
-    "Corregí el problema, verificá que compile o los tests pasen exitosamente (exitCode 0) antes de intentar salir.",
+    "A non-zero exit code on a verification command (tests, build, lint) means the work is NOT done. The Coherence Guard and the no-op detection would catch any 'looks done' claim that ignores the failure.",
     "",
-    `Último intento rechazado: ${clip(assistantReply, 500)}`,
-  ].join("\n")
+    "To proceed:",
+    "1. Read the error output above. It tells you what went wrong.",
+    "2. Fix the underlying issue in the workspace.",
+    "3. Re-run the verification command. Do not declare success until exit code 0.",
+    "4. If the verification command is fundamentally broken (e.g. wrong binary path, missing dependency), switch to a different verification method (run a different test, ask the user to run it manually, etc.).",
+    "",
+    "If the verification genuinely cannot be run on this machine, document that in the structured failure response instead of marking the work complete.",
+    "",
+    buildAttemptHistorySection(history),
+    buildEscapeHatchSection(attempt, escapeAt, history),
+    "Your last rejected response:",
+    clip(assistantReply, 500),
+  ].filter(Boolean).join("\n")
 }
 
 function getLatestFailingBashCommand(rootDir: string, sessionId: string) {
@@ -938,8 +1082,21 @@ export class AgentOrchestrator {
       let currentText = text
       let turn: any
       let attempt = 1
-      const maxAttempts = 6
+      // 20 attempts gives genuine iteration room. The escape hatch at 15
+      // forces the agent to surface what's blocking instead of looping
+      // indefinitely. 6 was too tight for real problems (a single wrong
+      // API call + retry-with-fallback = 3-4 attempts minimum).
+      const maxAttempts = 20
+      const escapeHatchAttempt = 15
       let partialResult = ""
+      // Track the last failure signature to detect "same error 2x in a row"
+      // (key behavior: the system rejects repeating the identical failure
+      // and forces the agent to try a different angle).
+      let lastFailureSignature: { kind: string; detail: string } | null = null
+      let sameErrorRepeatCount = 0
+      // Track prior attempt summaries to feed the agent's "what was tried
+      // before" awareness on re-prompts.
+      const attemptHistory: Array<{ attempt: number; kind: string; summary: string }> = []
 
       while (attempt <= maxAttempts && task.status === "running") {
         if (abortSignal?.aborted) {
@@ -959,15 +1116,35 @@ export class AgentOrchestrator {
 
         if (turn.error) {
           partialResult = turn.finalText || partialResult
-          const isExhausted = turn.error.includes("Max iterations reached") || 
+          const isExhausted = turn.error.includes("Max iterations reached") ||
                               turn.error.includes("Turn duration exceeded");
           if (attempt >= maxAttempts || isExhausted) {
             throw new Error(turn.error)
           }
+          // Same-error detection: compute a stable signature for this error
+          // and compare to the last one we saw. If 2+ consecutive failures
+          // share the same signature, the next re-prompt will include a
+          // nudge forcing the agent to try a substantially different approach.
+          const sig = computeErrorSignature(turn.error)
+          if (lastFailureSignature && lastFailureSignature.kind === sig.kind && lastFailureSignature.detail === sig.detail) {
+            sameErrorRepeatCount++
+          } else {
+            sameErrorRepeatCount = 0
+          }
+          lastFailureSignature = sig
+          appendWorklog(runtime.rootDir, task.subSessionId, {
+            type: "note",
+            summary: `[Ralph Loop] attempt ${attempt}/${maxAttempts} failed: ${sig.kind} — ${clip(sig.detail, 200)}.${sameErrorRepeatCount > 0 ? ` Same error repeated ${sameErrorRepeatCount} time(s).` : ""}`,
+          })
+          attemptHistory.push({ attempt, kind: sig.kind, summary: clip(sig.detail, 200) })
           currentText = buildSubagentRetryPrompt(
             task.task,
             turn.error,
             partialResult,
+            attemptHistory,
+            sameErrorRepeatCount,
+            attempt + 1,
+            escapeHatchAttempt,
           )
           attempt++
           continue
@@ -990,7 +1167,8 @@ export class AgentOrchestrator {
           if (attempt >= maxAttempts) {
             throw new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts without emitting ${SUBAGENT_VERIFICATION_TAG}`)
           }
-          currentText = buildRalphLoopPrompt(task.task, assistantReply)
+          attemptHistory.push({ attempt, kind: "missing-verification-tag", summary: clip(assistantReply, 200) })
+          currentText = buildRalphLoopPrompt(task.task, assistantReply, attemptHistory, attempt + 1, escapeHatchAttempt)
           attempt++
           continue
         }
@@ -1060,7 +1238,8 @@ export class AgentOrchestrator {
           if (attempt >= maxAttempts) {
             throw new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts with unfinished cognitive tasks remaining`)
           }
-          currentText = buildRalphLoopUnfinishedTasksPrompt(task.task, unfinishedTasks, assistantReply)
+          attemptHistory.push({ attempt, kind: "unfinished-cognitive-tasks", summary: `${unfinishedTasks.length} pending` })
+          currentText = buildRalphLoopUnfinishedTasksPrompt(task.task, unfinishedTasks, assistantReply, attemptHistory, attempt + 1, escapeHatchAttempt)
           attempt++
           continue
         }
@@ -1076,7 +1255,7 @@ export class AgentOrchestrator {
           if (attempt >= maxAttempts) {
             throw new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts with failing terminal command exitCode`)
           }
-          currentText = buildRalphLoopFailingBashPrompt(task.task, failingBash.command, failingBash.exitCode ?? -1, assistantReply)
+          currentText = buildRalphLoopFailingBashPrompt(task.task, failingBash.command, failingBash.exitCode ?? -1, assistantReply, attemptHistory, attempt + 1, escapeHatchAttempt)
           attempt++
           continue
         }
@@ -1297,7 +1476,15 @@ ${usageXml}
         summary: `Recovered after daemon restart from persisted worker job ${task.id} with status ${job.status}.`,
       })
       this.activeTasks.set(task.id, task)
-      const prompt = buildSubagentRetryPrompt(task.task, "Daemon restarted while this worker was pending or running.")
+      const prompt = buildSubagentRetryPrompt(
+        task.task,
+        "Daemon restarted while this worker was pending or running.",
+        undefined,
+        [],
+        0,
+        1,
+        15,
+      )
       this.executeTurn(task, prompt, undefined).catch(err => {
         logger.error(`Recovered delegation task ${task.id} failed:`, err)
       })
