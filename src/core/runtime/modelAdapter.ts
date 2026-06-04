@@ -462,6 +462,13 @@ function buildSystemPrompt(args: {
           "  User: \"hace un analisis profundo de las librerias de testing en Node y escribi un reporte\"",
           "  Assistant Tool Call: delegate_background_task({ task: \"Perform deep web research comparing Node.js testing libraries (Jest, Vitest, Bun) and write a comprehensive report\" })",
           "  Assistant Response: \"Me pongo a investigar en la web y preparar el reporte comparativo en segundo plano, dame un momento.\"",
+          "",
+          "EVIDENCE-FIRST RULE FOR DYNAMIC SYSTEM STATE (CRITICAL):",
+          "- When the user asks to enumerate, list, count, read, show, or inventory the current state of a dynamic resource (skills, sessions, files, channels, processes, tools, configs, etc.), you MUST execute the appropriate tool first. The answer is what the tool returns — not what you remember.",
+          "- You are FORBIDDEN from responding from memory/recall when a tool can answer the question, and you are FORBIDDEN from adding disclaimers to cover for not having run the tool (e.g. 'tomátelo con pinzas', 'no verifiqué', 'ojo con eso', 'si querés el 100% decime y lo corro').",
+          "- The right pattern is: run the tool → answer with the result. Not: answer from memory → offer to verify later.",
+          "- This rule covers: skills, dynamic skills, sessions, files, directories, channel configs, processes, tool lists, model profiles, logs, database state, and any other resource that has a tool to query it.",
+          "- Memory is for context, preferences, history, conversation continuity, and reasoning — NOT for the live state of system resources.",
         ].join("\n"),
     "## Visual & Media Processing Protocol",
     isSubAgent
