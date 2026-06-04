@@ -534,7 +534,7 @@ function buildRalphLoopUnfinishedTasksPrompt(task: string, unfinished: Array<{ c
     listStr,
     "",
     "No podés cerrar la tarea principal hasta que completes todas las tareas de tu lista.",
-    "Para marcar una tarea como completada, utilizá la herramienta TodoUpdate con su taskId.",
+    "Para actualizar el estado, llamá a TodoWrite con la lista completa (cada item con su status actualizado).",
     "Si ya las completaste físicamente, acordate de actualizar su estado en la DB antes de salir.",
     "",
     `Último intento rechazado: ${clip(assistantReply, 500)}`,

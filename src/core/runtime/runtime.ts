@@ -2942,7 +2942,7 @@ Review the existing skill library and apply the curation heuristics in your inst
       this.emit({ type: "tool.finish", sessionId, toolUseId, tool: tool.name, ok: true, output })
       // If the tool is a todo list mutation, emit a follow-up event so the
       // TUI can re-render the inline task list with the updated state.
-      if (tool.name === "TodoWrite" || tool.name === "TodoUpdate" || tool.name === "TodoList") {
+      if (tool.name === "TodoWrite" || tool.name === "TodoList") {
         try {
           const session = getSession(this.rootDir, sessionId)
           const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"

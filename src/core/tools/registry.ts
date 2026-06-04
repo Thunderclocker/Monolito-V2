@@ -36,6 +36,8 @@ import {
   writeSessionTask,
   listSessionTasks,
   deleteSessionTask,
+  getDb,
+  type SessionTask,
   upsertSemanticTool,
   querySemanticTools,
   upsertRalphRule,
@@ -2002,60 +2004,131 @@ Actions:
   {
     name: "TodoWrite",
     permissionTier: "edit",
-    description: "Add a task to the session task list. Tasks are private to the current profile and session. Use this tool proactively for complex multi-step work (3+ steps) so the user can see progress. Both `content` (imperative form, e.g. 'Run tests') and `activeForm` (present continuous, e.g. 'Running tests') are required so the TUI can render an animated in-progress state.",
+    description: "Replace the session task list with the supplied full state. Use this tool proactively for complex multi-step work (3+ steps) so the user can see progress. Each todo requires `content` (imperative, e.g. 'Run tests') and `activeForm` (present continuous, e.g. 'Running tests'). Exactly ONE todo may be in_progress at a time; mark previous ones as completed or pending before promoting a new one. The list is replaced atomically on each call: send the FULL desired state (any todo not in the new list is removed).",
     inputSchema: {
       type: "object",
       properties: {
-        content: {
-          type: "string",
-          description: "Imperative form describing what needs to be done (e.g. 'Run tests', 'Fix authentication bug').",
-        },
-        activeForm: {
-          type: "string",
-          description: "Present-continuous form shown during execution (e.g. 'Running tests', 'Fixing authentication bug').",
-        },
-        status: {
-          type: "string",
-          enum: ["pending", "in_progress", "completed"],
-          description: "Initial status. Default 'pending'. Use 'in_progress' to mark the single task currently being worked on.",
+        todos: {
+          type: "array",
+          description: "The full updated todo list for the session. Existing items not present in this array are removed; new items are created with the supplied content/activeForm/status.",
+          items: {
+            type: "object",
+            properties: {
+              content: {
+                type: "string",
+                description: "Imperative form describing what needs to be done (e.g. 'Run tests', 'Fix authentication bug').",
+              },
+              activeForm: {
+                type: "string",
+                description: "Present-continuous form shown during execution (e.g. 'Running tests', 'Fixing authentication bug').",
+              },
+              status: {
+                type: "string",
+                enum: ["pending", "in_progress", "completed"],
+                description: "Status of this todo item. Exactly ONE may be 'in_progress' at a time.",
+              },
+            },
+            required: ["content", "activeForm", "status"],
+            additionalProperties: false,
+          },
         },
       },
-      required: ["content", "activeForm"],
+      required: ["todos"],
       additionalProperties: false,
     },
     concurrencySafe: true,
     async run(input, context) {
-      const content = requireString(input, "content")
-      const activeForm = requireString(input, "activeForm")
-      const status = (optionalString(input, "status") as any) ?? "pending"
+      const todos = Array.isArray(input.todos) ? input.todos : []
       const profileId = context.profileId || "default"
       const sessionId = (context as any).sessionId
       if (!sessionId) {
         return formatToolError("No active session ID found in context.")
       }
-      if (content.trim().length === 0) {
-        return formatToolError("Task content cannot be empty.")
-      }
-      if (activeForm.trim().length === 0) {
-        return formatToolError("Task activeForm cannot be empty.")
+      if (todos.length === 0) {
+        return formatToolError("TodoWrite requires at least one todo. To clear the list, send an explicit empty todo per the schema; if you want to clear, call again with an explicit single-item clear (or use TodoList to confirm empty).")
       }
 
-      const taskId = `task-${randomUUID().slice(0, 8)}`
+      // Validate each todo
+      const validStatuses = new Set(["pending", "in_progress", "completed"])
+      for (let i = 0; i < todos.length; i++) {
+        const t = todos[i] as Record<string, unknown>
+        const content = typeof t.content === "string" ? t.content.trim() : ""
+        const activeForm = typeof t.activeForm === "string" ? t.activeForm.trim() : ""
+        const status = typeof t.status === "string" ? t.status : ""
+        if (content.length === 0) {
+          return formatToolError(`todos[${i}].content cannot be empty.`)
+        }
+        if (activeForm.length === 0) {
+          return formatToolError(`todos[${i}].activeForm cannot be empty.`)
+        }
+        if (!validStatuses.has(status)) {
+          return formatToolError(`todos[${i}].status must be one of pending|in_progress|completed (got '${status}').`)
+        }
+      }
+
+      // Structural rule: exactly ONE todo may be in_progress at a time.
+      const inProgressCount = todos.filter(t => (t as any).status === "in_progress").length
+      if (inProgressCount > 1) {
+        return formatToolError(
+          `Multiple todos are marked as in_progress (${inProgressCount}). ` +
+          `Exactly ONE todo may be in_progress at a time. Mark all but one as 'pending' or 'completed'.`,
+        )
+      }
+
+      // Atomic replacement: mark all existing tasks in the session as
+      // superseded, then write the new ones. This is the entire state, not
+      // a diff — the runtime generates fresh ids.
       const now = new Date().toISOString()
-      const task = {
-        id: taskId,
-        sessionId,
-        content,
-        activeForm,
-        status,
-        createdAt: now,
-        updatedAt: now,
+      const existing = listSessionTasks(context.rootDir, sessionId, profileId)
+      const db = getDb(context.rootDir)
+      for (const t of existing) {
+        db.prepare(
+          `UPDATE palace_nodes SET superseded_at = ? WHERE wing = 'active_tasks' AND room = ? AND node_key = ? AND superseded_at IS NULL`,
+        ).run(now, sessionId, t.id)
       }
 
-      writeSessionTask(context.rootDir, sessionId, taskId, task, profileId)
-      const tasks = listSessionTasks(context.rootDir, sessionId, profileId)
+      const persisted: SessionTask[] = []
+      for (const t of todos) {
+        const tt = t as { content: string; activeForm: string; status: "pending" | "in_progress" | "completed" }
+        const taskId = `task-${randomUUID().slice(0, 8)}`
+        const task: SessionTask = {
+          id: taskId,
+          sessionId,
+          content: tt.content,
+          activeForm: tt.activeForm,
+          status: tt.status,
+          createdAt: now,
+          updatedAt: now,
+        }
+        writeSessionTask(context.rootDir, sessionId, taskId, task, profileId)
+        persisted.push(task)
+      }
 
-      return { task, totalInSession: tasks.length, profile: profileId }
+      // Verification nudge: if the entire new list is completed, has 3+
+      // items, and none mentions a verification step, surface a reminder
+      // so the agent adds and executes a verification step before emitting
+      // a final summary. Catches the pattern of multi-step work being
+      // marked done without any actual verification.
+      let verificationNudge: string | undefined
+      const allDone = persisted.length > 0 && persisted.every(t => t.status === "completed")
+      const hasVerificationStep = persisted.some(t =>
+        /\b(verif|test|check|validate|assert|confirm|audit|review|inspect|examine|run\s+tests?|build\s+and|smoke)\b/i.test(t.content),
+      )
+      if (allDone && persisted.length >= 3 && !hasVerificationStep) {
+        verificationNudge =
+          "You just closed out 3+ tasks and none of them was a verification step. " +
+          "Before writing your final summary, add and execute at least one verification step " +
+          "(e.g. 'Run tests', 'Validate output', 'Confirm with tool evidence') and mark it completed. " +
+          "You cannot self-assign a passing verdict without a verification step in the todo list."
+      }
+
+      const result: Record<string, unknown> = {
+        todos: persisted,
+        totalInSession: persisted.length,
+        profile: profileId,
+      }
+      if (verificationNudge) result.verificationNudge = verificationNudge
+      return result
     },
   },
   {
@@ -2774,106 +2847,16 @@ Actions:
       if (!sessionId) {
         return formatToolError("No active session ID found in context.")
       }
-      
+
       const tasks = listSessionTasks(context.rootDir, sessionId, profileId)
       const filtered = filter === "all" ? tasks : tasks.filter(t => t.status === filter)
-      
-      return { 
-        tasks: filtered, 
-        totalInSession: tasks.length, 
+
+      return {
+        tasks: filtered,
+        totalInSession: tasks.length,
         filter,
         profile: profileId
       }
-    },
-  },
-  {
-    name: "TodoUpdate",
-    permissionTier: "edit",
-    description: "Update the status of a task or delete it from the session task list.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        taskId: { type: "string", description: "The ID of the task to update (e.g. task-abcdef12)" },
-        status: { type: "string", enum: ["pending", "in_progress", "completed"], description: "The new status for the task" },
-        deleteTask: { type: "boolean", description: "Set to true to delete the task instead of updating its status" },
-      },
-      required: ["taskId"],
-      additionalProperties: false,
-    },
-    concurrencySafe: true,
-    async run(input, context) {
-      const taskId = requireString(input, "taskId")
-      const status = optionalString(input, "status")
-      const deleteTaskFlag = optionalBoolean(input, "deleteTask") ?? false
-      const profileId = context.profileId || "default"
-      const sessionId = (context as any).sessionId
-      if (!sessionId) {
-        return formatToolError("No active session ID found in context.")
-      }
-
-      const tasks = listSessionTasks(context.rootDir, sessionId, profileId)
-      const task = tasks.find(t => t.id === taskId)
-      if (!task) {
-        return formatToolError(`Task with ID '${taskId}' not found in the current session.`)
-      }
-
-      if (deleteTaskFlag) {
-        deleteSessionTask(context.rootDir, sessionId, taskId, profileId)
-        const updatedTasks = listSessionTasks(context.rootDir, sessionId, profileId)
-        return { message: `Task '${taskId}' deleted successfully.`, totalInSession: updatedTasks.length }
-      }
-
-      if (status) {
-        // Structural rule: never allow more than ONE task in_progress at a
-        // time. If a different task is already in_progress, reject this
-        // transition with a clear error.
-        if (status === "in_progress") {
-          const otherInProgress = tasks.find(t => t.id !== taskId && t.status === "in_progress")
-          if (otherInProgress) {
-            return formatToolError(
-              `Cannot mark '${taskId}' as in_progress: task '${otherInProgress.id}' (${otherInProgress.content}) is already in_progress. ` +
-              `Mark it as completed or pending first. Exactly ONE task must be in_progress at any time.`,
-            )
-          }
-        }
-
-        task.status = status as any
-        task.updatedAt = new Date().toISOString()
-        writeSessionTask(context.rootDir, sessionId, taskId, task, profileId)
-
-        // Verification nudge: when the agent marks a task as completed, check
-        // if the entire list is now done AND has 3+ items AND none of them
-        // mentions a verification step. If so, return a nudge so the caller
-        // (or the dynamic context) can surface it to the agent. This catches
-        // the pattern of agents claiming success on multi-step work without
-        // any actual verification step.
-        let verificationNudgeNeeded = false
-        if (status === "completed") {
-          const updatedTasks = listSessionTasks(context.rootDir, sessionId, profileId)
-          const allDone = updatedTasks.length > 0 && updatedTasks.every(t => t.status === "completed")
-          const hasVerificationStep = updatedTasks.some(t =>
-            /\b(verif|test|check|validate|assert|confirm|audit|review|inspect|examine|run\s+tests?|build\s+and|smoke)\b/i.test(t.content),
-          )
-          if (allDone && updatedTasks.length >= 3 && !hasVerificationStep) {
-            verificationNudgeNeeded = true
-          }
-        }
-
-        const result: Record<string, unknown> = {
-          message: `Task '${taskId}' status updated to '${status}'.`,
-          task,
-        }
-        if (verificationNudgeNeeded) {
-          result.verificationNudge =
-            "You just closed out 3+ tasks and none of them was a verification step. " +
-            "Before writing your final summary, add and execute at least one verification step " +
-            "(e.g. 'Run tests', 'Validate output', 'Confirm with tool evidence') and mark it completed. " +
-            "You cannot self-assign a passing verdict without a verification step in the todo list."
-        }
-        return result
-      }
-
-      return formatToolError("Either 'status' or 'deleteTask' must be specified.")
     },
   },
   {
@@ -5039,16 +5022,15 @@ export function listModelTools(isSubAgent = false, lastUserText?: string | boole
   const blockedTools = Array.isArray(lastUserText)
     ? lastUserText
     : typeof lastUserText === "boolean"
-      ? (lastUserText ? ["AgentList", "ProfileCreate", "Write", "Edit", "MultiEdit", "Bash", "TodoWrite", "TodoUpdate"] : [])
+      ? (lastUserText ? ["AgentList", "ProfileCreate", "Write", "Edit", "MultiEdit", "Bash", "TodoWrite"] : [])
       : (typeof lastUserText === "string" && lastUserText === "true")
-        ? ["AgentList", "ProfileCreate", "Write", "Edit", "MultiEdit", "Bash", "TodoWrite", "TodoUpdate"]
+        ? ["AgentList", "ProfileCreate", "Write", "Edit", "MultiEdit", "Bash", "TodoWrite"]
         : (typeof lastUserText === "string" && /imagen|imagenes|foto|fotos|picture|pictures|image|images|vision|visual/i.test(lastUserText))
-          ? ["AgentList", "ProfileCreate", "Write", "Edit", "MultiEdit", "Bash", "TodoWrite", "TodoUpdate"]
+          ? ["AgentList", "ProfileCreate", "Write", "Edit", "MultiEdit", "Bash", "TodoWrite"]
           : []
 
   const CORE_TOOLS = new Set([
     "TodoWrite",
-    "TodoUpdate",
     "TodoList",
     "delegate_background_task",
     "search_tools",

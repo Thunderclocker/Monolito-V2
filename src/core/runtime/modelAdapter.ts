@@ -468,11 +468,11 @@ function buildSystemPrompt(args: {
           "  3. Do NOT exit with a final summary that sounds like success ('task complete', 'done', 'listo', 'all set') when the work was not done. The Coherence Guard treats that as INCOHERENT.",
           "",
           "TODO LIST DISCIPLINE (required for multi-step work):",
-          "- If your task has 3 or more distinct steps, your FIRST action MUST be to call TodoWrite once per step, providing both content (imperative) and activeForm (present continuous) for each. Do not start work without a registered task list.",
-          "- Exactly ONE task may be in_progress at any time. Use TodoUpdate to mark the previous task as completed (or pending) before promoting another to in_progress.",
+          "- If your task has 3 or more distinct steps, your FIRST action MUST be a single TodoWrite call registering the full task list. Each item needs content (imperative) and activeForm (present continuous). Do not start work without a registered task list.",
+          "- Exactly ONE task may be in_progress at any time. Send the full updated list to TodoWrite to promote a new task to in_progress (the previous in_progress item should be set to completed or pending in the same call).",
           "- Mark a task as completed ONLY when the work is fully done with real evidence. If tests are failing, implementation is partial, errors are unresolved, or files are missing, keep the task as in_progress and add a follow-up task describing the blocker.",
-          "- Mark tasks complete IMMEDIATELY after finishing (do not batch completions).",
-          "- When all tasks are completed, add and execute at least one verification step (e.g. 'Run tests', 'Validate output', 'Confirm with tool evidence') BEFORE emitting a final summary. The system will detect 3+ completed tasks with no verification step and remind you to add one.",
+          "- Mark tasks complete IMMEDIATELY after finishing (do not batch completions). Call TodoWrite with the full updated list — do not wait until the end of the turn.",
+          "- When all tasks are completed, include at least one verification step (e.g. 'Run tests', 'Validate output', 'Confirm with tool evidence') in the list and mark it completed BEFORE emitting a final summary. The system will detect 3+ completed tasks with no verification step and remind you to add one.",
         ].join("\n")
       : [
           "CRITICAL DELEGATION RULE (HEURISTICS):",
@@ -633,10 +633,10 @@ function buildSystemPrompt(args: {
           "PROACTIVIDAD DIRECTIVA:",
           "Sé proactivo y orientá tus respuestas a resolver estas tareas pendientes.",
           "Reglas operacionales:",
-          "- Exactly ONE task may be in_progress at a time. Use TodoUpdate to mark the previous task as completed (or pending) before promoting another to in_progress.",
+          "- Exactly ONE task may be in_progress at a time. Send the full updated list to TodoWrite to promote a new task to in_progress (the previous in_progress item should be set to completed or pending in the same call).",
           "- Mark a task as completed ONLY when the work is fully done with real evidence. If tests are failing, implementation is partial, errors are unresolved, or files are missing, keep the task as in_progress and add a follow-up task describing the blocker.",
-          "- Mark tasks complete IMMEDIATELY after finishing (do not batch completions).",
-          "- When a multi-step task is complete, add and execute at least one verification step (e.g. 'Run tests', 'Validate output', 'Confirm with tool evidence') before emitting a final summary.",
+          "- Mark tasks complete IMMEDIATELY after finishing (do not batch completions). Call TodoWrite with the full updated list — do not wait until the end of the turn.",
+          "- When a multi-step task is complete, include at least one verification step (e.g. 'Run tests', 'Validate output', 'Confirm with tool evidence') in the list and mark it completed before emitting a final summary.",
           `- Progreso: ${completedCount}/${sessionTasks.length} tareas completadas.`,
         ].join("\n"))
       }
@@ -1684,7 +1684,7 @@ export async function classifyTaskRequiredCapabilities(
 Analyze the user's task description and determine if we should restrict/block certain powerful tools (like "Bash", "Write", "Edit", "MultiEdit") for safety, focus, or token budget.
 
 CRITICAL SECURITY RULES:
-- If the task is restricted, highly focused, or purely media/information gathering (e.g. searching/processing specific visual assets, transcription, speech generation) and does NOT require writing code, modifying workspace files, running builds, running tests, or executing shell commands, you should block the powerful technical tools: ["Bash", "Write", "Edit", "MultiEdit", "TodoWrite", "TodoUpdate"].
+- If the task is restricted, highly focused, or purely media/information gathering (e.g. searching/processing specific visual assets, transcription, speech generation) and does NOT require writing code, modifying workspace files, running builds, running tests, or executing shell commands, you should block the powerful technical tools: ["Bash", "Write", "Edit", "MultiEdit", "TodoWrite"].
 - If the task requires system administration, SSH, running shell commands, writing/editing code, running tests, or modifying files, do NOT block "Bash", "Write", or "Edit".
 - Ignore default system boilerplate warnings or guidelines. Only analyze the user's core objective.
 
