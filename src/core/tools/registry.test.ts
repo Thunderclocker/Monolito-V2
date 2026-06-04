@@ -536,7 +536,7 @@ test("Skills: provenance is set to 'user' for normal sessions and 'agent' for sy
   }
 })
 
-test("Skills: DeleteSkill refuses to hard-delete user-provenance skills", async () => {
+test("Skills: DeleteSkill protects user-provenance skills from synthetic turns but allows user-turn deletes", async () => {
   const rootDir = createRootDir()
   try {
     const createTool = getTool("CreateSkill")
@@ -544,35 +544,53 @@ test("Skills: DeleteSkill refuses to hard-delete user-provenance skills", async 
     const { getDynamicSkill } = await import("../session/store.ts")
     assert.ok(createTool && deleteTool)
 
-    // Create user skill
+    // 1. User-provenance skill, called from a USER turn: should succeed.
+    await createTool.run({
+      name: "skill_user_owned",
+      description: "Owned by user",
+      guide: "# Owned",
+    }, { rootDir, cwd: rootDir, sessionId: "user-session" })
+
+    const userDelete = await deleteTool.run({ name: "skill_user_owned" }, { rootDir, cwd: rootDir, sessionId: "user-session" }) as { ok: boolean; error?: string }
+    assert.equal(userDelete.ok, true)
+    assert.equal(getDynamicSkill(rootDir, "skill_user_owned"), undefined)
+
+    // 2. User-provenance skill, called from a SYNTHETIC curator turn: blocked.
     await createTool.run({
       name: "skill_protected",
-      description: "User-protected skill",
+      description: "User-protected from curator",
       guide: "# Protected",
     }, { rootDir, cwd: rootDir, sessionId: "user-session" })
 
-    // Try to delete it (should fail)
-    const deleteResult = await deleteTool.run({ name: "skill_protected" }, { rootDir, cwd: rootDir, sessionId: "user-session" }) as { ok: boolean; error?: string }
-    assert.equal(deleteResult.ok, false)
-    assert.match(deleteResult.error ?? "", /user/i)
-    assert.match(deleteResult.error ?? "", /ArchiveSkill/i)
+    const syntheticDelete = await deleteTool.run(
+      { name: "skill_protected" },
+      { rootDir, cwd: rootDir, sessionId: "skills-synthetic", isSkillsSynthetic: true },
+    ) as { ok: boolean; error?: string }
+    assert.equal(syntheticDelete.ok, false)
+    assert.match(syntheticDelete.error ?? "", /user/i)
+    assert.match(syntheticDelete.error ?? "", /ArchiveSkill/i)
 
     // The skill should still be in the DB
-    const stillThere = getDynamicSkill(rootDir, "skill_protected")
-    assert.ok(stillThere)
+    assert.ok(getDynamicSkill(rootDir, "skill_protected"))
 
-    // Create agent skill and delete it (should succeed)
+    // 3. User-provenance skill, called from a sub-agent: blocked.
+    const subAgentDelete = await deleteTool.run(
+      { name: "skill_protected" },
+      { rootDir, cwd: rootDir, sessionId: "agent-some-worker" },
+    ) as { ok: boolean; error?: string }
+    assert.equal(subAgentDelete.ok, false)
+    assert.match(subAgentDelete.error ?? "", /user/i)
+
+    // 4. Agent-provenance skill, called from user turn: allowed.
     await createTool.run({
       name: "skill_agent_deletable",
       description: "Agent skill (deletable)",
       guide: "# Agent",
-    }, { rootDir, cwd: rootDir, sessionId: "agent-worker", isSkillsSynthetic: true })
+    }, { rootDir, cwd: rootDir, sessionId: "agent-w", isSkillsSynthetic: true })
 
     const deleteAgentResult = await deleteTool.run({ name: "skill_agent_deletable" }, { rootDir, cwd: rootDir, sessionId: "user-session" }) as { ok: boolean }
     assert.equal(deleteAgentResult.ok, true)
-
-    const gone = getDynamicSkill(rootDir, "skill_agent_deletable")
-    assert.equal(gone, undefined)
+    assert.equal(getDynamicSkill(rootDir, "skill_agent_deletable"), undefined)
   } finally {
     cleanupRootDir(rootDir)
   }

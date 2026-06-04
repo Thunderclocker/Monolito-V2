@@ -4586,7 +4586,7 @@ Actions:
   {
     name: "DeleteSkill",
     permissionTier: "edit",
-    description: "Elimina permanentemente un skill dinámico por su nombre. Las skills con provenance='user' NO se pueden borrar: deben archivarse con ArchiveSkill para ser reversiblemente desactivadas. Solo skills con provenance='agent' son elegibles para borrado permanente (lo usa el curator).",
+    description: "Elimina permanentemente un skill dinámico por su nombre. Las skills con provenance='user' están protegidas contra borrado desde turnos sintéticos (curator, sub-agents) — pero el usuario, hablando a través del LLM en un turno normal, SÍ puede borrarlas. Si querés desactivarla sin perderla, usá ArchiveSkill.",
     inputSchema: {
       type: "object",
       properties: {
@@ -4606,9 +4606,18 @@ Actions:
         if (!skill) {
           return { ok: false, error: `El skill '${name}' no existe.` }
         }
-        // Provenance protection: user-created skills cannot be hard-deleted.
-        if ((skill.provenance || "user") === "user") {
-          return { ok: false, error: `Skill '${name}' tiene provenance='user' y no se puede borrar. Usá ArchiveSkill para desactivarla de forma reversible.` }
+        // Provenance protection applies ONLY when the call comes from a
+        // non-user context. The user, through a normal turn, is the ultimate
+        // authority over their own skills. The protection is here to stop
+        // the curator (synthetic turn) or sub-agents from accidentally
+        // deleting things the user created.
+        const callerIsUserTurn = (
+          !context.sessionId?.startsWith("agent-") &&
+          context.sessionId !== "skills-synthetic" &&
+          (context as { isSkillsSynthetic?: boolean }).isSkillsSynthetic !== true
+        )
+        if ((skill.provenance || "user") === "user" && !callerIsUserTurn) {
+          return { ok: false, error: `Skill '${name}' tiene provenance='user' y no se puede borrar desde un turno sintético (curator/sub-agent). Usá ArchiveSkill para desactivarla reversiblemente, o pedí al usuario que la borre desde un turno normal.` }
         }
         deleteDynamicSkill(context.rootDir, name)
         return { ok: true, message: `Skill '${name}' eliminado exitosamente del registro y del vector store.` }
