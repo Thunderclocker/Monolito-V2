@@ -313,7 +313,65 @@ keeps the audit trail complete and lets the user see the rejected text in
 
 ---
 
-## 7. Auditing guard behavior
+## 7. EVIDENCE-FIRST RULE (system-prompt-level, semantic)
+
+**Source:** commit `dbb756c`. Lives in the orchestrator system prompt in
+[`src/core/runtime/modelAdapter.ts`](../src/core/runtime/modelAdapter.ts)
+under `## Visual & Media Processing Protocol` (non-sub-agent branch).
+
+This is not a post-hoc guard. It is a behavioral rule the assistant must
+follow *before* responding.
+
+### 7.1. What it enforces
+
+When the user asks to **enumerate, list, count, read, show, or inventory**
+the current state of a dynamic system resource — skills, sessions, files,
+directories, channel configs, processes, tool lists, model profiles, logs,
+database state — the assistant must:
+
+1. Execute the appropriate tool first (`ListSkills`, `Read`, `Glob`,
+   `list_files`, `list_sessions`, etc. depending on what was asked).
+2. Answer with the result the tool returned.
+3. **Never** answer from memory and bolt on a disclaimer
+   (*"tomátelo con pinzas"*, *"no verifiqué"*, *"ojo con eso"*,
+   *"si querés el 100% decime y lo corro"*).
+
+The rule explicitly lists which resources it covers:
+
+> *skills, dynamic skills, sessions, files, directories, channel configs,
+> processes, tool lists, model profiles, logs, database state, and any
+> other resource that has a tool to query it.*
+
+### 7.2. Memory is for context, not for live state
+
+Memory (Palace facts, BOOT wings, prior turn context) is still the right
+place for *preferences, history, conversation continuity, and reasoning*.
+It is the wrong place for the *live state* of any system resource that has
+a tool to query it.
+
+### 7.3. Backstop: the `enumerate_dynamic_state` Ralph rule
+
+The Ralph Loop can fire a corrective message if the rule is violated. The
+rule is registered in
+[`src/core/tools/registry.ts`](../src/core/tools/registry.ts) under
+`indexRalphRulesInPalace`. **It is registered with an empty
+`requiredTools` array** because the rule covers many resources, each
+mapping to a different tool — a hardcoded list would either be too narrow
+(causing false positives on legitimate `Read`/`Glob` calls) or too broad
+(never firing). The orchestrator's `checkDynamicRalphRules` skips rules
+with empty `requiredTools`, so the EVIDENCE-FIRST system-prompt rule is
+the actual enforcement layer; the Ralph rule entry is kept for visibility
+and future re-tuning.
+
+### 7.4. Level 0 supremacy still applies
+
+If the user explicitly says *"no listes, decime de memoria"* or
+*"sin verificar"*, that override beats EVIDENCE-FIRST. The rule is a
+default behavior, not an absolute hard constraint.
+
+---
+
+## 8. Auditing guard behavior
 
 Every guard rejection is a one-line worklog entry with a stable prefix.
 To audit a session:

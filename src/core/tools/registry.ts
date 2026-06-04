@@ -5094,12 +5094,22 @@ export async function indexRalphRulesInPalace(rootDir: string) {
     console.error("[indexRalphRulesInPalace] Failed to index image_verification rule:", err)
   }
 
+  // The enumerate_dynamic_state rule is enforced semantically via the
+  // EVIDENCE-FIRST RULE in the orchestrator system prompt. The orchestrator's
+  // checkDynamicRalphRules uses a hard requiredTools list to decide if the
+  // rule applies, but this rule covers many resources (skills, files,
+  // channels, processes, configs, profiles, models) — each one maps to a
+  // different tool. A hardcoded requiredTools list would either be
+  // too narrow (blocking legitimate tool calls) or too broad (never firing).
+  // We keep the rule definition as documentation but skip the tool-list
+  // enforcement by passing an empty requiredTools array, which makes the
+  // orchestrator skip the check (see orchestrator.ts checkDynamicRalphRules).
   const enumerateDynamicStateRule = {
     name: "Enumerate Dynamic State Rule",
     description: "Checks if the user is asking to enumerate, list, show, count, or inventory the current state of a dynamic system resource (skills, sessions, files, channels, tools, processes, configs). When the user asks for a live enumeration, the answer must come from a tool, not from memory.",
     intentRegex: "\\b(listame|lista|listas|listar|enumera|enumerar|mostrame|mostrar|ensename|ensenar|dime\\s+(?:que|cuales|cuantas|cuantos|qué|cuáles|cuántas|cuántos)|inventario|inventaria|qué\\s+(?:skills|herramientas|sessions|sesiones|archivos|files|tools|tienes|hay|existen)|how\\s+many|cuantas?\\s+(?:skills|herramientas|sessions|sesiones|archivos|files|tools|hay)|show\\s+(?:me\\s+)?(?:all\\s+)?(?:your\\s+)?(?:skills|sessions|files|tools))\\b",
     requiredRegex: "\\b(skills?|herramientas?|tools?|sessions?|sesiones?|archivos?|files?|canales?|channels?|procesos?|processes?|configs?|profiles?|modelos?|models?)\\b",
-    requiredTools: ["ListSkills"],
+    requiredTools: [],
     errorMessage: "[Ralph Loop] SYSTEM ALERT\nEl usuario pidió enumerar/listar el estado actual de un recurso dinámico del sistema (skills, sessions, archivos, tools, etc.).\nTu respuesta parece basada en memoria/recuerdo, NO en una tool ejecutada en este turno.\nEsto está PROHIBIDO. La respuesta correcta es ejecutar la tool correspondiente (ListSkills para skills, Read/Glob/list_files para archivos, etc.) y reportar lo que la tool devuelve.\nNO respondas desde memoria con disclaimers ('tomátelo con pinzas', 'no verifiqué', 'si querés el 100% decime').\nCorregilo: ejecutá la tool apropiada y respondé con el resultado real."
   }
 

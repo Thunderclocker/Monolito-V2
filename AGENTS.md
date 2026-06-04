@@ -127,6 +127,30 @@ npm run db:migrate
 - Adult mode (`/adult`) is session-scoped. Workers inherit this flag in their context extras.
 - **Dynamic SafeSearch adjustment:** Core search tools (like `ImageSearch`) check the session's adult mode status and automatically disable search filters (e.g. sending `safesearch=0` to SearXNG) when adult mode is active, while defaulting to safe/moderate filtering (`safesearch=1`) otherwise.
 
+## EVIDENCE-FIRST Rule (Dynamic System State)
+
+When the user asks to enumerate, list, count, read, show, or inventory the
+current state of a dynamic system resource (skills, sessions, files,
+channels, processes, tools, configs, profiles, models, logs, database
+state, etc.):
+
+1. Execute the appropriate tool first.
+2. Answer with the result the tool returned.
+3. **Do not** answer from memory and bolt on a disclaimer
+   (*"tomátelo con pinzas"*, *"no verifiqué"*, *"si querés el 100%
+   decime y lo corro"*).
+
+This rule is enforced by the orchestrator system prompt in
+`src/core/runtime/modelAdapter.ts` under `## Visual & Media Processing
+Protocol` (non-sub-agent branch). A backstop `enumerate_dynamic_state`
+Ralph rule is registered with an empty `requiredTools` array (the
+orchestrator's `checkDynamicRalphRules` skips empty-list rules, so the
+system-prompt rule is the actual enforcement layer). Full architecture
+and rationale: [`docs/guards.md`](./docs/guards.md#7-evidence-first-rule-system-prompt-level-semantic).
+
+The rule is overrideable by Level 0 user intent: an explicit *"no
+verifiques"*, *"sin chequear"*, *"decime de memoria"* wins.
+
 ## Key Paths & Files
 
 - **Local runtime state**: `~/.monolito/`

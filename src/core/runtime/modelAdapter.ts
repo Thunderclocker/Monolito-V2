@@ -950,8 +950,6 @@ export async function* runAgentLoop(
       } : undefined
       yield { type: "model_invoke_end", sessionId: session.id, iteration, usage: loopUsage, toolCallCount: response.toolCalls.length }
 
-      const toolsThisTurn = response.toolCalls.map((tc) => tc.name)
-
       if (response.toolCalls.length === 0) {
         // --- TDD FINALIZATION GUARD ---
         let lastFailureTool = ""
@@ -1384,14 +1382,10 @@ Considera esta estrategia de solución.`
 Si esto corresponde a un error de compilación, una excepción no controlada o una prueba unitaria rota (FAIL/tests failed), debes analizar con absoluta precisión el log de error anterior, localizar el archivo fuente correspondiente en el workspace y aplicar la corrección técnica en este mismo turno. No ignores el error ni finalices el turno diciendo que completaste la tarea sin haber resuelto y verificado exitosamente el problema.${semanticHelper}`
         })
       }
-
-      checkTurnIntegrity(rootDir, response.text, toolsThisTurn, runBackgroundTextTask)
-        .then((result) => {
-          if (!result.verified && result.type === "broken_promise") {
-            logBrokenPromise(rootDir, session.id, result.reason ?? "Promesa rota", response.text)
-          }
-        })
-        .catch(() => {/* silent */})
+      // NOTE: Turn integrity (veracity + commitment) is already checked
+      // synchronously in the toolCalls.length === 0 branch above. The previous
+      // fire-and-forget call here was redundant and wasted an LLM call per
+      // tool-using turn. See commit history for the removal.
     } catch (error) {
       if (options?.abortSignal?.aborted) {
         const result = finalize("", steps, startedAt, Math.max(0, steps.length), usage, undefined, "aborted")

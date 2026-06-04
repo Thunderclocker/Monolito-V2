@@ -29,6 +29,13 @@ additions and `PATCH` on fixes that do not change behavior.
   finalization (semantic LLM classifier, not regex).
 - `CONF_HEARTBEAT` wing with `enabled`, `min_idle_minutes`,
   `interval_minutes` configuration.
+- **EVIDENCE-FIRST RULE** (`dbb756c`) in the orchestrator system prompt:
+  when the user asks to enumerate, list, count, or inventory the current
+  state of a dynamic system resource (skills, sessions, files, channels,
+  processes, tools, configs), the assistant must execute the appropriate
+  tool first and answer with the result — never from memory with a
+  disclaimer. Backed by a new `enumerate_dynamic_state` Ralph rule that
+  fires the corrective message if the assistant still answers from memory.
 
 ### Changed
 
@@ -47,6 +54,26 @@ additions and `PATCH` on fixes that do not change behavior.
   `palace_nodes` table under the `BOOT_WING` namespace.
 - `compactSession` (destructive) is replaced by the Context Engine's
   3-layer anti-amnesia cascade.
+
+### Fixed
+
+- **`enumerate_dynamic_state` Ralph rule `requiredTools` was hardcoded to
+  `["ListSkills"]`** but the rule covers many resources (files, channels,
+  processes, configs, profiles, models), each mapping to a different tool.
+  A user asking to "list files" would trigger the rule, but the verification
+  would only pass if `ListSkills` had been called — false positives on
+  legitimate `Read`/`Glob`/`Bash` invocations. The rule is now kept as
+  documentation with an empty `requiredTools` list (orchestrator skips it),
+  and enforcement relies on the EVIDENCE-FIRST RULE in the system prompt.
+- **Duplicate `checkTurnIntegrity` invocation in `runAgentLoop`**: a
+  fire-and-forget call after every tool-using turn wasted an LLM call and
+  only logged `broken_promise` to the worklog, while the synchronous check
+  earlier in the loop already enforced both veracity and commitment.
+  Removed the duplicate.
+- **README claimed `nomic-embed-text` for embeddings**, contradicting the
+  actual `bge-m3` model used by `src/core/session/embeddings.ts`,
+  `src/core/session/store.ts`, `docs/architecture.md`, `docs/memory.md`
+  and `.env.example`. README now correctly says `bge-m3`.
 
 ---
 
