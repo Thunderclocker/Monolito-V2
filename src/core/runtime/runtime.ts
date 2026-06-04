@@ -1059,6 +1059,20 @@ export class MonolitoV2Runtime {
   private lastHeartbeatTime = 0
   private lastHeartbeatSkippedAt = 0
   private isHeartbeatRunning = false
+
+  // --- SkillsAgent state --------------------------------------------------
+  // Counter of tool calls since the last SkillsAgent (CREATE) trigger. Mirrors
+  // Hermes's _iters_since_skill (agent/conversation_loop.py:653-657). When this
+  // hits the configured interval, runSkillsCreate fires at the end of the turn.
+  private _itersSinceLastSkillSynthesis = 0
+  // Counter of user-turns since the last SkillsAgent (CURATE) pass. Curator
+  // inspects the full skill catalog and only touches agent-provenance skills.
+  private _sessionsSinceLastCuration = 0
+  // Set to true while a synthetic SkillsAgent turn is running, so the cadence
+  // counter and triggers don't re-fire recursively inside the agent.
+  private _isSyntheticSkillsTurn = false
+  // Synthetic sessionId used for SkillsAgent turns (used to mark provenance).
+  static readonly SKILLS_SYNTHETIC_SESSION_ID = "skills-synthetic"
   private heartbeatTimer: NodeJS.Timeout | null = null
 
   getLastUserActivity() {
@@ -1176,8 +1190,9 @@ export class MonolitoV2Runtime {
       // First run memory consolidation silently!
       await this.runMemoryConsolidation(targetSessionId, targetProfileId)
 
-      // Run skills synthesis silently!
-      await this.runSkillsSynthesis(targetSessionId, targetProfileId)
+      // Skills lifecycle is NO LONGER triggered from the heartbeat. It now
+      // runs on its own cadence: CREATE on tool-iteration count, CURATE on
+      // session count. See maybeFireSkillsTriggers (called at end of user turn).
 
       // Then run standard proactive heartbeat prompt!
       const prompt = `[SYSTEM EVENT: HEARTBEAT_CHECK]
@@ -1490,6 +1505,7 @@ IMPORTANT: The human user did NOT send or write this message. Do not reference t
     }
 
     this.activeSessions.add(sessionId)
+    this._isSyntheticSkillsTurn = true
     const turnStartedAt = Date.now()
     const abortController = new AbortController()
     const turnTimeout = setTimeout(() => {
@@ -1598,126 +1614,272 @@ Please analyze the preceding conversation and run your memory consolidation tool
       logger.error(`[MemoryAgent] Execution error: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       clearTimeout(turnTimeout)
+      this._isSyntheticSkillsTurn = false
       await this.transitionState(sessionId, "idle")
       this.releaseSessionLock(sessionId)
     }
   }
 
-  private async runSkillsSynthesis(sessionId: string, profileId: string) {
+  private async runSkillsCreate(sessionId: string, profileId: string) {
     if (this.activeSessions.has(sessionId)) {
-      logger.info(`[SkillsAgent] Session ${sessionId} is active, skipping skills synthesis.`)
+      logger.info(`[SkillsAgent:CREATE] Session ${sessionId} is active, skipping skills creation.`)
       return
     }
 
     this.activeSessions.add(sessionId)
+    this._isSyntheticSkillsTurn = true
     const turnStartedAt = Date.now()
     const abortController = new AbortController()
     const turnTimeout = setTimeout(() => {
-      abortController.abort(new TurnTimeoutError("Skills synthesis turn exceeded timeout"))
+      abortController.abort(new TurnTimeoutError("Skills CREATE turn exceeded timeout"))
     }, 90_000)
 
     try {
-      logger.info(`[SkillsAgent] Starting automatic skills synthesis for session ${sessionId}...`)
+      logger.info(`[SkillsAgent:CREATE] Starting automatic skill creation for session ${sessionId}...`)
       await this.transitionState(sessionId, "running")
 
       const session = getSession(this.rootDir, sessionId)
       if (!session) return
 
-      const promptOverride = `You are SkillsAgent, a silent and automatic software automation and skill lifecycle agent of Monolito V2.
+      const promptOverride = `You are SkillsAgent (CREATE mode), a silent and automatic skill-creation agent of Monolito V2.
 
-Your mission is to manage the complete lifecycle of dynamic skills (habilidades) in this session: synthesize new skills to automate or guide repetitive tasks, identify and merge redundant skills, archive/delete obsolete ones, and update existing skills to adapt to new paradigms or execution requirements.
+Your ONLY mission right now is to CREATE new procedural SOP skills from the recent conversation. You do NOT merge, archive, or curate the existing library in this mode — that's the curator's job in a separate pass.
 
 Mandatory rules:
-1. First, list and analyze all existing dynamic skills in the session using the ListSkills tool to understand the current skill library.
-2. Analyze the recent conversation, terminal history (Bash commands), and tool logs:
-   - Identify repetitive actions or complex multi-tool sequences that would benefit from procedural guidance.
-   - Look for changes in project architecture or APIs that make older skills obsolete.
-3. Perform the appropriate action using the skill management tools:
-   - CREATE new skills using CreateSkill.
-   - MERGE redundant, overlapping, or narrow near-duplicate skills under a single, well-structured "umbrella" skill (use CreateSkill to write the broad skill and DeleteSkill to prune the absorbed ones).
-   - UPDATE existing skills using CreateSkill if they need improvements, parameter expansion, or updates.
-   - ARCHIVE/DELETE obsolete or non-functional skills using DeleteSkill.
-4. Rules for creating/updating skills:
-   - DYNAMIC SKILLS ARE PROCEDURAL SOPs (Standard Operating Procedures) IN MARKDOWN. THEY ARE NOT BASH SCRIPTS OR EXECUTABLE CODE.
-   - Use CreateSkill to declare a 'guide' (rich Markdown guide explaining step-by-step instructions on how to chain system tools to solve a specific problem) and optional 'requiresTools' (the native tools that the assistant must have to complete this guide).
-   - ABSOLUTE PROHIBITION OF PLACEHOLDERS: Do NOT create placeholder skills or write stubs. Every skill must represent a real, comprehensive, and highly helpful operational manual. If you cannot describe a robust solution using existing native core tools, do NOT create the skill.
-   - The skill name must begin with 'skill_' and use snake_case (e.g., 'skill_verify_build').
-   - Write a rich, descriptive skill description to ensure vector search discoverability.
-5. Self-Healing & Telemetry Audit:
-   - Pay special attention to any skills listed by ListSkills where 'telemetry.failure_count > 0'.
-   - Analyze why it failed (e.g., incomplete guidelines, changed APIs) and update it using CreateSkill with improved SOP steps.
-6. SCOPE BOUNDARY — What is NOT a skill:
-   - Cognitive directives, behavioral rules, lessons learned, user preferences, warnings, or "remember to always..." type instructions are NOT skills. These belong to the Memory Palace (BootWrite / WorkspaceMemoryFiling) and are the exclusive domain of MemoryAgent.
-   - A valid skill MUST describe a concrete, reproducible sequence of system tool invocations (Bash, WebSearch, TelegramSend, VisionAnalyze, etc.) that solves a specific operational problem.
-   - If the content only describes WHEN or WHY to do something, but not a concrete HOW using specific tools, it is NOT a skill. Ignore it.
-7. You are 100% silent. Never respond to the user. When you have completely finished managing the skill lifecycle, respond ONLY with the exact word: SKILLS_OK`;
+1. Use ListSkills to read the current skill library first. Do not create a skill that already exists or that overlaps with an existing one.
+2. Analyze the recent conversation, tool usage logs, and Bash/terminal outputs from the turn that just finished:
+   - Look for a clear, repeatable multi-tool sequence that solved a non-trivial problem.
+   - Look for a fix that required iteration and would benefit from being captured.
+   - Look for environment-specific setup that the user is likely to redo.
+3. If you find a clear candidate, call CreateSkill ONCE. Do not create multiple skills in one pass unless there are clearly two unrelated patterns.
+4. If there is NO clear repeatable pattern, do nothing. Responding with SKILLS_OK and zero creations is a valid, expected outcome. Do NOT inflate the library.
+5. Rules for the skill guide:
+   - DYNAMIC SKILLS ARE PROCEDURAL SOPs (Standard Operating Procedures) IN MARKDOWN. They are NOT bash scripts or executable code.
+   - The guide must be a rich, step-by-step Markdown manual: numbered steps, the specific tool names to call, pitfalls and mitigations, and any required tools declared in 'requiresTools'.
+   - ABSOLUTE PROHIBITION OF PLACEHOLDERS. If you cannot describe a robust solution using existing native core tools, do NOT create the skill.
+   - Skill name must begin with 'skill_' and use snake_case (e.g., 'skill_verify_build').
+   - The 'description' field is used for vector search discoverability — write it precisely.
+6. SCOPE BOUNDARY — what is NOT a skill:
+   - Cognitive directives, behavioral rules, "remember to always..." instructions, user preferences, or warnings are NOT skills. They belong to the Memory Palace (MemoryAgent).
+   - A valid skill MUST describe a concrete, reproducible sequence of system tool invocations that solves a specific operational problem.
+7. You are 100% silent. Never respond to the user. When you have finished, respond ONLY with the exact word: SKILLS_OK.`
 
-      const syntheticSession: SessionRecord = {
-        ...session,
-        messages: [
-          ...session.messages,
-          {
-            role: "user" as const,
-            at: new Date().toISOString(),
-            text: `[SYSTEM EVENT: SKILLS_SYNTHESIS_TRIGGER]
-Please analyze the preceding conversation, tool usage logs, and terminal outputs, and run the CreateSkill tool to automate any repetitive sequences of commands you identify. When you have finished, reply with SKILLS_OK.`,
-          },
-        ],
-      }
-
-      const turn = await runAssistantTurn(
-        syntheticSession,
-        this.rootDir,
-        async (tool, input, context, toolUseId) =>
-          this.executeTool(
-            sessionId,
-            tool,
-            input,
-            { ...context, abortSignal: abortController.signal, sessionId, orchestrator: this.orchestrator, runtime: this },
-            toolUseId,
-            profileId,
-          ),
-        {
-          rootDir: this.rootDir,
-          cwd: this.rootDir,
-          abortSignal: abortController.signal,
-          getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
-          profileId,
-          orchestrator: this.orchestrator,
-        },
-        {
-          systemPromptOverride: promptOverride,
-          costState: this.costState,
-          abortSignal: abortController.signal,
-          turnStartedAt,
-          maxTurnDurationMs: 80_000,
-        },
+      await this.runSkillsSyntheticTurn(
+        session,
+        sessionId,
+        profileId,
+        promptOverride,
+        `[SYSTEM EVENT: SKILLS_CREATE_TRIGGER]
+The previous user turn produced tool calls and outputs. Review them, and call CreateSkill once if a clear repeatable pattern emerged. If nothing is worth capturing, do nothing and reply with SKILLS_OK.`,
+        abortController,
+        turnStartedAt,
+        "CREATE",
+        // Whitelist: only skill management tools.
+        ["ListSkills", "CreateSkill", "skill_view", "ArchiveSkill", "RestoreSkill"],
       )
 
-      if (turn.usage) {
-        recordApiCall(
-          this.costState,
-          getEffectiveModelConfig().model,
-          {
-            inputTokens: turn.usage.inputTokens,
-            outputTokens: turn.usage.outputTokens,
-          },
-          Date.now() - turnStartedAt,
-        )
-      }
-
-      logger.info(`[SkillsAgent] Skills synthesis turn finished. Result: ${turn.finalText?.trim()}`)
-      appendWorklog(this.rootDir, sessionId, {
-        type: "note",
-        summary: `SkillsAgent executed silently: ${turn.finalText?.trim()}`,
-      })
+      logger.info(`[SkillsAgent:CREATE] Skill creation turn finished for session ${sessionId}.`)
 
     } catch (e) {
-      logger.error(`[SkillsAgent] Execution error: ${e instanceof Error ? e.message : String(e)}`)
+      logger.error(`[SkillsAgent:CREATE] Execution error: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       clearTimeout(turnTimeout)
+      this._isSyntheticSkillsTurn = false
       await this.transitionState(sessionId, "idle")
       this.releaseSessionLock(sessionId)
+      this.activeSessions.delete(sessionId)
+    }
+  }
+
+  private async runSkillsCurate(sessionId: string, profileId: string) {
+    if (this.activeSessions.has(sessionId)) {
+      logger.info(`[SkillsAgent:CURATE] Session ${sessionId} is active, skipping curation.`)
+      return
+    }
+
+    this.activeSessions.add(sessionId)
+    this._isSyntheticSkillsTurn = true
+
+    // Anti-recursion: reset BOTH counters so the curator's own tool calls and
+    // the user turn that just completed don't immediately re-fire CREATE or
+    // another CURATE pass.
+    this._itersSinceLastSkillSynthesis = 0
+    this._sessionsSinceLastCuration = 0
+
+    const turnStartedAt = Date.now()
+    const abortController = new AbortController()
+    const turnTimeout = setTimeout(() => {
+      abortController.abort(new TurnTimeoutError("Skills CURATE turn exceeded timeout"))
+    }, 90_000)
+
+    try {
+      logger.info(`[SkillsAgent:CURATE] Starting skill curation for session ${sessionId}...`)
+      await this.transitionState(sessionId, "running")
+
+      const session = getSession(this.rootDir, sessionId)
+      if (!session) return
+
+      const promptOverride = `You are SkillsAgent (CURATE mode), a silent and automatic skill-lifecycle agent of Monolito V2.
+
+Your ONLY mission right now is to CLEAN UP the skill library. You do NOT capture new patterns. You are the conservative counterpart of the CREATE mode that runs separately.
+
+Mandatory rules:
+1. Call ListSkills to enumerate the full library (active + archived).
+2. Filter your attention to skills with provenance === "agent". Skills with provenance === "user" are USER-CREATED and PROTECTED — never archive, never delete, never merge them. Treat them as read-only.
+3. Apply these heuristics to agent-provenance skills:
+   a) STALE: skill has telemetry.use_count === 0 AND was created more than the configured min_age_sessions threshold. Archive it (ArchiveSkill with reason "stale: use_count=0").
+   b) OVERLAP: two or more agent-provenance skills cover the same operational territory. PATCH the broader one with the better guide and ArchiveSkill the narrower ones (reason "merged into skill_X"). Do NOT delete — archive is reversible.
+   c) OBSOLETE: skill guide references tools, paths, or APIs that are no longer in the codebase or are clearly superseded. ArchiveSkill with reason "obsolete: <what>".
+4. Be conservative. If you are not confident a skill is stale/obsolete/overlapping, leave it alone. False positives in curation are worse than false negatives.
+5. The "use_count === 0" telemetry is meaningful — respect it. A skill that was never read by the LLM in N sessions is probably not earning its keep.
+6. You are 100% silent. When you have finished, respond ONLY with the exact word: SKILLS_OK.`
+
+      await this.runSkillsSyntheticTurn(
+        session,
+        sessionId,
+        profileId,
+        promptOverride,
+        `[SYSTEM EVENT: SKILLS_CURATE_TRIGGER]
+Review the existing skill library and apply the curation heuristics in your instructions. Only touch agent-provenance skills. Reply with SKILLS_OK when done.`,
+        abortController,
+        turnStartedAt,
+        "CURATE",
+        // Whitelist: lifecycle tools (no skill_view needed for the curator's job).
+        ["ListSkills", "CreateSkill", "ArchiveSkill", "RestoreSkill", "DeleteSkill"],
+      )
+
+      logger.info(`[SkillsAgent:CURATE] Curation turn finished for session ${sessionId}.`)
+
+    } catch (e) {
+      logger.error(`[SkillsAgent:CURATE] Execution error: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      clearTimeout(turnTimeout)
+      this._isSyntheticSkillsTurn = false
+      await this.transitionState(sessionId, "idle")
+      this.releaseSessionLock(sessionId)
+      this.activeSessions.delete(sessionId)
+    }
+  }
+
+  /**
+   * Shared execution path for the synthetic SkillsAgent turns (CREATE and CURATE).
+   * Isolates the runAssistantTurn + tool execution + cost recording so each
+   * mode just provides its prompt, trigger message, and tool whitelist.
+   */
+  private async runSkillsSyntheticTurn(
+    session: SessionRecord,
+    sessionId: string,
+    profileId: string,
+    promptOverride: string,
+    triggerMessage: string,
+    abortController: AbortController,
+    turnStartedAt: number,
+    mode: "CREATE" | "CURATE",
+    allowedToolNames: string[],
+  ) {
+    const syntheticSession: SessionRecord = {
+      ...session,
+      id: MonolitoV2Runtime.SKILLS_SYNTHETIC_SESSION_ID,
+      messages: [
+        ...session.messages,
+        {
+          role: "user" as const,
+          at: new Date().toISOString(),
+          text: triggerMessage,
+        },
+      ],
+    }
+
+    const turn = await runAssistantTurn(
+      syntheticSession,
+      this.rootDir,
+      async (tool, input, context, toolUseId) =>
+        this.executeTool(
+          sessionId,
+          tool,
+          input,
+          { ...context, abortSignal: abortController.signal, sessionId, orchestrator: this.orchestrator, runtime: this },
+          toolUseId,
+          profileId,
+        ),
+      {
+        rootDir: this.rootDir,
+        cwd: this.rootDir,
+        abortSignal: abortController.signal,
+        getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
+        profileId,
+        orchestrator: this.orchestrator,
+        allowedToolNames,
+        isSkillsSynthetic: true,
+      },
+      {
+        systemPromptOverride: promptOverride,
+        costState: this.costState,
+        abortSignal: abortController.signal,
+        turnStartedAt,
+        maxTurnDurationMs: 80_000,
+      },
+    )
+
+    if (turn.usage) {
+      recordApiCall(
+        this.costState,
+        getEffectiveModelConfig().model,
+        {
+          inputTokens: turn.usage.inputTokens,
+          outputTokens: turn.usage.outputTokens,
+        },
+        Date.now() - turnStartedAt,
+      )
+    }
+
+    appendWorklog(this.rootDir, sessionId, {
+      type: "note",
+      summary: `SkillsAgent[${mode}] executed silently: ${turn.finalText?.trim()}`,
+    })
+  }
+
+  /**
+   * Called at the end of every user turn. Checks cadence and session counters,
+   * and fires the appropriate SkillsAgent pass in the background. Best-effort:
+   * never throws back to the caller.
+   */
+  private maybeFireSkillsTriggers(
+    sessionId: string,
+    profileId: string,
+    turn: AssistantTurnResult | undefined,
+  ) {
+    if (!turn || turn.error) return
+    if (this._isSyntheticSkillsTurn) return
+    if (sessionId?.startsWith("agent-")) return
+
+    let skillsConfig: import("../config/configWings.ts").SkillsConfig | null = null
+    try {
+      skillsConfig = readConfigWing(this.rootDir, "CONF_SKILLS") as import("../config/configWings.ts").SkillsConfig
+    } catch (e) {
+      logger.debug(`[SkillsAgent] Could not read CONF_SKILLS: ${e instanceof Error ? e.message : String(e)}`)
+    }
+
+    const createInterval = skillsConfig?.creation_nudge_interval ?? 10
+    const curateInterval = skillsConfig?.curation_session_interval ?? 20
+
+    // CREATE trigger: cadence-based. Resets the counter regardless of outcome.
+    if (this._itersSinceLastSkillSynthesis >= createInterval) {
+      this._itersSinceLastSkillSynthesis = 0
+      logger.info(`[SkillsAgent] Cadence threshold met (${createInterval} tool calls). Firing CREATE.`)
+      void this.runSkillsCreate(sessionId, profileId).catch(err => {
+        logger.error(`[SkillsAgent:CREATE] Background trigger failed: ${err instanceof Error ? err.message : String(err)}`)
+      })
+    }
+
+    // CURATE trigger: session-based. Increments first, then checks threshold.
+    this._sessionsSinceLastCuration += 1
+    if (this._sessionsSinceLastCuration >= curateInterval) {
+      // Don't double-reset here — runSkillsCurate resets it itself.
+      logger.info(`[SkillsAgent] Session threshold met (${curateInterval} user turns). Firing CURATE.`)
+      void this.runSkillsCurate(sessionId, profileId).catch(err => {
+        logger.error(`[SkillsAgent:CURATE] Background trigger failed: ${err instanceof Error ? err.message : String(err)}`)
+      })
     }
   }
 
@@ -2278,6 +2440,10 @@ Please analyze the preceding conversation, tool usage logs, and terminal outputs
         }
         await this.transitionState(sessionId, turn.error ? "error" : "idle")
 
+        // Fire SkillsAgent triggers AFTER the user turn completes and the
+        // session is back to idle. Both runs are background and best-effort.
+        this.maybeFireSkillsTriggers(sessionId, profileId, turn)
+
         return turn
       }
     } catch (error) {
@@ -2608,6 +2774,12 @@ Please analyze the preceding conversation, tool usage logs, and terminal outputs
     toolUseId?: string,
     profileId?: string,
   ) {
+    // SkillsAgent cadence counter. Skip sub-agents and the synthetic SkillsAgent
+    // turn itself to avoid recursive triggering.
+    if (!this._isSyntheticSkillsTurn && !sessionId?.startsWith("agent-")) {
+      this._itersSinceLastSkillSynthesis += 1
+    }
+
     let tool = getTool(toolName)
     if (!tool) throw new Error(`Unknown tool: ${toolName}`)
     const normalizedInput = normalizeToolInputPayload(input) as Record<string, unknown>

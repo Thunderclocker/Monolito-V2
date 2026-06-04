@@ -2178,6 +2178,8 @@ export function listRalphRules(rootDir: string): Array<{ key: string; content: s
   return rows
 }
 
+export type SkillProvenance = "agent" | "user" | "imported"
+
 export interface DynamicSkill {
   name: string
   description: string
@@ -2190,6 +2192,14 @@ export interface DynamicSkill {
     failure_count: number
   }
   active: boolean
+  // Provenance: who created this skill. Curator only touches "agent" skills.
+  // Default for legacy skills without provenance is "user" (defensive: protects them).
+  provenance?: SkillProvenance
+  createdAt?: string
+  updatedAt?: string
+  // Archive fields: archived skills are kept in DB but excluded from <available_skills>.
+  archivedAt?: string
+  archiveReason?: string
 }
 
 export function saveDynamicSkill(rootDir: string, skill: DynamicSkill): void {
@@ -2197,23 +2207,41 @@ export function saveDynamicSkill(rootDir: string, skill: DynamicSkill): void {
   const wing = "CONF_SKILLS"
   const room = "registry"
   const now = new Date().toISOString()
-  const skillJson = JSON.stringify({
+  const skillWithTelemetry = {
     ...skill,
-    telemetry: skill.telemetry || { use_count: 0, last_used_at: now, failure_count: 0 }
-  })
+    telemetry: skill.telemetry || { use_count: 0, last_used_at: now, failure_count: 0 },
+    updatedAt: skill.updatedAt || now,
+    // Defensive: legacy skills without provenance default to "user" (curator won't touch).
+    provenance: skill.provenance || "user",
+  }
+  // Preserve createdAt on update.
+  if (!skillWithTelemetry.createdAt) {
+    skillWithTelemetry.createdAt = now
+  }
+  const skillJson = JSON.stringify(skillWithTelemetry)
 
   const existing = db.prepare(`
-    SELECT id FROM memory_drawers
+    SELECT id, content FROM memory_drawers
     WHERE wing = ? AND room = ? AND memory_key = ?
     LIMIT 1
-  `).get(wing, room, skill.name) as { id: string } | undefined
+  `).get(wing, room, skill.name) as { id: string; content: string } | undefined
 
   if (existing) {
+    // Preserve original createdAt if not provided in the incoming skill.
+    try {
+      const parsed = JSON.parse(existing.content) as DynamicSkill
+      if (parsed.createdAt && !skill.createdAt) {
+        skillWithTelemetry.createdAt = parsed.createdAt
+      }
+    } catch {
+      // ignore
+    }
+    const finalJson = JSON.stringify(skillWithTelemetry)
     db.prepare(`
       UPDATE memory_drawers
       SET content = ?
       WHERE id = ?
-    `).run(skillJson, existing.id)
+    `).run(finalJson, existing.id)
     return
   }
 
@@ -2224,7 +2252,13 @@ export function saveDynamicSkill(rootDir: string, skill: DynamicSkill): void {
   `).run(id, wing, room, skill.name, skillJson, now)
 }
 
-export function listDynamicSkills(rootDir: string): DynamicSkill[] {
+export interface ListSkillsFilter {
+  provenance?: SkillProvenance | SkillProvenance[]
+  active?: boolean
+  includeArchived?: boolean
+}
+
+export function listDynamicSkills(rootDir: string, filter?: ListSkillsFilter): DynamicSkill[] {
   const db = getDb(rootDir)
   const wing = "CONF_SKILLS"
   const room = "registry"
@@ -2234,13 +2268,58 @@ export function listDynamicSkills(rootDir: string): DynamicSkill[] {
     WHERE wing = ? AND room = ?
   `).all(wing, room) as Array<{ content: string }>
 
-  return rows.map(r => {
+  const all = rows.map(r => {
     try {
       return JSON.parse(r.content) as DynamicSkill
     } catch {
       return null
     }
   }).filter((s): s is DynamicSkill => s !== null)
+
+  return all.filter(skill => {
+    if (filter?.active !== undefined) {
+      if (filter.active && !skill.active) return false
+      if (!filter.active && skill.active) return false
+    } else if (filter?.includeArchived !== true) {
+      // Default: only return active skills (backwards compat).
+      if (!skill.active) return false
+    }
+    if (filter?.provenance) {
+      const wanted = Array.isArray(filter.provenance) ? filter.provenance : [filter.provenance]
+      const actual = skill.provenance || "user"
+      if (!wanted.includes(actual)) return false
+    }
+    return true
+  })
+}
+
+export function archiveDynamicSkill(rootDir: string, name: string, reason?: string): { ok: boolean; error?: string } {
+  const skill = getDynamicSkill(rootDir, name)
+  if (!skill) return { ok: false, error: `Skill '${name}' not found.` }
+  const now = new Date().toISOString()
+  saveDynamicSkill(rootDir, {
+    ...skill,
+    active: false,
+    archivedAt: now,
+    archiveReason: reason,
+    updatedAt: now,
+  })
+  return { ok: true }
+}
+
+export function restoreArchivedSkill(rootDir: string, name: string): { ok: boolean; error?: string } {
+  const skill = getDynamicSkill(rootDir, name)
+  if (!skill) return { ok: false, error: `Skill '${name}' not found.` }
+  const now = new Date().toISOString()
+  const restored: DynamicSkill = {
+    ...skill,
+    active: true,
+    updatedAt: now,
+  }
+  delete restored.archivedAt
+  delete restored.archiveReason
+  saveDynamicSkill(rootDir, restored)
+  return { ok: true }
 }
 
 export function getDynamicSkill(rootDir: string, name: string): DynamicSkill | undefined {

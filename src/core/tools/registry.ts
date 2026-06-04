@@ -43,6 +43,9 @@ import {
   saveDynamicSkill,
   getDynamicSkill,
   deleteDynamicSkill,
+  incrementSkillTelemetry,
+  archiveDynamicSkill,
+  restoreArchivedSkill,
 } from "../session/store.ts"
 import { isEmbeddingsUnavailableError } from "../session/embeddings.ts"
 import { type AgentOrchestrator } from "../runtime/orchestrator.ts"
@@ -286,6 +289,12 @@ export type ToolContext = {
   orchestrator?: AgentOrchestrator
   logger?: Logger
   sessionId?: string
+  // Optional whitelist of tool names the LLM is allowed to call in this turn.
+  // Used by SkillsAgent to restrict synthetic turns to lifecycle tools only.
+  allowedToolNames?: string[]
+  // Set to true for synthetic SkillsAgent turns so tools (e.g. CreateSkill)
+  // can mark provenance as "agent" instead of "user".
+  isSkillsSynthetic?: boolean
   runtime?: {
     acquireJobGroupForBatch: (sessionId: string) => string
     getSystemStatus?: () => Promise<unknown>
@@ -1065,6 +1074,66 @@ const scheduleTaskInputZod = z.discriminatedUnion("action", [
     }
   }),
 ])
+
+// ----- Skills: configuration and security helpers ----------------------------
+
+/**
+ * Read the CONF_SKILLS config wing for skill lifecycle settings.
+ * Returns sensible defaults if the wing is missing or malformed.
+ */
+function readSkillGuardConfig(rootDir: string): boolean {
+  try {
+    const wing = readConfigWing(rootDir, "CONF_SKILLS") as {
+      guard_agent_created?: boolean
+    } | null
+    return wing?.guard_agent_created === true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Lightweight threat-pattern scanner for agent-created skill guides.
+ * Returns the first matched pattern (or null if clean).
+ * This is defensive only — not a sandbox. The agent can still execute
+ * anything via Bash; the scan just adds friction against self-inflicted
+ * bad SOPs that would otherwise look innocuous.
+ */
+const SKILL_THREAT_PATTERNS: { name: string; regex: RegExp }[] = [
+  { name: "rm -rf root", regex: /\brm\s+(-\w*r\w*f\w*\s+)*\/\s*$/m },
+  { name: "rm -rf home", regex: /\brm\s+-\w*r\w*f\w*\s+~(?:\s|$)/m },
+  { name: "rm -rf ssh", regex: /\brm\s+-\w*r\w*f\w*\s+\.?\.?\/?\.ssh/m },
+  { name: "curl pipe bash", regex: /curl[^|]*\|\s*(sudo\s+)?(ba)?sh/m },
+  { name: "exfiltrate env", regex: /\b(cat|printenv|env)\b[^.\n]*\b(AWS_|GITHUB_|OPENAI_|ANTHROPIC_|API_KEY|SECRET|TOKEN)/m },
+  { name: "chmod 777", regex: /\bchmod\s+777\b/ },
+  { name: "dd overwrite disk", regex: /\bdd\s+if=[^\n]*\s+of=\/dev\/(sd|nvme|hd)/m },
+]
+
+function scanSkillGuideForThreats(guide: string): { threat: boolean; pattern: string | null } {
+  for (const { name, regex } of SKILL_THREAT_PATTERNS) {
+    if (regex.test(guide)) {
+      return { threat: true, pattern: name }
+    }
+  }
+  return { threat: false, pattern: null }
+}
+
+/**
+ * Debounce window for skill telemetry. If a skill was used less than this many
+ * milliseconds ago, skip the increment. Prevents SQLite writes from a tight
+ * loop of skill_view calls in the same turn.
+ */
+const SKILL_TELEMETRY_DEBOUNCE_MS = 60_000
+
+function shouldRecordSkillUse(skill: { telemetry?: { last_used_at?: string; use_count?: number } }): boolean {
+  // First use (use_count === 0) always counts. After that, debounce.
+  if (!skill.telemetry || (skill.telemetry.use_count ?? 0) === 0) return true
+  const last = skill.telemetry.last_used_at
+  if (!last) return true
+  const lastMs = Date.parse(last)
+  if (Number.isNaN(lastMs)) return true
+  return Date.now() - lastMs >= SKILL_TELEMETRY_DEBOUNCE_MS
+}
 
 const rawTools: ToolDefinition[] = [
   {
@@ -4418,20 +4487,49 @@ Actions:
           ? input.requiresTools.map(t => String(t).trim())
           : undefined
 
+        // Provenance: skills created from a synthetic SkillsAgent turn or by a
+        // sub-agent are marked as "agent" (eligible for curator). User turns are
+        // marked as "user" (protected from curator).
+        const provenance: "agent" | "user" = (
+          context.sessionId?.startsWith("agent-") ||
+          context.sessionId === "skills-synthetic" ||
+          // Internal flag set by runSkillsCreate in runtime.ts
+          (context as { isSkillsSynthetic?: boolean }).isSkillsSynthetic === true
+        ) ? "agent" : "user"
+
+        // Optional security scan for agent-created skills.
+        let securityWarning: string | null = null
+        if (provenance === "agent") {
+          const skillGuardEnabled = readSkillGuardConfig(context.rootDir)
+          if (skillGuardEnabled) {
+            const scan = scanSkillGuideForThreats(guide)
+            if (scan.threat) {
+              securityWarning = `Security scan flagged content (pattern: ${scan.pattern}). Review before persisting.`
+            }
+          }
+        }
+
+        const now = new Date().toISOString()
         const skill = {
           name,
           description,
-          author: context.sessionId?.startsWith("agent-") ? "sub-agent" : "coordinator",
+          author: provenance === "agent" ? "skills-agent" : "user",
           guide,
           requiresTools,
           active: true,
+          provenance,
+          createdAt: now,
+          updatedAt: now,
         }
 
         saveDynamicSkill(context.rootDir, skill)
-        // Vectorize semantically right away
+        // Vectorize semantically right away. The <available_skills> block in the
+        // system prompt is built live from listDynamicSkills on every turn — no
+        // explicit cache to invalidate.
         await upsertSemanticTool(context.rootDir, name, `Dynamic Skill: ${name} - ${description}`)
 
-        return { ok: true, message: `Skill '${name}' creado e indexado semánticamente de forma exitosa.` }
+        const warningSuffix = securityWarning ? ` WARNING: ${securityWarning}` : ""
+        return { ok: true, message: `Skill '${name}' creado (provenance=${provenance}) e indexado semánticamente.${warningSuffix}` }
       } catch (err: any) {
         return { ok: false, error: `Error creando el skill: ${err.message}` }
       }
@@ -4440,7 +4538,7 @@ Actions:
   {
     name: "DeleteSkill",
     permissionTier: "edit",
-    description: "Elimina permanentemente un skill dinámico por su nombre de registro.",
+    description: "Elimina permanentemente un skill dinámico por su nombre. Las skills con provenance='user' NO se pueden borrar: deben archivarse con ArchiveSkill para ser reversiblemente desactivadas. Solo skills con provenance='agent' son elegibles para borrado permanente (lo usa el curator).",
     inputSchema: {
       type: "object",
       properties: {
@@ -4460,6 +4558,10 @@ Actions:
         if (!skill) {
           return { ok: false, error: `El skill '${name}' no existe.` }
         }
+        // Provenance protection: user-created skills cannot be hard-deleted.
+        if ((skill.provenance || "user") === "user") {
+          return { ok: false, error: `Skill '${name}' tiene provenance='user' y no se puede borrar. Usá ArchiveSkill para desactivarla de forma reversible.` }
+        }
         deleteDynamicSkill(context.rootDir, name)
         return { ok: true, message: `Skill '${name}' eliminado exitosamente del registro y del vector store.` }
       } catch (err: any) {
@@ -4468,24 +4570,88 @@ Actions:
     }
   },
   {
+    name: "ArchiveSkill",
+    permissionTier: "edit",
+    description: "Archiva (desactiva reversiblemente) un skill dinámico. La skill queda en la base de datos pero deja de aparecer en el bloque <available_skills> del system prompt. Usá RestoreSkill para reactivarla. Usado por el curator para limpiar skills obsoletas sin perderlas.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "Nombre del skill a archivar (ej: 'skill_legacy_workflow')."
+        },
+        reason: {
+          type: "string",
+          description: "Razón breve del archivado (opcional). Se guarda en el campo archiveReason."
+        }
+      },
+      required: ["name"],
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    async run(input, context) {
+      try {
+        const name = String(input.name).trim()
+        const reason = input.reason ? String(input.reason).trim() : undefined
+        const result = archiveDynamicSkill(context.rootDir, name, reason)
+        if (!result.ok) return { ok: false, error: result.error }
+        return { ok: true, message: `Skill '${name}' archivado${reason ? ` (motivo: ${reason})` : ""}. Usá RestoreSkill para reactivarlo.` }
+      } catch (err: any) {
+        return { ok: false, error: `Error archivando el skill: ${err.message}` }
+      }
+    }
+  },
+  {
+    name: "RestoreSkill",
+    permissionTier: "edit",
+    description: "Restaura un skill archivado, volviéndolo a hacer visible en el bloque <available_skills> del system prompt.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "Nombre del skill a restaurar (ej: 'skill_legacy_workflow')."
+        }
+      },
+      required: ["name"],
+      additionalProperties: false,
+    },
+    concurrencySafe: true,
+    async run(input, context) {
+      try {
+        const name = String(input.name).trim()
+        const result = restoreArchivedSkill(context.rootDir, name)
+        if (!result.ok) return { ok: false, error: result.error }
+        return { ok: true, message: `Skill '${name}' restaurado y activo nuevamente.` }
+      } catch (err: any) {
+        return { ok: false, error: `Error restaurando el skill: ${err.message}` }
+      }
+    }
+  },
+  {
     name: "ListSkills",
     permissionTier: "read",
-    description: "Lista todas las habilidades dinámicas creadas, mostrando su estado y telemetría de uso.",
+    description: "Lista todas las habilidades dinámicas creadas, mostrando su estado, provenance y telemetría de uso.",
     inputSchema: emptyInputSchema,
     concurrencySafe: true,
     async run(input, context) {
       try {
-        const skills = listDynamicSkills(context.rootDir)
+        // Include archived ones so the curator can see them; the LLM in normal
+        // turns rarely calls this and is allowed to see archived state.
+        const skills = listDynamicSkills(context.rootDir, { includeArchived: true })
         if (skills.length === 0) {
           return "No hay skills dinámicos registrados en este momento."
         }
         const formatted = skills.map(s => {
           const telemetry = s.telemetry || { use_count: 0, last_used_at: "nunca", failure_count: 0 }
-          return `* ${s.name} (Activo: ${s.active ? "SÍ" : "NO"})
+          const provenance = s.provenance || "user"
+          const status = s.active ? "ACTIVO" : `ARCHIVADO${s.archiveReason ? `: ${s.archiveReason}` : ""}`
+          return `* ${s.name} [${provenance}] (${status})
   - Descripción: ${s.description}
   - Autor: ${s.author}
   - Usos: ${telemetry.use_count} | Fallos: ${telemetry.failure_count}
   - Último Uso: ${telemetry.last_used_at}
+  - Creado: ${s.createdAt || "desconocido"}
   - Herramientas Requeridas: ${s.requiresTools && s.requiresTools.length > 0 ? s.requiresTools.join(", ") : "Ninguna"}`
         }).join("\n\n")
         return `Skills dinámicos registrados:\n\n${formatted}`
@@ -4726,6 +4892,17 @@ Actions:
         }
         if (!skill.active) {
           return `El skill '${name}' existe pero está inactivo en este momento.`
+        }
+        // Telemetry: increment use_count with debounce. Skipping writes if the
+        // last_used_at is within the debounce window prevents SQLite thrashing
+        // when the LLM reads the same skill multiple times in one turn.
+        if (shouldRecordSkillUse(skill)) {
+          try {
+            incrementSkillTelemetry(context.rootDir, name, true)
+          } catch (telemetryErr) {
+            // Telemetry failures must not break the tool — log and continue.
+            context.logger?.warn?.(`skill_view telemetry failed for '${name}': ${telemetryErr}`)
+          }
         }
         return `# Skill: ${skill.name} (SOP Manual)\n\n${skill.guide}`
       } catch (err: any) {

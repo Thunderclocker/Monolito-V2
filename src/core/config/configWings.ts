@@ -13,6 +13,7 @@ export const CONFIG_WING_ORDER = [
   "CONF_MCP",
   "CONF_POLICY",
   "CONF_HEARTBEAT",
+  "CONF_SKILLS",
 ] as const
 
 export type ConfigWingName = (typeof CONFIG_WING_ORDER)[number]
@@ -25,12 +26,27 @@ export type ConfigWingValueMap = {
   CONF_MCP: Record<string, ResolvedMcpServerConfig>
   CONF_POLICY: PolicyConfig
   CONF_HEARTBEAT: HeartbeatConfig
+  CONF_SKILLS: SkillsConfig
 }
 
 export type HeartbeatConfig = {
   enabled: boolean
   interval_minutes: number
   min_idle_minutes: number
+}
+
+export type SkillsConfig = {
+  // Number of tool iterations in a user turn before triggering skill creation.
+  // Mirrors Hermes's `skills.creation_nudge_interval`.
+  creation_nudge_interval: number
+  // Number of user-turns between curator passes. Curator only acts on
+  // agent-created skills (provenance === "agent").
+  curation_session_interval: number
+  // Optional defensive scan of agent-created skill guides for threat patterns.
+  guard_agent_created: boolean
+  // Don't archive agent-created skills younger than this many sessions. Avoids
+  // curator killing fresh useful skills before they get a chance to be used.
+  min_age_sessions_before_curate: number
 }
 
 export type PermissionMode = "default" | "acceptEdits" | "bypassPermissions"
@@ -115,5 +131,11 @@ export const DEFAULT_CONFIG_WING_VALUES: ConfigWingValueMap = {
     enabled: true,
     interval_minutes: 30,
     min_idle_minutes: 12,
+  },
+  CONF_SKILLS: {
+    creation_nudge_interval: 10,
+    curation_session_interval: 20,
+    guard_agent_created: false,
+    min_age_sessions_before_curate: 5,
   },
 }

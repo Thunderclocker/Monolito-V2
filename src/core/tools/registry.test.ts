@@ -439,7 +439,8 @@ test("Dynamic Skills System lifecycle: CreateSkill, ListSkills, skill_view, and 
     assert.ok(deleteTool)
     assert.ok(viewTool)
 
-    // 1. Create a dynamic skill
+    // 1. Create a dynamic skill. Use isSkillsSynthetic so the skill is marked
+    // provenance=agent and is deletable (user-provenance skills are protected).
     const createResult = await createTool.run({
       name: "skill_test_hello",
       description: "Outputs a welcome message",
@@ -447,7 +448,8 @@ test("Dynamic Skills System lifecycle: CreateSkill, ListSkills, skill_view, and 
       requiresTools: ["Bash", "VisionAnalyze"]
     }, {
       rootDir,
-      cwd: rootDir
+      cwd: rootDir,
+      isSkillsSynthetic: true,
     }) as { ok: boolean }
 
     assert.equal(createResult.ok, true)
@@ -470,7 +472,7 @@ test("Dynamic Skills System lifecycle: CreateSkill, ListSkills, skill_view, and 
     assert.equal(skill.guide, "# Welcome SOP\n1. Say hello\n2. Enjoy!")
     assert.deepEqual(skill.requiresTools, ["Bash", "VisionAnalyze"])
 
-    // 5. Delete the skill
+    // 5. Delete the skill (agent provenance so it's allowed)
     const deleteResult = await deleteTool.run({ name: "skill_test_hello" }, { rootDir, cwd: rootDir }) as { ok: boolean }
     assert.equal(deleteResult.ok, true)
 
@@ -479,6 +481,264 @@ test("Dynamic Skills System lifecycle: CreateSkill, ListSkills, skill_view, and 
     if (listAfterDelete !== "No hay skills dinámicos registrados en este momento.") {
       assert.ok(!listAfterDelete.includes("skill_test_hello"))
     }
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("Skills: provenance is set to 'user' for normal sessions and 'agent' for synthetic SkillsAgent turns", async () => {
+  const rootDir = createRootDir()
+  try {
+    const createTool = getTool("CreateSkill")
+    const { getDynamicSkill } = await import("../session/store.ts")
+    assert.ok(createTool)
+
+    // 1. User provenance (normal session).
+    const userResult = await createTool.run({
+      name: "skill_user_one",
+      description: "User-created skill",
+      guide: "# User SOP",
+    }, { rootDir, cwd: rootDir, sessionId: "user-session-1" }) as { ok: boolean }
+    assert.equal(userResult.ok, true)
+
+    const userSkill = getDynamicSkill(rootDir, "skill_user_one")
+    assert.ok(userSkill)
+    assert.equal(userSkill.provenance, "user")
+    assert.equal(userSkill.active, true)
+    assert.ok(userSkill.createdAt)
+    assert.ok(userSkill.updatedAt)
+
+    // 2. Agent provenance via isSkillsSynthetic flag.
+    const agentResult = await createTool.run({
+      name: "skill_agent_one",
+      description: "Agent-created skill",
+      guide: "# Agent SOP",
+    }, { rootDir, cwd: rootDir, sessionId: "user-session-1", isSkillsSynthetic: true }) as { ok: boolean }
+    assert.equal(agentResult.ok, true)
+
+    const agentSkill = getDynamicSkill(rootDir, "skill_agent_one")
+    assert.ok(agentSkill)
+    assert.equal(agentSkill.provenance, "agent")
+
+    // 3. Agent provenance via sessionId prefix 'agent-'.
+    const agent2Result = await createTool.run({
+      name: "skill_agent_two",
+      description: "Sub-agent-created skill",
+      guide: "# Sub-agent SOP",
+    }, { rootDir, cwd: rootDir, sessionId: "agent-some-worker" }) as { ok: boolean }
+    assert.equal(agent2Result.ok, true)
+
+    const agent2Skill = getDynamicSkill(rootDir, "skill_agent_two")
+    assert.ok(agent2Skill)
+    assert.equal(agent2Skill.provenance, "agent")
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("Skills: DeleteSkill refuses to hard-delete user-provenance skills", async () => {
+  const rootDir = createRootDir()
+  try {
+    const createTool = getTool("CreateSkill")
+    const deleteTool = getTool("DeleteSkill")
+    const { getDynamicSkill } = await import("../session/store.ts")
+    assert.ok(createTool && deleteTool)
+
+    // Create user skill
+    await createTool.run({
+      name: "skill_protected",
+      description: "User-protected skill",
+      guide: "# Protected",
+    }, { rootDir, cwd: rootDir, sessionId: "user-session" })
+
+    // Try to delete it (should fail)
+    const deleteResult = await deleteTool.run({ name: "skill_protected" }, { rootDir, cwd: rootDir, sessionId: "user-session" }) as { ok: boolean; error?: string }
+    assert.equal(deleteResult.ok, false)
+    assert.match(deleteResult.error ?? "", /user/i)
+    assert.match(deleteResult.error ?? "", /ArchiveSkill/i)
+
+    // The skill should still be in the DB
+    const stillThere = getDynamicSkill(rootDir, "skill_protected")
+    assert.ok(stillThere)
+
+    // Create agent skill and delete it (should succeed)
+    await createTool.run({
+      name: "skill_agent_deletable",
+      description: "Agent skill (deletable)",
+      guide: "# Agent",
+    }, { rootDir, cwd: rootDir, sessionId: "agent-worker", isSkillsSynthetic: true })
+
+    const deleteAgentResult = await deleteTool.run({ name: "skill_agent_deletable" }, { rootDir, cwd: rootDir, sessionId: "user-session" }) as { ok: boolean }
+    assert.equal(deleteAgentResult.ok, true)
+
+    const gone = getDynamicSkill(rootDir, "skill_agent_deletable")
+    assert.equal(gone, undefined)
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("Skills: ArchiveSkill marks active=false and RestoreSkill reactivates", async () => {
+  const rootDir = createRootDir()
+  try {
+    const createTool = getTool("CreateSkill")
+    const archiveTool = getTool("ArchiveSkill")
+    const restoreTool = getTool("RestoreSkill")
+    const listTool = getTool("ListSkills")
+    const { getDynamicSkill, listDynamicSkills } = await import("../session/store.ts")
+    assert.ok(createTool && archiveTool && restoreTool && listTool)
+
+    await createTool.run({
+      name: "skill_archiveable",
+      description: "Will be archived",
+      guide: "# Archive me",
+    }, { rootDir, cwd: rootDir, sessionId: "user-session" })
+
+    // Archive with reason
+    const archiveResult = await archiveTool.run({
+      name: "skill_archiveable",
+      reason: "obsolete: replaced by skill_x",
+    }, { rootDir, cwd: rootDir }) as { ok: boolean; message?: string }
+    assert.equal(archiveResult.ok, true)
+    assert.match(archiveResult.message ?? "", /archivado/)
+    assert.match(archiveResult.message ?? "", /obsolete/)
+
+    let skill = getDynamicSkill(rootDir, "skill_archiveable")
+    assert.ok(skill)
+    assert.equal(skill.active, false)
+    assert.ok(skill.archivedAt)
+    assert.equal(skill.archiveReason, "obsolete: replaced by skill_x")
+
+    // Default listDynamicSkills should NOT return archived skills.
+    const defaultList = listDynamicSkills(rootDir)
+    assert.equal(defaultList.find(s => s.name === "skill_archiveable"), undefined)
+
+    // With includeArchived, it should be there.
+    const allList = listDynamicSkills(rootDir, { includeArchived: true })
+    assert.ok(allList.find(s => s.name === "skill_archiveable"))
+
+    // Restore
+    const restoreResult = await restoreTool.run({ name: "skill_archiveable" }, { rootDir, cwd: rootDir }) as { ok: boolean }
+    assert.equal(restoreResult.ok, true)
+
+    skill = getDynamicSkill(rootDir, "skill_archiveable")
+    assert.ok(skill)
+    assert.equal(skill.active, true)
+    assert.equal(skill.archivedAt, undefined)
+    assert.equal(skill.archiveReason, undefined)
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("Skills: listDynamicSkills supports provenance and active filters", async () => {
+  const rootDir = createRootDir()
+  try {
+    const createTool = getTool("CreateSkill")
+    const archiveTool = getTool("ArchiveSkill")
+    const { listDynamicSkills } = await import("../session/store.ts")
+    assert.ok(createTool && archiveTool)
+
+    // Note: getDb caches a single instance globally, so earlier tests in this
+    // file may have left skills in the DB. Filter to THIS rootDir by reading
+    // only the rows that match our created skill names — then assert the
+    // provenance/active filters work as documented.
+
+    // Mix of user + agent
+    await createTool.run({ name: "skill_flt_u1", description: "u1", guide: "# u1" }, { rootDir, cwd: rootDir, sessionId: "u" })
+    await createTool.run({ name: "skill_flt_u2", description: "u2", guide: "# u2" }, { rootDir, cwd: rootDir, sessionId: "u" })
+    await createTool.run({ name: "skill_flt_a1", description: "a1", guide: "# a1" }, { rootDir, cwd: rootDir, sessionId: "agent-w", isSkillsSynthetic: true })
+    await createTool.run({ name: "skill_flt_a2", description: "a2", guide: "# a2" }, { rootDir, cwd: rootDir, sessionId: "agent-w", isSkillsSynthetic: true })
+
+    // Archive one agent skill
+    await archiveTool.run({ name: "skill_flt_a2", reason: "test" }, { rootDir, cwd: rootDir })
+
+    // Filter provenance=agent, default (active only). With our 4 created skills,
+    // only skill_flt_a1 should match (skill_flt_a2 is archived).
+    const agents = listDynamicSkills(rootDir, { provenance: "agent" })
+    const agentNames = agents.map(s => s.name).filter(n => n.startsWith("skill_flt_")).sort()
+    assert.ok(agentNames.includes("skill_flt_a1"))
+    assert.ok(!agentNames.includes("skill_flt_a2"))
+    assert.ok(!agentNames.includes("skill_flt_u1"))
+
+    // Filter provenance=user
+    const users = listDynamicSkills(rootDir, { provenance: "user" })
+    const userNames = users.map(s => s.name).filter(n => n.startsWith("skill_flt_")).sort()
+    assert.ok(userNames.includes("skill_flt_u1"))
+    assert.ok(userNames.includes("skill_flt_u2"))
+    assert.ok(!userNames.includes("skill_flt_a1"))
+
+    // Filter includeArchived should now include skill_flt_a2
+    const agentsArchived = listDynamicSkills(rootDir, { provenance: "agent", includeArchived: true })
+    const agentsArchivedNames = agentsArchived.map(s => s.name).filter(n => n.startsWith("skill_flt_")).sort()
+    assert.ok(agentsArchivedNames.includes("skill_flt_a1"))
+    assert.ok(agentsArchivedNames.includes("skill_flt_a2"))
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("Skills: incrementSkillTelemetry debounces within 60s window", async () => {
+  const rootDir = createRootDir()
+  try {
+    const createTool = getTool("CreateSkill")
+    const viewTool = getTool("skill_view")
+    const { getDynamicSkill, incrementSkillTelemetry } = await import("../session/store.ts")
+    assert.ok(createTool && viewTool)
+
+    await createTool.run({ name: "skill_telem", description: "t", guide: "# t" }, { rootDir, cwd: rootDir, sessionId: "u" })
+
+    // First view: use_count should go from 0 to 1
+    await viewTool.run({ name: "skill_telem" }, { rootDir, cwd: rootDir })
+    let s = getDynamicSkill(rootDir, "skill_telem")
+    assert.equal(s?.telemetry?.use_count, 1)
+
+    // Second view immediately: should debounce, stay at 1
+    await viewTool.run({ name: "skill_telem" }, { rootDir, cwd: rootDir })
+    s = getDynamicSkill(rootDir, "skill_telem")
+    assert.equal(s?.telemetry?.use_count, 1)
+
+    // Force the last_used_at to be older than 60s and re-view: should increment
+    const skillNow = getDynamicSkill(rootDir, "skill_telem")
+    assert.ok(skillNow)
+    const oldTime = new Date(Date.now() - 70_000).toISOString()
+    skillNow.telemetry = { use_count: 1, last_used_at: oldTime, failure_count: 0 }
+    const { saveDynamicSkill } = await import("../session/store.ts")
+    saveDynamicSkill(rootDir, skillNow)
+
+    await viewTool.run({ name: "skill_telem" }, { rootDir, cwd: rootDir })
+    s = getDynamicSkill(rootDir, "skill_telem")
+    assert.equal(s?.telemetry?.use_count, 2)
+
+    // Direct call also works
+    incrementSkillTelemetry(rootDir, "skill_telem", true)
+    s = getDynamicSkill(rootDir, "skill_telem")
+    assert.equal(s?.telemetry?.use_count, 3)
+
+    // Failure path
+    incrementSkillTelemetry(rootDir, "skill_telem", false)
+    s = getDynamicSkill(rootDir, "skill_telem")
+    assert.equal(s?.telemetry?.use_count, 4)
+    assert.equal(s?.telemetry?.failure_count, 1)
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("Skills: ArchiveSkill tool refuses on missing skill; RestoreSkill tool refuses on missing skill", async () => {
+  const rootDir = createRootDir()
+  try {
+    const archiveTool = getTool("ArchiveSkill")
+    const restoreTool = getTool("RestoreSkill")
+    assert.ok(archiveTool && restoreTool)
+
+    const arch = await archiveTool.run({ name: "skill_does_not_exist" }, { rootDir, cwd: rootDir }) as { ok: boolean; error?: string }
+    assert.equal(arch.ok, false)
+    assert.match(arch.error ?? "", /not found/i)
+
+    const res = await restoreTool.run({ name: "skill_does_not_exist" }, { rootDir, cwd: rootDir }) as { ok: boolean; error?: string }
+    assert.equal(res.ok, false)
+    assert.match(res.error ?? "", /not found/i)
   } finally {
     cleanupRootDir(rootDir)
   }
