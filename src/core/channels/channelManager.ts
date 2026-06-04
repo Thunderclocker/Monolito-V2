@@ -7,6 +7,7 @@ import { createTelegramPoller, type TelegramCallbackQuery, type TelegramMessage,
 import type { MonolitoV2Runtime } from "../runtime/runtime.ts"
 import { ensureDirs } from "../ipc/protocol.ts"
 import { deployManagedSttContainer, getManagedSttStatus, normalizeSttConfig, probeManagedStt, transcribeManagedAudioFile } from "../stt/managed.ts"
+import { markTelegramUpdateProcessed, persistTelegramUpdate } from "../session/store.ts"
 
 const logger = createLogger("channels")
 let activePoller: TelegramPoller | null = null
@@ -420,7 +421,9 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
         logger.warn(`No se pudieron registrar los comandos sugeridos de Telegram: ${message}`)
       })
     
-    activePoller = createTelegramPoller(config.telegram.token, {
+    activePoller = createTelegramPoller(
+      config.telegram.token,
+      {
       onUpdate: async (update) => {
         if (update.callback_query) {
           const callback = update.callback_query
@@ -591,8 +594,22 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
       onError: (error) => {
         logger.error("Telegram poller error", error)
       }
-    })
-    
+    },
+    {
+      // Durability: persist every incoming update BEFORE onUpdate runs.
+      // If the daemon crashes mid-process, the next startup sees the
+      // unprocessed row in telegram_raw_updates and can replay it. The
+      // Telegram long-poller also re-delivers on next start (offset is
+      // re-fetched from getUpdates), so this is defense in depth.
+      persistRawUpdate: (updateId, chatId, rawJson) => {
+        persistTelegramUpdate(runtime.rootDir, updateId, chatId, rawJson)
+      },
+      markProcessed: (updateId) => {
+        markTelegramUpdateProcessed(runtime.rootDir, updateId)
+      },
+    },
+    )
+
     activePoller.start()
   }
 }

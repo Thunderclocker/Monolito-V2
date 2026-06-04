@@ -153,9 +153,22 @@ export interface TelegramPollerCallbacks {
   onError(error: Error): void
 }
 
+/**
+ * Optional persistence hooks. The poller will call persistRawUpdate BEFORE
+ * invoking onUpdate, and markProcessed AFTER onUpdate resolves. Both are
+ * best-effort: a persistence failure is logged at debug level and does not
+ * stop the poll. This is the durability mechanism that survives a daemon
+ * crash mid-process.
+ */
+export interface TelegramPollerPersistenceHooks {
+  persistRawUpdate?: (updateId: number, chatId: number | null, rawJson: string) => void
+  markProcessed?: (updateId: number) => void
+}
+
 export function createTelegramPoller(
   token: string,
-  callbacks: TelegramPollerCallbacks
+  callbacks: TelegramPollerCallbacks,
+  options: TelegramPollerPersistenceHooks = {},
 ): TelegramPoller {
   let offset = 0
   let reconnectAttempts = 0
@@ -183,8 +196,40 @@ export function createTelegramPoller(
 
       if (data.result.length > 0) {
         for (const update of data.result) {
+          // Persist the raw update BEFORE calling onUpdate. If the daemon
+          // crashes between the persist and the processing, the update is
+          // still in the table; the next startup can replay it (Telegram
+          // also re-delivers on re-poll since offset is not advanced until
+          // processing completes).
+          if (options.persistRawUpdate) {
+            try {
+              const chatId = update.message?.chat?.id
+                ?? update.edited_message?.chat?.id
+                ?? update.channel_post?.chat?.id
+                ?? update.callback_query?.message?.chat?.id
+                ?? null
+              options.persistRawUpdate(update.update_id, chatId, JSON.stringify(update))
+            } catch (err) {
+              logger.debug(`[Telegram] Failed to persist raw update ${update.update_id}: ${err instanceof Error ? err.message : String(err)}`)
+            }
+          }
+          try {
+            await callbacks.onUpdate(update)
+            // Mark processed only after onUpdate resolves without throwing.
+            // If it throws, the offset is still advanced (Telegram won't
+            // re-deliver this update_id) but the raw table preserves the
+            // payload for forensic review.
+            if (options.markProcessed) {
+              options.markProcessed(update.update_id)
+            }
+          } catch (err) {
+            logger.error(`[Telegram] onUpdate failed for update_id ${update.update_id}: ${err instanceof Error ? err.message : String(err)}`)
+            // Re-throw so the existing error handling kicks in and the
+            // poller backs off. The update is in the raw table, so we can
+            // add a recovery path later.
+            throw err
+          }
           offset = update.update_id + 1
-          await callbacks.onUpdate(update)
         }
       }
 

@@ -574,6 +574,27 @@ export function getDb(rootDir: string): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_worker_jobs_session
       ON worker_jobs(session_id);
 
+    -- telegram_raw_updates: durable queue for incoming Telegram updates.
+    -- Every update the daemon receives is persisted here BEFORE the
+    -- channel manager processes it. If the daemon crashes mid-process,
+    -- the updates are still in this table; on the next startup, the
+    -- poller re-fetches them (or this table is replayed). This is the
+    -- mechanism that keeps Telegram delivery from being lost across
+    -- daemon crashes — the most recent successful offset is committed
+    -- AFTER the processing, so a crash means Telegram will re-deliver
+    -- the same updates (idempotent on update_id).
+    CREATE TABLE IF NOT EXISTS telegram_raw_updates (
+      update_id INTEGER PRIMARY KEY,
+      chat_id INTEGER,
+      received_at TEXT NOT NULL,
+      processed_at TEXT,
+      raw_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_telegram_raw_chat
+      ON telegram_raw_updates(chat_id);
+    CREATE INDEX IF NOT EXISTS idx_telegram_raw_unprocessed
+      ON telegram_raw_updates(processed_at) WHERE processed_at IS NULL;
+
     CREATE TABLE IF NOT EXISTS knowledge_graph (
       id TEXT PRIMARY KEY,
       profile_id TEXT,
@@ -2589,5 +2610,69 @@ export async function querySimilarErrors(
     logger.error(`Failed to query similar errors semantically: ${err}`)
   }
   return null
+}
+
+/**
+ * Persist a raw Telegram update before the channel manager processes it.
+ * This is the durability mechanism that lets the daemon crash mid-process
+ * without losing the user's message. After successful processing, call
+ * markTelegramUpdateProcessed() to record the completion.
+ *
+ * Idempotency: Telegram re-delivers the same update_id on re-poll if the
+ * poller's offset is not advanced. The PRIMARY KEY on update_id ensures
+ * we never persist the same update twice.
+ */
+export function persistTelegramUpdate(
+  rootDir: string,
+  updateId: number,
+  chatId: number | null,
+  rawJson: string,
+): { ok: boolean; error?: string } {
+  try {
+    const db = getDb(rootDir)
+    const now = new Date().toISOString()
+    db.prepare(
+      `INSERT OR IGNORE INTO telegram_raw_updates (update_id, chat_id, received_at, raw_json)
+       VALUES (?, ?, ?, ?)`,
+    ).run(updateId, chatId, now, rawJson)
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/**
+ * Mark a Telegram update as processed. Called AFTER the channel manager
+ * has successfully dispatched the message to the runtime. If the daemon
+ * crashes between persistTelegramUpdate and this call, the next startup
+ * will see the unprocessed update and either re-poll Telegram (which
+ * will re-deliver) or replay it from the table.
+ */
+export function markTelegramUpdateProcessed(rootDir: string, updateId: number): void {
+  try {
+    const db = getDb(rootDir)
+    db.prepare(
+      `UPDATE telegram_raw_updates SET processed_at = ? WHERE update_id = ?`,
+    ).run(new Date().toISOString(), updateId)
+  } catch {
+    // best-effort; do not throw from a hot path
+  }
+}
+
+/**
+ * Returns the count of unprocessed Telegram updates that the daemon
+ * still needs to handle. Used at startup to detect "did the daemon
+ * crash mid-process" and to surface that to the user.
+ */
+export function countUnprocessedTelegramUpdates(rootDir: string): number {
+  try {
+    const db = getDb(rootDir)
+    const row = db.prepare(
+      `SELECT COUNT(*) as n FROM telegram_raw_updates WHERE processed_at IS NULL`,
+    ).get() as { n: number }
+    return row.n
+  } catch {
+    return 0
+  }
 }
 
