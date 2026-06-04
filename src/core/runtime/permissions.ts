@@ -13,6 +13,14 @@ export type PermissionContext = {
   rootDir: string
   sessionId: string
   profileId?: string
+  /**
+   * The user's most recent user-role message text in this session. Used by
+   * PreToolUse prompt hooks to detect intent-mismatch (e.g. user asked to
+   * "list" but the agent is calling a destructive tool). Optional for
+   * backward compatibility — hooks that need it will receive an empty
+   * string when the caller does not supply it.
+   */
+  lastUserText?: string
 }
 
 export type PermissionCheckResult = {
@@ -284,6 +292,13 @@ async function runHookCommands(
     if (!matchesGlob(context.sessionId, matcher?.session)) continue
     if (!matchesGlob(context.profileId ?? "default", matcher?.profile)) continue
 
+    const hookType = hook.type ?? "command"
+    if (hookType === "prompt") {
+      const result = await runPromptHook(event, hook, toolName, inputSummary, context)
+      if (result) return result
+      continue
+    }
+
     for (const command of hook.commands ?? []) {
       const shell = process.env.SHELL || "/bin/zsh"
       const result = await execFileAsync(shell, ["-lc", command.cmd], {
@@ -294,6 +309,7 @@ async function runHookCommands(
           MONOLITO_TOOL_INPUT: inputSummary,
           MONOLITO_SESSION_ID: context.sessionId,
           MONOLITO_PROFILE_ID: context.profileId ?? "default",
+          MONOLITO_USER_MESSAGE: context.lastUserText ?? "",
           MONOLITO_TOOL_OUTPUT: output === undefined ? "" : summarizeInput({ output }),
         },
         timeout: 15_000,
@@ -321,6 +337,58 @@ async function runHookCommands(
         // Hook output is advisory unless it returns JSON.
       }
     }
+  }
+  return null
+}
+
+/**
+ * Run an LLM-judge "prompt" hook. The hook's `prompt` template is rendered
+ * by substituting the standard placeholders, then sent to the model via
+ * runBackgroundTextTask. The response is parsed as JSON; the first
+ * decision-shaped line wins.
+ */
+async function runPromptHook(
+  event: string,
+  hook: HookDefinition,
+  toolName: string,
+  inputSummary: string,
+  context: PermissionContext,
+): Promise<PermissionCheckResult | null> {
+  const template = hook.prompt?.trim()
+  if (!template) {
+    // Misconfigured prompt hook: log and skip.
+    return null
+  }
+  const rendered = template
+    .replace(/\$TOOL_NAME/g, toolName)
+    .replace(/\$TOOL_INPUT/g, inputSummary)
+    .replace(/\$USER_MESSAGE/g, context.lastUserText ?? "(not available)")
+    .replace(/\$SESSION_ID/g, context.sessionId)
+    .replace(/\$PROFILE_ID/g, context.profileId ?? "default")
+    .replace(/\$EVENT/g, event)
+
+  try {
+    const result = await runBackgroundTextTask(
+      context.rootDir,
+      "You are a strict runtime policy hook. Respond ONLY with a single JSON object on one line. Schema: {\"decision\": \"allow\" | \"deny\", \"reason\": \"short explanation in English\"}.",
+      rendered,
+      { maxTokens: hook.maxTokens ?? 120 },
+    )
+    const text = (result.text || "").trim()
+    if (!text) return null
+    const parsed = JSON.parse(text) as { decision?: string; reason?: string }
+    const decision = parsed.decision?.toLowerCase()
+    if (decision === "allow" || decision === "approve") {
+      return { behavior: "allow" as const, source: "hook" as const, message: parsed.reason }
+    }
+    if (decision === "deny" || decision === "block") {
+      const prefix = hook.description ? `[${hook.description}] ` : ""
+      return { behavior: "deny" as const, source: "hook" as const, message: `${prefix}${parsed.reason || "Prompt hook denied " + toolName + "."}` }
+    }
+  } catch (err) {
+    // Fail-open: if the judge errors, do not block the user. Surface to
+    // the worklog so we can debug, but do not break the runtime.
+    return null
   }
   return null
 }

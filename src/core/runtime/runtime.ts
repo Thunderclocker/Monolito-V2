@@ -2808,10 +2808,27 @@ Review the existing skill library and apply the curation heuristics in your inst
     let tool = getTool(toolName)
     if (!tool) throw new Error(`Unknown tool: ${toolName}`)
     const normalizedInput = normalizeToolInputPayload(input) as Record<string, unknown>
+    // Fetch the most recent user-role message so the PreToolUse hooks
+    // (especially the intent-mismatch check) can compare the user's
+    // current intent against the tool being invoked. Cheap read; cached
+    // by better-sqlite3.
+    let lastUserText = ""
+    try {
+      const session = getSession(this.rootDir, sessionId)
+      const recent = session?.messages ?? []
+      for (let i = recent.length - 1; i >= 0; i--) {
+        const m = recent[i]
+        if (m.role === "user") {
+          lastUserText = m.text || ""
+          break
+        }
+      }
+    } catch {}
     const permission = await checkToolPermission(tool.name, normalizedInput, {
       rootDir: this.rootDir,
       sessionId,
       profileId: profileId ?? context.profileId,
+      lastUserText,
     })
     if (permission.behavior !== "allow") {
       const message = permission.message ?? `Permission denied for tool ${tool.name}.`

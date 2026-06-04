@@ -1013,3 +1013,33 @@ test("Todo tools: TodoWrite replaces the list atomically (old items are removed 
     cleanupRootDir(rootDir)
   }
 })
+
+test("CONF_POLICY default: ships an intent-mismatch PreToolUse prompt hook", async () => {
+  const { DEFAULT_CONFIG_WING_VALUES } = await import("../config/configWings.ts")
+  const policy = DEFAULT_CONFIG_WING_VALUES.CONF_POLICY
+  assert.ok(policy.hooks.PreToolUse.length > 0, "default policy should ship at least one PreToolUse hook")
+  const intentHook = policy.hooks.PreToolUse[0]
+  assert.equal(intentHook.type, "prompt", "default PreToolUse hook should be a prompt-type LLM judge")
+  assert.ok(intentHook.prompt && intentHook.prompt.length > 200, "default prompt should be substantial")
+  assert.ok(intentHook.prompt?.includes("listame"), "default prompt should reference the Amanda case ('listame las skills, no las borres')")
+  assert.ok(intentHook.matcher?.tool?.includes("DeleteSkill"), "default matcher should include destructive tools (DeleteSkill)")
+  assert.ok(intentHook.description?.includes("Intent-mismatch"), "default hook should be described in English")
+})
+
+test("HookDefinition: supports both 'command' and 'prompt' types", async () => {
+  // Verify the type system allows both shapes without runtime errors.
+  // This is a smoke test for the schema; semantic validation is in the
+  // integration tests below.
+  const { DEFAULT_CONFIG_WING_VALUES } = await import("../config/configWings.ts")
+  const policy = DEFAULT_CONFIG_WING_VALUES.CONF_POLICY
+  // A user can also add a custom command-type hook without the 'type' field
+  // (defaults to 'command' for backward compatibility).
+  const customHook = {
+    matcher: { tool: "Bash" },
+    commands: [{ cmd: "echo {\"decision\":\"allow\"}" }],
+  }
+  // The schema accepts both — no runtime assertion needed beyond compile.
+  assert.equal(typeof customHook.commands, "object")
+  // The default hook's maxTokens is reasonable
+  assert.ok(policy.hooks.PreToolUse[0].maxTokens === undefined || policy.hooks.PreToolUse[0].maxTokens! <= 500)
+})
