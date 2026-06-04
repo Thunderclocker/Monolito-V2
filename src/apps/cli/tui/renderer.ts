@@ -59,25 +59,47 @@ export function renderTranscriptBlock(block: TranscriptBlock, width: number) {
   if (block.type === "assistant-meta") {
     return wrapTextWithIndent(`${ANSI.dim}${block.text}${ANSI.reset}`, width, "  ", "  ")
   }
+  if (block.type === "todo-list") {
+    const lines: string[] = []
+    const header = `${ANSI.dim}▼ Tasks (${block.completed}/${block.total})${ANSI.reset}`
+    lines.push(wrapTextWithIndent(header, width, "  ", "  ")[0] ?? header)
+    for (const item of block.items) {
+      let bullet: string
+      let label: string
+      if (item.status === "completed") {
+        bullet = `${ANSI.dim}✓${ANSI.reset}`
+        label = `${ANSI.dim}${item.content}${ANSI.reset}`
+      } else if (item.status === "in_progress") {
+        bullet = `${ANSI.purpleFluor}▶${ANSI.reset}`
+        label = `${ANSI.purpleFluor}${item.activeForm || item.content}${ANSI.reset}`
+      } else {
+        bullet = `${ANSI.dim}○${ANSI.reset}`
+        label = item.content
+      }
+      const row = `${bullet} ${label}`
+      lines.push(...wrapTextWithIndent(row, width, "    ", "    "))
+    }
+    return lines
+  }
   if (block.type === "message") {
     if (block.role === "assistant") {
       return renderBulletedBlock(block.text, width, "")
     }
     return wrapTextWithIndent(block.text, width, `${ANSI.purpleFluor}${ANSI.bold}❯${ANSI.reset} `, "  ")
   }
-  if (block.tone === "error") {
-    return renderBulletedBlock(block.text, width, ANSI.red)
-  }
-  if (block.tone === "info") {
-    return renderBulletedBlock(block.text, width, ANSI.purpleFluor)
-  }
-  if (block.tone === "success") {
-    return renderBulletedBlock(block.text, width, ANSI.green)
-  }
-  if (!block.label) {
+  if (block.type === "event") {
+    if (block.tone === "error") {
+      return renderBulletedBlock(block.text, width, ANSI.red)
+    }
+    if (block.tone === "info") {
+      return renderBulletedBlock(block.text, width, ANSI.purpleFluor)
+    }
+    if (block.tone === "success") {
+      return renderBulletedBlock(block.text, width, ANSI.green)
+    }
     return renderBulletedBlock(block.text, width, "")
   }
-  return renderBulletedBlock(block.text, width, "")
+  return renderBulletedBlock("", width, "")
 }
 
 export function flattenTranscript(blocks: TranscriptBlock[], width: number) {
@@ -94,13 +116,26 @@ export function renderCopyTranscriptBlock(block: TranscriptBlock, width: number)
   if (block.type === "assistant-meta") {
     return wrapTextWithIndent(block.text, width, "  ", "  ")
   }
+  if (block.type === "todo-list") {
+    const lines: string[] = []
+    lines.push(`Tasks (${block.completed}/${block.total}):`)
+    for (const item of block.items) {
+      const bullet = item.status === "completed" ? "[x]" : item.status === "in_progress" ? "[>]" : "[ ]"
+      const label = item.status === "in_progress" && item.activeForm ? item.activeForm : item.content
+      lines.push(`  ${bullet} ${label}`)
+    }
+    return lines
+  }
   if (block.type === "message") {
     return block.role === "assistant"
       ? wrapTextWithSinglePrefix(block.text, width, "● ", "  ")
       : wrapTextWithIndent(block.text, width, "❯ ", "  ")
   }
-  if (!block.label) return wrapTextWithIndent(block.text, width, "", "  ")
-  return wrapTextWithIndent(block.text, width, `[${block.label}] `, "  ")
+  if (block.type === "event") {
+    if (!block.label) return wrapTextWithIndent(block.text, width, "", "  ")
+    return wrapTextWithIndent(block.text, width, `[${block.label}] `, "  ")
+  }
+  return []
 }
 
 export function flattenCopyTranscript(blocks: TranscriptBlock[], width: number) {

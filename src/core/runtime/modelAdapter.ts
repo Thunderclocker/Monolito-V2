@@ -466,6 +466,13 @@ function buildSystemPrompt(args: {
           "  1. Report a STRUCTURED FAILURE to the coordinator in this exact format: TASK_FAILED:INSUFFICIENT_TOOLS — describe in one sentence what you tried and what tool you need. The orchestrator will re-delegate with the right toolset.",
           "  2. Do NOT emit the standard sub-agent success tag (the agent's verification tag) if you did not actually execute the task. Emitting the success tag after a structured failure is a hard contradiction that the Coherence Guard will catch.",
           "  3. Do NOT exit with a final summary that sounds like success ('task complete', 'done', 'listo', 'all set') when the work was not done. The Coherence Guard treats that as INCOHERENT.",
+          "",
+          "TODO LIST DISCIPLINE (required for multi-step work):",
+          "- If your task has 3 or more distinct steps, your FIRST action MUST be to call TodoWrite once per step, providing both content (imperative) and activeForm (present continuous) for each. Do not start work without a registered task list.",
+          "- Exactly ONE task may be in_progress at any time. Use TodoUpdate to mark the previous task as completed (or pending) before promoting another to in_progress.",
+          "- Mark a task as completed ONLY when the work is fully done with real evidence. If tests are failing, implementation is partial, errors are unresolved, or files are missing, keep the task as in_progress and add a follow-up task describing the blocker.",
+          "- Mark tasks complete IMMEDIATELY after finishing (do not batch completions).",
+          "- When all tasks are completed, add and execute at least one verification step (e.g. 'Run tests', 'Validate output', 'Confirm with tool evidence') BEFORE emitting a final summary. The system will detect 3+ completed tasks with no verification step and remind you to add one.",
         ].join("\n")
       : [
           "CRITICAL DELEGATION RULE (HEURISTICS):",
@@ -604,21 +611,33 @@ function buildSystemPrompt(args: {
     dynamicContext.push(`=== SYSTEM DIRECTIVE ===\n${args.extras.systemDirective}`)
   }
 
-  // Inject session cognitive tasks (Memory Palace) to drive proactivity
+  // Inject session cognitive tasks (Memory Palace) to drive proactivity.
+  // Shows ALL tasks (pending + in_progress + completed) so the agent keeps
+  // an accurate mental model of where it is in multi-step work. Uses the
+  // activeForm for in_progress tasks when present, content otherwise.
   try {
     const sessionTasks = listSessionTasks(args.rootDir, args.session.id, args.session.profileId)
     if (sessionTasks.length > 0) {
       const pendingTasks = sessionTasks.filter(t => t.status === "pending" || t.status === "in_progress")
+      const completedCount = sessionTasks.filter(t => t.status === "completed").length
       if (pendingTasks.length > 0) {
         dynamicContext.push([
           "=== COGNITIVE TASK LIST (MEMORY PALACE) ===",
-          "Tenés las siguientes tareas cognitivas pendientes o en progreso en esta sesión:",
-          pendingTasks.map(t => `- [${t.status.toUpperCase()}] ID: ${t.id} - ${t.content}`).join("\n"),
+          "Tenés las siguientes tareas cognitivas en esta sesión:",
+          sessionTasks.map(t => {
+            const label = t.status === "in_progress" && t.activeForm ? t.activeForm : t.content
+            const status = t.status.toUpperCase()
+            return `- [${status}] ID: ${t.id} - ${label}`
+          }).join("\n"),
           "",
           "PROACTIVIDAD DIRECTIVA:",
           "Sé proactivo y orientá tus respuestas a resolver estas tareas pendientes.",
-          "Cuando las completes físicamente, recordá usar la herramienta TodoUpdate con su taskId para marcarlas como 'completed'.",
-          "Mantené al usuario informado de forma natural sobre el avance de estas tareas sin mencionar tecnicismos del loop.",
+          "Reglas operacionales:",
+          "- Exactly ONE task may be in_progress at a time. Use TodoUpdate to mark the previous task as completed (or pending) before promoting another to in_progress.",
+          "- Mark a task as completed ONLY when the work is fully done with real evidence. If tests are failing, implementation is partial, errors are unresolved, or files are missing, keep the task as in_progress and add a follow-up task describing the blocker.",
+          "- Mark tasks complete IMMEDIATELY after finishing (do not batch completions).",
+          "- When a multi-step task is complete, add and execute at least one verification step (e.g. 'Run tests', 'Validate output', 'Confirm with tool evidence') before emitting a final summary.",
+          `- Progreso: ${completedCount}/${sessionTasks.length} tareas completadas.`,
         ].join("\n"))
       }
     }

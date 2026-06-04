@@ -845,3 +845,115 @@ test("tool_manage_config action 'activate_model' changes the active profile", as
     cleanupRootDir(rootDir)
   }
 })
+
+test("Todo tools: TodoWrite requires content and activeForm, creates task with both fields", async () => {
+  const rootDir = createRootDir()
+  try {
+    const { ensureSession } = await import("../session/store.ts")
+    const sessionId = "todo-test-session-1"
+    ensureSession(rootDir, sessionId, "default")
+
+    const writeTool = getTool("TodoWrite")
+    const result = await writeTool.run({
+      content: "Run tests",
+      activeForm: "Running tests",
+      status: "in_progress",
+    }, { rootDir, cwd: rootDir, sessionId, profileId: "default" }) as { task: { content: string; activeForm: string; status: string; id: string } }
+
+    assert.equal(result.task.content, "Run tests")
+    assert.equal(result.task.activeForm, "Running tests")
+    assert.equal(result.task.status, "in_progress")
+    assert.ok(result.task.id.startsWith("task-"))
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("Todo tools: TodoUpdate rejects second in_progress while another is already in_progress", async () => {
+  const rootDir = createRootDir()
+  try {
+    const { ensureSession } = await import("../session/store.ts")
+    const sessionId = "todo-test-session-2"
+    ensureSession(rootDir, sessionId, "default")
+
+    const writeTool = getTool("TodoWrite")
+    const updateTool = getTool("TodoUpdate")
+
+    // Create two tasks, mark the first as in_progress
+    const t1 = await writeTool.run({ content: "Task one", activeForm: "Doing task one" }, { rootDir, cwd: rootDir, sessionId, profileId: "default" }) as { task: { id: string } }
+    const t2 = await writeTool.run({ content: "Task two", activeForm: "Doing task two" }, { rootDir, cwd: rootDir, sessionId, profileId: "default" }) as { task: { id: string } }
+
+    // Mark t1 as in_progress — should succeed
+    const first = await updateTool.run({ taskId: t1.task.id, status: "in_progress" }, { rootDir, cwd: rootDir, sessionId, profileId: "default" })
+    assert.equal(typeof first, "object")
+
+    // Try to mark t2 as in_progress — should fail (ONE in_progress rule)
+    const second = await updateTool.run({ taskId: t2.task.id, status: "in_progress" }, { rootDir, cwd: rootDir, sessionId, profileId: "default" })
+    assert.equal(typeof second, "string")
+    const parsed = JSON.parse(second as string)
+    assert.equal(parsed.success, false)
+    assert.match(parsed.error, /already in_progress/i)
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("Todo tools: TodoUpdate triggers verification nudge when 3+ items complete with no verify step", async () => {
+  const rootDir = createRootDir()
+  try {
+    const { ensureSession } = await import("../session/store.ts")
+    const sessionId = "todo-test-session-3"
+    ensureSession(rootDir, sessionId, "default")
+
+    const writeTool = getTool("TodoWrite")
+    const updateTool = getTool("TodoUpdate")
+
+    // Create 3 tasks (none mentions verify/test/check/validate/assert/confirm/audit/review/inspect/examine)
+    const t1 = await writeTool.run({ content: "Install dependencies", activeForm: "Installing dependencies" }, { rootDir, cwd: rootDir, sessionId, profileId: "default" }) as { task: { id: string } }
+    const t2 = await writeTool.run({ content: "Write code", activeForm: "Writing code" }, { rootDir, cwd: rootDir, sessionId, profileId: "default" }) as { task: { id: string } }
+    const t3 = await writeTool.run({ content: "Commit changes", activeForm: "Committing changes" }, { rootDir, cwd: rootDir, sessionId, profileId: "default" }) as { task: { id: string } }
+
+    // Mark all as completed sequentially. Must reset the in_progress constraint between
+    // each (mark as completed bypasses the one-in-progress check, but the next in_progress
+    // promotion would fail). Here we just mark all as completed one by one.
+    await updateTool.run({ taskId: t1.task.id, status: "in_progress" }, { rootDir, cwd: rootDir, sessionId, profileId: "default" })
+    await updateTool.run({ taskId: t1.task.id, status: "completed" }, { rootDir, cwd: rootDir, sessionId, profileId: "default" })
+    await updateTool.run({ taskId: t2.task.id, status: "in_progress" }, { rootDir, cwd: rootDir, sessionId, profileId: "default" })
+    const r2 = await updateTool.run({ taskId: t2.task.id, status: "completed" }, { rootDir, cwd: rootDir, sessionId, profileId: "default" }) as Record<string, unknown>
+    // After 2 of 3 done, no nudge yet
+    assert.equal(r2.verificationNudge, undefined)
+
+    await updateTool.run({ taskId: t3.task.id, status: "in_progress" }, { rootDir, cwd: rootDir, sessionId, profileId: "default" })
+    const r3 = await updateTool.run({ taskId: t3.task.id, status: "completed" }, { rootDir, cwd: rootDir, sessionId, profileId: "default" }) as Record<string, unknown>
+    // After all 3 done with no verify step, nudge fires
+    assert.ok(typeof r3.verificationNudge === "string", "expected verificationNudge to be set")
+    assert.match(r3.verificationNudge as string, /verification step/i)
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("Todo tools: TodoUpdate does NOT trigger verification nudge when at least one item mentions a verify step", async () => {
+  const rootDir = createRootDir()
+  try {
+    const { ensureSession } = await import("../session/store.ts")
+    const sessionId = "todo-test-session-4"
+    ensureSession(rootDir, sessionId, "default")
+
+    const writeTool = getTool("TodoWrite")
+    const updateTool = getTool("TodoUpdate")
+
+    const t1 = await writeTool.run({ content: "Install dependencies", activeForm: "Installing dependencies" }, { rootDir, cwd: rootDir, sessionId, profileId: "default" }) as { task: { id: string } }
+    const t2 = await writeTool.run({ content: "Write code", activeForm: "Writing code" }, { rootDir, cwd: rootDir, sessionId, profileId: "default" }) as { task: { id: string } }
+    const t3 = await writeTool.run({ content: "Run tests", activeForm: "Running tests" }, { rootDir, cwd: rootDir, sessionId, profileId: "default" }) as { task: { id: string } }
+
+    for (const t of [t1, t2, t3]) {
+      await updateTool.run({ taskId: t.task.id, status: "in_progress" }, { rootDir, cwd: rootDir, sessionId, profileId: "default" })
+      const r = await updateTool.run({ taskId: t.task.id, status: "completed" }, { rootDir, cwd: rootDir, sessionId, profileId: "default" }) as Record<string, unknown>
+      // 'Run tests' triggers a match → no nudge
+      assert.equal(r.verificationNudge, undefined)
+    }
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})

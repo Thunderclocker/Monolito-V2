@@ -92,6 +92,7 @@ export type TranscriptBlock =
   | { type: "message"; role: "user" | "assistant"; text: string }
   | { type: "assistant-meta"; text: string }
   | { type: "event"; label: string; tone: "neutral" | "info" | "success" | "error"; text: string; replacesLastEvent?: boolean }
+  | { type: "todo-list"; completed: number; total: number; items: { status: "pending" | "in_progress" | "completed"; content: string; activeForm?: string }[] }
 
 export type TranscriptViewport = {
   blocks: TranscriptBlock[]

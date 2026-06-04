@@ -313,8 +313,17 @@ export function readSessionSources(
 export interface SessionTask {
   id: string
   content: string
+  /**
+   * Present-continuous form of the task (e.g. "Running tests" for
+   * content "Run tests"). Optional for backward compatibility with tasks
+   * created before the field was added. When present, the TUI renders
+   * the activeForm for the in_progress task; when absent, the content is
+   * used as-is.
+   */
+  activeForm?: string
   status: "pending" | "in_progress" | "completed"
   createdAt: string
+  updatedAt?: string
   sessionId?: string
 }
 

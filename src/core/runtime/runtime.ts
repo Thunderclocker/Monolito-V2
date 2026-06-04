@@ -45,6 +45,7 @@ import {
   getDynamicSkill,
   recallMemory,
   isMainSession,
+  listSessionTasks,
 } from "../session/store.ts"
 import { generateEmbedding, isEmbeddingsUnavailableError } from "../session/embeddings.ts"
 import { getTool, listTools, type ToolContext, type ToolInputSchema } from "../tools/registry.ts"
@@ -2696,10 +2697,34 @@ Review the existing skill library and apply the curation heuristics in your inst
           "/model",
           "/channels",
           "/status",
+          "/todos",
           "/update",
         ].join("\n")
       case "/status":
         return this.formatSystemStatusText(await this.getSystemStatus())
+      case "/todos": {
+        const session = getSession(this.rootDir, sessionId)
+        const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
+        const tasks = listSessionTasks(this.rootDir, sessionId, profileId)
+        if (tasks.length === 0) {
+          return "No active todo list in this session."
+        }
+        const inProgress = tasks.filter(t => t.status === "in_progress")
+        const pending = tasks.filter(t => t.status === "pending")
+        const completed = tasks.filter(t => t.status === "completed")
+        const lines: string[] = []
+        lines.push(`Todo list (${completed.length}/${tasks.length} completed):`)
+        for (const t of inProgress) {
+          lines.push(`  ▶ ${t.activeForm || t.content}  [${t.id}]`)
+        }
+        for (const t of pending) {
+          lines.push(`  ○ ${t.content}  [${t.id}]`)
+        }
+        for (const t of completed) {
+          lines.push(`  ✓ ${t.content}`)
+        }
+        return lines.join("\n")
+      }
       case "/model":
         return this.runModelCommand(rest)
       case "/update": {
@@ -2915,6 +2940,22 @@ Review the existing skill library and apply the curation heuristics in your inst
         sessionId,
       })
       this.emit({ type: "tool.finish", sessionId, toolUseId, tool: tool.name, ok: true, output })
+      // If the tool is a todo list mutation, emit a follow-up event so the
+      // TUI can re-render the inline task list with the updated state.
+      if (tool.name === "TodoWrite" || tool.name === "TodoUpdate" || tool.name === "TodoList") {
+        try {
+          const session = getSession(this.rootDir, sessionId)
+          const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
+          const tasks = listSessionTasks(this.rootDir, sessionId, profileId)
+          this.emit({
+            type: "todo.updated",
+            sessionId,
+            completed: tasks.filter(t => t.status === "completed").length,
+            total: tasks.length,
+            items: tasks.map(t => ({ status: t.status, content: t.content, activeForm: t.activeForm })),
+          })
+        } catch {}
+      }
       return output
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)

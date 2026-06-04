@@ -2002,38 +2002,59 @@ Actions:
   {
     name: "TodoWrite",
     permissionTier: "edit",
-    description: "Add a task to the session task list. Tasks are private to the current profile and session.",
+    description: "Add a task to the session task list. Tasks are private to the current profile and session. Use this tool proactively for complex multi-step work (3+ steps) so the user can see progress. Both `content` (imperative form, e.g. 'Run tests') and `activeForm` (present continuous, e.g. 'Running tests') are required so the TUI can render an animated in-progress state.",
     inputSchema: {
       type: "object",
       properties: {
-        content: { type: "string" },
-        status: { type: "string", enum: ["in_progress", "completed", "pending"] },
+        content: {
+          type: "string",
+          description: "Imperative form describing what needs to be done (e.g. 'Run tests', 'Fix authentication bug').",
+        },
+        activeForm: {
+          type: "string",
+          description: "Present-continuous form shown during execution (e.g. 'Running tests', 'Fixing authentication bug').",
+        },
+        status: {
+          type: "string",
+          enum: ["pending", "in_progress", "completed"],
+          description: "Initial status. Default 'pending'. Use 'in_progress' to mark the single task currently being worked on.",
+        },
       },
-      required: ["content"],
+      required: ["content", "activeForm"],
       additionalProperties: false,
     },
     concurrencySafe: true,
     async run(input, context) {
       const content = requireString(input, "content")
+      const activeForm = requireString(input, "activeForm")
       const status = (optionalString(input, "status") as any) ?? "pending"
       const profileId = context.profileId || "default"
       const sessionId = (context as any).sessionId
       if (!sessionId) {
         return formatToolError("No active session ID found in context.")
       }
-      
+      if (content.trim().length === 0) {
+        return formatToolError("Task content cannot be empty.")
+      }
+      if (activeForm.trim().length === 0) {
+        return formatToolError("Task activeForm cannot be empty.")
+      }
+
       const taskId = `task-${randomUUID().slice(0, 8)}`
+      const now = new Date().toISOString()
       const task = {
         id: taskId,
         sessionId,
         content,
+        activeForm,
         status,
-        createdAt: new Date().toISOString(),
+        createdAt: now,
+        updatedAt: now,
       }
-      
+
       writeSessionTask(context.rootDir, sessionId, taskId, task, profileId)
       const tasks = listSessionTasks(context.rootDir, sessionId, profileId)
-      
+
       return { task, totalInSession: tasks.length, profile: profileId }
     },
   },
@@ -2789,25 +2810,69 @@ Actions:
       if (!sessionId) {
         return formatToolError("No active session ID found in context.")
       }
-      
+
       const tasks = listSessionTasks(context.rootDir, sessionId, profileId)
       const task = tasks.find(t => t.id === taskId)
       if (!task) {
         return formatToolError(`Task with ID '${taskId}' not found in the current session.`)
       }
-      
+
       if (deleteTaskFlag) {
         deleteSessionTask(context.rootDir, sessionId, taskId, profileId)
         const updatedTasks = listSessionTasks(context.rootDir, sessionId, profileId)
         return { message: `Task '${taskId}' deleted successfully.`, totalInSession: updatedTasks.length }
       }
-      
+
       if (status) {
+        // Structural rule: never allow more than ONE task in_progress at a
+        // time. If a different task is already in_progress, reject this
+        // transition with a clear error.
+        if (status === "in_progress") {
+          const otherInProgress = tasks.find(t => t.id !== taskId && t.status === "in_progress")
+          if (otherInProgress) {
+            return formatToolError(
+              `Cannot mark '${taskId}' as in_progress: task '${otherInProgress.id}' (${otherInProgress.content}) is already in_progress. ` +
+              `Mark it as completed or pending first. Exactly ONE task must be in_progress at any time.`,
+            )
+          }
+        }
+
         task.status = status as any
+        task.updatedAt = new Date().toISOString()
         writeSessionTask(context.rootDir, sessionId, taskId, task, profileId)
-        return { message: `Task '${taskId}' status updated to '${status}'.`, task }
+
+        // Verification nudge: when the agent marks a task as completed, check
+        // if the entire list is now done AND has 3+ items AND none of them
+        // mentions a verification step. If so, return a nudge so the caller
+        // (or the dynamic context) can surface it to the agent. This catches
+        // the pattern of agents claiming success on multi-step work without
+        // any actual verification step.
+        let verificationNudgeNeeded = false
+        if (status === "completed") {
+          const updatedTasks = listSessionTasks(context.rootDir, sessionId, profileId)
+          const allDone = updatedTasks.length > 0 && updatedTasks.every(t => t.status === "completed")
+          const hasVerificationStep = updatedTasks.some(t =>
+            /\b(verif|test|check|validate|assert|confirm|audit|review|inspect|examine|run\s+tests?|build\s+and|smoke)\b/i.test(t.content),
+          )
+          if (allDone && updatedTasks.length >= 3 && !hasVerificationStep) {
+            verificationNudgeNeeded = true
+          }
+        }
+
+        const result: Record<string, unknown> = {
+          message: `Task '${taskId}' status updated to '${status}'.`,
+          task,
+        }
+        if (verificationNudgeNeeded) {
+          result.verificationNudge =
+            "You just closed out 3+ tasks and none of them was a verification step. " +
+            "Before writing your final summary, add and execute at least one verification step " +
+            "(e.g. 'Run tests', 'Validate output', 'Confirm with tool evidence') and mark it completed. " +
+            "You cannot self-assign a passing verdict without a verification step in the todo list."
+        }
+        return result
       }
-      
+
       return formatToolError("Either 'status' or 'deleteTask' must be specified.")
     },
   },

@@ -27,6 +27,13 @@ export type AgentEvent =
   | { type: "mcp.called"; sessionId: string; server: string; tool: string }
   | { type: "agent.background.completed"; sessionId: string; agentId: string; status: "completed" | "failed" | "killed"; result?: string; error?: string }
   | { type: "permission.request"; sessionId: string; permissionId: string; tool: string; path: string; reason: string }
+  | {
+      type: "todo.updated"
+      sessionId: string
+      completed: number
+      total: number
+      items: Array<{ status: "pending" | "in_progress" | "completed"; content: string; activeForm?: string }>
+    }
 
 export type SessionSummary = {
   id: string

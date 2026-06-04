@@ -370,6 +370,13 @@ class InteractiveTranscriptFormatter {
         return [{ type: "message", role: "assistant", text: unwrapChannelMessage(event.text) }]
       case "turn.completed":
         return [{ type: "assistant-meta", text: `${formatDuration(event.durationMs)} · ${formatUsage(event.usage)}` }]
+      case "todo.updated":
+        return [{
+          type: "todo-list",
+          completed: event.completed,
+          total: event.total,
+          items: event.items,
+        }]
       case "tool.start": {
         const line = renderToolStart(event.tool, event.input)
         return [{ type: "event", label: line.label, tone: line.tone, text: renderToolStartText(line, "└─ ") }]
