@@ -1088,6 +1088,132 @@ export function checkDelegateThreshold(
   }
 }
 
+// =============================================================================
+// Renewal-review integration for the sub-agent Ralph Loop
+// =============================================================================
+//
+// When a sub-agent exhausts its attempt budget inside executeTurn, we
+// don't just throw — we first ask the verifier whether the work is
+// worth more attempts. If yes, we bump maxAttempts, append a renewal
+// system message so the model knows it was extended, and continue the
+// loop. If no, we throw the original exhaustion error so the parent
+// session sees a real failure with a reason.
+//
+// This is the runtime-level analog of "the operator decides" in
+// Claude Code's --max-iterations. The verifier IS the operator here,
+// reading the sub-agent's TodoWrite list and recent worklog to make
+// the call.
+// =============================================================================
+
+type RenewalHookResult = {
+  renewed: boolean
+  newMaxAttempts: number
+  newExtensionsUsed: number
+  renewalMessage: string
+  finalError: Error
+}
+
+function buildRenewalMessage(verdict: RenewalVerdict, signals: RenewalSignals): string {
+  const lines: string[] = [
+    `[Renewal granted by orchestrator] You hit your attempt budget but the verifier decided your work is worth continuing.`,
+    ``,
+    `Verifier score: ${verdict.score}. Reasons: ${verdict.reasons.join("; ")}.`,
+    `Extra attempts granted: ${verdict.extraAttempts}.`,
+    ``,
+  ]
+  if (signals.taskProgress.hasPlan) {
+    lines.push(
+      `Your TodoWrite plan: ${signals.taskProgress.completedTasks}/${signals.taskProgress.totalTasks} completed (${Math.round(signals.taskProgress.completionPct * 100)}%).`,
+    )
+    if (signals.taskProgress.inProgressTasks > 0) {
+      lines.push(`There is still 1 task in_progress and ${signals.taskProgress.pendingTasks} pending — focus on completing the in_progress item first.`)
+    } else if (signals.taskProgress.pendingTasks > 0) {
+      lines.push(`Promote one of the pending tasks to in_progress and complete it.`)
+    }
+  } else {
+    lines.push(`⚠️ You never created a TodoWrite plan. The verifier had to infer your progress from the worklog. Start your next turn by calling TodoWrite to make your remaining work explicit.`)
+  }
+  lines.push(``)
+  lines.push(`Persisted so far: ${signals.palaceNodesPersisted} palace node(s). Continue and finish the job.`)
+  return lines.join("\n")
+}
+
+/**
+ * Decide whether to extend the sub-agent's budget. Returns a result the
+ * Ralph Loop can act on: either a renewal (caller updates maxAttempts
+ * and continues) or a final error (caller throws).
+ *
+ * Side effects: appends a worklog entry with the verifier's decision
+ * (audit trail).
+ */
+function maybeRenewSubAgentBudget(
+  runtime: MonolitoV2Runtime,
+  task: DelegationTask,
+  reason: string,
+  attempt: number,
+  maxAttempts: number,
+  extensionsUsed: number,
+): RenewalHookResult {
+  let signals: RenewalSignals
+  try {
+    const recentEvents = tailEvents(runtime.rootDir, task.subSessionId, 80)
+    const recentTail = recentEvents
+      .filter((e): e is Extract<typeof e, { type: "tool.finish" }> => e.type === "tool.finish")
+      .slice(-5)
+      .map(e => ({ type: e.type, ok: e.ok, tool: e.tool }))
+    signals = gatherRenewalSignals(
+      runtime.rootDir,
+      task.subSessionId,
+      task.profileId,
+      recentTail,
+    )
+  } catch (e) {
+    appendWorklog(runtime.rootDir, task.subSessionId, {
+      type: "note",
+      summary: `[Renewal] signal gathering failed: ${e instanceof Error ? e.message : String(e)} — cancelling.`,
+    })
+    return {
+      renewed: false,
+      newMaxAttempts: maxAttempts,
+      newExtensionsUsed: extensionsUsed,
+      renewalMessage: "",
+      finalError: new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts (${reason}); renewal signal gathering failed: ${e instanceof Error ? e.message : String(e)}`),
+    }
+  }
+
+  const verdict = decideRenewal(signals, {
+    attemptsUsed: attempt,
+    extensionsUsed,
+  })
+
+  // Audit trail in worklog
+  appendWorklog(runtime.rootDir, task.subSessionId, {
+    type: "note",
+    summary: `[Renewal] ${reason} on attempt ${attempt}/${maxAttempts}. Score=${verdict.score}. Verdict=${verdict.verdict}${verdict.extraAttempts > 0 ? ` (+${verdict.extraAttempts})` : ""}. Reasons: ${verdict.reasons.join("; ")}.`,
+  })
+
+  if (verdict.verdict === "cancel") {
+    const finalReason = verdict.capReached
+      ? `absolute cap reached (${verdict.reasons[0]})`
+      : `verifier said cancel (score=${verdict.score}, reasons: ${verdict.reasons.join("; ")})`
+    return {
+      renewed: false,
+      newMaxAttempts: maxAttempts,
+      newExtensionsUsed: extensionsUsed,
+      renewalMessage: "",
+      finalError: new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts (${reason}); ${finalReason}`),
+    }
+  }
+
+  return {
+    renewed: true,
+    newMaxAttempts: maxAttempts + verdict.extraAttempts,
+    newExtensionsUsed: extensionsUsed + 1,
+    renewalMessage: buildRenewalMessage(verdict, signals),
+    finalError: new Error(""), // unused
+  }
+}
+
 function buildRalphLoopFailingBashPrompt(
   task: string,
   command: string,
@@ -1506,8 +1632,12 @@ export class AgentOrchestrator {
       // forces the agent to surface what's blocking instead of looping
       // indefinitely. 6 was too tight for real problems (a single wrong
       // API call + retry-with-fallback = 3-4 attempts minimum).
-      const maxAttempts = 20
+      // `maxAttempts` is `let` because the renewal-review verifier can
+      // grant extra attempts when the sub-agent has a real plan and is
+      // making progress.
+      let maxAttempts = 20
       const escapeHatchAttempt = 15
+      let extensionsUsed = 0
       let partialResult = ""
       // Track the last failure signature to detect "same error 2x in a row"
       // (key behavior: the system rejects repeating the identical failure
@@ -1539,7 +1669,23 @@ export class AgentOrchestrator {
           const isExhausted = turn.error.includes("Max iterations reached") ||
                               turn.error.includes("Turn duration exceeded");
           if (attempt >= maxAttempts || isExhausted) {
-            throw new Error(turn.error)
+            const renewal = maybeRenewSubAgentBudget(
+              runtime,
+              task,
+              "model reported exhaustion or hit attempt limit",
+              attempt,
+              maxAttempts,
+              extensionsUsed,
+            )
+            if (renewal.renewed) {
+              maxAttempts = renewal.newMaxAttempts
+              extensionsUsed = renewal.newExtensionsUsed
+              appendMessage(runtime.rootDir, task.subSessionId, "user", renewal.renewalMessage)
+              attemptHistory.push({ attempt, kind: "renewal-granted", summary: `+${renewal.newMaxAttempts - attempt} attempts` })
+              attempt++
+              continue
+            }
+            throw renewal.finalError
           }
           // Same-error detection: compute a stable signature for this error
           // and compare to the last one we saw. If 2+ consecutive failures
@@ -1585,7 +1731,16 @@ export class AgentOrchestrator {
           })
           partialResult = assistantReply || partialResult
           if (attempt >= maxAttempts) {
-            throw new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts without emitting ${SUBAGENT_VERIFICATION_TAG}`)
+            const renewal = maybeRenewSubAgentBudget(runtime, task, "missing verification tag", attempt, maxAttempts, extensionsUsed)
+            if (renewal.renewed) {
+              maxAttempts = renewal.newMaxAttempts
+              extensionsUsed = renewal.newExtensionsUsed
+              appendMessage(runtime.rootDir, task.subSessionId, "user", renewal.renewalMessage)
+              attemptHistory.push({ attempt, kind: "renewal-granted", summary: `+${renewal.newMaxAttempts - attempt} attempts` })
+              attempt++
+              continue
+            }
+            throw renewal.finalError
           }
           attemptHistory.push({ attempt, kind: "missing-verification-tag", summary: clip(assistantReply, 200) })
           currentText = buildRalphLoopPrompt(task.task, assistantReply, attemptHistory, attempt + 1, escapeHatchAttempt)
@@ -1631,7 +1786,16 @@ export class AgentOrchestrator {
           })
           partialResult = assistantReply || partialResult
           if (attempt >= maxAttempts) {
-            throw new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts claiming success without executing any tool.`)
+            const renewal = maybeRenewSubAgentBudget(runtime, task, "no-op success claim (no tool executed)", attempt, maxAttempts, extensionsUsed)
+            if (renewal.renewed) {
+              maxAttempts = renewal.newMaxAttempts
+              extensionsUsed = renewal.newExtensionsUsed
+              appendMessage(runtime.rootDir, task.subSessionId, "user", renewal.renewalMessage)
+              attemptHistory.push({ attempt, kind: "renewal-granted", summary: `+${renewal.newMaxAttempts - attempt} attempts` })
+              attempt++
+              continue
+            }
+            throw renewal.finalError
           }
           currentText = [
             task.task.trim(),
@@ -1656,7 +1820,23 @@ export class AgentOrchestrator {
           })
           partialResult = assistantReply || partialResult
           if (attempt >= maxAttempts) {
-            throw new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts with unfinished cognitive tasks remaining`)
+            const renewal = maybeRenewSubAgentBudget(
+              runtime,
+              task,
+              "unfinished cognitive tasks remaining",
+              attempt,
+              maxAttempts,
+              extensionsUsed,
+            )
+            if (renewal.renewed) {
+              maxAttempts = renewal.newMaxAttempts
+              extensionsUsed = renewal.newExtensionsUsed
+              appendMessage(runtime.rootDir, task.subSessionId, "user", renewal.renewalMessage)
+              attemptHistory.push({ attempt, kind: "renewal-granted", summary: `+${renewal.newMaxAttempts - attempt} attempts` })
+              attempt++
+              continue
+            }
+            throw renewal.finalError
           }
           attemptHistory.push({ attempt, kind: "unfinished-cognitive-tasks", summary: `${unfinishedTasks.length} pending` })
           currentText = buildRalphLoopUnfinishedTasksPrompt(task.task, unfinishedTasks, assistantReply, attemptHistory, attempt + 1, escapeHatchAttempt)
@@ -1673,7 +1853,16 @@ export class AgentOrchestrator {
           })
           partialResult = assistantReply || partialResult
           if (attempt >= maxAttempts) {
-            throw new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts with failing terminal command exitCode`)
+            const renewal = maybeRenewSubAgentBudget(runtime, task, "failing terminal command", attempt, maxAttempts, extensionsUsed)
+            if (renewal.renewed) {
+              maxAttempts = renewal.newMaxAttempts
+              extensionsUsed = renewal.newExtensionsUsed
+              appendMessage(runtime.rootDir, task.subSessionId, "user", renewal.renewalMessage)
+              attemptHistory.push({ attempt, kind: "renewal-granted", summary: `+${renewal.newMaxAttempts - attempt} attempts` })
+              attempt++
+              continue
+            }
+            throw renewal.finalError
           }
           currentText = buildRalphLoopFailingBashPrompt(task.task, failingBash.command, failingBash.exitCode ?? -1, assistantReply, attemptHistory, attempt + 1, escapeHatchAttempt)
           attempt++
@@ -1685,7 +1874,16 @@ export class AgentOrchestrator {
         if (dynamicBlockedPrompt) {
           partialResult = assistantReply || partialResult
           if (attempt >= maxAttempts) {
-            throw new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts with failing dynamic verification rules`)
+            const renewal = maybeRenewSubAgentBudget(runtime, task, "failing dynamic verification rules", attempt, maxAttempts, extensionsUsed)
+            if (renewal.renewed) {
+              maxAttempts = renewal.newMaxAttempts
+              extensionsUsed = renewal.newExtensionsUsed
+              appendMessage(runtime.rootDir, task.subSessionId, "user", renewal.renewalMessage)
+              attemptHistory.push({ attempt, kind: "renewal-granted", summary: `+${renewal.newMaxAttempts - attempt} attempts` })
+              attempt++
+              continue
+            }
+            throw renewal.finalError
           }
           currentText = dynamicBlockedPrompt
           attempt++
@@ -1697,7 +1895,16 @@ export class AgentOrchestrator {
         if (assertionBlockedPrompt) {
           partialResult = assistantReply || partialResult
           if (attempt >= maxAttempts) {
-            throw new Error(`[Ralph Loop] Agent exhausted ${maxAttempts} attempts with failing assertion verification rules`)
+            const renewal = maybeRenewSubAgentBudget(runtime, task, "failing assertion verification rules", attempt, maxAttempts, extensionsUsed)
+            if (renewal.renewed) {
+              maxAttempts = renewal.newMaxAttempts
+              extensionsUsed = renewal.newExtensionsUsed
+              appendMessage(runtime.rootDir, task.subSessionId, "user", renewal.renewalMessage)
+              attemptHistory.push({ attempt, kind: "renewal-granted", summary: `+${renewal.newMaxAttempts - attempt} attempts` })
+              attempt++
+              continue
+            }
+            throw renewal.finalError
           }
           currentText = assertionBlockedPrompt
           attempt++
