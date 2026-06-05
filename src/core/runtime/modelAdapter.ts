@@ -291,28 +291,17 @@ function sumUsage(total: TurnUsage | undefined, next: TurnUsage | undefined): Tu
 }
 
 function finalize(finalText: string, steps: AssistantTurnStep[], startedAt: number, iterationCount: number, usage?: TurnUsage, error?: string, stopReason: AssistantTurnResult["meta"]["stopReason"] = "completed"): AssistantTurnResult {
-  // Empty-response fallback: if the turn terminated without producing
-  // a finalText (typically a 95s timeout or a model that produced only
-  // tool calls without a concluding message), surface a clear, actionable
-  // message to the user instead of leaving them in silence. Without
-  // this, the runtime suppresses the empty response and the user has no
-  // way to know that the agent got stuck.
-  let safeFinalText = redactSensitiveText(finalText)
-  if (!safeFinalText || safeFinalText.trim().length === 0) {
-    safeFinalText = [
-      "⚠️ Mi último turn terminó sin respuesta (probablemente timeout 95s o un loop de tool calls).",
-      "",
-      "Esto indica que me atasqué. Decime cómo seguir:",
-      "  • Si querés que reintente: mandame el mismo mensaje otra vez.",
-      "  • Si querés que cambie de approach: contame el approach que preferís.",
-      "  • Si la tarea no es realizable: cancelala con /reset o decime 'aborta'.",
-      "",
-      "Para investigar por mí, mirá `~/.monolito/logs/monolitod.log` y `~/.monolito/memory/memory.sqlite` (worklog de la sesión).",
-    ].join("\n")
-  }
+  // No hardcoded fallback. If the turn terminated without producing a
+  // finalText, we return finalText="" with `error` populated and let
+  // the caller (the model on the NEXT turn) see the real reason and
+  // communicate it to the user. Hardcoded messages used to lie about
+  // what happened — e.g. they said "turn ended with no response" even
+  // when the verifier had explicitly cancelled the work, or when the
+  // turn was actually a renewal-grant continuation.
+  const safeFinalText = redactSensitiveText(finalText ?? "")
   return {
     finalText: safeFinalText,
-    steps: [...steps, { type: "final", message: safeFinalText }],
+    steps: [...steps, ...(safeFinalText ? [{ type: "final" as const, message: safeFinalText }] : [])],
     error: error ? redactSensitiveText(error) : undefined,
     usage: usage ? {
       inputTokens: usage.inputTokens,
@@ -1588,11 +1577,18 @@ Si esto corresponde a un error de compilación, una excepción no controlada o u
       if (error instanceof AbortError) throw error
       logger.error("assistant turn failed", { error: error instanceof Error ? error.message : String(error), sessionId: session.id })
       const message = error instanceof Error ? error.message : String(error)
-      const result = finalize(message, steps, startedAt, Math.min(maxIterations, steps.length + 1), usage, message)
+      // Don't synthesize a user-facing message here. Pass finalText=""
+      // and let `error` carry the real reason. The next turn's model
+      // (or the principal's wake-up) will see the error and produce a
+      // contextual response.
+      const result = finalize("", steps, startedAt, Math.min(maxIterations, steps.length + 1), usage, message)
       yield { type: "done", sessionId: session.id, result }
       return result
     }
   }
+  // Max iterations reached without an explicit error: still let the
+  // caller (principal / wake-up) decide how to communicate the
+  // situation based on `error` + `stopReason`.
   const result = finalize("", steps, startedAt, maxIterations, usage, "Max iterations reached", "max_iterations")
   yield { type: "done", sessionId: session.id, result }
   return result

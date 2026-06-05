@@ -2040,9 +2040,12 @@ export class AgentOrchestrator {
   <duration_ms>${task.usage.duration_ms}</duration_ms>
 </usage>` : ""
 
+    const isFailure = task.status === "failed" || task.status === "killed"
     const directive = isMainSession(task.parentSessionId)
-      ? `\n\n[SYSTEM DIRECTIVE]\nA background worker task has completed. Retrieve the <result> above, translate it to your normal assistant voice, and deliver a direct update/response to the user now answering their immediate query. Do not mention XML tags, agent-ids, or background workers. Keep the execution details private.`
-      : `\n\n[SYSTEM DIRECTIVE]\nA sub-agent task has completed. Convert this completion into a concise internal orchestration update for your parent agent in your own words. Do not mention XML tags or system/log details.`
+      ? isFailure
+        ? `\n\n[SYSTEM DIRECTIVE]\nA background worker task FAILED. The <summary> above contains the real reason (e.g. "Max iterations reached", "verifier said cancel", error message). ${task.result ? "There is also a <result> with partial output — use it if useful." : "There is no <result> — the worker produced nothing."} Translate the failure honestly to the user in your normal assistant voice: what was attempted, why it failed, and what they can do next (retry with smaller scope, give up, change approach). Do NOT invent success. Do not mention XML tags, agent-ids, or background workers. Keep the execution details private but the failure reason must be accurate.`
+        : `\n\n[SYSTEM DIRECTIVE]\nA background worker task has completed. Retrieve the <result> above, translate it to your normal assistant voice, and deliver a direct update/response to the user now answering their immediate query. Do not mention XML tags, agent-ids, or background workers. Keep the execution details private.`
+      : `\n\n[SYSTEM DIRECTIVE]\nA sub-agent task has ${task.status}. Convert this into a concise internal orchestration update for your parent agent in your own words. Do not mention XML tags or system/log details.`
 
     const notification = `<task-notification>
 <task-id>${task.id}</task-id>
