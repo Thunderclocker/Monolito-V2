@@ -68,7 +68,7 @@ import { readWebSearchConfig, writeWebSearchConfig, type WebSearchProvider } fro
 import { getDateContext, getGitContext } from "../context/gitContext.ts"
 import { getWorkspaceContext } from "../context/workspaceContext.ts"
 import { normalizeToolInputPayload } from "./toolInput.ts"
-import { AgentOrchestrator } from "./orchestrator.ts"
+import { AgentOrchestrator, evaluateTopLevelRalphGate, TOP_LEVEL_RALPH_MAX_ATTEMPTS } from "./orchestrator.ts"
 import { renderToolFinish, renderToolStart, renderToolStartText } from "../renderer/toolRenderer.ts"
 import { checkToolPermission, runLifecycleHooks, runPostToolHooks } from "./permissions.ts"
 
@@ -2328,52 +2328,119 @@ Review the existing skill library and apply the curation heuristics in your inst
 
 
         const webSearchConfig = readWebSearchConfig()
-        const turn = await this.consumeAgentLoop(
-          runAgentLoop(
-            ragSession,
-            this.rootDir,
-            async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, abortSignal: abortController.signal, sessionId, orchestrator: this.orchestrator, runtime: this }, toolUseId, profileId),
-            {
-              rootDir: this.rootDir,
-              cwd: effectiveCwd,
-              abortSignal: abortController.signal,
-              traceId,
-              getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
-              profileId,
-              orchestrator: this.orchestrator,
-              logger: instanceLogger,
-            },
-            {
-              contextExtras: {
-                gitContext,
-                dateContext,
-                workspaceContext,
-                adultMode: this.hasAdultMode(sessionId),
-                webSearchProvider: webSearchConfig.provider,
-                stallAlert: this.consumeStallAlert(sessionId),
-                activeTasks: this.orchestrator.getTaskSnapshot(sessionId).filter(t => t.status === "pending" || t.status === "running"),
-                taskNotifications: collectAllRecentTaskNotifications(ragSession),
+
+        // Top-level Ralph loop (Stop-hook analog). If the session has
+        // unfinished TodoWrite items (pending or in_progress) after the
+        // model turn, the runtime refuses to deliver the assistant reply
+        // and re-feeds a structured retry prompt. This mirrors the
+        // sub-agent Ralph Loop in AgentOrchestrator.executeTurn and the
+        // Ralph Wiggum Stop hook in Claude Code: the runtime has the
+        // last word, not the LLM.
+        let ralphAttempt = 1
+        const ralphAttemptHistory: Array<{ attempt: number; kind: string; summary: string }> = []
+        let turn: AssistantTurnResult | null = null
+        let lastAssistantReplyForRalph = ""
+        let lastUserTextForRalph = preparedUserText
+        let effectiveRagSession = ragSession
+
+        while (true) {
+          const apiStartedAt = Date.now()
+          // Re-read the session on subsequent iterations so the
+          // re-fed feedback prompt (appended as a user message) is
+          // visible to the agent loop.
+          if (ralphAttempt > 1) {
+            const refreshed = getSession(this.rootDir, sessionId)
+            if (refreshed) {
+              effectiveRagSession = await prepareSemanticRagSession(this.rootDir, refreshed, profileId)
+            }
+          }
+          turn = await this.consumeAgentLoop(
+            runAgentLoop(
+              effectiveRagSession,
+              this.rootDir,
+              async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, abortSignal: abortController.signal, sessionId, orchestrator: this.orchestrator, runtime: this }, toolUseId, profileId),
+              {
+                rootDir: this.rootDir,
+                cwd: effectiveCwd,
+                abortSignal: abortController.signal,
+                traceId,
+                getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
+                profileId,
+                orchestrator: this.orchestrator,
+                logger: instanceLogger,
               },
-              costState: this.costState,
-              abortSignal: abortController.signal,
-              maxTokens: options?.maxTokens,
-              turnStartedAt,
-              maxTurnDurationMs: timeoutMs - 5_000,
-            },
-          ),
-          options?.onAgentLoopEvent,
-        )
-        if (turn.usage) {
-          recordApiCall(
-            this.costState,
-            getEffectiveModelConfig().model,
-            {
-              inputTokens: turn.usage.inputTokens,
-              outputTokens: turn.usage.outputTokens,
-            },
-            Date.now() - apiStartedAt,
+              {
+                contextExtras: {
+                  gitContext,
+                  dateContext,
+                  workspaceContext,
+                  adultMode: this.hasAdultMode(sessionId),
+                  webSearchProvider: webSearchConfig.provider,
+                  stallAlert: this.consumeStallAlert(sessionId),
+                  activeTasks: this.orchestrator.getTaskSnapshot(sessionId).filter(t => t.status === "pending" || t.status === "running"),
+                  taskNotifications: collectAllRecentTaskNotifications(effectiveRagSession),
+                },
+                costState: this.costState,
+                abortSignal: abortController.signal,
+                maxTokens: options?.maxTokens,
+                turnStartedAt,
+                maxTurnDurationMs: timeoutMs - 5_000,
+              },
+            ),
+            options?.onAgentLoopEvent,
           )
+          if (turn.usage) {
+            recordApiCall(
+              this.costState,
+              getEffectiveModelConfig().model,
+              {
+                inputTokens: turn.usage.inputTokens,
+                outputTokens: turn.usage.outputTokens,
+              },
+              Date.now() - apiStartedAt,
+            )
+          }
+          lastAssistantReplyForRalph = turn.finalText ?? ""
+
+          // Gate: refuse to deliver if the cognitive task list has
+          // unfinished items. Re-feed a structured prompt asking the
+          // model to either complete the work, restructure, or
+          // declare TASK_FAILED.
+          const gate = evaluateTopLevelRalphGate(
+            this.rootDir,
+            sessionId,
+            profileId,
+            lastUserTextForRalph,
+            ralphAttempt,
+            lastAssistantReplyForRalph,
+            ralphAttemptHistory,
+          )
+          if (!gate.blocked) break
+
+          if (ralphAttempt >= TOP_LEVEL_RALPH_MAX_ATTEMPTS) {
+            appendWorklog(this.rootDir, sessionId, {
+              type: "note",
+              summary: `[Top-level Ralph] Exhausted ${TOP_LEVEL_RALPH_MAX_ATTEMPTS} attempts with ${gate.unfinished.length} unfinished tasks. Delivering last turn with task failure marker.`,
+            })
+            break
+          }
+          appendWorklog(this.rootDir, sessionId, {
+            type: "note",
+            summary: `[Top-level Ralph] Blocked delivery on attempt ${ralphAttempt}/${TOP_LEVEL_RALPH_MAX_ATTEMPTS}: ${gate.unfinished.length} unfinished tasks. Re-feeding feedback prompt.`,
+          })
+          ralphAttemptHistory.push({
+            attempt: ralphAttempt,
+            kind: "unfinished-tasks-top-level",
+            summary: `${gate.unfinished.length} unfinished: ${gate.unfinished.map(t => t.content).slice(0, 3).join(" | ")}`,
+          })
+          if (gate.feedbackPrompt) {
+            appendMessage(this.rootDir, sessionId, "user", gate.feedbackPrompt)
+            lastUserTextForRalph = gate.feedbackPrompt
+          }
+          ralphAttempt++
         }
+
+        if (!turn) throw new Error("No turn produced by agent loop")
 
         // Seal the batch group (if any delegate_background_task calls happened this turn).
         const batchJobGroupId = this.currentBatchGroups.get(sessionId)

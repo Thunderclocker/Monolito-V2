@@ -635,7 +635,7 @@ function buildRalphLoopPrompt(
 }
 
 
-function buildRalphLoopUnfinishedTasksPrompt(
+export function buildRalphLoopUnfinishedTasksPrompt(
   task: string,
   unfinished: Array<{ content: string; status: string }>,
   assistantReply: string,
@@ -666,6 +666,74 @@ function buildRalphLoopUnfinishedTasksPrompt(
     "Your last rejected response (DO NOT repeat the same response):",
     clip(assistantReply, 500),
   ].filter(Boolean).join("\n")
+}
+
+// =============================================================================
+// Top-level Ralph gate (Stop-hook analog for the orchestrator session)
+// =============================================================================
+//
+// Bug it fixes: the top-level (orchestrator) session registers TodoWrite
+// items, the model runs a few of them, leaves the rest pending, and tries
+// to close the turn. The runtime previously delivered the reply without
+// checking the task list. The sub-agent path already had this check
+// (buildRalphLoopUnfinishedTasksPrompt inside executeTurn); the top-level
+// path did not.
+//
+// Approach mirrors Claude Code's Ralph Wiggum Stop hook: a runtime-level
+// guard that reads external state (the Memory Palace `active_tasks` table),
+// and — if the task list is not clean — re-feeds a structured retry prompt
+// back to the model instead of delivering. The model can satisfy the gate
+// by calling TodoWrite to mark the items completed, by restructuring, or
+// by returning TASK_FAILED:<reason>.
+// =============================================================================
+
+export type TopLevelRalphGateResult = {
+  /** True when the gate has unfinished items and the loop must continue. */
+  blocked: boolean
+  /** Convenience alias matching the runtime loop's vocabulary. */
+  shouldRetry: boolean
+  /** Feedback prompt to re-feed as a user message. Null when clean. */
+  feedbackPrompt: string | null
+  /** The unfinished items that triggered the block. */
+  unfinished: Array<{ content: string; status: string }>
+}
+
+export const TOP_LEVEL_RALPH_MAX_ATTEMPTS = 20
+export const TOP_LEVEL_RALPH_ESCAPE_AT = 15
+
+/**
+ * Evaluate the top-level Ralph gate for a session. Pure function (modulo
+ * the SQLite read); safe to unit-test. The caller is responsible for the
+ * loop, the worklog appends, and the actual re-feed via appendMessage +
+ * re-running the agent loop.
+ */
+export function evaluateTopLevelRalphGate(
+  rootDir: string,
+  sessionId: string,
+  profileId: string,
+  lastUserText: string,
+  attempt: number,
+  assistantReply: string,
+  history: Array<{ attempt: number; kind: string; summary: string }> = [],
+): TopLevelRalphGateResult {
+  const tasks = listSessionTasks(rootDir, sessionId, profileId)
+  const unfinished = tasks
+    .filter(t => t.status === "pending" || t.status === "in_progress")
+    .map(t => ({ content: t.content, status: t.status }))
+
+  if (unfinished.length === 0) {
+    return { blocked: false, shouldRetry: false, feedbackPrompt: null, unfinished: [] }
+  }
+
+  const feedbackPrompt = buildRalphLoopUnfinishedTasksPrompt(
+    lastUserText,
+    unfinished,
+    assistantReply,
+    history,
+    attempt,
+    TOP_LEVEL_RALPH_ESCAPE_AT,
+  )
+  return { blocked: true, shouldRetry: true, feedbackPrompt, unfinished }
 }
 
 function buildRalphLoopFailingBashPrompt(
