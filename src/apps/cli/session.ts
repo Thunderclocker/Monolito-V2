@@ -1094,12 +1094,22 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       return
     }
 
-    // Try local command execution first
+    // Try local command execution first.
+    // Clear input and show a spinner immediately so the user gets feedback
+    // that the command was sent. Local commands can take seconds to minutes
+    // (e.g. /update runs git fetch + npm install + daemon restart), and
+    // without this the input box stays frozen showing the command text.
+    composer.input = ""
+    composer.cursor = 0
+    composer.busy = true
+    composer.thinkingVisible = true
+    startThinkingAnimation()
+    redraw()
     const localResult = await tryLocalCommand(client, line)
     if (localResult !== null) {
       commitPromptHistory(rootDir, history, line)
-      composer.input = ""
-      composer.cursor = 0
+      composer.busy = false
+      stopThinkingAnimation()
       const block = localResult
       transcript = appendTranscriptBlocks(transcript, [
         { type: "event", label: "command", tone: block.tone ?? "neutral", text: block.content },
