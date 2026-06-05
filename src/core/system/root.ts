@@ -36,7 +36,7 @@ export function ensureMonolitoRoot() {
   mkdirSync(join(MONOLITO_ROOT, "logs"), { recursive: true })
   mkdirSync(join(MONOLITO_ROOT, "logs", "instances"), { recursive: true })
   mkdirSync(join(MONOLITO_ROOT, "run"), { recursive: true })
-  mkdirSync(join(MONOLITO_ROOT, "profiles"), { recursive: true })
+  mkdirSync(join(MONOLITO_ROOT, "agents"), { recursive: true })
   // Workspace del agente y su scratchpad viven en la raíz de MONOLITO_ROOT.
   // El agente organiza su escritorio libremente dentro de `workspace/`.
   mkdirSync(join(MONOLITO_ROOT, "workspace"), { recursive: true })

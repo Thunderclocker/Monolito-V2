@@ -123,7 +123,7 @@ export function getPaths(rootDir: string, profileId: string = "default") {
   const baseDir = MONOLITO_ROOT
   const runDir = join(baseDir, "run")
   const logsDir = join(baseDir, "logs")
-  const profilesDir = join(baseDir, "profiles")
+  const agentsDir = join(baseDir, "agents")
   // Workspace del agente: escritorio libre en la raíz de MONOLITO_ROOT.
   // No depende de profileId (single-user); el profileId se mantiene solo
   // para BOOT wings, memoria y sub-agentes.
@@ -148,7 +148,7 @@ export function getPaths(rootDir: string, profileId: string = "default") {
     stateDir,
     runDir,
     logsDir,
-    profilesDir,
+    agentsDir,
     workspaceDir,
     socketPath,
     pidFile,
@@ -173,7 +173,7 @@ export function ensureDirs(rootDir: string, profileId: string = "default") {
     paths.baseDir,
     paths.runDir,
     paths.logsDir,
-    paths.profilesDir,
+    paths.agentsDir,
     paths.workspaceDir,
     paths.stateDir,
     paths.scratchpadDir,
