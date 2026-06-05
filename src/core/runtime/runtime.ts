@@ -3094,12 +3094,18 @@ Your job:
       userMessage = `🔁 Delegué este trabajo a un sub-agente en segundo plano. Te aviso por acá cuando termine con el resultado.`
       appendWorklog(this.rootDir, sessionId, {
         type: "note",
-        summary: `[Auto-delegate] Sub-agent spawned (id=${spawnResult?.agentId ?? "?"}, session=${spawnResult?.sessionId ?? "?"}). Wake-up queued.`,
+        summary: `[Auto-delegate] Sub-agent spawned (id=${spawnResult?.agentId ?? "?"}, session=${spawnResult?.sessionId ?? "?"}).`,
       })
-      // Schedule the wake-up so the main session gets a proactive turn
-      // when the sub-agent reports back. flushPendingBackgroundWakeup
-      // handles the actual trigger when the worker finishes.
-      this.enqueueBackgroundWakeup(sessionId, profileId)
+      // Do NOT enqueue a background wake-up here. Enqueueing immediately
+      // makes the main session run a "background turn completed"
+      // proactive turn RIGHT AWAY — before the sub-agent has anything to
+      // report. The main session then has no real content to react to
+      // and falls back to the generic "turn ended with no response"
+      // error, which confuses the user. Instead, the orchestrator's
+      // notifyParent will append the <task-notification> as a user
+      // message to the main session when the sub-agent actually
+      // finishes, and the existing message-received path will produce
+      // a real, content-bearing reply.
     }
 
     return {
