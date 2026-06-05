@@ -1,14 +1,24 @@
 import { spawn, execSync } from "node:child_process"
+import { join } from "node:path"
+import { homedir } from "node:os"
 import { DaemonClient } from "../core/client/daemonClient.ts"
 import { parseArgs } from "./cli/args.ts"
 import { runCliCommand } from "./cli/commands.ts"
 import { handleCliFailure } from "./cli/output.ts"
+import { MONOLITO_ROOT } from "../core/system/root.ts"
 
 async function ensureDaemon(client: DaemonClient) {
   try {
     await client.connect()
   } catch {
-    const rootDir = process.cwd()
+    // Bug fix: previously this used process.cwd(), which pointed at the
+    // app/ source directory when the production launcher did
+    // `cd ~/.monolito/app` before invoking the CLI. That made the
+    // runtime treat app/ as MONOLITO_ROOT, so the workspace resolved
+    // to ~/.monolito/app/workspace (inside the source tree) instead of
+    // ~/.monolito/workspace. Honor MONOLITO_ROOT first; fall back to
+    // cwd for dev mode.
+    const rootDir = process.env.MONOLITO_ROOT || MONOLITO_ROOT || join(homedir(), ".monolito")
 
     process.stderr.write(`[monolito] Daemon is not running. Attempting to start it...\n`)
 

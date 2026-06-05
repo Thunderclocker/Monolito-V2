@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, existsSync } from "node:fs"
+import { mkdirSync, readFileSync, existsSync, statSync, renameSync, unlinkSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { dirname, join } from "node:path"
 import { MONOLITO_ROOT } from "../system/root.ts"
@@ -185,7 +185,34 @@ export function ensureDirs(rootDir: string, profileId: string = "default") {
     }
   }
 
+  // Rotate the daemon stderr/stdout log if it has grown too large.
+  // The structured logger (createDailyRotatingFileSink) already rotates
+  // daily, but the daemon redirects its own stdout/stderr to this file
+  // with flag="a" and nothing trims it, so it can grow indefinitely.
+  rotateDaemonLogIfLarge(paths.daemonLog, 5 * 1024 * 1024)
+
   return paths
+}
+
+/**
+ * If the daemon log is larger than `maxBytes`, rotate it to a single
+ * `*.log.old` file (overwriting any previous one) and start fresh.
+ * The structured logger writes JSON-per-line so this is a safe point
+ * cut (worst case: a half-written final line is dropped).
+ */
+export function rotateDaemonLogIfLarge(daemonLogPath: string, maxBytes: number) {
+  try {
+    if (!existsSync(daemonLogPath)) return
+    const stat = statSync(daemonLogPath)
+    if (stat.size <= maxBytes) return
+    const backupPath = `${daemonLogPath}.old`
+    try {
+      unlinkSync(backupPath)
+    } catch {}
+    renameSync(daemonLogPath, backupPath)
+  } catch {
+    // Best-effort rotation — never block startup on a log rotation failure.
+  }
 }
 
 export function readDaemonLock(rootDir: string): DaemonLock | null {

@@ -155,7 +155,7 @@ function readLatestPalaceContent(
   return rows[0]?.content ?? null
 }
 
-function upsertMutablePalaceNode(
+export function upsertMutablePalaceNode(
   db: Database.Database,
   options: {
     namespace: PalaceNamespace

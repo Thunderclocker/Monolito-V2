@@ -46,10 +46,13 @@ import {
   recallMemory,
   isMainSession,
   listSessionTasks,
+  upsertMutablePalaceNode,
 } from "../session/store.ts"
 import { generateEmbedding, isEmbeddingsUnavailableError } from "../session/embeddings.ts"
 import { getTool, listTools, type ToolContext, type ToolInputSchema } from "../tools/registry.ts"
 import { getEffectiveModelConfig, runAgentLoop, runAssistantTurn, runBackgroundTextTask, type AgentLoopEvent, type AssistantTurnResult } from "./modelAdapter.ts"
+import { getActiveProfile } from "./modelRegistry.ts"
+import { PALACE_NAMESPACE } from "../db/schema.ts"
 import {
   applyModelSettingsToEnv,
   draftToSettings,
@@ -98,6 +101,7 @@ import { normalizeVisionConfig } from "../vision/managed.ts"
 import { MONOLITO_ROOT } from "../system/root.ts"
 import { ToolExecutionError } from "../errors.ts"
 import { redactSensitiveText, redactSensitiveValue } from "../security/redact.ts"
+import { ANSI } from "../../apps/cli/tui/ansi.ts"
 import type { DeliveryContext, DeliveryHandler } from "./types.ts"
 
 type EventListener = (event: AgentEvent) => void
@@ -1027,6 +1031,10 @@ export class MonolitoV2Runtime {
   private activeSessions = new Set<string>()
   private recentResumeAt = new Map<string, number>()
   private abortControllers = new Map<string, AbortController>()
+  // MemoryAgent failure tracking — used to back off when the model is
+  // stuck on the same error every interval.
+  private _memoryConsolidationFailures = 0
+  private _lastMemoryConsolidationFailureAt = 0
   private costState = createCostState()
   private adultModeDisabledSessions = new Set<string>()
   private pendingPermissions = new Map<string, { resolve: (decision: "allow" | "deny" | "ask") => void }>()
@@ -1240,10 +1248,56 @@ IMPORTANT: The human user did NOT send or write this message. Do not reference t
     ensureConfigWings(this.rootDir)
     reconcileSystemWings(db, rootDir)
     loadAndApplyModelSettings(process.env)
+    this.reconcileModelConfigWing()
 
     const config = readConfigWing(this.rootDir, "CONF_HEARTBEAT") as import("../config/configWings.ts").HeartbeatConfig
     if (config?.enabled) {
       this.startHeartbeatTimer()
+    }
+  }
+
+  /**
+   * Reconcile the `model_config` Memory Palace wing with the active
+   * profile. The wing is a free-text note the model itself writes; it
+   * can drift away from reality (e.g. claiming Grok 4.3 while the
+   * routing is on minimax). On boot we rewrite it to reflect the
+   * actual active profile so the model and the user have an accurate
+   * reference.
+   */
+  private reconcileModelConfigWing() {
+    try {
+      const active = getEffectiveModelConfig()
+      const profile = getActiveProfile()
+      const now = new Date().toISOString()
+      const providerName = profile?.name || active.provider || "unknown"
+      const content = [
+        `Perfil activo: ${providerName} con modelo ${active.model || "unknown"}.`,
+        `Provider: ${active.provider}`,
+        `Base URL: ${active.baseUrl || "(unset)"}`,
+        `Last reconciled at runtime boot: ${now}`,
+      ].join("\n")
+
+      const db = getDb(this.rootDir)
+      // Supersede any existing non-superseded row, then upsert the new one.
+      db.prepare(
+        `UPDATE palace_nodes SET superseded_at = ?, updated_at = ?
+         WHERE namespace = ? AND wing = ? AND room = ? AND superseded_at IS NULL`,
+      ).run(now, now, PALACE_NAMESPACE.chatHistory, "model_config", "activation")
+      upsertMutablePalaceNode(db, {
+        namespace: PALACE_NAMESPACE.chatHistory,
+        wing: "model_config",
+        room: "activation",
+        nodeKey: "active-profile",
+        profileId: null,
+        contentType: "text/plain",
+        content,
+        now,
+      })
+      logger.info(`[boot] Reconciled model_config wing: ${providerName} / ${active.model}`)
+    } catch (e) {
+      logger.warn(
+        `[boot] Could not reconcile model_config wing: ${e instanceof Error ? e.message : String(e)}`,
+      )
     }
   }
 
@@ -1505,6 +1559,23 @@ IMPORTANT: The human user did NOT send or write this message. Do not reference t
       return
     }
 
+    // Backoff: if the last 2 MemoryAgent runs failed (no response /
+    // timeout), skip the next one. Without this, the system hits the
+    // same model-stuck failure every interval and logs the same error
+    // repeatedly (observed: 4 in a row, every 30 min).
+    const now = Date.now()
+    if (this._memoryConsolidationFailures >= 2) {
+      const minutesSinceLastFailure = (now - this._lastMemoryConsolidationFailureAt) / 60000
+      const backoffMinutes = Math.min(180, this._memoryConsolidationFailures * 30)
+      if (minutesSinceLastFailure < backoffMinutes) {
+        logger.warn(
+          `[MemoryAgent] Skipping consolidation: ${this._memoryConsolidationFailures} consecutive failures, backoff active for ${(backoffMinutes - minutesSinceLastFailure).toFixed(1)}m more.`
+        )
+        this.lastHeartbeatSkippedAt = now
+        return
+      }
+    }
+
     this.activeSessions.add(sessionId)
     this._isSyntheticSkillsTurn = true
     const turnStartedAt = Date.now()
@@ -1605,14 +1676,34 @@ Please analyze the preceding conversation and run your memory consolidation tool
         )
       }
 
-      logger.info(`[MemoryAgent] Consolidation turn finished. Result: ${turn.finalText?.trim()}`)
-      appendWorklog(this.rootDir, sessionId, {
-        type: "note",
-        summary: `MemoryAgent executed silently: ${turn.finalText?.trim()}`,
-      })
+      const finalText = (turn.finalText ?? "").trim()
+      const success = !turn.error && finalText.length > 0
+      if (success) {
+        this._memoryConsolidationFailures = 0
+        this._lastMemoryConsolidationFailureAt = 0
+        logger.info(`[MemoryAgent] Consolidation turn finished. Result: ${finalText}`)
+        appendWorklog(this.rootDir, sessionId, {
+          type: "note",
+          summary: `MemoryAgent executed silently: ${finalText}`,
+        })
+      } else {
+        // Empty finalText or turn error: treat as failure for backoff.
+        this._memoryConsolidationFailures += 1
+        this._lastMemoryConsolidationFailureAt = Date.now()
+        const reason = turn.error ? `error: ${turn.error}` : "empty final text (model stuck)"
+        logger.error(
+          `[MemoryAgent] Consolidation turn failed (${this._memoryConsolidationFailures} consecutive): ${reason}`
+        )
+        appendWorklog(this.rootDir, sessionId, {
+          type: "note",
+          summary: `MemoryAgent failed silently: ${reason}`,
+        })
+      }
 
     } catch (e) {
-      logger.error(`[MemoryAgent] Execution error: ${e instanceof Error ? e.message : String(e)}`)
+      this._memoryConsolidationFailures += 1
+      this._lastMemoryConsolidationFailureAt = Date.now()
+      logger.error(`[MemoryAgent] Execution error (${this._memoryConsolidationFailures} consecutive): ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       clearTimeout(turnTimeout)
       this._isSyntheticSkillsTurn = false
@@ -2457,6 +2548,21 @@ Review the existing skill library and apply the curation heuristics in your inst
 
         let userFacingText = sanitizeExternalAssistantText(sessionId, turn.finalText, preparedUserText)
         const hasSideEffects = turn.steps?.some(step => step.type === "tool" && getTool(step.tool)?.sideEffect === true)
+
+        // Robustness: when the turn ended with an error/timeout but the
+        // Ralph gate has already closed the cognitive task list (every
+        // TodoWrite item is `completed`), the work is genuinely done —
+        // the model just got stuck on the closing message. Synthesize a
+        // positive user-facing message instead of falling back to the
+        // "turn ended with no response" generic error, which would
+        // confuse the user into thinking the task failed.
+        const tasksAreClean = listSessionTasks(this.rootDir, sessionId, profileId).every(t => t.status === "completed")
+        if (turn.error && tasksAreClean && shouldSuppressEmit(userFacingText)) {
+          const completedCount = listSessionTasks(this.rootDir, sessionId, profileId).length
+          if (completedCount > 0) {
+            userFacingText = `✅ Listo. Las ${completedCount} tareas quedaron completadas.`
+          }
+        }
 
         if (shouldSuppressEmit(userFacingText)) {
           if (hasSideEffects) {
@@ -3421,6 +3527,11 @@ Review the existing skill library and apply the curation heuristics in your inst
       const container = service.containerState ? ` container=${service.containerState}` : ""
       const models = service.models && service.models.length > 0 ? ` [${service.models.join(", ")}]` : ""
       lines.push(`${marker} ${padRight(name, 10)} ${padRight(label, 9)} ${checked}${container}${models}`)
+      // Graceful-degradation hint when STT/TTS containers are not deployed.
+      if ((name === "stt" || name === "tts") && service.containerState === "not_found") {
+        const deployTool = name === "stt" ? "SttServiceDeploy" : "TtsServiceDeploy"
+        lines.push(`           ${ANSI.dim}↳ run \`${deployTool}\` to spin it up${ANSI.reset}`)
+      }
     }
     lines.push("")
     
