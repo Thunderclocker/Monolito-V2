@@ -737,6 +737,228 @@ export function evaluateTopLevelRalphGate(
 }
 
 // =============================================================================
+// Sub-agent renewal verifier
+// =============================================================================
+//
+// When a sub-agent hits its attempt limit, instead of dying immediately
+// the orchestrator asks this verifier whether the work is worth
+// continuing. The verifier reads the sub-agent's TodoWrite list (the
+// source of truth for what it committed to do), its recent worklog
+// progress, and whether it has persisted anything useful.
+//
+// Multi-signal scoring (each signal adds to a 0+ score):
+//   Signal 1 — recent success rate (last 5 tool executions)
+//   Signal 2 — TodoWrite plan exists and progress %
+//   Signal 3 — persistence events (WorkspaceMemoryFiling, BootWrite, palace nodes)
+//
+// Cap absolute: MAX_ABSOLUTE_ATTEMPTS — no matter what, beyond this we
+// cancel. Safety net against runaway loops.
+//
+// All decisions are auditable: every call appends a worklog entry with
+// the score, signals, and reasons, so any decision can be reviewed.
+// =============================================================================
+
+export const MAX_ABSOLUTE_ATTEMPTS = 200
+export const MAX_RENEWAL_EXTENSIONS = 5
+export const MIN_ATTEMPTS_BEFORE_RENEWAL = 3
+
+export type SubAgentTaskProgress = {
+  totalTasks: number
+  completedTasks: number
+  pendingTasks: number
+  inProgressTasks: number
+  completionPct: number
+  hasPlan: boolean
+}
+
+export type RenewalSignals = {
+  recentSuccessCount: number
+  recentWindowSize: number
+  taskProgress: SubAgentTaskProgress
+  memoryPersistedRecently: boolean
+  palaceNodesPersisted: number
+  hasPersistedAnywhere: boolean
+}
+
+export type RenewalVerdict = {
+  verdict: "extend" | "cancel"
+  extraAttempts: number
+  score: number
+  reasons: string[]
+  capReached: boolean
+}
+
+export type RenewalDecisionOptions = {
+  attemptsUsed: number
+  extensionsUsed: number
+  /** Optional override; defaults to MAX_ABSOLUTE_ATTEMPTS. */
+  absoluteCap?: number
+}
+
+/**
+ * Pure function. Read-only inspection of the sub-agent's state.
+ * Reuses the same listSessionTasks the runtime uses for the top-level
+ * Ralph gate — that's the single source of truth.
+ */
+export function gatherRenewalSignals(
+  rootDir: string,
+  subSessionId: string,
+  profileId: string,
+  recentWorklogTail: Array<{ type: string; ok?: boolean; tool?: string }>,
+  recentWindowSize: number = 5,
+): RenewalSignals {
+  const tail = recentWorklogTail.slice(-recentWindowSize)
+  const recentSuccessCount = tail.filter(e => e.type === "tool.finish" && e.ok === true).length
+
+  const tasks = listSessionTasks(rootDir, subSessionId, profileId)
+  const completedTasks = tasks.filter(t => t.status === "completed").length
+  const pendingTasks = tasks.filter(t => t.status === "pending").length
+  const inProgressTasks = tasks.filter(t => t.status === "in_progress").length
+  const totalTasks = tasks.length
+  const completionPct = totalTasks > 0 ? completedTasks / totalTasks : 0
+
+  const memoryPersistedRecently = tail.some(e =>
+    e.tool === "WorkspaceMemoryFiling" || e.tool === "BootWrite",
+  )
+
+  // Count palace nodes authored in this sub-agent's session — these are
+  // the durable artifacts the sub-agent created.
+  let palaceNodesPersisted = 0
+  let hasPersistedAnywhere = false
+  try {
+    const db = getDb(rootDir)
+    const row = db
+      .prepare(
+        `SELECT COUNT(*) as c FROM palace_nodes
+         WHERE room = ? AND superseded_at IS NULL
+           AND wing NOT IN ('LOG_ACTIONS', 'active_tasks')`,
+      )
+      .get(subSessionId) as { c: number } | undefined
+    palaceNodesPersisted = row?.c ?? 0
+    hasPersistedAnywhere = palaceNodesPersisted > 0
+  } catch {
+    // DB read failure is logged elsewhere; verifier should not crash.
+  }
+
+  return {
+    recentSuccessCount,
+    recentWindowSize: tail.length,
+    taskProgress: {
+      totalTasks,
+      completedTasks,
+      pendingTasks,
+      inProgressTasks,
+      completionPct,
+      hasPlan: totalTasks > 0,
+    },
+    memoryPersistedRecently,
+    palaceNodesPersisted,
+    hasPersistedAnywhere,
+  }
+}
+
+/**
+ * Pure function. Decides whether to extend a sub-agent's budget or
+ * cancel it. Multi-signal scoring with a hard absolute cap.
+ */
+export function decideRenewal(
+  signals: RenewalSignals,
+  options: RenewalDecisionOptions,
+): RenewalVerdict {
+  const { attemptsUsed, extensionsUsed } = options
+  const cap = options.absoluteCap ?? MAX_ABSOLUTE_ATTEMPTS
+  const reasons: string[] = []
+
+  // Hard cap: no matter what the signals say, beyond this we stop.
+  if (attemptsUsed >= cap) {
+    return {
+      verdict: "cancel",
+      extraAttempts: 0,
+      score: 0,
+      reasons: [`absolute cap reached (${attemptsUsed}/${cap})`],
+      capReached: true,
+    }
+  }
+  if (extensionsUsed >= MAX_RENEWAL_EXTENSIONS) {
+    return {
+      verdict: "cancel",
+      extraAttempts: 0,
+      score: 0,
+      reasons: [`max extensions reached (${extensionsUsed}/${MAX_RENEWAL_EXTENSIONS})`],
+      capReached: true,
+    }
+  }
+  if (attemptsUsed < MIN_ATTEMPTS_BEFORE_RENEWAL) {
+    return {
+      verdict: "cancel",
+      extraAttempts: 0,
+      score: 0,
+      reasons: [`too early for renewal (${attemptsUsed} attempts < ${MIN_ATTEMPTS_BEFORE_RENEWAL})`],
+      capReached: false,
+    }
+  }
+
+  let score = 0
+
+  // Signal 1: recent tool success rate
+  if (signals.recentSuccessCount >= 3) {
+    score += 2
+    reasons.push(`strong recent progress (${signals.recentSuccessCount}/${signals.recentWindowSize} tool successes)`)
+  } else if (signals.recentSuccessCount >= 1) {
+    score += 1
+    reasons.push(`some recent progress (${signals.recentSuccessCount}/${signals.recentWindowSize} tool successes)`)
+  } else {
+    reasons.push(`no recent progress (0/${signals.recentWindowSize} tool successes)`)
+  }
+
+  // Signal 2: TodoWrite plan + completion — primary source of truth.
+  if (!signals.taskProgress.hasPlan) {
+    reasons.push("no TodoWrite plan found — sub-agent skipped the mandatory plan step")
+    // No plan is a strong negative signal but not auto-cancel; the
+    // sub-agent may have done real work anyway.
+  } else {
+    if (signals.taskProgress.completionPct >= 0.7) {
+      score += 2
+      reasons.push(`tasks mostly done (${Math.round(signals.taskProgress.completionPct * 100)}% of ${signals.taskProgress.totalTasks})`)
+    } else if (signals.taskProgress.completionPct >= 0.3) {
+      score += 1
+      reasons.push(`tasks in progress (${Math.round(signals.taskProgress.completionPct * 100)}% of ${signals.taskProgress.totalTasks})`)
+    } else {
+      reasons.push(`tasks just started (${Math.round(signals.taskProgress.completionPct * 100)}% of ${signals.taskProgress.totalTasks})`)
+    }
+  }
+
+  // Signal 3: persistence
+  if (signals.memoryPersistedRecently) {
+    score += 1
+    reasons.push("persisted useful work in the last few iterations")
+  }
+  if (signals.palaceNodesPersisted > 0) {
+    score += 1
+    reasons.push(`${signals.palaceNodesPersisted} palace node(s) created by this sub-agent`)
+  }
+
+  // Decision table.
+  let extraAttempts = 0
+  let verdict: "extend" | "cancel"
+  if (score >= 4) {
+    extraAttempts = 30
+    verdict = "extend"
+  } else if (score >= 2) {
+    extraAttempts = 15
+    verdict = "extend"
+  } else if (score >= 1) {
+    extraAttempts = 10
+    verdict = "extend"
+  } else {
+    extraAttempts = 0
+    verdict = "cancel"
+  }
+
+  return { verdict, extraAttempts, score, reasons, capReached: false }
+}
+
+// =============================================================================
 // Auto-delegate gate
 // =============================================================================
 //

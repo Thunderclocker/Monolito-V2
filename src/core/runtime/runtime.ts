@@ -3057,11 +3057,32 @@ The runtime intercepted this turn because the model started running multi-step B
 
 Reason from gate: ${reason}
 
-Your job:
-1. Complete the user's original request (re-read it from the parent session's recent messages if you need to).
-2. Persist anything important to the Memory Palace.
-3. Emit <verified>SUCCESS</verified> when done, or TASK_FAILED:<reason> if impossible.
-4. The runtime will wake the main session up with your result. Do NOT try to send a message to the user — just return your final result and the runtime will relay it.`
+## MANDATORY: Your first action MUST be TodoWrite
+
+Before doing any other tool call, call TodoWrite with your full plan. The runtime's renewal-review verifier reads this list to decide whether to give you more turns when you hit the limit. Without it, the verifier will cancel you.
+
+Each item in TodoWrite must:
+- Have non-empty "content" (imperative, e.g. "List memory_drawers tables")
+- Have non-empty "activeForm" (present continuous, e.g. "Listing memory_drawers tables")
+- Be marked with status: "pending" | "in_progress" | "completed"
+- Exactly ONE may be in_progress at a time
+
+Example first call:
+  TodoWrite(todos=[
+    {content: "Locate the target file", activeForm: "Locating target file", status: "in_progress"},
+    {content: "Read the file in chunks", activeForm: "Reading file in chunks", status: "pending"},
+    {content: "Persist findings to Memory Palace", activeForm: "Persisting findings", status: "pending"},
+  ])
+
+When you finish an item, immediately call TodoWrite again marking it completed and promoting the next one to in_progress. The runtime uses the in_progress item to track your actual progress.
+
+## Your job
+1. Plan with TodoWrite (mandatory, before any other tool).
+2. Complete the user's original request (re-read it from the parent session's recent messages if you need to).
+3. Persist anything important to the Memory Palace.
+4. Mark every TodoWrite item completed when done.
+5. Emit <verified>SUCCESS</verified> when done, or TASK_FAILED:<reason> if impossible.
+6. The runtime will wake the main session up with your result. Do NOT try to send a message to the user — just return your final result and the runtime will relay it.`
 
     appendWorklog(this.rootDir, sessionId, {
       type: "note",
