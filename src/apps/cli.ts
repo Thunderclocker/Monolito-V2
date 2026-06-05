@@ -1,4 +1,5 @@
 import { spawn, execSync } from "node:child_process"
+import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
 import { DaemonClient } from "../core/client/daemonClient.ts"
@@ -42,9 +43,13 @@ async function ensureDaemon(client: DaemonClient) {
       }
     }
 
-    const daemonPath = `${rootDir}/src/apps/daemon.ts`
+    const directPath = join(rootDir, "src/apps/daemon.ts")
+    const packagedPath = join(rootDir, "app", "src", "apps", "daemon.ts")
+    const usePackaged = existsSync(packagedPath) && !existsSync(directPath)
+    const daemonPath = usePackaged ? packagedPath : directPath
+    const childCwd = usePackaged ? join(rootDir, "app") : rootDir
     const child = spawn(process.execPath, ["--experimental-strip-types", daemonPath], {
-      cwd: rootDir,
+      cwd: childCwd,
       detached: true,
       stdio: "ignore",
     })
