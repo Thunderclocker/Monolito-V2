@@ -795,6 +795,17 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
 
         await runGit(rootDir, ["reset", "--hard", `origin/${branch}`])
         await runGit(rootDir, ["clean", "-fd"])
+        // Reinstall deps: the new git tree may have added/removed/changed
+        // packages in package.json. `git clean -fd` does not touch
+        // node_modules (gitignored), so the previous install persists
+        // unless we refresh it. Without this, the freshly-spawned daemon
+        // can crash on missing imports and the restart verification polls
+        // out at 15s.
+        await execFileAsync("npm", ["install", "--include=dev"], {
+          cwd: rootDir,
+          timeout: 120_000,
+          env: { ...process.env, NODE_ENV: "development" },
+        })
         await restartDaemon(client, rootDir)
         connectionHealthy = client.isConnected()
         subscribedSessionId = null
