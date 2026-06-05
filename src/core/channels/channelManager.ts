@@ -137,13 +137,32 @@ function dispatchRuntimeMessage(runtime: MonolitoV2Runtime, sessionId: string, t
   runtime.ensureSession(sessionId, title)
   void (async () => {
     const delivery = telegram ? { channel: "telegram", targetId: String(telegram.chatId) } : undefined
+    // Telegram's typing action expires after ~5s. We need to re-send it
+    // during long generations so the user sees continuous "typing..." in
+    // the chat. model_stream events fire on every token chunk, so we
+    // debounce to one typing-action every 3s to respect Telegram's
+    // ~1 chat action per second per chat rate limit.
+    const TYPING_DEBOUNCE_MS = 3_000
+    let lastTypingSentAt = 0
+    const sendTyping = () => {
+      if (!telegram) return
+      const now = Date.now()
+      if (now - lastTypingSentAt < TYPING_DEBOUNCE_MS) return
+      lastTypingSentAt = now
+      void telegramApi(telegram.token, "sendChatAction", {
+        chat_id: telegram.chatId,
+        action: "typing",
+      }).catch(() => {})
+    }
     for await (const event of runtime.processMessageEvents(sessionId, text, { delivery })) {
       if (!telegram) continue
-      if (event.type === "tool_execute_start" || event.type === "recoverable_error" || event.type === "model_invoke_start") {
-        await telegramApi(telegram.token, "sendChatAction", {
-          chat_id: telegram.chatId,
-          action: "typing",
-        }).catch(() => {})
+      if (
+        event.type === "tool_execute_start" ||
+        event.type === "recoverable_error" ||
+        event.type === "model_invoke_start" ||
+        event.type === "model_stream"
+      ) {
+        sendTyping()
       }
     }
     if (runtime.consumeRestartRequest()) {
