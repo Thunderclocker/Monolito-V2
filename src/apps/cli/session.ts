@@ -520,6 +520,21 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       return
     }
 
+    // Start thinking animation when the LLM starts generating. Without
+    // this, Telegram-originated turns (where the user is NOT typing into
+    // the CLI directly, so the onInputData path that sets thinkingVisible
+    // never runs) show no spinner while Amanda is generating. The
+    // animation runs until either a tool.start event replaces it with
+    // the tool-specific animation, or a message.received event stops it.
+    //
+    // Note: 'model_invoke_start' is an internal runtime event that
+    // does NOT appear in the AgentEvent IPC type (see protocol.ts).
+    // The previous check on event.type === "model_invoke_start" could
+    // never match, which is why the thinking spinner was never shown
+    // for Telegram-originated turns. The spinner is now started on
+    // 'message.received' (user role) below and stopped on
+    // 'message.received' (assistant role).
+
     // Start animation on tool.start
     if (event.type === "tool.start") {
       const line = renderToolStart(event.tool, event.input)
@@ -549,6 +564,26 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     }
 
     const blocks = formatter.render(event)
+    if (event.type === "message.received" && event.role === "user") {
+      // Show the Thinking... spinner the MOMENT a user message arrives
+      // (regardless of source: CLI-typed, Telegram-delivered, /slash
+      // command, etc.). Without this, there is a window between the
+      // user message arrival and the runtime emitting model_invoke_start
+      // during which the CLI shows nothing — the user sees silence and
+      // assumes the system is hung. CLI-typed input has a similar
+      // pre-event window (between Enter pressed and the daemon
+      // echoing back the model_invoke_start event) but it is shorter
+      // because processMessage() sets busy=true synchronously. Setting
+      // busy/thinkingVisible here covers Telegram-originated turns,
+      // /slash command echoes, and any other non-CLI path.
+      if (!composer.permissionPrompt) {
+        composer.busy = true
+        composer.thinkingVisible = true
+        composer.toolThinkingText = ""
+        startThinkingAnimation()
+        redraw()
+      }
+    }
     if (event.type === "message.received" && event.role === "assistant") {
       composer.thinkingVisible = false
       if (composer.masterMenuEphemeral) {
