@@ -71,7 +71,7 @@ import { readWebSearchConfig, writeWebSearchConfig, type WebSearchProvider } fro
 import { getDateContext, getGitContext } from "../context/gitContext.ts"
 import { getWorkspaceContext } from "../context/workspaceContext.ts"
 import { normalizeToolInputPayload } from "./toolInput.ts"
-import { AgentOrchestrator, evaluateTopLevelRalphGate, TOP_LEVEL_RALPH_MAX_ATTEMPTS } from "./orchestrator.ts"
+import { AgentOrchestrator, evaluateTopLevelRalphGate, TOP_LEVEL_RALPH_MAX_ATTEMPTS, checkDelegateThreshold } from "./orchestrator.ts"
 import { renderToolFinish, renderToolStart, renderToolStartText } from "../renderer/toolRenderer.ts"
 import { checkToolPermission, runLifecycleHooks, runPostToolHooks } from "./permissions.ts"
 
@@ -1035,6 +1035,12 @@ export class MonolitoV2Runtime {
   // stuck on the same error every interval.
   private _memoryConsolidationFailures = 0
   private _lastMemoryConsolidationFailureAt = 0
+  // Auto-delegate gate state. Per-session, reset at the start of each
+  // top-level turn. When the gate fires, _delegationTriggered is set
+  // with the reason + the user message that should be passed to the
+  // sub-agent.
+  private _turnExecutedTools: Map<string, string[]> = new Map()
+  private _delegationTriggered: { sessionId: string; reason: string; lastUserText: string; profileId: string } | null = null
   private costState = createCostState()
   private adultModeDisabledSessions = new Set<string>()
   private pendingPermissions = new Map<string, { resolve: (decision: "allow" | "deny" | "ask") => void }>()
@@ -2445,11 +2451,17 @@ Review the existing skill library and apply the curation heuristics in your inst
               effectiveRagSession = await prepareSemanticRagSession(this.rootDir, refreshed, profileId)
             }
           }
+          // Reset the auto-delegate gate at the start of each turn /
+          // each Ralph iteration. The callback below records tool
+          // names and checks the threshold.
+          this._turnExecutedTools.set(sessionId, [])
+          this._delegationTriggered = null
           turn = await this.consumeAgentLoop(
             runAgentLoop(
               effectiveRagSession,
               this.rootDir,
-              async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, abortSignal: abortController.signal, sessionId, orchestrator: this.orchestrator, runtime: this }, toolUseId, profileId),
+              async (tool, input, context, toolUseId) =>
+                this.executeToolGated(sessionId, tool, input, { ...context, abortSignal: abortController.signal, sessionId, orchestrator: this.orchestrator, runtime: this }, toolUseId, profileId),
               {
                 rootDir: this.rootDir,
                 cwd: effectiveCwd,
@@ -2532,6 +2544,15 @@ Review the existing skill library and apply the curation heuristics in your inst
         }
 
         if (!turn) throw new Error("No turn produced by agent loop")
+
+        // Auto-delegate gate check: if the agent loop was aborted because
+        // the model started running multi-step Bash work without first
+        // planning or delegating, take over and spawn a sub-agent.
+        if (this._delegationTriggered) {
+          const deleg = this._delegationTriggered
+          this._delegationTriggered = null
+          turn = await this.autoDelegateToSubAgent(deleg, turn)
+        }
 
         // Seal the batch group (if any delegate_background_task calls happened this turn).
         const batchJobGroupId = this.currentBatchGroups.get(sessionId)
@@ -2962,6 +2983,130 @@ Review the existing skill library and apply the curation heuristics in your inst
       runtime: this,
     })
     return JSON.stringify(output, null, 2)
+  }
+
+  /**
+   * Wraps executeTool with the auto-delegate gate. Sub-agents
+   * (sessionId starts with "agent-") and synthetic SkillsAgent turns
+   * are exempt — the gate is only for the user-facing main session.
+   *
+   * Records the tool name in _turnExecutedTools so the threshold
+   * check works on subsequent calls. When the gate fires, sets
+   * _delegationTriggered and throws a sentinel error so the model
+   * sees a tool failure (and stops) while the runtime prepares the
+   * sub-agent spawn.
+   */
+  private async executeToolGated(
+    sessionId: string,
+    toolName: string,
+    input: Record<string, unknown>,
+    context: ToolContext,
+    toolUseId?: string,
+    profileId?: string,
+  ) {
+    const exempt = sessionId?.startsWith("agent-") || this._isSyntheticSkillsTurn
+    if (!exempt) {
+      const executed = this._turnExecutedTools.get(sessionId) ?? []
+      const gate = checkDelegateThreshold(executed, toolName)
+      // Always record, even when not Bash, so the executed list is
+      // truthful and the planning-tool check works.
+      this._turnExecutedTools.set(sessionId, [...executed, toolName])
+      if (gate.shouldDelegate) {
+        const lastUserText = (() => {
+          try {
+            const s = getSession(this.rootDir, sessionId)
+            const recent = s?.messages ?? []
+            for (let i = recent.length - 1; i >= 0; i--) {
+              if (recent[i].role === "user") return recent[i].text || ""
+            }
+          } catch {}
+          return ""
+        })()
+        this._delegationTriggered = {
+          sessionId,
+          reason: gate.reason,
+          lastUserText,
+          profileId: profileId ?? context.profileId ?? "default",
+        }
+        // Throwing makes the agent loop see a tool error and stop
+        // trying more tools in this turn. The post-loop handler in
+        // runTurnWithContext then runs the auto-delegate flow.
+        throw new Error(`[DELEGATION_TRIGGERED] ${gate.reason}`)
+      }
+    }
+    return this.executeTool(sessionId, toolName, input, context, toolUseId, profileId)
+  }
+
+  /**
+   * Called by runTurnWithContext after the agent loop produced a turn
+   * (or aborted because of the delegate gate). Spawns a background
+   * sub-agent with the user's last message as the task, sets a
+   * wake-up so the main session gets a proactive turn when the
+   * sub-agent finishes, and returns a synthetic AssistantTurnResult
+   * whose finalText tells the user what happened.
+   */
+  private async autoDelegateToSubAgent(
+    deleg: { sessionId: string; reason: string; lastUserText: string; profileId: string },
+    previousTurn: AssistantTurnResult,
+  ): Promise<AssistantTurnResult> {
+    const { sessionId, reason, lastUserText, profileId } = deleg
+    const taskText = lastUserText || "(the user did not provide a message; check the worklog)"
+    const injectedContext = `## AUTO-DELEGATION (runtime decision)
+
+The runtime intercepted this turn because the model started running multi-step Bash work in the main user-facing session without first planning (TodoWrite) or delegating (AgentSpawn / delegate_background_task). This is the rule: the main session is for the user; heavy work goes to sub-agents.
+
+Reason from gate: ${reason}
+
+Your job:
+1. Complete the user's original request (re-read it from the parent session's recent messages if you need to).
+2. Persist anything important to the Memory Palace.
+3. Emit <verified>SUCCESS</verified> when done, or TASK_FAILED:<reason> if impossible.
+4. The runtime will wake the main session up with your result. Do NOT try to send a message to the user — just return your final result and the runtime will relay it.`
+
+    appendWorklog(this.rootDir, sessionId, {
+      type: "note",
+      summary: `[Auto-delegate] Gate fired: ${reason}. Spawning sub-agent with the user's request.`,
+    })
+
+    let spawnResult: { agentId?: string; sessionId?: string } | null = null
+    let spawnError: string | null = null
+    try {
+      spawnResult = await this.orchestrator.spawnBackgroundTask(
+        sessionId,
+        profileId,
+        taskText,
+        "Auto-delegated from main session by runtime gate",
+        undefined,
+        { isolation: "none", injected_context: injectedContext },
+      )
+    } catch (e) {
+      spawnError = e instanceof Error ? e.message : String(e)
+    }
+
+    let userMessage: string
+    if (spawnError) {
+      userMessage = `⚠️ El runtime intentó delegar este trabajo a un sub-agente pero falló: ${spawnError}. Por favor intentá vos con un plan más chico o pedí más ayuda.`
+      appendWorklog(this.rootDir, sessionId, {
+        type: "note",
+        summary: `[Auto-delegate] Sub-agent spawn failed: ${spawnError}`,
+      })
+    } else {
+      userMessage = `🔁 Delegué este trabajo a un sub-agente en segundo plano. Te aviso por acá cuando termine con el resultado.`
+      appendWorklog(this.rootDir, sessionId, {
+        type: "note",
+        summary: `[Auto-delegate] Sub-agent spawned (id=${spawnResult?.agentId ?? "?"}, session=${spawnResult?.sessionId ?? "?"}). Wake-up queued.`,
+      })
+      // Schedule the wake-up so the main session gets a proactive turn
+      // when the sub-agent reports back. flushPendingBackgroundWakeup
+      // handles the actual trigger when the worker finishes.
+      this.enqueueBackgroundWakeup(sessionId, profileId)
+    }
+
+    return {
+      ...previousTurn,
+      finalText: userMessage,
+      error: undefined,
+    }
   }
 
   private async executeTool(

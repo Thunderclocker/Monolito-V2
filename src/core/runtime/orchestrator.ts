@@ -736,6 +736,136 @@ export function evaluateTopLevelRalphGate(
   return { blocked: true, shouldRetry: true, feedbackPrompt, unfinished }
 }
 
+// =============================================================================
+// Auto-delegate gate
+// =============================================================================
+//
+// Goal: keep the user-facing main session from being eaten by multi-step
+// shell work. The system prompt instructs the model to delegate with
+// TodoWrite / AgentSpawn when a task has 3+ steps, but the model often
+// ignores that and starts running Bash directly. This gate observes the
+// stream of tool calls in the current turn and, once it sees the model
+// going down a Bash-heavy path WITHOUT first planning (TodoWrite) or
+// delegating (AgentSpawn / delegate_background_task), recommends that
+// the runtime auto-delegate the work to a sub-agent.
+//
+// This is the runtime-level analog of the user-facing rule "the main
+// session is for the user; heavy work goes to sub-agents." The model
+// never sees a warning — the runtime just takes over and spawns a
+// background worker that finishes the job (or fails with structured
+// evidence) and wakes the main session up when done.
+// =============================================================================
+
+/** Tools that count as "the model is planning" or "the model delegated". */
+export const PLANNING_TOOLS = new Set([
+  "TodoWrite",
+  "TodoList",
+  "TodoUpdate",
+  "AgentSpawn",
+  "AgentList",
+  "AgentSendMessage",
+  "AgentStop",
+  "delegate_background_task",
+  "TriggerBackgroundStudy",
+])
+
+/** Tools that are cheap, side-effect free, or pure reads — not Bash-heavy. */
+export const LIGHT_TOOLS = new Set([
+  "Read",
+  "Glob",
+  "Grep",
+  "list_files",
+  "pwd",
+  "WebFetch",
+  "WebSearch",
+  "ImageSearch",
+  "AnalyzeImage",
+  "VisionAnalyze",
+  "TodoList",
+  "BootRead",
+  "BootListWings",
+  "WorkspaceMemoryRecall",
+  "KgQuery",
+  "QuerySessionStatus",
+  "QueryCost",
+  "QuerySessionStats",
+  "CompactSession",
+  "SessionForensics",
+  "list_active_workers",
+  "ListSkills",
+  "skill_view",
+  "ListMcpResourcesTool",
+  "ReadMcpResourceTool",
+])
+
+export type DelegateGateResult = {
+  /** True when the runtime should auto-delegate the work. */
+  shouldDelegate: boolean
+  /** Bash tool count in the current turn at evaluation time. */
+  bashCount: number
+  /** Whether the model already called a planning/delegation tool. */
+  planningToolUsed: boolean
+  /** Human-readable reason (for worklog). */
+  reason: string
+}
+
+/**
+ * Pure function. Given the list of tool names already executed (or
+ * currently executing) in the current turn, decide whether the runtime
+ * should refuse the current tool and auto-delegate to a sub-agent.
+ *
+ * Trigger conditions (any of):
+ *  - >= 2 Bash calls without a planning tool used first, OR
+ *  - >= 1 Bash call AFTER a heavy call (>= 3 prior non-light calls)
+ *    without a planning tool used first.
+ *
+ * If a planning tool has been used (TodoWrite, AgentSpawn, etc.) the
+ * gate is silent — the model is following the rules.
+ */
+export function checkDelegateThreshold(
+  toolNamesExecuted: ReadonlyArray<string>,
+  currentToolName: string,
+  options?: { bashThreshold?: number },
+): DelegateGateResult {
+  const bashThreshold = options?.bashThreshold ?? 2
+  const planningToolUsed = toolNamesExecuted.some(t => PLANNING_TOOLS.has(t))
+  const bashCount = toolNamesExecuted.filter(t => t === "Bash" || t === currentToolName).length
+
+  if (planningToolUsed) {
+    return {
+      shouldDelegate: false,
+      bashCount,
+      planningToolUsed: true,
+      reason: "Planning/delegation tool already used in this turn",
+    }
+  }
+
+  if (currentToolName !== "Bash") {
+    return {
+      shouldDelegate: false,
+      bashCount,
+      planningToolUsed: false,
+      reason: "Current tool is not Bash; gate only fires on Bash",
+    }
+  }
+
+  if (bashCount >= bashThreshold) {
+    return {
+      shouldDelegate: true,
+      bashCount,
+      planningToolUsed: false,
+      reason: `Detected ${bashCount} Bash calls in this turn without TodoWrite/AgentSpawn — the model is doing multi-step shell work in the main session.`,
+    }
+  }
+
+  return {
+    shouldDelegate: false,
+    bashCount,
+    planningToolUsed: false,
+    reason: `Bash count ${bashCount} below threshold ${bashThreshold}`,
+  }
+}
+
 function buildRalphLoopFailingBashPrompt(
   task: string,
   command: string,
