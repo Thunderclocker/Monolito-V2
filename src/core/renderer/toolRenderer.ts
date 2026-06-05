@@ -472,15 +472,13 @@ export function renderToolFinish(tool: string, ok: boolean, output: unknown): To
       }
       const exitCode = getNumber(value, "exitCode")
       const failed = typeof exitCode === "number" && exitCode !== 0
-      if (failed) return { label: "error", tone: "error", text: `Command exited ${exitCode}` }
+      if (failed) return { label: "error", tone: "error", text: `(Bash exited ${exitCode})` }
       const stdout = getString(value, "stdout") ?? ""
       const stderr = getString(value, "stderr") ?? ""
-      const command = getString(value, "command") ?? ""
-      const artifact = command ? detectBashArtifact(command) : null
-      if (!stdout.trim() && !stderr.trim() && artifact) {
-        return { label, tone, text: `Command completed: produced ${artifact}` }
+      if (!stdout.trim() && !stderr.trim()) {
+        return { label, tone, text: "(No output)" }
       }
-      return { label: failed ? "error" : label, tone: failed ? "error" : tone, text: failed ? `Command exit ${exitCode}: no output` : "Command completed: no output" }
+      return { label, tone, text: "" }
     }
     case "Read": {
       return { label, tone, text: `Read ${humanizePath(getString(value, "path") ?? "file")}` }
