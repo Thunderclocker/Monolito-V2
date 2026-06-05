@@ -124,7 +124,12 @@ export function getPaths(rootDir: string, profileId: string = "default") {
   const runDir = join(baseDir, "run")
   const logsDir = join(baseDir, "logs")
   const profilesDir = join(baseDir, "profiles")
-  const workspaceDir = join(profilesDir, profileId, "workspace")
+  // Workspace del agente: escritorio libre en la raíz de MONOLITO_ROOT.
+  // No depende de profileId (single-user); el profileId se mantiene solo
+  // para BOOT wings, memoria y sub-agentes.
+  const workspaceDir = join(baseDir, "workspace")
+  // Scratchpad vive adentro del workspace (es donde el agente trabaja).
+  const scratchpadDir = join(workspaceDir, "scratchpad")
 
   const stateDir = join(baseDir, "memory")
   const socketSuffix = createHash("sha1").update(rootDir).digest("hex").slice(0, 12)
@@ -134,7 +139,6 @@ export function getPaths(rootDir: string, profileId: string = "default") {
   const lockFile = join(runDir, "daemon-lock.json")
   const ownerFile = join(runDir, "daemon-owner.json")
   const envFile = join(baseDir, ".env")
-  const scratchpadDir = join(baseDir, "scratchpad")
 
   const tcpHost = "127.0.0.1"
   const tcpPort = 7355

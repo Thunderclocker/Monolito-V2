@@ -37,12 +37,15 @@ export function ensureMonolitoRoot() {
   mkdirSync(join(MONOLITO_ROOT, "logs", "instances"), { recursive: true })
   mkdirSync(join(MONOLITO_ROOT, "run"), { recursive: true })
   mkdirSync(join(MONOLITO_ROOT, "profiles"), { recursive: true })
-  mkdirSync(join(MONOLITO_ROOT, "scratchpad"), { recursive: true })
+  // Workspace del agente y su scratchpad viven en la raíz de MONOLITO_ROOT.
+  // El agente organiza su escritorio libremente dentro de `workspace/`.
+  mkdirSync(join(MONOLITO_ROOT, "workspace"), { recursive: true })
+  mkdirSync(join(MONOLITO_ROOT, "workspace", "scratchpad"), { recursive: true })
   return MONOLITO_ROOT
 }
 
 export function cleanupScratchpad() {
-  const scratchpadDir = join(MONOLITO_ROOT, "scratchpad")
+  const scratchpadDir = join(MONOLITO_ROOT, "workspace", "scratchpad")
   try {
     const files = readdirSync(scratchpadDir, { recursive: true }) as string[]
     const now = Date.now()

@@ -3,6 +3,7 @@ import { basename, join } from "node:path"
 import { truncate } from "../../../core/renderer/toolRenderer.ts"
 import { readModelSettings } from "../../../core/runtime/modelConfig.ts"
 import { getActiveProfile } from "../../../core/runtime/modelRegistry.ts"
+import { getPaths } from "../../../core/ipc/protocol.ts"
 import type { HeaderState } from "./types.ts"
 
 export function inferProvider(baseUrl: string) {
@@ -36,6 +37,8 @@ export function readProjectMetadata(rootDir: string) {
 
 export function getHeaderState(rootDir: string, sessionId: string, connected: boolean): HeaderState {
   const metadata = readProjectMetadata(rootDir)
+  // Workspace real del agente (no el cwd del proyecto).
+  const workspacePath = getPaths(rootDir).workspaceDir
 
   // Prefer active profile from registry
   const activeProfile = getActiveProfile()
@@ -43,7 +46,7 @@ export function getHeaderState(rootDir: string, sessionId: string, connected: bo
     return {
       projectName: metadata.projectName,
       version: metadata.version,
-      workspacePath: rootDir,
+      workspacePath,
       model: activeProfile.model || "(unset)",
       provider: activeProfile.name || inferProvider(activeProfile.baseUrl),
       reasoning: "default",
@@ -59,7 +62,7 @@ export function getHeaderState(rootDir: string, sessionId: string, connected: bo
   return {
     projectName: metadata.projectName,
     version: metadata.version,
-    workspacePath: rootDir,
+    workspacePath,
     model,
     provider: inferProvider(baseUrl),
     reasoning: "default",

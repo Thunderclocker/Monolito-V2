@@ -205,7 +205,7 @@ function stringifyToolResult(value: unknown) {
   }
 
   const monolitoRoot = ensureMonolitoRoot()
-  const outputPath = join(monolitoRoot, "scratchpad", `tool-output-${randomUUID()}.txt`)
+  const outputPath = join(monolitoRoot, "workspace", "scratchpad", `tool-output-${randomUUID()}.txt`)
   writeFileSync(outputPath, serialized, "utf8")
   const preview = truncateHeadTail(serialized, toolResultBudget)
   return `${preview}\n\n[... TRUNCADO: La salida superó el límite de seguridad de memoria. Usa comandos más específicos (ej. grep, head) o afina tu búsqueda.]\nFull output saved to: ${outputPath}\nUse the Read tool with offset/line_limit to inspect the rest.`

@@ -3839,7 +3839,7 @@ Actions:
         return formatToolError("La visión local no está habilitada en la configuración.")
       }
 
-      const scratchpadDir = join(MONOLITO_ROOT, "scratchpad")
+      const scratchpadDir = join(MONOLITO_ROOT, "workspace", "scratchpad")
       mkdirSync(scratchpadDir, { recursive: true })
       const tmpPath = join(scratchpadDir, `vision-${randomUUID()}.jpg`)
 
@@ -3927,7 +3927,7 @@ Actions:
         if (!response.ok) return formatToolError(`Error descargando imagen desde URL: HTTP ${response.status}`)
         buffer = Buffer.from(await response.arrayBuffer())
 
-        const scratchpadDir = join(MONOLITO_ROOT, "scratchpad")
+        const scratchpadDir = join(MONOLITO_ROOT, "workspace", "scratchpad")
         mkdirSync(scratchpadDir, { recursive: true })
         localPath = join(scratchpadDir, `vision-${randomUUID()}.${mediaType === "image/png" ? "png" : "jpg"}`)
         writeFileSync(localPath, buffer)
@@ -4020,7 +4020,7 @@ Actions:
         const description = data.content?.[0]?.text || ""
         if (!description) {
           const visionConfig = normalizeVisionConfig(readChannelsConfig().vision)
-          const tmpPath = join(MONOLITO_ROOT, "scratchpad", `vision-${randomUUID()}.jpg`)
+          const tmpPath = join(MONOLITO_ROOT, "workspace", "scratchpad", `vision-${randomUUID()}.jpg`)
           writeFileSync(tmpPath, buffer)
           const localDescription = await analyzeManagedImage(tmpPath, visionConfig)
           return { ok: true, description: localDescription, local_path: tmpPath }
@@ -4068,7 +4068,7 @@ Actions:
         const description = data.choices?.[0]?.message?.content || ""
         if (!description) {
           const visionConfig = normalizeVisionConfig(readChannelsConfig().vision)
-          const tmpPath = join(MONOLITO_ROOT, "scratchpad", `vision-${randomUUID()}.jpg`)
+          const tmpPath = join(MONOLITO_ROOT, "workspace", "scratchpad", `vision-${randomUUID()}.jpg`)
           writeFileSync(tmpPath, buffer)
           const localDescription = await analyzeManagedImage(tmpPath, visionConfig)
           return { ok: true, description: localDescription, local_path: tmpPath }
@@ -4882,7 +4882,7 @@ Actions:
         const imageUrl = first.url
 
         // 4. Save Locally
-        const scratchpadDir = join(MONOLITO_ROOT, "scratchpad")
+        const scratchpadDir = join(MONOLITO_ROOT, "workspace", "scratchpad")
         mkdirSync(scratchpadDir, { recursive: true })
 
         let localPath = ""
