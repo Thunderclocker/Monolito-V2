@@ -26,7 +26,11 @@ import { saveEmergencySnapshot } from "../context/contextSnapshot.ts"
 import { smartCompactSession, compactInMemoryTier1 } from "../context/smartCompactor.ts"
 
 const defaultLogger = createLogger("modelAdapter")
-const MAX_TURN_ITERATIONS = 16
+// Orchestrator turn iteration cap. Bumped from 16 to 20 to match sub-agents
+// (runBackgroundTask uses maxAttempts=20). The empty-response fallback
+// (see finalize fallback) is the hard ceiling — this is the soft cap that
+// signals the loop is escalating.
+const MAX_TURN_ITERATIONS = 20
 const DEFAULT_MAX_TURN_DURATION_MS = 120_000
 const MAX_BACKGROUND_TOKENS = 3_000
 const MAX_RATE_LIMIT_RETRIES = 5
@@ -287,7 +291,25 @@ function sumUsage(total: TurnUsage | undefined, next: TurnUsage | undefined): Tu
 }
 
 function finalize(finalText: string, steps: AssistantTurnStep[], startedAt: number, iterationCount: number, usage?: TurnUsage, error?: string, stopReason: AssistantTurnResult["meta"]["stopReason"] = "completed"): AssistantTurnResult {
-  const safeFinalText = redactSensitiveText(finalText)
+  // Empty-response fallback: if the turn terminated without producing
+  // a finalText (typically a 95s timeout or a model that produced only
+  // tool calls without a concluding message), surface a clear, actionable
+  // message to the user instead of leaving them in silence. Without
+  // this, the runtime suppresses the empty response and the user has no
+  // way to know that the agent got stuck.
+  let safeFinalText = redactSensitiveText(finalText)
+  if (!safeFinalText || safeFinalText.trim().length === 0) {
+    safeFinalText = [
+      "⚠️ Mi último turn terminó sin respuesta (probablemente timeout 95s o un loop de tool calls).",
+      "",
+      "Esto indica que me atasqué. Decime cómo seguir:",
+      "  • Si querés que reintente: mandame el mismo mensaje otra vez.",
+      "  • Si querés que cambie de approach: contame el approach que preferís.",
+      "  • Si la tarea no es realizable: cancelala con /reset o decime 'aborta'.",
+      "",
+      "Para investigar por mí, mirá `~/.monolito/logs/monolitod.log` y `~/.monolito/memory/memory.sqlite` (worklog de la sesión).",
+    ].join("\n")
+  }
   return {
     finalText: safeFinalText,
     steps: [...steps, { type: "final", message: safeFinalText }],
@@ -859,6 +881,13 @@ export async function* runAgentLoop(
   const messages = sessionToMessages(session)
   const executionStack = new TurnExecutionStack()
   const operationalFailures = new Map<string, number>()
+  // Same-error detector: track (toolName, errorSignature) for consecutive
+  // failures. Mirrors the same logic in runBackgroundTask (sub-agent loop)
+  // but applied to the orchestrator main loop. After 2 consecutive calls
+  // to the same tool with the same error signature, we inject a nudge
+  // forcing a different approach.
+  let lastFailedToolSig: { toolName: string; kind: string; detail: string } | null = null
+  let sameErrorRepeatCount = 0
 
   const lastUserText = getLastUserMessage(session)
   // Full Tool Access Model: Expose all tools directly to the agent.
@@ -1418,6 +1447,47 @@ No intentes ejecutarla más en este turno. Por favor, detén la ejecución en es
         } else if (!isFail && isOp) {
           operationalFailures.set(toolResult.toolName, 0)
         }
+
+        // Same-error detection (universal, applies to all tools not just
+        // operational ones). If the same tool fails with the same error
+        // signature 2+ times in a row, inject a nudge forcing a different
+        // approach. Mirrors the logic in runBackgroundTask but for the
+        // orchestrator main loop.
+        if (isFail) {
+          const sig = computeToolErrorSignature(toolResult.toolName, toolResult.content)
+          if (
+            lastFailedToolSig &&
+            lastFailedToolSig.toolName === sig.kind &&
+            lastFailedToolSig.kind === sig.kind &&
+            lastFailedToolSig.detail === sig.detail
+          ) {
+            sameErrorRepeatCount++
+          } else {
+            sameErrorRepeatCount = 0
+          }
+          lastFailedToolSig = { toolName: toolResult.toolName, kind: sig.kind, detail: sig.detail }
+
+          if (sameErrorRepeatCount >= 2) {
+            appendWorklog(rootDir, session.id, {
+              type: "note",
+              summary: `[Orchestrator] Same-error detection: ${toolResult.toolName} failed ${sameErrorRepeatCount + 1} times consecutively with the same signature (kind=${sig.kind}). Injecting nudge to force a different approach.`,
+            })
+            messages.push({
+              role: "user",
+              content: buildSameErrorNudgeForMain(
+                sameErrorRepeatCount + 1,
+                toolResult.toolName,
+                `${sig.kind}: ${sig.detail}`,
+              ),
+            })
+          }
+        } else {
+          // Successful tool call resets the same-error counter for that tool.
+          if (lastFailedToolSig && lastFailedToolSig.toolName === toolResult.toolName) {
+            sameErrorRepeatCount = 0
+            lastFailedToolSig = null
+          }
+        }
       }
 
       // --- TDD-REACT FAIL-SAFE ALERTS ---
@@ -1568,6 +1638,59 @@ function extractErrorText(content: string): string {
   }
   const lines = content.split("\n")
   return lines.slice(-10).join("\n").trim()
+}
+
+/**
+ * Build a stable signature for a failed tool call so the orchestrator can
+ * detect "same error N times in a row" and force a different approach.
+ * Mirrors the helper in orchestrator.ts (used for sub-agents) but adapted
+ * to the tool-call shape used by runAgentLoop.
+ */
+export function computeToolErrorSignature(toolName: string, content: string): { kind: string; detail: string } {
+  const raw = extractErrorText(content)
+  let kind = "unknown"
+  if (/command not found/i.test(raw)) kind = "command-not-found"
+  else if (/permission|eacces|eperm/i.test(raw)) kind = "permission"
+  else if (/not found|enoent/i.test(raw)) kind = "not-found"
+  else if (/timeout|aborted/i.test(raw)) kind = "timeout"
+  else if (/syntax|parse|invalid/i.test(raw)) kind = "syntax"
+  // Strip volatile parts so two consecutive identical errors share a signature.
+  const normalized = raw
+    .replace(/\b[0-9a-f]{8,}\b/gi, "<id>")
+    .replace(/\b\d+\b/g, "<n>")
+    .replace(/\/[^\s]+/g, "<path>")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 200)
+  return { kind, detail: normalized }
+}
+
+/**
+ * Render the same-error nudge block. Injected into the message stream when
+ * the agent has hit the same tool with the same error signature N times
+ * in a row. Forces a substantially different approach instead of
+ * retrying the identical call.
+ */
+export function buildSameErrorNudgeForMain(repeatCount: number, toolName: string, lastError: string): string {
+  return [
+    `## SAME-ERROR DETECTION (orchestrator)`,
+    `You have called '${toolName}' ${repeatCount} times consecutively with the same error signature.`,
+    "",
+    "STOP and reconsider before the next call. The same retry is producing the same error. Try a SUBSTANTIALLY different approach:",
+    "1. Is the tool fundamentally unable to do what you need? (e.g. you need Bash but it's blocked, or sqlite3 is not installed and you should Read the file directly via better-sqlite3 from node)",
+    "2. Is your INPUT wrong? (wrong path, wrong arg, wrong syntax — re-read the tool schema and the actual error message)",
+    "3. Is the WORKSPACE state wrong? (missing file, stale state — check `ls`, `pwd`, recent `git status` before retrying)",
+    "4. Is the APPROACH wrong? (e.g. you keep editing a file but the bug is in a different file — re-read the task carefully)",
+    "",
+    "If 3+ approaches have failed, surface the blocker with structure:",
+    "  1. WHAT YOU TRIED (list the actual approaches you attempted)",
+    "  2. WHAT FAILED (the specific failure mode for each)",
+    "  3. WHAT YOU NEED (a tool you don't have? info only the user has?)",
+    "",
+    "You may also report TASK_FAILED:<reason> if the task is impossible. Do NOT keep retrying the same call.",
+    "",
+    `Last error signature: ${lastError}`,
+  ].join("\n")
 }
 
 async function detectAndSaveLearning(rootDir: string, messages: ConversationMessage[], logger: Logger) {
