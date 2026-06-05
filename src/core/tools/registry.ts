@@ -386,7 +386,13 @@ async function resolveWorkspacePath(
     }
 
     const permissionId = randomUUID()
+    let resolveDecision: (decision: "allow" | "deny" | "ask") => void = () => {}
+    let timeoutHandle: NodeJS.Timeout | null = null
     const decisionPromise = new Promise<"allow" | "deny" | "ask">((resolvePromise) => {
+      resolveDecision = resolvePromise
+      // Hand the resolver to the runtime so external responders (CLI TUI
+      // prompt, future Telegram inline button, etc.) can call
+      // respondPermission(permissionId, decision) to resolve the promise.
       runtime.registerPendingPermission!(permissionId, resolvePromise)
     })
 
@@ -399,7 +405,40 @@ async function resolveWorkspacePath(
       reason: `Acceso fuera de directorios permitidos por la herramienta ${toolName || "FileSystem"}.`,
     })
 
+    // SAFETY NET: if no responder (CLI user, Telegram user, anything) replies
+    // within 60s, default to "deny" and surface the timeout to the
+    // worklog. Without this, the agent hangs forever in CLI-less or
+    // Telegram contexts (the CLI's TUI prompt is the only responder; in
+    // Telegram there is no responder, so the promise never resolves and
+    // the tool call never completes).
+    const PERMISSION_TIMEOUT_MS = 60_000
+    timeoutHandle = setTimeout(() => {
+      try {
+        resolveDecision("deny")
+        try {
+          const { appendWorklog } = require("../session/store.ts") as typeof import("../session/store.ts")
+          // Use the rootDir from the function parameter (rootDir is the
+          // workspace root passed in by the caller; runtime.rootDir may
+          // not be typed on the loose runtime interface).
+          appendWorklog(rootDir, sessionId, {
+            type: "note",
+            summary: `PERMISSION_TIMEOUT: no responder for permissionId=${permissionId} (tool=${toolName || "FileSystem"}, path=${absolute}). Defaulted to 'deny' after ${PERMISSION_TIMEOUT_MS}ms. The agent will see this as a denial.`,
+          })
+        } catch {
+          // best-effort; fall through to the runtime emit below
+        }
+        runtime.emit?.({
+          type: "error",
+          sessionId,
+          error: `Permission request timed out after ${PERMISSION_TIMEOUT_MS}ms (no responder). Defaulted to 'deny' for tool=${toolName || "FileSystem"}, path=${absolute}.`,
+        })
+      } catch {
+        // best-effort
+      }
+    }, PERMISSION_TIMEOUT_MS)
+
     const decision = await decisionPromise
+    if (timeoutHandle) clearTimeout(timeoutHandle)
 
     if (decision === "allow" || decision === "ask") {
       if (decision === "allow") {
