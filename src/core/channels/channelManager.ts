@@ -7,12 +7,25 @@ import { createTelegramPoller, type TelegramCallbackQuery, type TelegramMessage,
 import type { MonolitoV2Runtime } from "../runtime/runtime.ts"
 import { ensureDirs } from "../ipc/protocol.ts"
 import { deployManagedSttContainer, getManagedSttStatus, normalizeSttConfig, probeManagedStt, transcribeManagedAudioFile } from "../stt/managed.ts"
-import { markTelegramUpdateProcessed, persistTelegramUpdate } from "../session/store.ts"
+import { appendWorklog, markTelegramUpdateProcessed, persistTelegramUpdate } from "../session/store.ts"
 
 const logger = createLogger("channels")
 let activePoller: TelegramPoller | null = null
 let activeDeliveryUnregister: (() => void) | null = null
 const pendingTelegramInputs = new Map<number, { kind: "channels-token" | "channels-chats" | "websearch-test" }>()
+
+/**
+ * Map of pending permission requests that were forwarded to a Telegram
+ * chat as inline buttons. Keyed by chatId so that when a button is
+ * clicked we can find the pending permission and resolve it. Cleaned
+ * up on resolution.
+ *
+ * The 60s safety net in registry.ts (commit 1bc5a9c) is the fallback
+ * for when the user does NOT respond in Telegram within 60s. This map
+ * is the FAST path — the user can click Allow/Deny in Telegram and the
+ * agent unblocks within seconds instead of 60s.
+ */
+const pendingTelegramPermissions = new Map<number, { permissionId: string; tool: string; path: string; reason: string }>()
 
 
 const TELEGRAM_BOT_COMMANDS = [
@@ -438,6 +451,51 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
 
           await answerTelegramCallback(config.telegram.token, callback.id)
 
+          // Permission inline-button callback. Resolves the pending
+          // permission and edits the original message to show the decision.
+          const data = callback.data ?? ""
+          if (data.startsWith("perm:")) {
+            const parts = data.split(":")
+            if (parts.length === 3 && (parts[2] === "allow" || parts[2] === "deny")) {
+              const permissionId = parts[1]!
+              const decision = parts[2] as "allow" | "deny"
+              const resolved = runtime.resolvePendingPermission(permissionId, decision)
+              // Find the chat and the original message to update.
+              const chatId = callbackMessage?.chat.id ?? callback.from.id
+              const pending = pendingTelegramPermissions.get(chatId)
+              if (pending) pendingTelegramPermissions.delete(chatId)
+
+              if (resolved) {
+                appendWorklog(runtime.rootDir, `telegram-${chatId}`, {
+                  type: "note",
+                  summary: `PERMISSION_VIA_TELEGRAM: user clicked '${decision}' on permissionId=${permissionId} (tool=${pending?.tool ?? "?"}, path=${pending?.path ?? "?"})`,
+                })
+                // Edit the original message to reflect the decision so
+                // the user has visual confirmation.
+                if (callbackMessage && pending) {
+                  const label = decision === "allow" ? "✅ Allowed" : "❌ Denied"
+                  const confirmation = `🔐 **Permission ${label}**\n\nTool: \`${pending.tool}\`\nPath: \`${pending.path}\`\n\nThe agent will ${decision === "allow" ? "proceed" : "be denied access"}.`
+                  await editTelegramMenu(
+                    config.telegram!.token!,
+                    chatId,
+                    callbackMessage.message_id,
+                    confirmation,
+                    [],
+                  ).catch(() => {})
+                }
+              } else {
+                // The permission already resolved (probably via the
+                // 60s safety net). Tell the user.
+                await sendTelegramText(
+                  config.telegram!.token!,
+                  chatId,
+                  "⚠️ Permission already resolved (likely the 60s safety net denied it). No action taken.",
+                ).catch(() => {})
+              }
+              return
+            }
+          }
+
           try {
             const channelResult = await handleChannelsCallback(config.telegram.token, callback)
             if (channelResult) {
@@ -609,6 +667,50 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
       },
     },
     )
+
+    // Subscribe to runtime events to surface permission requests to
+    // the Telegram user as inline buttons. Without this, permission
+    // requests in Telegram sessions would either hang until the 60s
+    // safety net (commit 1bc5a9c) or stay pending forever if no
+    // safety net existed. The CLI path still uses the TUI prompt as
+    // before — this only kicks in for sessions whose sessionId starts
+    // with "telegram-".
+    const unsubscribePermissions = runtime.onEvent((event) => {
+      if (event.type !== "permission.request") return
+      const permEvent = event as { sessionId: string; permissionId: string; tool: string; path: string; reason: string }
+      if (!permEvent.sessionId.startsWith("telegram-")) return
+      const chatIdRaw = permEvent.sessionId.slice("telegram-".length)
+      const chatId = Number(chatIdRaw)
+      if (!Number.isFinite(chatId) || chatId === 0) return
+
+      // Track the pending permission so the callback handler can resolve
+      // it when the user clicks Allow/Deny.
+      pendingTelegramPermissions.set(chatId, {
+        permissionId: permEvent.permissionId,
+        tool: permEvent.tool,
+        path: permEvent.path,
+        reason: permEvent.reason,
+      })
+
+      const text = `🔐 **Permission request**\n\nTool: \`${permEvent.tool}\`\nPath: \`${permEvent.path}\`\n\n${permEvent.reason}\n\nThe agent is waiting for your decision. You can also just wait — Monolito will auto-deny after 60s if you don't respond.`
+      // Inline keyboard: Allow / Deny. Callback data encodes the
+      // permissionId and decision so the callback handler can resolve.
+      const buttons: TelegramInlineButton[][] = [
+        [
+          { text: "✅ Allow", callback_data: `perm:${permEvent.permissionId}:allow` },
+          { text: "❌ Deny", callback_data: `perm:${permEvent.permissionId}:deny` },
+        ],
+      ]
+      void sendTelegramMenu(config.telegram!.token!, chatId, text, buttons).catch((err) => {
+        logger.warn(`Failed to send Telegram permission prompt: ${err instanceof Error ? err.message : String(err)}`)
+      })
+    })
+    // Store the unsubscribe so stopChannels can clean up.
+    const previousUnregister = activeDeliveryUnregister
+    activeDeliveryUnregister = () => {
+      unsubscribePermissions()
+      previousUnregister?.()
+    }
 
     activePoller.start()
   }
