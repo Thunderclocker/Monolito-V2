@@ -111,11 +111,11 @@ export async function exchangeCodeForTokens(
     throw new Error(`Grok token exchange failed (HTTP ${response.status}): ${errorText.trim()}`);
   }
 
-  const payload = await response.json() as any;
+  const payload = await response.json() as { access_token?: string; refresh_token?: string; id_token?: string; expires_in?: number };
   const now = Math.floor(Date.now() / 1000);
   return {
-    access_token: payload.access_token,
-    refresh_token: payload.refresh_token,
+    access_token: payload.access_token ?? "",
+    refresh_token: payload.refresh_token ?? "",
     id_token: payload.id_token,
     expires_at: now + (payload.expires_in || 3600),
   };
@@ -146,10 +146,10 @@ export async function refreshGrokAccessToken(tokens: GrokTokens): Promise<string
     throw new Error(`Failed to refresh Grok access token (HTTP ${response.status}): ${errorText.trim()}`);
   }
 
-  const payload = await response.json() as any;
+  const payload = await response.json() as { access_token?: string; refresh_token?: string; id_token?: string; expires_in?: number };
   const now = Math.floor(Date.now() / 1000);
   const nextTokens: GrokTokens = {
-    access_token: payload.access_token,
+    access_token: payload.access_token ?? tokens.access_token,
     refresh_token: payload.refresh_token || tokens.refresh_token,
     id_token: payload.id_token || tokens.id_token,
     expires_at: now + (payload.expires_in || 3600),

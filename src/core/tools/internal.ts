@@ -307,6 +307,7 @@ export type ToolContext = {
     gracefulRestart?: (reason?: string) => void
     registerPendingPermission?: (permissionId: string, resolve: (decision: "allow" | "deny" | "ask") => void) => void
     emit?: (event: any) => void
+    hasAdultMode?: (sessionId: string) => boolean
   }
   querySessionStatus?: (sessionId: string) => string
   queryCost?: () => string

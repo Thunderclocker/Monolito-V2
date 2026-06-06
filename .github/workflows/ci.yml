@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main, feature/**, fix/**, feat/**]
+  pull_request:
+    branches: [main]
+
+jobs:
+  typecheck-and-test:
+    name: TypeScript + Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript typecheck (strict mode)
+        run: npx tsc --noEmit
+
+      - name: Run test suite
+        run: npm test
+
+  smoke-test:
+    name: Agent smoke test (MiniMax M3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Only run smoke test on main branch pushes to avoid wasting API
+    # credits on every PR. PRs still get the typecheck + unit tests.
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: typecheck-and-test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Smoke test against MiniMax M3
+        env:
+          MONOLITO_ROOT: /tmp/monolito-smoke
+          ANTHROPIC_BASE_URL: ${{ secrets.MiniMax_BASE_URL }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.MiniMax_API_KEY }}
+          ANTHROPIC_MODEL: MiniMax-M3
+          MONOLITO_ACTIVE_PROVIDER: minimax
+        run: |
+          mkdir -p /tmp/monolito-smoke
+          timeout 90 node --experimental-strip-types scripts/test-minimax-m3.ts 2>&1 | \
+            (grep -q "Final response" && echo "smoke-test: PASS") || \
+            (echo "smoke-test: FAIL" && exit 1)

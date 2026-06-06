@@ -14,6 +14,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { listSessionTasks, writeSessionTask, getDb } from "../session/store.ts"
+import type { SessionTask } from "../session/store.ts"
 import { evaluateTopLevelRalphGate } from "./orchestrator.ts"
 
 // All tests share a single rootDir because `getPaths` is anchored to
@@ -50,7 +51,7 @@ test("evaluateTopLevelRalphGate: blocks when there are pending tasks", () => {
     status: "completed",
     createdAt: "2026-06-05T13:13:05.372Z",
     updatedAt: "2026-06-05T13:13:05.372Z",
-  } as any, profileId)
+  } as SessionTask, profileId)
   writeSessionTask(sharedRoot, sessionId, "task-2", {
     id: "task-2",
     sessionId,
@@ -59,7 +60,7 @@ test("evaluateTopLevelRalphGate: blocks when there are pending tasks", () => {
     status: "pending",
     createdAt: "2026-06-05T13:13:05.372Z",
     updatedAt: "2026-06-05T13:13:05.372Z",
-  } as any, profileId)
+  } as SessionTask, profileId)
   writeSessionTask(sharedRoot, sessionId, "task-3", {
     id: "task-3",
     sessionId,
@@ -68,7 +69,7 @@ test("evaluateTopLevelRalphGate: blocks when there are pending tasks", () => {
     status: "in_progress",
     createdAt: "2026-06-05T13:13:05.372Z",
     updatedAt: "2026-06-05T13:13:05.372Z",
-  } as any, profileId)
+  } as SessionTask, profileId)
 
   const result = evaluateTopLevelRalphGate(
     sharedRoot, sessionId, profileId,
@@ -108,7 +109,7 @@ test("evaluateTopLevelRalphGate: passes when all tasks are completed", () => {
     status: "completed",
     createdAt: "2026-06-05T13:13:05.372Z",
     updatedAt: "2026-06-05T13:13:05.372Z",
-  } as any, profileId)
+  } as SessionTask, profileId)
   writeSessionTask(sharedRoot, sessionId, "task-2", {
     id: "task-2",
     sessionId,
@@ -117,7 +118,7 @@ test("evaluateTopLevelRalphGate: passes when all tasks are completed", () => {
     status: "completed",
     createdAt: "2026-06-05T13:13:05.372Z",
     updatedAt: "2026-06-05T13:13:05.372Z",
-  } as any, profileId)
+  } as SessionTask, profileId)
 
   const result = evaluateTopLevelRalphGate(sharedRoot, sessionId, profileId, "do A and B", 1, "all done")
 
@@ -149,7 +150,7 @@ test("evaluateTopLevelRalphGate: ignores superseded tasks", () => {
     status: "in_progress",
     createdAt: "2026-06-05T12:00:00.000Z",
     updatedAt: "2026-06-05T12:00:00.000Z",
-  } as any, profileId)
+  } as SessionTask, profileId)
   // Manually mark superseded
   const db = getDb(sharedRoot)
   db.prepare(

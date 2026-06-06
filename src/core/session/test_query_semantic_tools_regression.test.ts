@@ -1,0 +1,62 @@
+/**
+ * Regression tests for querySemanticTools / upsertSemanticTool
+ *
+ * Pre-existing bug (fixed in commit 4656f37): the dynamic skills indexing
+ * loop in registry.ts accessed `existing[0].name` on a `string[]` return
+ * value. This test pins down the actual return type so the bug cannot
+ * return if someone refactors either side.
+ *
+ * These tests are "shape tests" — they verify the contract of the API
+ * (returns string[], items are names not objects) without actually
+ * calling the embedding model.
+ */
+
+import test from "node:test"
+import assert from "node:assert/strict"
+import { upsertSemanticTool, querySemanticTools } from "./store.ts"
+import { ensureDirs } from "../ipc/protocol.ts"
+
+const TEST_ROOT = "/tmp/monolito-regression-semantic"
+
+test("upsertSemanticTool + querySemanticTools: returns string[] not object[]", async () => {
+  await ensureDirs(TEST_ROOT)
+  // Clean slate
+  const { getDb } = await import("./store.ts")
+  const db = getDb(TEST_ROOT)
+  db.exec(`DELETE FROM memory_drawers WHERE wing = 'CONF_TOOLS' AND room = 'registry'`)
+
+  // Insert known tools
+  await upsertSemanticTool(TEST_ROOT, "Read", "Read a file from disk")
+  await upsertSemanticTool(TEST_ROOT, "Write", "Write content to a file")
+  await upsertSemanticTool(TEST_ROOT, "Bash", "Execute a shell command")
+
+  const result = await querySemanticTools(TEST_ROOT, "file operations", 10)
+
+  // The contract: result is string[] of names, not objects
+  assert.ok(Array.isArray(result), "result must be an array")
+  for (const item of result) {
+    assert.equal(typeof item, "string", `each item must be a string, got ${typeof item}: ${JSON.stringify(item)}`)
+  }
+})
+
+test("querySemanticTools: returns empty array on errors (not throws)", async () => {
+  // Pass an invalid rootDir that will cause the underlying sqlite to fail.
+  // Per the function's contract, errors should be caught and return [].
+  // This pins down the failure mode so callers can rely on array semantics.
+  const result = await querySemanticTools("/nonexistent/path/that/does/not/exist", "anything")
+  assert.ok(Array.isArray(result), "errors must yield array, not throw")
+  assert.equal(result.length, 0, "errors must yield empty array")
+})
+
+test("querySemanticTools: respects limit parameter", async () => {
+  const { getDb } = await import("./store.ts")
+  const db = getDb(TEST_ROOT)
+  db.exec(`DELETE FROM memory_drawers WHERE wing = 'CONF_TOOLS' AND room = 'registry'`)
+
+  for (let i = 0; i < 5; i++) {
+    await upsertSemanticTool(TEST_ROOT, `Tool${i}`, `Description for tool ${i}`)
+  }
+
+  const limited = await querySemanticTools(TEST_ROOT, "tool", 2)
+  assert.ok(limited.length <= 2, `limit=2 should yield at most 2 results, got ${limited.length}`)
+})

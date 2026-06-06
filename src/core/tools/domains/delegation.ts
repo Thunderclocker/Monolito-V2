@@ -56,13 +56,13 @@ export const delegationTools: ToolDefinition[] = [
     const profileId = requireString(input, "profileId")
     const task = requireString(input, "task")
     const description = optionalString(input, "description")
-    const type = (optionalString(input, "type") as any) || "worker"
+    const type = (optionalString(input, "type") as "worker" | "researcher" | "verifier" | undefined) || "worker"
     const isolation = (optionalString(input, "isolation") as "none" | "worktree" | undefined) || "none"
     const injectedContext = requireString(input, "injected_context")
 
     if (!context.orchestrator) return formatToolError("Agent Orchestrator not available.")
 
-    const parentSessionId = (context as any).sessionId
+    const parentSessionId = context.sessionId
     if (!parentSessionId) return formatToolError("Parent Session ID not found.")
     if (parentSessionId.startsWith("agent-")) {
       return formatToolError("Los sub-agentes no pueden spawnear otros agentes. Ejecutá la tarea directamente y devolvé los resultados.")
@@ -119,7 +119,7 @@ export const delegationTools: ToolDefinition[] = [
   concurrencySafe: true,
   async run(_input, context) {
     if (!context.orchestrator) return formatToolError("Agent Orchestrator not available.")
-    const parentSessionId = (context as any).sessionId
+    const parentSessionId = context.sessionId
     if (!parentSessionId) return formatToolError("Parent Session ID not found.")
     return {
       ok: true,
@@ -151,7 +151,7 @@ export const delegationTools: ToolDefinition[] = [
     const profileId = optionalString(input, "profileId") ?? context.profileId ?? "default"
 
     if (!context.orchestrator) return formatToolError("Agent Orchestrator not available.")
-    const parentSessionId = (context as any).sessionId
+    const parentSessionId = context.sessionId
     if (!parentSessionId) return formatToolError("Parent Session ID not found.")
     if (parentSessionId.startsWith("agent-")) {
       return formatToolError("Los sub-agentes no pueden delegar tareas en background. Ejecutá la tarea directamente y devolvé los resultados.")

@@ -701,27 +701,32 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
     const unsubscribePermissions = runtime.onEvent((event) => {
       if (event.type !== "permission.request" && event.type !== "destructive.confirm") return
       const isDestructive = event.type === "destructive.confirm"
-      const permEvent = event as any
-      if (!permEvent.sessionId.startsWith("telegram-")) return
-      const chatIdRaw = permEvent.sessionId.slice("telegram-".length)
+      // event is narrowed to permission.request or destructive.confirm
+      // by the type check above. Both shapes include sessionId.
+      if (!event.sessionId.startsWith("telegram-")) return
+      const chatIdRaw = event.sessionId.slice("telegram-".length)
       const chatId = Number(chatIdRaw)
       if (!Number.isFinite(chatId) || chatId === 0) return
 
-      const permissionId = isDestructive ? permEvent.confirmId : permEvent.permissionId
-      const path = isDestructive ? permEvent.command : permEvent.path
+      const permissionId = isDestructive
+        ? (event as { confirmId: string }).confirmId
+        : (event as { permissionId: string }).permissionId
+      const path = isDestructive
+        ? (event as { command: string }).command
+        : (event as { path: string }).path
 
       // Track the pending permission so the callback handler can resolve
       // it when the user clicks Allow/Deny.
       pendingTelegramPermissions.set(chatId, {
         permissionId,
-        tool: permEvent.tool,
+        tool: event.tool,
         path,
-        reason: permEvent.reason,
+        reason: event.reason,
       })
 
       const text = isDestructive
-        ? `⚠️ **Destructive Action Detected**\n\nTool: \`${permEvent.tool}\`\nAction: \`${path}\`\n\nReason: *${permEvent.reason}*\n\nThe agent is waiting for your decision. It will auto-deny after 30s if you don't respond.`
-        : `🔐 **Permission Request**\n\nTool: \`${permEvent.tool}\`\nPath: \`${path}\`\n\n${permEvent.reason}\n\nThe agent is waiting for your decision. It will auto-deny after 60s if you don't respond.`
+        ? `⚠️ **Destructive Action Detected**\n\nTool: \`${event.tool}\`\nAction: \`${path}\`\n\nReason: *${event.reason}*\n\nThe agent is waiting for your decision. It will auto-deny after 30s if you don't respond.`
+        : `🔐 **Permission Request**\n\nTool: \`${event.tool}\`\nPath: \`${path}\`\n\n${event.reason}\n\nThe agent is waiting for your decision. It will auto-deny after 60s if you don't respond.`
 
       // Inline keyboard: Allow / Deny. Callback data encodes the
       // permissionId and decision so the callback handler can resolve.
