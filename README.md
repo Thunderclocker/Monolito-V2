@@ -4,9 +4,24 @@ Local orchestration runtime for AI agents: daemon + terminal UI, SQLite-first me
 
 ## Install
 
+The installer is itself a shell script. We recommend downloading and inspecting it before running it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Thunderclocker/Monolito-V2/main/install.sh -o install.sh
+less install.sh   # optional: read it before running
+bash install.sh
+```
+
+If you trust the source and want a one-liner, the conventional form still works:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Thunderclocker/Monolito-V2/main/install.sh | bash
 ```
+
+**Prerequisites:** Node.js 22+ and npm must already be installed. The installer
+will not auto-install Node (we don't use `curl | sudo bash` for that internally
+— it would be inconsistent with the runtime's own security checks). If Node is
+missing, the installer will print concrete install instructions.
 
 ## Uninstall
 
