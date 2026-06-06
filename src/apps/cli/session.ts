@@ -1,7 +1,7 @@
 import { stdin, stdout } from "node:process"
 import { spawn, execSync, execFile } from "node:child_process"
 import { promisify } from "node:util"
-import { readDaemonLock, type AgentEvent, type SessionRecord, type SessionSummary } from "../../core/ipc/protocol.ts"
+import { readDaemonLock, type AgentEvent, type SessionRecord, type SessionSummary, MAIN_SESSION_ID } from "../../core/ipc/protocol.ts"
 import {
   parseTaskNotification,
   renderToolFinish,
@@ -457,7 +457,7 @@ export async function ensureCliSession(client: DaemonClient, sessionId?: string)
   if (sessionId) {
     return (await client.ensureSession(sessionId, "Monolito v2 Resumed Session")) as SessionRecord
   }
-  return (await client.ensureSession("orchestrator", "Orchestrator")) as SessionRecord
+  return (await client.ensureSession(MAIN_SESSION_ID, "Orchestrator")) as SessionRecord
 }
 
 export async function openInteractiveSession(client: DaemonClient, sessionId?: string) {

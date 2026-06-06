@@ -4,7 +4,7 @@ import { execFile, spawn } from "node:child_process"
 import { existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { promisify } from "node:util"
-import { getPaths, encodeEnvelope, type AgentEvent, type SessionRecord } from "../ipc/protocol.ts"
+import { getPaths, encodeEnvelope, type AgentEvent, type SessionRecord, MAIN_SESSION_ID } from "../ipc/protocol.ts"
 import { createMcpClient, getDefaultMcpServers, type McpClient, type ResolvedMcpServerConfig } from "../mcp/client.ts"
 import {
   appendActionLog,
@@ -981,7 +981,7 @@ function resolveDeliveryContext(sessionId: string, delivery?: DeliveryContext): 
   const telegramChatId = getTelegramChatId(sessionId)
   if (telegramChatId) return { channel: "telegram", targetId: telegramChatId }
 
-  if (sessionId === "orchestrator") {
+  if (sessionId === MAIN_SESSION_ID) {
     try {
       const config = readChannelsConfig()
       if (config.telegram?.enabled && config.telegram.allowedChats && config.telegram.allowedChats.length > 0) {
@@ -1198,9 +1198,17 @@ export class MonolitoV2Runtime {
     this.isHeartbeatRunning = true
     this.lastHeartbeatTime = Date.now()
     try {
-      const sessions = listSessions(this.rootDir).filter(s => s.id !== "daemon-cmd" && !s.id.startsWith("agent-"))
-      const targetSessionId = sessions[0]?.id || "cli-default"
-      const targetSession = getSession(this.rootDir, targetSessionId)
+      // Always target the canonical main session. The single-session design
+      // (see MAIN_SESSION_ID) means there is exactly one user-facing session
+      // regardless of how many sub-agents, Telegram channels, or other
+      // internal sessions exist. If the main session row does not exist yet
+      // (e.g. fresh install, never sent a message) create it on demand.
+      const targetSessionId = MAIN_SESSION_ID
+      let targetSession = getSession(this.rootDir, targetSessionId)
+      if (!targetSession) {
+        ensureSession(this.rootDir, targetSessionId, "Main session")
+        targetSession = getSession(this.rootDir, targetSessionId)
+      }
       const targetProfileId = targetSession?.profileId || "default"
 
       // First run memory consolidation silently!
@@ -1210,12 +1218,40 @@ export class MonolitoV2Runtime {
       // runs on its own cadence: CREATE on tool-iteration count, CURATE on
       // session count. See maybeFireSkillsTriggers (called at end of user turn).
 
-      // Then run standard proactive heartbeat prompt!
+      // Then ask the model: is there anything urgent the user should know?
+      // The model itself decides what counts as urgent — we previously had
+      // a short-circuit here that skipped the turn if no explicit tasks
+      // were pending, which defeated the whole point of the proactive
+      // check. Removed in favor of letting the model judge.
       const prompt = `[SYSTEM EVENT: HEARTBEAT_CHECK]
-Read system state, pending tasks, and recent context.
-- If nothing requires urgent attention, reply exactly with: HEARTBEAT_OK
-- If something is urgent, reply with your suggestion.
-IMPORTANT: The human user did NOT send or write this message. Do not reference this automated system check in your response.`
+You are running a proactive autonomy check. The user is currently idle (no
+new messages in the configured idle window).
+
+Read the current state:
+- Recent conversation history (last 10-20 messages)
+- Memory palace recalls relevant to active tasks
+- Knowledge graph facts added or invalidated recently
+- Any background workers that completed since the last user message
+- Any error or stall alerts in the worklog
+- The current date and time
+
+Decide if the user would want a proactive notification. Examples of
+"yes, notify":
+- A background worker completed with a result the user is waiting for
+- A scheduled task fired and the user should know
+- Something in the conversation went wrong (tool failure, rate limit, etc.)
+- A pattern suggests the user might be stuck (repeating same tool)
+- A new fact the user asked the agent to remember is now queryable
+- The agent previously said "I'll let you know when X" and X is now done
+
+If none of the above apply, reply exactly with: HEARTBEAT_OK
+
+If something does apply, write a SHORT (1-3 sentences) message for the
+user. Be specific. "Just checking in" with no concrete content is a HEARTBEAT_OK.
+
+IMPORTANT: The human user did NOT send or write this message. Do not
+reference this automated system check in your response. Do not say
+"HEARTBEAT_OK" out loud — keep it as the exact token.`
       await this.runProactiveBackgroundTurn(targetSessionId, targetProfileId, 0, prompt)
     } finally {
       this.isHeartbeatRunning = false
@@ -2010,17 +2046,16 @@ Review the existing skill library and apply the curation heuristics in your inst
       const taskNotifications = collectRecentTaskNotifications(session)
       const sessionMessages = session.messages ?? []
 
-      // DEFENSIVE: If heartbeat has no real pending work, skip proactive notification.
-      // Completed tasks are already delivered to user; no need to bother them again.
-      const activeTaskCount = this.orchestrator.getTaskSnapshot(sessionId)
-        .filter(t => t.status === "pending" || t.status === "running").length
-      if (heartbeatPrompt && activeTaskCount === 0 && taskNotifications.length === 0) {
-        appendWorklog(this.rootDir, sessionId, {
-          type: "note",
-          summary: "Proactive heartbeat skipped: no pending tasks found.",
-        })
-        return
-      }
+      // The previous code short-circuited here if there were no pending
+      // tasks and no task notifications, but that defeated the entire
+      // point of the proactive heartbeat: the model never got a chance
+      // to decide if there was something urgent the user should know.
+      // We removed that short-circuit in the checkAndTriggerHeartbeat
+      // refactor — the model now always gets the HEARTBEAT_CHECK prompt
+      // and decides for itself whether to emit HEARTBEAT_OK or a real
+      // notification. If it says HEARTBEAT_OK, the runProactive
+      // BackgroundTurn handler at the end of this function discards
+      // the response silently (worklog entry included).
       const backgroundSession = taskNotifications.length > 0
         ? {
             ...session,

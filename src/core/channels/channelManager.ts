@@ -5,7 +5,7 @@ import { readChannelsConfig, writeChannelsConfig } from "./config.ts"
 import { readWebSearchConfig, writeWebSearchConfig } from "../websearch/config.ts"
 import { createTelegramPoller, type TelegramCallbackQuery, type TelegramMessage, type TelegramPoller } from "./telegramPoller.ts"
 import type { MonolitoV2Runtime } from "../runtime/runtime.ts"
-import { ensureDirs } from "../ipc/protocol.ts"
+import { ensureDirs, MAIN_SESSION_ID } from "../ipc/protocol.ts"
 import { deployManagedSttContainer, getManagedSttStatus, normalizeSttConfig, probeManagedStt, transcribeManagedAudioFile } from "../stt/managed.ts"
 import { appendWorklog, markTelegramUpdateProcessed, persistTelegramUpdate } from "../session/store.ts"
 
@@ -551,7 +551,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
           }
         }
         
-        const sessionId = "orchestrator"
+        const sessionId = MAIN_SESSION_ID
 
         const pending = pendingTelegramInputs.get(chatId)
         if (pending) {
