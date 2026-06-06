@@ -123,43 +123,95 @@ NODE_HELP
   fi
 }
 
+stop_existing_daemon() {
+  # Best-effort: if a previous monolito.service is running, stop it cleanly
+  # before we re-install. Without this, the old daemon keeps running with
+  # stale code while we re-write the unit, which leads to a confusing state
+  # where 'is-active' returns true for the OLD binary.
+  if ! command -v systemctl >/dev/null 2>&1; then
+    return 0
+  fi
+  if systemctl --user is-active monolito.service >/dev/null 2>&1; then
+    log "Deteniendo monolito.service previo antes de reinstalar..."
+    systemctl --user stop monolito.service 2>&1 | sed 's/^/  /' || true
+    # Give it a moment to flush and release the SQLite WAL
+    sleep 2
+  fi
+}
+
 enable_and_start_service() {
   if [ "$(uname -s)" != "Linux" ] || ! command -v systemctl >/dev/null 2>&1; then
-    log "systemd no detectado; el daemon no se auto-arrancará al login. Iniciálo manualmente con 'monolito'."
+    log "systemd no detectado; el daemon no se auto-arrancará al boot. Iniciálo manualmente con 'monolito'."
     return 0
   fi
 
+  # --- 1. enable-linger (REQUIRED for autostart without login) ---
+  # Without linger, user services only run while the user is logged in.
+  # On a headless server or after a reboot where the user hasn't logged
+  # in yet, the daemon would never start. This command typically needs
+  # to run as root (or with sudo). If it fails, the install CANNOT
+  # guarantee autostart, so we abort with a clear fix.
   log "Habilitando linger para el usuario ${USER}..."
-  loginctl enable-linger "${USER}" >/dev/null 2>&1 || log "WARN: loginctl enable-linger falló (puede requerir sudo)."
+  if ! loginctl enable-linger "${USER}" 2>&1 | sed 's/^/  /'; then
+    if [[ "$EUID" -ne 0 ]]; then
+      fail "loginctl enable-linger falló. Sin esto, el daemon NO va a auto-arrancar al boot.
+Solución: re-ejecutá el install con sudo, o corré 'sudo loginctl enable-linger ${USER}' manualmente."
+    else
+      fail "loginctl enable-linger falló por un motivo desconocido. Revisá: journalctl -u systemd-logind"
+    fi
+  fi
 
+  # --- 2. Materialize systemd unit ---
   log "Materializando unit de systemd con MONOLITO_ROOT hardcodeado..."
-  if ! node --experimental-strip-types src/apps/daemon.ts --write-unit-only >/dev/null 2>&1; then
-    log "WARN: no se pudo materializar el unit; abortando enable automático."
-    return 0
+  if ! node --experimental-strip-types src/apps/daemon.ts --write-unit-only 2>&1 | sed 's/^/  /'; then
+    fail "no se pudo materializar el unit file. Abortando para evitar dejar systemd en estado roto."
   fi
 
-  if ! systemctl --user daemon-reload >/dev/null 2>&1; then
-    log "WARN: systemctl --user daemon-reload falló."
-    return 0
+  # --- 3. daemon-reload ---
+  log "Recargando systemd..."
+  if ! systemctl --user daemon-reload 2>&1 | sed 's/^/  /'; then
+    fail "systemctl --user daemon-reload falló. El unit no se puede activar."
   fi
 
+  # --- 4. enable --now (idempotent) ---
   log "Habilitando monolito.service (enable --now)..."
-  if ! systemctl --user enable --now monolito.service >/dev/null 2>&1; then
-    log "WARN: systemctl --user enable --now falló. El service quedó creado pero no habilitado."
-    return 0
+  if ! systemctl --user enable --now monolito.service 2>&1 | sed 's/^/  /'; then
+    fail "systemctl --user enable --now monolito.service falló.
+El service no quedó habilitado. Solución:
+  systemctl --user enable --now monolito.service
+y revisá el error con 'journalctl --user -u monolito.service'."
   fi
 
+  # --- 5. Wait for active state (give the binary time to bind socket) ---
   local waited=0
-  while [ "${waited}" -lt 10 ] && ! systemctl --user is-active monolito.service >/dev/null 2>&1; do
+  while [ "${waited}" -lt 15 ] && ! systemctl --user is-active monolito.service >/dev/null 2>&1; do
     sleep 1
     waited=$((waited + 1))
   done
 
-  if systemctl --user is-active monolito.service >/dev/null 2>&1; then
-    log "Daemon corriendo bajo systemd (autostart al login)."
-  else
-    log "WARN: el service no quedó activo tras 10s. Corré 'systemctl --user status monolito.service' para diagnosticar."
+  # --- 6. Post-install validation: all three must be true ---
+  # We don't trust 'is-active' alone; we also verify 'is-enabled' and
+  # 'Linger=yes' so a half-broken install is reported as a failure.
+  local all_good=true
+  if ! systemctl --user is-active monolito.service >/dev/null 2>&1; then
+    log "ERROR: el service no quedó 'active' tras 15s. Estado actual:"
+    systemctl --user status monolito.service --no-pager 2>&1 | sed 's/^/  /' || true
+    all_good=false
   fi
+  if ! systemctl --user is-enabled monolito.service >/dev/null 2>&1; then
+    log "ERROR: el service no quedó 'enabled'. No va a auto-arrancar al boot."
+    all_good=false
+  fi
+  if ! loginctl show-user "${USER}" 2>/dev/null | grep -q "Linger=yes"; then
+    log "ERROR: el usuario ${USER} no tiene Linger=yes. El daemon NO va a arrancar al boot sin login."
+    all_good=false
+  fi
+
+  if [ "$all_good" = false ]; then
+    fail "la instalación del autostart de systemd falló. El install continúa pero vas a tener que diagnosticar. Revisar: journalctl --user -u monolito.service -n 50"
+  fi
+
+  log "Daemon corriendo bajo systemd (autostart al boot)."
 }
 
 main() {
@@ -176,6 +228,14 @@ main() {
   # fails with 'Failed to set up standard output: No such file or
   # directory' on first start.
   mkdir -p "${MONOLITO_DIR}/memory" "${MONOLITO_DIR}/logs" "${MONOLITO_DIR}/logs/instances" "${MONOLITO_DIR}/run" "${MONOLITO_DIR}/agents" "${WORKSPACE_DIR}/scratchpad"
+
+  # Stop the previous daemon BEFORE we touch files. This is critical for
+  # re-installs: the old daemon is holding the SQLite database open and
+  # the unit file in memory. If we re-materialize the unit while it's
+  # still running, the old daemon keeps using the OLD code in memory
+  # until the next restart, which is exactly the "I rebooted and the
+  # daemon is missing" failure mode.
+  stop_existing_daemon
 
   if [ -d "${APP_DIR}" ]; then
     log "Monolito directory already exists in ${APP_DIR}. Updating repository..."
@@ -219,6 +279,15 @@ EOF
   chmod +x "${LAUNCHER_PATH}"
 
   enable_and_start_service
+  # enable_and_start_service now uses 'fail' (exit 1) on any error, so
+  # we should never reach here if it broke. But we keep this defensive
+  # check so that a future regression in the function doesn't silently
+  # claim "Install path: ${APP_DIR}" success at the end.
+  local service_status
+  service_status="$(systemctl --user is-active monolito.service 2>/dev/null || echo 'inactive')"
+  if [ "$service_status" != "active" ]; then
+    log "WARN: el service terminó en estado '$service_status'. Investigar: journalctl --user -u monolito.service -n 50"
+  fi
 
   cat <<EOF
 
