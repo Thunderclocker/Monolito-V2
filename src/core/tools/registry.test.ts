@@ -370,10 +370,10 @@ test("clearMemoryPalace removes profile memory while preserving configuration", 
 test("Dynamic Skills System lifecycle: CreateSkill, ListSkills, skill_view, and DeleteSkill", async () => {
   const rootDir = createRootDir()
   try {
-    const createTool = getTool("CreateSkill")
-    const listTool = getTool("ListSkills")
+    const createTool = getTool("CreateSkill")!
+    const listTool = getTool("ListSkills")!
     const deleteTool = getTool("DeleteSkill")
-    const viewTool = getTool("skill_view")
+    const viewTool = getTool("skill_view")!
     assert.ok(createTool)
     assert.ok(listTool)
     assert.ok(deleteTool)
@@ -429,7 +429,7 @@ test("Dynamic Skills System lifecycle: CreateSkill, ListSkills, skill_view, and 
 test("Skills: provenance is set to 'user' for normal sessions and 'agent' for synthetic SkillsAgent turns", async () => {
   const rootDir = createRootDir()
   try {
-    const createTool = getTool("CreateSkill")
+    const createTool = getTool("CreateSkill")!
     const { getDynamicSkill } = await import("../session/store.ts")
     assert.ok(createTool)
 
@@ -479,7 +479,7 @@ test("Skills: provenance is set to 'user' for normal sessions and 'agent' for sy
 test("Skills: DeleteSkill protects user-provenance skills from synthetic turns but allows user-turn deletes", async () => {
   const rootDir = createRootDir()
   try {
-    const createTool = getTool("CreateSkill")
+    const createTool = getTool("CreateSkill")!
     const deleteTool = getTool("DeleteSkill")
     const { getDynamicSkill } = await import("../session/store.ts")
     assert.ok(createTool && deleteTool)
@@ -539,10 +539,10 @@ test("Skills: DeleteSkill protects user-provenance skills from synthetic turns b
 test("Skills: ArchiveSkill marks active=false and RestoreSkill reactivates", async () => {
   const rootDir = createRootDir()
   try {
-    const createTool = getTool("CreateSkill")
+    const createTool = getTool("CreateSkill")!
     const archiveTool = getTool("ArchiveSkill")
     const restoreTool = getTool("RestoreSkill")
-    const listTool = getTool("ListSkills")
+    const listTool = getTool("ListSkills")!
     const { getDynamicSkill, listDynamicSkills } = await import("../session/store.ts")
     assert.ok(createTool && archiveTool && restoreTool && listTool)
 
@@ -592,7 +592,7 @@ test("Skills: ArchiveSkill marks active=false and RestoreSkill reactivates", asy
 test("Skills: listDynamicSkills supports provenance and active filters", async () => {
   const rootDir = createRootDir()
   try {
-    const createTool = getTool("CreateSkill")
+    const createTool = getTool("CreateSkill")!
     const archiveTool = getTool("ArchiveSkill")
     const { listDynamicSkills } = await import("../session/store.ts")
     assert.ok(createTool && archiveTool)
@@ -639,8 +639,8 @@ test("Skills: listDynamicSkills supports provenance and active filters", async (
 test("Skills: incrementSkillTelemetry debounces within 60s window", async () => {
   const rootDir = createRootDir()
   try {
-    const createTool = getTool("CreateSkill")
-    const viewTool = getTool("skill_view")
+    const createTool = getTool("CreateSkill")!
+    const viewTool = getTool("skill_view")!
     const { getDynamicSkill, incrementSkillTelemetry } = await import("../session/store.ts")
     assert.ok(createTool && viewTool)
 
@@ -811,8 +811,8 @@ test("Todo tools: TodoWrite requires todos array with content+activeForm+status,
     const sessionId = "todo-test-session-1"
     ensureSession(rootDir, sessionId, "default")
 
-    const writeTool = getTool("TodoWrite")
-    const result = await writeTool.run({
+    const writeTool = getTool("TodoWrite")!
+    const result = await writeTool!.run({
       todos: [
         { content: "Run tests", activeForm: "Running tests", status: "in_progress" },
       ],
@@ -836,10 +836,10 @@ test("Todo tools: TodoWrite rejects when more than ONE todo is in_progress", asy
     const sessionId = "todo-test-session-2"
     ensureSession(rootDir, sessionId, "default")
 
-    const writeTool = getTool("TodoWrite")
+    const writeTool = getTool("TodoWrite")!
 
     // First call: one in_progress is fine
-    await writeTool.run({
+    await writeTool!.run({
       todos: [
         { content: "Task one", activeForm: "Doing task one", status: "in_progress" },
         { content: "Task two", activeForm: "Doing task two", status: "pending" },
@@ -847,7 +847,7 @@ test("Todo tools: TodoWrite rejects when more than ONE todo is in_progress", asy
     }, { rootDir, cwd: rootDir, sessionId, profileId: "default" })
 
     // Second call: TWO in_progress — should fail
-    const second = await writeTool.run({
+    const second = await writeTool!.run({
       todos: [
         { content: "Task one", activeForm: "Doing task one", status: "in_progress" },
         { content: "Task two", activeForm: "Doing task two", status: "in_progress" },
@@ -870,10 +870,10 @@ test("Todo tools: TodoWrite triggers verification nudge when 3+ items completed 
     const sessionId = "todo-test-session-3"
     ensureSession(rootDir, sessionId, "default")
 
-    const writeTool = getTool("TodoWrite")
+    const writeTool = getTool("TodoWrite")!
 
     // Send a partial list (2 of 3 done) — no nudge
-    const r2 = await writeTool.run({
+    const r2 = await writeTool!.run({
       todos: [
         { content: "Install dependencies", activeForm: "Installing dependencies", status: "completed" },
         { content: "Write code", activeForm: "Writing code", status: "completed" },
@@ -883,7 +883,7 @@ test("Todo tools: TodoWrite triggers verification nudge when 3+ items completed 
     assert.equal(r2.verificationNudge, undefined)
 
     // Now mark all 3 completed in a single call — nudge fires (none mentions verify)
-    const r3 = await writeTool.run({
+    const r3 = await writeTool!.run({
       todos: [
         { content: "Install dependencies", activeForm: "Installing dependencies", status: "completed" },
         { content: "Write code", activeForm: "Writing code", status: "completed" },
@@ -904,10 +904,10 @@ test("Todo tools: TodoWrite does NOT trigger verification nudge when at least on
     const sessionId = "todo-test-session-4"
     ensureSession(rootDir, sessionId, "default")
 
-    const writeTool = getTool("TodoWrite")
+    const writeTool = getTool("TodoWrite")!
 
     // 'Run tests' counts as a verify step — no nudge should fire
-    const r = await writeTool.run({
+    const r = await writeTool!.run({
       todos: [
         { content: "Install dependencies", activeForm: "Installing dependencies", status: "completed" },
         { content: "Write code", activeForm: "Writing code", status: "completed" },
@@ -927,11 +927,11 @@ test("Todo tools: TodoWrite replaces the list atomically (old items are removed 
     const sessionId = "todo-test-session-5"
     ensureSession(rootDir, sessionId, "default")
 
-    const writeTool = getTool("TodoWrite")
-    const listTool = getTool("TodoList")
+    const writeTool = getTool("TodoWrite")!
+    const listTool = getTool("TodoList")!
 
     // Initial list: 3 items
-    await writeTool.run({
+    await writeTool!.run({
       todos: [
         { content: "A", activeForm: "Doing A", status: "pending" },
         { content: "B", activeForm: "Doing B", status: "pending" },
@@ -940,7 +940,7 @@ test("Todo tools: TodoWrite replaces the list atomically (old items are removed 
     }, { rootDir, cwd: rootDir, sessionId, profileId: "default" })
 
     // Replace with 1 item — old items should be gone
-    await writeTool.run({
+    await writeTool!.run({
       todos: [
         { content: "D", activeForm: "Doing D", status: "pending" },
       ],

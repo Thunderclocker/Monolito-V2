@@ -4,6 +4,10 @@ import { coerceConfigRecord } from "../config/wingValue.ts"
 import { readConfigWing, writeConfigWing, appendActionLog } from "../session/store.ts"
 import { MONOLITO_ROOT } from "../system/root.ts"
 import { MODEL_PROTOCOL } from "./modelConstants.ts"
+import { createLogger } from "../logging/logger.ts"
+
+const logger = createLogger("model-config")
+
 
 export type ModelSettings = {
   modelConfig: {
@@ -178,7 +182,7 @@ export async function bootstrapConfigFromEnv(env: NodeJS.ProcessEnv = process.en
       }
     } catch (profileErr) {
       // If the profile write fails, the env settings alone are still useful.
-      console.error(`[bootstrapConfigFromEnv] failed to create default profile:`, profileErr)
+      logger.error("failed to create default profile:", { errorMessage: String(profileErr), errorStack: (profileErr instanceof Error ? profileErr.stack : undefined) })
     }
 
     appendActionLog(MONOLITO_ROOT, "Bootstrap de configuracion inicial desde .env", {
@@ -187,7 +191,7 @@ export async function bootstrapConfigFromEnv(env: NodeJS.ProcessEnv = process.en
       baseUrl: baseUrl || "(unset)",
     })
   } catch (err) {
-    console.error(`[bootstrapConfigFromEnv] failed:`, err)
+    logger.error("failed:", { errorMessage: String(err), errorStack: (err instanceof Error ? err.stack : undefined) })
   }
 }
 

@@ -2,6 +2,10 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { getPaths } from "../ipc/protocol.ts";
 import type { ConversationMessage } from "../runtime/providers/types.ts";
+import { createLogger } from "../logging/logger.ts"
+
+const logger = createLogger("context-snapshot")
+
 
 /**
  * Saves a full backup snapshot of the active conversation messages to the state/snapshots directory
@@ -23,7 +27,7 @@ export function saveEmergencySnapshot(
     writeFileSync(fullPath, JSON.stringify(messages, null, 2), "utf8");
     return fullPath;
   } catch (err) {
-    console.error(`[context-snapshot] Failed to save emergency snapshot: ${err}`);
+    logger.error("Failed to save emergency snapshot", { errorMessage: String(err), errorStack: (err instanceof Error ? err.stack : undefined) })
     // Return a path in workspace as fallback
     try {
       const fallbackPath = join(rootDir, `emergency-snapshot-${sessionId}-${Date.now()}.json`);

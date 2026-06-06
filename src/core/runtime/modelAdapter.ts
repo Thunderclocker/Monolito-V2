@@ -290,7 +290,7 @@ function sumUsage(total: TurnUsage | undefined, next: TurnUsage | undefined): Tu
   }
 }
 
-function finalize(finalText: string, steps: AssistantTurnStep[], startedAt: number, iterationCount: number, usage?: TurnUsage, error?: string, stopReason: AssistantTurnResult["meta"]["stopReason"] = "completed"): AssistantTurnResult {
+function finalize(finalText: string, steps: AssistantTurnStep[], startedAt: number, iterationCount: number, usage?: TurnUsage, error?: string, stopReason: NonNullable<AssistantTurnResult["meta"]>["stopReason"] = "completed"): AssistantTurnResult {
   // No hardcoded fallback. If the turn terminated without producing a
   // finalText, we return finalText="" with `error` populated and let
   // the caller (the model on the NEXT turn) see the real reason and

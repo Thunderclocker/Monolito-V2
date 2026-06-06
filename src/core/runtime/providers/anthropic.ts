@@ -63,8 +63,8 @@ export async function callAnthropicApi(
       usage = {
         inputTokens: event.message.usage.input_tokens,
         outputTokens: event.message.usage.output_tokens,
-        cacheReadInputTokens: event.message.usage.cache_read_input_tokens,
-        cacheCreationInputTokens: event.message.usage.cache_creation_input_tokens,
+        cacheReadInputTokens: event.message.usage.cache_read_input_tokens ?? undefined,
+        cacheCreationInputTokens: event.message.usage.cache_creation_input_tokens ?? undefined,
       }
       continue
     }

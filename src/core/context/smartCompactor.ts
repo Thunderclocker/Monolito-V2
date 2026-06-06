@@ -1,4 +1,8 @@
 import { getRawMessagesForSession, rewriteMessageInPlace, deleteMessages, appendWorklog, getSession, readBootWing } from "../session/store.ts";
+import { createLogger } from "../logging/logger.ts"
+
+const logger = createLogger("smart-compactor")
+
 
 export interface SmartCompactOptions {
   protectTailTurns?: number;
@@ -151,7 +155,7 @@ export async function smartCompactSession(
         userProfileFacts = facts.join("\n\n");
       }
     } catch (err) {
-      console.error(`[smart-compactor] Failed to read user profile facts: ${err}`);
+      logger.error("Failed to read user profile facts", { errorMessage: String(err), errorStack: (err instanceof Error ? err.stack : undefined) })
     }
 
     let summaryPrompt = `Genera un resumen conciso, factual y sumamente estructurado del historial intermedio de este chat.
@@ -195,7 +199,7 @@ ${userProfileFacts}`;
       freedChars: totalCompressibleChars - summaryText.length
     };
   } catch (err) {
-    console.error(`[smart-compactor] Failed to generate LLM summary: ${err}`);
+    logger.error("Failed to generate LLM summary", { errorMessage: String(err), errorStack: (err instanceof Error ? err.stack : undefined) })
     return { compacted: false, freedChars: 0 };
   }
 }

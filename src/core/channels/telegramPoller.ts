@@ -238,7 +238,7 @@ export function createTelegramPoller(
       return POLLING_INTERVAL_MS
 
     } catch (error) {
-      if (stopped) return
+      if (stopped) return POLLING_INTERVAL_MS
 
       const err = error as Error
 

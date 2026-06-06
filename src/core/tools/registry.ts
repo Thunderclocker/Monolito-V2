@@ -52,7 +52,7 @@ import {
 import { isEmbeddingsUnavailableError } from "../session/embeddings.ts"
 import { type AgentOrchestrator } from "../runtime/orchestrator.ts"
 import { redactSensitiveValue } from "../security/redact.ts"
-import { type Logger } from "../logging/logger.ts"
+import { type Logger, createLogger } from "../logging/logger.ts"
 import { CONFIG_WING_ORDER, type ConfigWingName } from "../config/configWings.ts"
 import { coerceConfigRecord } from "../config/wingValue.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "../runtime/modelConfig.ts"
@@ -4845,6 +4845,8 @@ Actions:
 
 const tools: ToolDefinition[] = rawTools.map(withSafeToolFailure)
 
+const logger = createLogger("tools")
+
 function isValidJson(value: string) {
   try {
     JSON.parse(value)
@@ -4992,7 +4994,7 @@ export async function indexToolsInPalace(rootDir: string) {
     try {
       await upsertSemanticTool(rootDir, tool.name, formattedDesc)
     } catch (err) {
-      console.error(`[indexToolsInPalace] Failed to index ${tool.name}:`, err)
+      logger.error("Failed to index tool", { toolName: tool.name, errorMessage: String(err), errorStack: err instanceof Error ? err.stack : undefined })
     }
   }
 
@@ -5003,7 +5005,7 @@ export async function indexToolsInPalace(rootDir: string) {
       await upsertSemanticTool(rootDir, skill.name, formattedDesc)
     }
   } catch (err) {
-    console.error(`[indexToolsInPalace] Failed to index dynamic skills:`, err)
+    logger.error("Failed to index dynamic skills:", { errorMessage: String(err), errorStack: (err instanceof Error ? err.stack : undefined) })
   }
 }
 
@@ -5020,7 +5022,7 @@ export async function indexRalphRulesInPalace(rootDir: string) {
   try {
     upsertRalphRule(rootDir, "image_verification", JSON.stringify(imageVerificationRule, null, 2))
   } catch (err) {
-    console.error("[indexRalphRulesInPalace] Failed to index image_verification rule:", err)
+    logger.error("[indexRalphRulesInPalace] Failed to index image_verification rule:", { errorMessage: String(err), errorStack: (err instanceof Error ? err.stack : undefined) })
   }
 
   // The enumerate_dynamic_state rule is enforced semantically via the
@@ -5045,7 +5047,7 @@ export async function indexRalphRulesInPalace(rootDir: string) {
   try {
     upsertRalphRule(rootDir, "enumerate_dynamic_state", JSON.stringify(enumerateDynamicStateRule, null, 2))
   } catch (err) {
-    console.error("[indexRalphRulesInPalace] Failed to index enumerate_dynamic_state rule:", err)
+    logger.error("[indexRalphRulesInPalace] Failed to index enumerate_dynamic_state rule:", { errorMessage: String(err), errorStack: (err instanceof Error ? err.stack : undefined) })
   }
 }
 

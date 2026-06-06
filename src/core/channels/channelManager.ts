@@ -371,7 +371,7 @@ async function handleChannelsCallback(token: string, callback: TelegramCallbackQ
       token,
       chatId,
       messageId,
-      `${buildChannelsMenuText()}\n\nTelegram ${config.telegram.enabled ? "enabled" : "disabled"}.`,
+      `${buildChannelsMenuText()}\n\nTelegram ${telegram.enabled ? "enabled" : "disabled"}.`,
       buildChannelsMenuButtons(),
     )
     return "RESTART"
@@ -427,6 +427,8 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
   }
 
   if (config.telegram?.enabled && config.telegram.token) {
+    // Narrow the optional type so the rest of this block doesn't need `?.` everywhere.
+    const telegram = config.telegram
     logger.info("Starting Telegram integration...")
     activeDeliveryUnregister?.()
     activeDeliveryUnregister = runtime.registerDeliveryChannel("telegram", async (targetId, text) => {
@@ -444,7 +446,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
     // coordinator owns all user-facing Telegram replies so internal workers do
     // not speak directly to chats or leak orchestration details.
 
-    void registerTelegramCommands(config.telegram.token)
+    void registerTelegramCommands(telegram.token)
       .then(() => {
         logger.info("Comandos de Telegram registrados")
       })
@@ -452,23 +454,23 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
         const message = error instanceof Error ? error.message : String(error)
         logger.warn(`No se pudieron registrar los comandos sugeridos de Telegram: ${message}`)
       })
-    
+
     activePoller = createTelegramPoller(
-      config.telegram.token,
+      telegram.token,
       {
       onUpdate: async (update) => {
         if (update.callback_query) {
           const callback = update.callback_query
           const callbackMessage = callback.message
           const chatId = callbackMessage?.chat.id ?? callback.from.id
-          if (config.telegram?.allowedChats && config.telegram.allowedChats.length > 0) {
-            if (!config.telegram.allowedChats.includes(chatId)) {
+          if (config.telegram?.allowedChats && telegram.allowedChats.length > 0) {
+            if (!telegram.allowedChats.includes(chatId)) {
               logger.warn(`Telegram callback blocked (unauthorized chat): ${chatId}`)
               return
             }
           }
 
-          await answerTelegramCallback(config.telegram.token, callback.id)
+          await answerTelegramCallback(telegram.token, callback.id)
 
           // Permission inline-button callback. Resolves the pending
           // permission and edits the original message to show the decision.
@@ -498,7 +500,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
                     ? `⚠️ **Destructive Action ${label}**\n\nTool: \`${pending.tool}\`\nAction: \`${pending.path}\`\n\nThe agent will ${decision === "allow" ? "proceed" : "be denied execution"}.`
                     : `🔐 **Permission ${label}**\n\nTool: \`${pending.tool}\`\nPath: \`${pending.path}\`\n\nThe agent will ${decision === "allow" ? "proceed" : "be denied access"}.`
                   await editTelegramMenu(
-                    config.telegram!.token!,
+                    telegram.token!,
                     chatId,
                     callbackMessage.message_id,
                     confirmation,
@@ -508,7 +510,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
               } else {
                 // The permission already resolved (probably via safety net). Tell the user.
                 await sendTelegramText(
-                  config.telegram!.token!,
+                  telegram.token!,
                   chatId,
                   "⚠️ Request already resolved or timed out (no action taken).",
                 ).catch(() => {})
@@ -518,7 +520,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
           }
 
           try {
-            const channelResult = await handleChannelsCallback(config.telegram.token, callback)
+            const channelResult = await handleChannelsCallback(telegram.token, callback)
             if (channelResult) {
               if (channelResult === "RESTART") {
                 options?.onRestartRequested?.()
@@ -542,8 +544,8 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
         const chatId = msg.chat.id
         
         // Authorization
-        if (config.telegram?.allowedChats && config.telegram.allowedChats.length > 0) {
-          if (!config.telegram.allowedChats.includes(chatId)) {
+        if (config.telegram?.allowedChats && telegram.allowedChats.length > 0) {
+          if (!telegram.allowedChats.includes(chatId)) {
             logger.warn(`Telegram message blocked (unauthorized chat): ${chatId}`)
             return
           }
@@ -558,14 +560,14 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
             if (pending.kind === "channels-token") {
               const token = (msg.text ?? msg.caption ?? "").trim()
               if (!token) {
-                await sendTelegramMenu(config.telegram.token, chatId, "Empty token. Try /channels again.", buildChannelsMenuButtons())
+                await sendTelegramMenu(telegram.token, chatId, "Empty token. Try /channels again.", buildChannelsMenuButtons())
                 return
               }
               const nextConfig = readChannelsConfig()
-              const telegram = nextConfig.telegram ?? { token: "", enabled: false, allowedChats: [] }
-              nextConfig.telegram = { ...telegram, token, enabled: true }
+              const telegramCfg = nextConfig.telegram ?? { token: "", enabled: false, allowedChats: [] }
+              nextConfig.telegram = { ...telegramCfg, token, enabled: true }
               writeChannelsConfig(nextConfig)
-              await sendTelegramMenu(config.telegram.token, chatId, "Token saved.", buildChannelsMenuButtons())
+              await sendTelegramMenu(telegram.token, chatId, "Token saved.", buildChannelsMenuButtons())
               options?.onRestartRequested?.()
               return
             }
@@ -573,14 +575,14 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
               const raw = (msg.text ?? msg.caption ?? "").trim()
               const { ids, invalid } = parseAllowedChats(raw)
               if (invalid.length > 0) {
-                await sendTelegramMenu(config.telegram.token, chatId, `Invalid IDs: ${invalid.join(", ")}`, buildChannelsMenuButtons())
+                await sendTelegramMenu(telegram.token, chatId, `Invalid IDs: ${invalid.join(", ")}`, buildChannelsMenuButtons())
                 return
               }
               const nextConfig = readChannelsConfig()
-              const telegram = nextConfig.telegram ?? { token: "", enabled: false, allowedChats: [] }
+              const telegramCfg = nextConfig.telegram ?? { token: "", enabled: false, allowedChats: [] }
               nextConfig.telegram = { ...telegram, allowedChats: ids }
               writeChannelsConfig(nextConfig)
-              await sendTelegramMenu(config.telegram.token, chatId, `Allowed chats saved: ${ids.join(", ")}`, buildChannelsMenuButtons())
+              await sendTelegramMenu(telegram.token, chatId, `Allowed chats saved: ${ids.join(", ")}`, buildChannelsMenuButtons())
               options?.onRestartRequested?.()
               return
             }
@@ -594,13 +596,13 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
         const normalized = normalizeTelegramCommand(msg.text?.trim() || msg.caption?.trim() || "")
 
         if (normalized === "/channels") {
-          await sendTelegramMenu(config.telegram.token, chatId, buildChannelsMenuText(), buildChannelsMenuButtons())
+          await sendTelegramMenu(telegram.token, chatId, buildChannelsMenuText(), buildChannelsMenuButtons())
           return
         }
 
         let transcript: { text: string; language?: string } | null = null
         try {
-          const result = await maybeTranscribeTelegramAudio(config.telegram.token, runtime.rootDir, msg)
+          const result = await maybeTranscribeTelegramAudio(telegram.token, runtime.rootDir, msg)
           if (result) {
             transcript = result.ok
               ? { text: result.text, language: result.language }
@@ -613,7 +615,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
 
         if (shouldShortCircuitAudioFailure(msg, transcript)) {
           await sendTelegramText(
-            config.telegram.token,
+            telegram.token,
             chatId,
             "I could not transcribe that audio automatically right now. Send it again later or send the text.",
           ).catch(() => {})
@@ -626,7 +628,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
             const largest = getLargestTelegramPhoto(msg)
             if (largest) {
               const prefix = `telegram-photo-${msg.chat.id}-${Date.now()}-${largest.file_id.slice(0, 8)}`
-              localPhotoPath = await downloadTelegramFile(config.telegram.token, largest.file_id, runtime.rootDir, prefix)
+              localPhotoPath = await downloadTelegramFile(telegram.token, largest.file_id, runtime.rootDir, prefix)
             }
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
@@ -641,7 +643,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
             if (!msg.document.file_size || msg.document.file_size <= maxSizeBytes) {
               const safeName = msg.document.file_name ? msg.document.file_name.replace(/[^a-zA-Z0-9._-]/g, "_") : `doc-${msg.document.file_id.slice(0, 8)}`
               const prefix = `telegram-doc-${msg.chat.id}-${Date.now()}-${safeName}`
-              localDocPath = await downloadTelegramFile(config.telegram.token, msg.document.file_id, runtime.rootDir, prefix)
+              localDocPath = await downloadTelegramFile(telegram.token, msg.document.file_id, runtime.rootDir, prefix)
             } else {
               logger.warn(`Telegram document skipped (size exceeds limit): ${msg.document.file_name} (${msg.document.file_size} bytes)`)
             }
@@ -659,7 +661,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
         // Ensure the session exists before sending the message
         try {
           dispatchRuntimeMessage(runtime, sessionId, `Telegram ${chatId}`, inboundText, `message ${chatId}:${msg.message_id}`, {
-            token: config.telegram.token,
+            token: telegram.token,
             chatId,
           }, options?.onRestartRequested)
         } catch (error) {
@@ -729,7 +731,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
           { text: "❌ Deny", callback_data: `perm:${permissionId}:deny` },
         ],
       ]
-      void sendTelegramMenu(config.telegram!.token!, chatId, text, buttons).catch((err) => {
+      void sendTelegramMenu(telegram.token!, chatId, text, buttons).catch((err) => {
         logger.warn(`Failed to send Telegram permission prompt: ${err instanceof Error ? err.message : String(err)}`)
       })
     })
