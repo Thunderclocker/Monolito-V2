@@ -73,7 +73,16 @@ export type AssistantTurnResult = {
   }
 }
 
-export type AgentLoopRecoverableAction = "backoff" | "compact_context" | "reload_auth" | "stall_blocking" | "tdd_correction"
+export type AgentLoopRecoverableAction =
+  | "backoff"
+  | "compact_context"
+  | "reload_auth"
+  | "stall_blocking"
+  | "tdd_correction"
+  | "coherence_correction"
+  | "veracity_correction"
+  | "commitment_correction"
+  | "operational_interruption"
 
 export type AgentLoopEvent =
   | { type: "setup"; sessionId: string; iteration: number; model: string; maxIterations: number; maxTurnDurationMs: number }
@@ -1136,7 +1145,7 @@ Debes corregir el código del workspace y ejecutar con éxito las pruebas corres
               type: "recoverable_error",
               sessionId: session.id,
               iteration,
-              action: "coherence_correction" as any,
+              action: "coherence_correction",
               error: `Respuesta rechazada por coherencia: ${coherence.reason}`
             };
 
@@ -1173,7 +1182,7 @@ Por favor, corregí este error de inmediato y reescribí tu respuesta respetando
                 type: "recoverable_error",
                 sessionId: session.id,
                 iteration,
-                action: "veracity_correction" as any,
+                action: "veracity_correction",
                 error: `Respuesta rechazada por veracidad: ${integrity.reason}`
               };
 
@@ -1190,7 +1199,7 @@ No inventes ni alucines resultados. Por favor, ejecuta las herramientas reales (
                 type: "recoverable_error",
                 sessionId: session.id,
                 iteration,
-                action: "commitment_correction" as any,
+                action: "commitment_correction",
                 error: `Respuesta rechazada por promesa rota: no se llamó a ninguna herramienta para cumplir el compromiso.`
               };
 
@@ -1431,7 +1440,7 @@ Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas c
               type: "recoverable_error",
               sessionId: session.id,
               iteration,
-              action: "operational_interruption" as any,
+              action: "operational_interruption",
               error: `Interrupción operacional al alcanzar ${count} fallos consecutivos en "${toolResult.toolName}".`
             }
             messages.push({

@@ -63,6 +63,7 @@ async function checkDynamicRalphRules(
       try {
         const rule = JSON.parse(row.content) as {
           name: string
+          description?: string
           intentRegex?: string
           requiredRegex?: string
           requiredTools: string[]
@@ -76,7 +77,7 @@ async function checkDynamicRalphRules(
         // Semantic intent and requirements matching via LLM classification
         let isRuleApplicable = false
         try {
-          const ruleDescriptionText = (rule as any).description || `Validates that the task executes at least one of these required tools: ${rule.requiredTools.join(", ")}`
+          const ruleDescriptionText = rule.description || `Validates that the task executes at least one of these required tools: ${rule.requiredTools.join(", ")}`
           const systemPrompt = `You are a silent runtime auditor. Your task is to analyze if the user's instructions match the intent of the following auditing rule.
           
 Auditing Rule: "${rule.name}"
