@@ -760,7 +760,7 @@ export function evaluateTopLevelRalphGate(
 
 export const MAX_ABSOLUTE_ATTEMPTS = 200
 export const MAX_RENEWAL_EXTENSIONS = 5
-export const MIN_ATTEMPTS_BEFORE_RENEWAL = 3
+export const MIN_ATTEMPTS_BEFORE_RENEWAL = 1
 
 export type SubAgentTaskProgress = {
   totalTasks: number
