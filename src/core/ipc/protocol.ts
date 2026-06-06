@@ -3,6 +3,25 @@ import { createHash } from "node:crypto"
 import { dirname, join } from "node:path"
 import { MONOLITO_ROOT } from "../system/root.ts"
 
+/**
+ * The single canonical session ID for the user-facing session.
+ *
+ * Monolito-V2 uses a single-session model for the user: the CLI and
+ * Telegram both target this same session. Other sessions in the DB
+ * (sub-agents, SkillsAgent, etc.) are internal and live in their
+ * own `agent-*` / `skills-synthetic` namespaces — they are not
+ * candidates for proactive delivery, the heartbeat, or the TUI's
+ * "current session" display.
+ *
+ * `/new` does NOT create a new session row — it calls `resetSession`
+ * on this same session, which clears the messages but keeps the
+ * session record and its profile/state. This preserves forensic
+ * continuity (the session row keeps its `created_at`, `updated_at`,
+ * and any worklog/summary entries) while giving the user a fresh
+ * conversation surface.
+ */
+export const MAIN_SESSION_ID = "orchestrator"
+
 export type AgentEvent =
   | { type: "session.created"; sessionId: string; title: string }
   | { type: "session.resumed"; sessionId: string }
