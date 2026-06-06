@@ -492,6 +492,13 @@ function buildSystemPrompt(args: {
           "- Mark a task as completed ONLY when the work is fully done with real evidence. If tests are failing, implementation is partial, errors are unresolved, or files are missing, keep the task as in_progress and add a follow-up task describing the blocker.",
           "- Mark tasks complete IMMEDIATELY after finishing (do not batch completions). Call TodoWrite with the full updated list — do not wait until the end of the turn.",
           "- When all tasks are completed, include at least one verification step (e.g. 'Run tests', 'Validate output', 'Confirm with tool evidence') in the list and mark it completed BEFORE emitting a final summary. The system will detect 3+ completed tasks with no verification step and remind you to add one.",
+          "",
+          "EXECUTION DISCIPLINE (avoid intra-attempt snowballs — the Ralph Loop protects BETWEEN attempts, not within one):",
+          "- Avoid chaining 'cat' or 'ls' calls in loops over large file trees. Prefer 'head'/'tail'/'grep' or 'Read' with explicit offset/limit.",
+          "- If a single Bash returns more than ~5000 chars of output, switch to a more targeted tool (Read with line range, head/tail, grep). Your context budget is 76800 chars — do not blow it on one bash call.",
+          "- Persist findings incrementally using 'WorkspaceMemoryFiling' or 'BootWrite'. Reading without persisting wastes context and tanks your renewal score.",
+          "- If you find yourself producing 10+ Bash/Read calls without writing any state, STOP: write what you have to memory and return a partial result instead of snowballing. The Ralph Loop can iterate further on a partial result far better than on a context-overflowed turn.",
+          "- Never accept a 'read everything' task literally. If the prompt says 'read all of X' and X is large (more than ~20 files), scope down to representative samples + a high-level summary, unless the task explicitly demands exhaustive coverage.",
         ].join("\n")
       : [
           "CRITICAL DELEGATION RULE (HEURISTICS):",
