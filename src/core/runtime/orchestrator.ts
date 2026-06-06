@@ -840,7 +840,12 @@ export function evaluateTopLevelRalphGate(
 
 export const MAX_ABSOLUTE_ATTEMPTS = 200
 export const MAX_RENEWAL_EXTENSIONS = 5
-export const MIN_ATTEMPTS_BEFORE_RENEWAL = 1
+// A sub-agent must have completed at least 3 attempts before we even consider
+// renewing its budget. With fewer attempts the signal is too noisy — we can't
+// distinguish a slow-starting agent from one that's truly stuck. The test
+// "decideRenewal: too early for renewal rejects the request" (attemptsUsed=2)
+// relies on this threshold.
+export const MIN_ATTEMPTS_BEFORE_RENEWAL = 3
 
 export type SubAgentTaskProgress = {
   totalTasks: number

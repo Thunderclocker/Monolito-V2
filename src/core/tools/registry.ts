@@ -1043,13 +1043,27 @@ function readSkillGuardConfig(rootDir: string): boolean {
  * bad SOPs that would otherwise look innocuous.
  */
 const SKILL_THREAT_PATTERNS: { name: string; regex: RegExp }[] = [
-  { name: "rm -rf root", regex: /\brm\s+(-\w*r\w*f\w*\s+)*\/\s*$/m },
-  { name: "rm -rf home", regex: /\brm\s+-\w*r\w*f\w*\s+~(?:\s|$)/m },
-  { name: "rm -rf ssh", regex: /\brm\s+-\w*r\w*f\w*\s+\.?\.?\/?\.ssh/m },
-  { name: "curl pipe bash", regex: /curl[^|]*\|\s*(sudo\s+)?(ba)?sh/m },
+  // Matches rm with any combination of -r and -f flags in either order, and
+  // any dangerous path. Catches:
+  //   rm -rf /, rm -fr /, rm -Rf /, rm --remove-files /
+  //   rm -rf .         (recursive delete of cwd)
+  //   rm -rf /tmp      (recursive delete of /tmp)
+  //   rm -rf /etc, /var, /home, /usr, /opt, /root, /srv, /mnt
+  //   rm -rf ~         (recursive delete of home)
+  //   rm -rf .ssh      (deletes SSH keys)
+  { name: "rm recursive dangerous", regex: /\brm\s+(-\w*[rf]\w*[rf]\w*\s+|--\S+\s+)+\.?(\/|\.\.?\/|~\/|\$HOME|\$\{HOME\}|\/tmp|\/etc|\/var|\/home|\/usr|\/opt|\/root|\/srv|\/mnt|\/bin|\/sbin|\/lib|\.ssh|\.\/|\.\.\/)/im },
+  // Catches rm -rf / at end of line (legacy) and any rm -rf <path>
+  { name: "rm recursive path", regex: /\brm\s+-\w*[rf]\w*[rf]\w*[\s\u00A0]+(?!\/dev\/null)[^\s]/im },
+  // Catches shell download-and-execute on any common shell.
+  // sh | bash | zsh | ksh | fish | csh | tcsh | dash | ash | oil | elvish | xonsh
+  { name: "curl pipe shell", regex: /\b(curl|wget)\b[^|;&]*\|\s*(sudo\s+)?(ba)?sh|zsh|ksh|fish|csh|tcsh|dash|ash|oil|elvish|xonsh(?:\s|$)/m },
   { name: "exfiltrate env", regex: /\b(cat|printenv|env)\b[^.\n]*\b(AWS_|GITHUB_|OPENAI_|ANTHROPIC_|API_KEY|SECRET|TOKEN)/m },
   { name: "chmod 777", regex: /\bchmod\s+777\b/ },
-  { name: "dd overwrite disk", regex: /\bdd\s+if=[^\n]*\s+of=\/dev\/(sd|nvme|hd)/m },
+  { name: "dd overwrite disk", regex: /\bdd\s+if=[^\n]*\s+of=\/dev\/(sd|nvme|hd|xvd|vd|mmcblk|loop|disk|dasd)/m },
+  // Whole-disk wipe via redirections
+  { name: "truncate device", regex: />\s*\/dev\/(sd|nvme|hd|xvd|vd|mmcblk|loop|disk|dasd)\b/m },
+  // Classic fork bomb
+  { name: "fork bomb", regex: /:\(\)\s*\{[^}]*:\s*\|:\s*&?\s*\};:/m },
 ]
 
 function scanSkillGuideForThreats(guide: string): { threat: boolean; pattern: string | null } {
@@ -4940,7 +4954,7 @@ export function listModelTools(isSubAgent = false, lastUserText?: string | boole
     .map(tool => ({
       name: tool.name,
       description: tool.description,
-      input_schema: tool.inputSchema,
+      inputSchema: tool.inputSchema,
     }))
   return staticMapped
 }

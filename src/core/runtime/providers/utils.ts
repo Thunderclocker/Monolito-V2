@@ -120,12 +120,12 @@ export function buildToolDefinitions(isSubAgent: boolean, lastUserText?: string,
   return listModelTools(isSubAgent, lastUserText, allowedToolNames).map(tool => ({
     name: tool.name,
     description: tool.description,
-    input_schema: tool.input_schema,
+    input_schema: tool.inputSchema,
     type: "function",
     function: {
       name: tool.name,
       description: tool.description,
-      parameters: tool.input_schema,
+      parameters: tool.inputSchema,
     },
   }))
 }
