@@ -13,6 +13,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { listSessionTasks, writeSessionTask, getDb } from "../session/store.ts"
+import type { SessionTask } from "../session/store.ts"
 import {
   gatherRenewalSignals,
   decideRenewal,
@@ -251,7 +252,7 @@ test("gatherRenewalSignals: reads TodoWrite items as task progress", () => {
     status: "completed",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-  } as any, profileId)
+  } as SessionTask, profileId)
   writeSessionTask(sharedRoot, sessionId, "task-2", {
     id: "task-2",
     sessionId,
@@ -260,7 +261,7 @@ test("gatherRenewalSignals: reads TodoWrite items as task progress", () => {
     status: "in_progress",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-  } as any, profileId)
+  } as SessionTask, profileId)
 
   const signals = gatherRenewalSignals(sharedRoot, sessionId, profileId, [
     makeSuccessEvent("Bash"),

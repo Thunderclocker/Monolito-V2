@@ -622,7 +622,7 @@ export function getDb(rootDir: string): Database.Database {
     ensurePalaceSchema(db)
 
     // Migration: Add profile_id to sessions if missing (better-sqlite3)
-    const sessionInfo = db.prepare(`PRAGMA table_info(sessions)`).all() as any[]
+    const sessionInfo = db.prepare(`PRAGMA table_info(sessions)`).all() as Array<{ name: string; type: string; dflt_value: unknown; pk: number }>
     if (!sessionInfo.find(c => c.name === "profile_id")) {
       try {
         db.exec(`ALTER TABLE sessions ADD COLUMN profile_id TEXT DEFAULT 'default'`)
@@ -631,7 +631,7 @@ export function getDb(rootDir: string): Database.Database {
       }
     }
 
-    const memoryInfo = db.prepare(`PRAGMA table_info(memory_drawers)`).all() as any[]
+    const memoryInfo = db.prepare(`PRAGMA table_info(memory_drawers)`).all() as Array<{ name: string; type: string; dflt_value: unknown; pk: number }>
     if (!memoryInfo.find(c => c.name === "memory_key")) {
       try {
         db.exec(`ALTER TABLE memory_drawers ADD COLUMN memory_key TEXT`)
@@ -642,7 +642,7 @@ export function getDb(rootDir: string): Database.Database {
 
     db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_drawers_key ON memory_drawers(memory_key)`)
 
-    const workerInfo = db.prepare(`PRAGMA table_info(worker_jobs)`).all() as any[]
+    const workerInfo = db.prepare(`PRAGMA table_info(worker_jobs)`).all() as Array<{ name: string; type: string; dflt_value: unknown; pk: number }>
     for (const column of [
       { name: "profile_id", sql: `ALTER TABLE worker_jobs ADD COLUMN profile_id TEXT` },
       { name: "result_text", sql: `ALTER TABLE worker_jobs ADD COLUMN result_text TEXT` },
@@ -1106,27 +1106,27 @@ export function saveSession(rootDir: string, session: SessionRecord) {
 
 export function getSession(rootDir: string, sessionId: string): SessionRecord | null {
   const db = getDb(rootDir)
-  
+
   const stmtSession = db.prepare(`SELECT id, profile_id, title, state, created_at, updated_at FROM sessions WHERE id = ?`)
-  const row = stmtSession.get(sessionId) as any
+  const row = stmtSession.get(sessionId) as { id: string; profile_id: string | null; title: string | null; state: string | null; created_at: string; updated_at: string } | undefined
   if (!row) return null
 
   const stmtMsgs = db.prepare(`SELECT role, text, at FROM messages WHERE session_id = ? ORDER BY id ASC`)
-  const messages = stmtMsgs.all(sessionId) as any[]
+  const messages = stmtMsgs.all(sessionId) as Array<{ role: string; text: string; at: string }>
 
   const stmtLogs = db.prepare(`SELECT type, summary, at FROM worklog WHERE session_id = ? ORDER BY id ASC`)
-  const worklogs = stmtLogs.all(sessionId) as any[]
+  const worklogs = stmtLogs.all(sessionId) as Array<{ type: string; summary: string; at: string }>
 
   return {
     id: row.id,
-    profileId: row.profile_id,
-    title: row.title,
+    profileId: row.profile_id ?? "default",
+    title: row.title ?? "",
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    state: row.state,
-    messages: messages.map(m => ({ at: m.at, role: m.role, text: m.text })),
-    worklog: worklogs.map(w => ({ at: w.at, type: w.type, summary: w.summary })),
-  } as any
+    state: (row.state ?? "idle") as "idle" | "running" | "error",
+    messages: messages.map(m => ({ at: m.at, role: m.role as "user" | "assistant" | "system", text: m.text })),
+    worklog: worklogs.map(w => ({ at: w.at, type: w.type as "session" | "message" | "tool" | "note", summary: w.summary })),
+  }
 }
 
 export function ensureSession(rootDir: string, sessionId?: string, title?: string) {
@@ -1147,12 +1147,12 @@ export function listSessions(rootDir: string, profileId?: string): SessionSummar
   }
   sql += ` ORDER BY updated_at DESC`
   const stmt = db.prepare(sql)
-  const rows = stmt.all(...params) as any[]
+  const rows = stmt.all(...params) as Array<{ id: string; profile_id: string | null; title: string | null; state: string | null; created_at: string; updated_at: string }>
   return rows.map(r => ({
     id: r.id,
-    profileId: r.profile_id,
-    title: r.title,
-    state: r.state,
+    profileId: r.profile_id ?? "default",
+    title: r.title ?? "",
+    state: (r.state ?? "idle") as "idle" | "running" | "error",
     createdAt: r.created_at,
     updatedAt: r.updated_at
   }))
@@ -1470,14 +1470,14 @@ export function compactSession(rootDir: string, sessionId: string, options: Comp
   
   // Get the ones to remove
   const stmtToCompact = db.prepare(`SELECT id, role, at, text FROM messages WHERE session_id = ? ORDER BY id ASC LIMIT ?`)
-  const removed = stmtToCompact.all(sessionId, toRemoveCount) as any[]
+  const removed = stmtToCompact.all(sessionId, toRemoveCount) as Array<{ id: number; role: string; at: string; text: string }>
   
   const userCount = removed.filter(m => m.role === "user").length
   const assistantCount = removed.filter(m => m.role === "assistant").length
   const systemCount = removed.filter(m => m.role === "system").length
   
-  const firstAt = removed[0].at
-  const lastIdRemoved = removed[removed.length - 1].id
+  const firstAt = removed[0]?.at
+  const lastIdRemoved = removed[removed.length - 1]?.id ?? 0
 
   db.exec("BEGIN TRANSACTION")
   try {
@@ -1640,7 +1640,7 @@ export async function recallMemory(rootDir: string, wing?: string, room?: string
     sql += ` ORDER BY v.distance ASC LIMIT 15`
 
     const stmt = db.prepare(sql)
-    return stmt.all(floatArray, ...params) as any[]
+    return stmt.all(floatArray, ...params) as Array<{ id: number; profile_id: string | null; wing: string; room: string; memory_key: string | null; content: string; created_at: string; distance: number }>
   } else {
     // Non-semantic pure recall
     let sql = `SELECT id, profile_id, wing, room, memory_key, content, created_at FROM memory_drawers m`
@@ -1648,16 +1648,16 @@ export async function recallMemory(rootDir: string, wing?: string, room?: string
       sql += ` WHERE ` + conditions.join(" AND ")
     }
     sql += ` ORDER BY m.created_at DESC LIMIT 50`
-    
+
     const stmt = db.prepare(sql)
-    return stmt.all(...params) as any[]
+    return stmt.all(...params) as Array<{ id: number; profile_id: string | null; wing: string; room: string; memory_key: string | null; content: string; created_at: string }>
   }
 }
 
 export function listProfiles(rootDir: string) {
   const db = getDb(rootDir)
   const stmt = db.prepare(`SELECT id, name, description, created_at FROM profiles ORDER BY name ASC`)
-  return stmt.all() as any[]
+  return stmt.all() as Array<{ id: string; name: string; description: string | null; created_at: string }>
 }
 
 export function createProfile(rootDir: string, id: string, name: string, description?: string) {
@@ -2424,7 +2424,7 @@ export function isSessionResearchSilent(rootDir: string, sessionId: string, prof
 
 export function getRawMessagesForSession(rootDir: string, sessionId: string): Array<{ id: number; role: string; text: string; at: string; is_compacted: number }> {
   const db = getDb(rootDir)
-  return db.prepare(`SELECT id, role, text, at, is_compacted FROM messages WHERE session_id = ? ORDER BY id ASC`).all(sessionId) as any[]
+  return db.prepare(`SELECT id, role, text, at, is_compacted FROM messages WHERE session_id = ? ORDER BY id ASC`).all(sessionId) as Array<{ id: number; role: string; text: string; at: string; is_compacted: number }>
 }
 
 export function rewriteMessageInPlace(rootDir: string, messageId: number, text: string, isCompacted: number = 1) {
