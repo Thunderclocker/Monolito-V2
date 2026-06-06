@@ -1176,17 +1176,17 @@ export class MonolitoV2Runtime {
     const enabled = config?.enabled ?? true
     if (!enabled) return
 
-    const min_idle_minutes = config?.min_idle_minutes ?? 12
+    // We intentionally do NOT gate on user idle anymore. The heartbeat
+    // is responsible for housekeeping (MemoryAgent consolidation) and
+    // for proactive checks, and both should run on the configured
+    // cadence regardless of whether the user is currently typing. The
+    // `activeSessions` check inside runMemoryConsolidation and
+    // runProactiveBackgroundTurn is the natural gate that prevents the
+    // heartbeat from pising a turn that's already in flight.
     const interval_minutes = config?.interval_minutes ?? 30
 
     const now = Date.now()
     const idleTime = (now - (this.lastUserActivity || now)) / 60000
-    if (idleTime < min_idle_minutes) {
-      logger.debug(`Heartbeat skipped: user is not idle enough (${idleTime.toFixed(2)}/${min_idle_minutes} minutes)`)
-      this.lastHeartbeatSkippedAt = now
-      return
-    }
-
     const minsSinceLast = (now - (this.lastHeartbeatTime || 0)) / 60000
     if (minsSinceLast < interval_minutes) {
       logger.debug(`Heartbeat skipped: interval not met (${minsSinceLast.toFixed(2)}/${interval_minutes} minutes since last)`)

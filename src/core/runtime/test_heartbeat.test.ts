@@ -98,3 +98,16 @@ test("HEARTBEAT_OK detection: strips non-alphanumeric noise", async () => {
   // The fifth ("heartbeat ok") has a space which gets stripped → "HEARTBEATOK"
   assert.equal(normalize(samples[4]!), "HEARTBEATOK", "spaces get stripped too")
 })
+
+test("heartbeat: no longer requires the user to be idle", async () => {
+  // The previous behavior gated the heartbeat on `idleTime >= min_idle_minutes`.
+  // We removed that gate so housekeeping (MemoryAgent) and proactive checks
+  // run on the configured cadence regardless of user activity. This test
+  // verifies the gate is gone from the source.
+  const { readFileSync } = await import("node:fs")
+  const src = readFileSync("src/core/runtime/runtime.ts", "utf8")
+  assert.ok(
+    !src.includes("Heartbeat skipped: user is not idle enough"),
+    "the 'user is not idle enough' skip message must remain removed — the heartbeat should fire on its cadence regardless of user activity",
+  )
+})
