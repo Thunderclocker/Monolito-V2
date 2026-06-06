@@ -25,6 +25,7 @@ import {
   optionalNumber,
   optionalString,
   requireString,
+  resolveTelegramDownload,
   sanitizeFilenameSegment,
 } from "../internal.ts"
 
@@ -400,30 +401,57 @@ export const mediaTools: ToolDefinition[] = [
     properties: {
       url: { type: "string", description: "URL de la imagen a descargar y analizar." },
       path: { type: "string", description: "Ruta local del archivo de imagen a analizar." },
+      file_id: { type: "string", description: "Telegram file_id. Si se proporciona, descarga la imagen desde los servidores de Telegram (útil si la URL de origen bloquea descargas directas)." },
     },
     additionalProperties: false,
   },
   concurrencySafe: true,
   validate: input => {
-    if (typeof input.url !== "string" && typeof input.path !== "string") {
-      return "Debes proporcionar 'url' o 'path' como string."
+    if (typeof input.url !== "string" && typeof input.path !== "string" && typeof input.file_id !== "string") {
+      return "Debes proporcionar 'url', 'path' o 'file_id' como string."
     }
     return null
   },
   async run(input, context) {
     const url = optionalString(input, "url")
     const pathArg = optionalString(input, "path")
+    const fileId = optionalString(input, "file_id")
     
     let buffer: Buffer
     let mediaType = "image/jpeg"
     let localPath = ""
     
-    if (url) {
+    if (fileId) {
+      const config = readChannelsConfig()
+      if (!config.telegram?.enabled || !config.telegram.token) {
+        return formatToolError("Telegram no está configurado. file_id requiere Telegram activo.")
+      }
+      try {
+        const download = await resolveTelegramDownload(config.telegram.token, fileId, context.rootDir)
+        if (!download.ok) {
+          return formatToolError(`Error descargando desde Telegram: ${JSON.stringify(download)}`)
+        }
+        buffer = readFileSync(download.local_path)
+        localPath = download.local_path
+        
+        if (localPath.toLowerCase().endsWith(".png")) mediaType = "image/png"
+        else if (localPath.toLowerCase().endsWith(".webp")) mediaType = "image/webp"
+        else if (localPath.toLowerCase().endsWith(".gif")) mediaType = "image/gif"
+      } catch (error: any) {
+        return formatToolError(`Error descargando desde Telegram: ${error.message || error}`)
+      }
+    } else if (url) {
       if (url.toLowerCase().endsWith(".png")) mediaType = "image/png"
       else if (url.toLowerCase().endsWith(".webp")) mediaType = "image/webp"
       else if (url.toLowerCase().endsWith(".gif")) mediaType = "image/gif"
       
-      const response = await fetch(url, { signal: context.abortSignal })
+      const response = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "image/*,*/*",
+        },
+        signal: context.abortSignal,
+      })
       if (!response.ok) return formatToolError(`Error descargando imagen desde URL: HTTP ${response.status}`)
       buffer = Buffer.from(await response.arrayBuffer())
 
@@ -441,7 +469,7 @@ export const mediaTools: ToolDefinition[] = [
       buffer = readFileSync(absolutePath)
       localPath = absolutePath
     } else {
-      return formatToolError("Debes proporcionar 'url' o 'path'.")
+      return formatToolError("Debes proporcionar 'url', 'path' o 'file_id'.")
     }
 
     const base64Image = buffer.toString("base64")
