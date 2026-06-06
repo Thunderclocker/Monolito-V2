@@ -500,6 +500,73 @@ function buildAttemptHistorySection(history: Array<{ attempt: number; kind: stri
   ].join("\n")
 }
 
+// React to results of the worker's previous attempt: tell it which tools
+// already produced output it can build on, and which inputs to avoid
+// re-issuing verbatim. This is the "reactive" part of the Ralph Loop:
+// iteration N+1 should not blindly retry iteration N's tool calls —
+// it should reuse what worked and skip what didn't.
+//
+// Implementation note: turn.steps only carries `{tool, input}` (no
+// `ok` flag, no output body), so we cannot tell success from failure
+// from the in-memory state alone. The model sees the tool calls in
+// its own context window anyway. What this section does is compress
+// the tool-call surface into a quick reference so the model
+// (a) avoids re-issuing identical inputs, and (b) understands what
+// has already been touched in this turn, so it can scope the next
+// attempt accordingly.
+function buildToolAnchorSection(anchors: Array<{ tool: string; brief: string }>): string {
+  if (anchors.length === 0) return ""
+  // Deduplicate identical (tool, brief) pairs to keep the prompt lean.
+  const seen = new Set<string>()
+  const unique: Array<{ tool: string; brief: string }> = []
+  for (const a of anchors) {
+    const key = `${a.tool}::${a.brief}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    unique.push(a)
+  }
+  return [
+    "## TOOL ANCHORS — work already attempted in this task",
+    "These tools have been called in prior attempts. Do NOT re-issue identical inputs — either reuse the output, refine the input, or pick a different tool.",
+    unique.map(a => `- ${a.tool}: ${a.brief}`).join("\n"),
+    "",
+  ].join("\n")
+}
+
+function summarizeToolInput(tool: string, input: Record<string, unknown>): string {
+  const pick = (...keys: string[]): string => {
+    for (const k of keys) {
+      const v = input[k]
+      if (typeof v === "string" && v.trim().length > 0) return v
+    }
+    return ""
+  }
+  switch (tool) {
+    case "Bash":
+      return clip(pick("command", "cmd") || JSON.stringify(input), 120)
+    case "Read":
+      return clip(pick("file_path", "path", "file") || JSON.stringify(input), 120)
+    case "Write":
+      return clip(pick("file_path", "path", "file") || JSON.stringify(input), 120)
+    case "Edit":
+      return clip(pick("file_path", "path", "file") || JSON.stringify(input), 120)
+    case "Glob":
+      return clip(pick("pattern", "glob") || JSON.stringify(input), 120)
+    case "Grep":
+      return clip(pick("pattern") || JSON.stringify(input), 120)
+    case "TodoWrite": {
+      const todos = Array.isArray(input.todos) ? input.todos : []
+      return `${todos.length} todo item(s)`
+    }
+    case "WebSearch":
+      return clip(pick("query") || JSON.stringify(input), 120)
+    case "WebFetch":
+      return clip(pick("url") || JSON.stringify(input), 120)
+    default:
+      return clip(JSON.stringify(input), 120)
+  }
+}
+
 function buildSameErrorNudge(repeatCount: number): string {
   if (repeatCount < 2) return ""
   return [
@@ -545,6 +612,7 @@ function buildSubagentRetryPrompt(
   sameErrorRepeatCount: number,
   attempt: number,
   escapeAt: number,
+  toolAnchors: Array<{ tool: string; brief: string }> = [],
 ): string {
   const message = error instanceof Error ? error.message : String(error)
   return [
@@ -562,8 +630,13 @@ function buildSubagentRetryPrompt(
     "4. If a different tool would be more appropriate, use that tool instead.",
     "5. If you can fix the underlying state and retry, do that.",
     "",
+    "REACTIVE LOOP (use what already worked, do not re-run it):",
+    "- The TOOL ANCHORS section below lists tools already called in this task. Build on the ones that produced useful output, refine the inputs that produced junk, and pick a different tool rather than re-issuing an identical call.",
+    "- If a Bash already produced the file listing you needed, do not re-list it. If a Read already gave you the relevant section, do not re-Read it. Move forward.",
+    "",
     buildSameErrorNudge(sameErrorRepeatCount),
     buildAttemptHistorySection(history),
+    buildToolAnchorSection(toolAnchors),
     buildEscapeHatchSection(attempt, escapeAt, history),
     partialResult?.trim() ? `Partial result to keep: ${clip(partialResult, 500)}` : "",
   ].filter(Boolean).join("\n")
@@ -611,6 +684,7 @@ function buildRalphLoopPrompt(
   history: Array<{ attempt: number; kind: string; summary: string }>,
   attempt: number,
   escapeAt: number,
+  toolAnchors: Array<{ tool: string; brief: string }> = [],
 ): string {
   return [
     task.trim(),
@@ -627,7 +701,10 @@ function buildRalphLoopPrompt(
     "2. If the task doesn't require tool execution, return a STRUCTURED FAILURE (TASK_FAILED:<reason>) explaining why instead of the success tag.",
     "3. If a sub-agent, report TASK_FAILED:INSUFFICIENT_TOOLS — the orchestrator will re-delegate with the right toolset.",
     "",
+    "REACTIVE LOOP: the TOOL ANCHORS section below lists every tool you have already called in this task. To produce a valid tag you must do work that is NOT in that list. Either run a new tool, or run one of those tools with a meaningfully different input. Re-issuing an already-attempted tool call with the same input is not progress and the tag will be rejected again.",
+    "",
     buildAttemptHistorySection(history),
+    buildToolAnchorSection(toolAnchors),
     buildEscapeHatchSection(attempt, escapeAt, history),
     "Your last rejected response (DO NOT repeat the same response, even with a different preamble):",
     clip(assistantReply, 500),
@@ -642,6 +719,7 @@ export function buildRalphLoopUnfinishedTasksPrompt(
   history: Array<{ attempt: number; kind: string; summary: string }>,
   attempt: number,
   escapeAt: number,
+  toolAnchors: Array<{ tool: string; brief: string }> = [],
 ): string {
   const listStr = unfinished.map(t => `- [${t.status.toUpperCase()}] ${t.content}`).join("\n")
   return [
@@ -661,7 +739,10 @@ export function buildRalphLoopUnfinishedTasksPrompt(
     "",
     "Do NOT mark items as completed without doing the work. The Coherence Guard treats that as INCOHERENT.",
     "",
+    "REACTIVE LOOP: the TOOL ANCHORS section below lists every tool you have already called in this task. Re-running a tool with the same input is not progress. Either build on the output you have or pick a different tool.",
+    "",
     buildAttemptHistorySection(history),
+    buildToolAnchorSection(toolAnchors),
     buildEscapeHatchSection(attempt, escapeAt, history),
     "Your last rejected response (DO NOT repeat the same response):",
     clip(assistantReply, 500),
@@ -1647,6 +1728,11 @@ export class AgentOrchestrator {
       // Track prior attempt summaries to feed the agent's "what was tried
       // before" awareness on re-prompts.
       const attemptHistory: Array<{ attempt: number; kind: string; summary: string }> = []
+      // Tool anchors: every tool the sub-agent has called in any prior
+      // attempt of this task. Fed back to the next re-prompt so the
+      // model knows what NOT to re-issue verbatim. Capped to the last
+      // 15 entries to keep the prompt lean.
+      const toolAnchors: Array<{ tool: string; brief: string }> = []
 
       while (attempt <= maxAttempts && task.status === "running") {
         if (abortSignal?.aborted) {
@@ -1662,6 +1748,22 @@ export class AgentOrchestrator {
         task.usage = task.usage || { total_tokens: 0, tool_uses: 0, duration_ms: 0 };
         task.usage.total_tokens += turn.usage?.totalTokens ?? 0;
         task.usage.duration_ms = Date.now() - turnStartedAt;
+
+        // Capture tool calls from this attempt for the next re-prompt.
+        // turn.steps carries {tool, input} but no ok/output, so we
+        // surface what was *attempted* — the model's own context
+        // already shows it what came back.
+        if (Array.isArray(turn.steps)) {
+          for (const step of turn.steps) {
+            if (step && step.type === "tool" && typeof step.tool === "string") {
+              toolAnchors.push({ tool: step.tool, brief: summarizeToolInput(step.tool, step.input) })
+            }
+          }
+          // Cap to the last 15 anchors so the prompt stays lean.
+          if (toolAnchors.length > 15) {
+            toolAnchors.splice(0, toolAnchors.length - 15)
+          }
+        }
 
 
         if (turn.error) {
@@ -1711,6 +1813,7 @@ export class AgentOrchestrator {
             sameErrorRepeatCount,
             attempt + 1,
             escapeHatchAttempt,
+            toolAnchors,
           )
           attempt++
           continue
@@ -1743,7 +1846,7 @@ export class AgentOrchestrator {
             throw renewal.finalError
           }
           attemptHistory.push({ attempt, kind: "missing-verification-tag", summary: clip(assistantReply, 200) })
-          currentText = buildRalphLoopPrompt(task.task, assistantReply, attemptHistory, attempt + 1, escapeHatchAttempt)
+          currentText = buildRalphLoopPrompt(task.task, assistantReply, attemptHistory, attempt + 1, escapeHatchAttempt, toolAnchors)
           attempt++
           continue
         }
@@ -1839,7 +1942,7 @@ export class AgentOrchestrator {
             throw renewal.finalError
           }
           attemptHistory.push({ attempt, kind: "unfinished-cognitive-tasks", summary: `${unfinishedTasks.length} pending` })
-          currentText = buildRalphLoopUnfinishedTasksPrompt(task.task, unfinishedTasks, assistantReply, attemptHistory, attempt + 1, escapeHatchAttempt)
+          currentText = buildRalphLoopUnfinishedTasksPrompt(task.task, unfinishedTasks, assistantReply, attemptHistory, attempt + 1, escapeHatchAttempt, toolAnchors)
           attempt++
           continue
         }
