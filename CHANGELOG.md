@@ -14,6 +14,105 @@ additions and `PATCH` on fixes that do not change behavior.
 
 ### Added
 
+- **GitHub Actions CI** (`.github/workflows/ci.yml`): runs `tsc --noEmit`
+  + `npm test` on every push and PR. Includes a smoke-test job that
+  exercises the agent against MiniMax M3 on `main` branch pushes.
+- **Regression tests** for two pre-existing bugs that were fixed in
+  earlier commits but had no test coverage:
+  - `querySemanticTools` returns `string[]` of tool names (the caller
+    in `indexToolsInPalace` was previously treating it as
+    `Array<{name: string}>` and accessing `.name` on a string).
+  - `listModelTools` returns tools with `inputSchema` (camelCase) — the
+    Anthropic Messages API rejects tools with `input_schema` (snake_case)
+    silently, which made the agent appear to work but unable to invoke
+    any tool.
+- **`scripts/test-minimax-m3.ts`** — end-to-end smoke test script:
+  cleans `MONOLITO_ROOT`, bootstraps config from env, sends a known
+  prompt ("Reply with exactly: PONG"), verifies the response contains
+  "PONG", and exits with a structured pass/fail log. Used by the
+  smoke-test CI job and by developers after a model change.
+- **Smoke-test pattern documented** in the new `scripts/` directory so
+  other providers (Anthropic, xAI, OpenAI) can plug in the same shape.
+
+### Changed
+
+- `tools/registry.ts` refactored from a 5037-line monolith into a
+  295-line barrel file (`registry.ts`) + 1094-line helpers
+  (`internal.ts`) + 14 domain-organized files under
+  `tools/domains/` (shell, mcp, web, file, git, telegram, media,
+  memory, forensics, delegation, config, todo, admin, skills). To
+  add a new tool, create a file in the appropriate domain and add
+  the import in the barrel.
+- `tsconfig.json` enables `strict: true`. This surfaced 25 latent
+  bugs (mostly `T | undefined` not being narrowed before use) that
+  were fixed as part of this work.
+- Runtime `console.error` calls in `registry.ts`, `runtime.ts`,
+  `modelConfig.ts`, `smartCompactor.ts`, `contextSnapshot.ts`, and
+  `channelManager.ts` replaced with structured `logger.error(...)`
+  calls that include `errorMessage` and `errorStack` metadata. CLI
+  files in `apps/cli/` intentionally keep `console.*` for human-
+  facing output.
+- ~10 `as any` casts in `runtime.ts`, `orchestrator.ts`, and
+  `modelAdapter.ts` replaced with structural types (e.g.
+  `let turn: { finalText: string; steps?: ... } | null` instead of
+  `let turn: any`). The `AgentLoopRecoverableAction` union was
+  extended to include `coherence_correction`, `veracity_correction`,
+  `commitment_correction`, and `operational_interruption`, which
+  removed 4 type-laundering casts in the model adapter.
+
+### Fixed
+
+- **`isDangerousBash`** rewritten with tokenization (not regex) and
+  now catches 15+ dangerous verbs plus fork-bomb and `dd` patterns.
+  The previous regex missed `curl x.com/y | sh` and several other
+  bypass vectors.
+- **`SKILL_THREAT_PATTERNS`** regexes tightened: now matches
+  `rm -fr`, `rm -Rf`, all shells (`bash`, `zsh`, `ksh`, `csh`,
+  `fish`), and absolute paths to dangerous system files
+  (`/etc/passwd`, `/etc/shadow`, `/etc/sudoers`, `/boot/`). Added
+  protection against `>` / `<` redirects to device files.
+- **`MIN_ATTEMPTS_BEFORE_RENEWAL`** raised from `1` to `3` in
+  `decideRenewal`. The previous value meant sub-agents were eligible
+  for renewal after a single attempt, with no signal of whether
+  they were making real progress.
+- **`bootstrapConfigFromEnv`** added to `modelConfig.ts`: reads
+  `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL`,
+  and `MONOLITO_ACTIVE_PROVIDER` from env and persists them to the
+  SQLite config wings, enabling the agent to run with environment-
+  variable-supplied credentials (useful for Docker, CI, and
+  temporary key rotation).
+- **Daemon Unix socket** now uses `chmod 0o600` (owner read/write
+  only) instead of the default `0o755`. This prevents local users
+  on a multi-tenant host from connecting to the agent.
+- **`install.sh`** no longer auto-installs Node.js via
+  `curl | sudo bash` from the NodeSource CDN. The installer now
+  requires the user to have Node 22+ already installed; this
+  removes a supply-chain risk and a project rule violation (the
+  project's own `SKILL_THREAT_PATTERNS` blocked this exact
+  pattern).
+- **Pre-existing bug in `indexToolsInPalace`**: the dynamic skills
+  indexing loop accessed `existing[0].name` on a `string[]` value
+  (since `querySemanticTools` returns `string[]`, not
+  `Array<{name: string}>`). The condition was always false, meaning
+  every dynamic skill was re-indexed on every call. Now checks
+  `existing[0] === skill.name`.
+- **Pre-existing dead code in `orchestrator.ts` worker monitor**:
+  the comparison `fullJob.status === "killed"` was checked against
+  an enum (`WorkerJobStatus`) that does not include `"killed"`
+  (that status only exists in `BackgroundTask` and IPC event
+  types). The check was always false. Removed; the actual
+  worker_jobs terminal states are `completed` and `failed`.
+
+### Security
+
+- The `install.sh` change above is the primary security fix. The
+  `isDangerousBash` and `SKILL_THREAT_PATTERNS` changes are also
+  defensive-in-depth — they reduce the blast radius if a model
+  ever emits a malicious-looking command.
+
+---
+
+
 - Dynamic semantic RAG context that pulls semantically related Palace
   facts into the prompt, with an isolated context-tags guard to prevent
   cross-session leakage.
