@@ -1,6 +1,7 @@
 import { stdin, stdout } from "node:process"
 import { spawn, execSync, execFile } from "node:child_process"
 import { promisify } from "node:util"
+import { existsSync } from "node:fs"
 import { readDaemonLock, type AgentEvent, type SessionRecord, type SessionSummary, MAIN_SESSION_ID } from "../../core/ipc/protocol.ts"
 import {
   parseTaskNotification,
@@ -89,6 +90,87 @@ function unwrapChannelMessage(text: string) {
   return match?.[1] ?? clean
 }
 
+/**
+ * Self-heal: ensure systemd is configured to autostart the daemon.
+ *
+ * This runs every time the CLI starts and the daemon is not reachable.
+ * It checks the three things that the install script is supposed to set up:
+ *
+ *   1. Linger=yes for the current user (required for user services to run
+ *      at boot without a login session)
+ *   2. The systemd unit file is present and current
+ *   3. The unit is enabled (so systemd will start it on next boot)
+ *
+ * If any is missing or broken, we try to fix it. Failures are logged but
+ * do not block the daemon from starting in the current session — we
+ * prefer a working daemon NOW over refusing to start because autostart
+ * is misconfigured.
+ *
+ * Returns true if autostart is configured, false if we couldn't fix it.
+ */
+function repairSystemdAutostart(rootDir: string): boolean {
+  if (process.platform !== "linux") return false
+  if (!existsSync("/run/systemd/system")) return false  // no systemd running
+
+  const log = (msg: string) => console.error(`[monolito] ${msg}`)
+  let allGood = true
+
+  // 1. Linger — try without sudo first, then with sudo
+  try {
+    const linger = execSync(`loginctl show-user ${process.env.USER ?? ""} 2>/dev/null | grep -q "Linger=yes"`, {
+      stdio: "ignore",
+    })
+    void linger
+  } catch {
+    log("Linger no está activo. Intentando habilitar...")
+    try {
+      execSync("loginctl enable-linger $USER", { stdio: "ignore", shell: "/bin/bash" })
+    } catch {
+      try {
+        execSync("sudo loginctl enable-linger $USER", { stdio: "ignore", shell: "/bin/bash" })
+      } catch {
+        log("WARN: no pude habilitar linger. El daemon no va a auto-arrancar al boot.")
+        log("      Solución: sudo loginctl enable-linger $USER")
+        allGood = false
+      }
+    }
+  }
+
+  // 2. Materialize the unit if missing
+  const unitPath = `${process.env.HOME}/.config/systemd/user/monolito.service`
+  if (!existsSync(unitPath)) {
+    log("Unit file monolito.service no existe. Materializando...")
+    try {
+      execSync(
+        `node --experimental-strip-types ${rootDir}/src/apps/daemon.ts --write-unit-only`,
+        { stdio: "ignore", cwd: rootDir },
+      )
+    } catch (e) {
+      log(`WARN: no pude materializar el unit: ${e instanceof Error ? e.message : String(e)}`)
+      allGood = false
+    }
+  }
+
+  // 3. daemon-reload + enable (idempotent)
+  try {
+    execSync("systemctl --user daemon-reload", { stdio: "ignore" })
+  } catch (e) {
+    log(`WARN: systemctl --user daemon-reload falló: ${e instanceof Error ? e.message : String(e)}`)
+    allGood = false
+  }
+  try {
+    execSync("systemctl --user enable monolito.service", { stdio: "ignore" })
+  } catch (e) {
+    log(`WARN: systemctl --user enable monolito.service falló: ${e instanceof Error ? e.message : String(e)}`)
+    allGood = false
+  }
+
+  if (allGood) {
+    log("Autostart de systemd verificado y reparado.")
+  }
+  return allGood
+}
+
 async function ensureDaemon(client: DaemonClient, rootDir: string) {
   try {
     await client.connect()
@@ -96,6 +178,13 @@ async function ensureDaemon(client: DaemonClient, rootDir: string) {
   } catch {
     // Intentar iniciar el servicio systemd en Linux si está disponible
     if (process.platform === "linux") {
+      // First, repair the autostart config so that the daemon we are about
+      // to start will also auto-start on the next boot. This is what the
+      // user actually wants: install.sh may have been run a while ago and
+      // a `loginctl enable-linger` could have been lost, or the unit
+      // could have been wiped. We don't want the user to re-run install.sh.
+      repairSystemdAutostart(rootDir)
+
       try {
         execSync("systemctl --user start monolito.service", { stdio: "ignore" })
         for (let i = 0; i < 20; i++) {
