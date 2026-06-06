@@ -36,14 +36,14 @@ function buildServiceContent(escapedCwd: string, escapedExecPath: string, daemon
   return `[Unit]
 Description=Monolito V2 - AI Orchestration Daemon
 After=network.target
+StartLimitBurst=10
+StartLimitIntervalSec=300
 
 [Service]
 Type=simple
 ExecStart=/bin/sh -c 'cd "${escapedCwd}" && exec "${escapedExecPath}" --experimental-strip-types src/apps/daemon.ts --foreground'
 Restart=always
 RestartSec=10
-StartLimitBurst=10
-StartLimitIntervalSec=300
 TimeoutStopSec=30
 StandardOutput=append:${daemonLog}
 StandardError=append:${daemonLog}

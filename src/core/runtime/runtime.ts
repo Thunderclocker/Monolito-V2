@@ -1,5 +1,5 @@
 import { type Socket } from "node:net"
-import { execFile } from "node:child_process"
+import { execFile, spawn } from "node:child_process"
 import { existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { promisify } from "node:util"
@@ -3349,10 +3349,81 @@ When you finish an item, immediately call TodoWrite again marking it completed a
 
   gracefulRestart(reason = "system_reboot tool requested restart") {
     logger.warn(`Graceful restart requested: ${reason}`)
-    setTimeout(() => {
-      this.close()
-      process.exit(0)
-    }, 1_000)
+    void this.performGracefulRestart(reason)
+  }
+
+  /**
+   * Robust graceful restart: spawn the replacement daemon FIRST, wait for it
+   * to claim its own lock file, and only then shut this one down. This
+   * guarantees that at most one daemon is alive at a time, and prevents the
+   * OOM-crash loop that used to happen when systemd would briefly run the
+   * old and the new daemon in parallel during config reloads.
+   */
+  private async performGracefulRestart(reason: string) {
+    const { openSync } = await import("node:fs")
+    const { ensureDirs, readDaemonLock } = await import("../ipc/protocol.ts")
+
+    const paths = ensureDirs(this.rootDir)
+    const stdout = openSync(paths.daemonLog, "a")
+    const stderr = openSync(paths.daemonLog, "a")
+
+    // Same argv as this process; process.argv[1] is the entry script.
+    const daemonScript = process.argv[1]
+    const args = daemonScript
+      ? ["--experimental-strip-types", daemonScript, "--foreground"]
+      : ["--experimental-strip-types", "src/apps/daemon.ts", "--foreground"]
+
+    const child = spawn(process.execPath, args, {
+      cwd: this.rootDir,
+      detached: true,
+      env: {
+        ...process.env,
+        MONOLITO_RESTART_PARENT_PID: String(process.pid),
+      },
+      stdio: ["ignore", stdout, stderr],
+    })
+    child.unref()
+    logger.warn(`Spawned replacement daemon (pid ${child.pid}); waiting for it to claim its lock...`)
+
+    const isPidRunning = (pid: number) => {
+      try {
+        process.kill(pid, 0)
+        return true
+      } catch {
+        return false
+      }
+    }
+
+    const timeoutMs = 90_000
+    const pollIntervalMs = 250
+    const startedAt = Date.now()
+    let ready = false
+    let observedPid: number | null = null
+
+    while (Date.now() - startedAt < timeoutMs) {
+      try {
+        const lock = readDaemonLock(this.rootDir)
+        if (lock && lock.pid !== process.pid && isPidRunning(lock.pid)) {
+          observedPid = lock.pid
+          ready = true
+          break
+        }
+      } catch {
+        // lock file may not be readable mid-transition; keep polling
+      }
+      await new Promise(r => setTimeout(r, pollIntervalMs))
+    }
+
+    if (!ready) {
+      logger.error(
+        `Replacement daemon did not become ready within ${timeoutMs}ms; aborting graceful restart to keep the current daemon alive`,
+      )
+      return
+    }
+
+    logger.warn(`Replacement daemon is ready (pid ${observedPid}); shutting down this one`)
+    this.close()
+    process.exit(0)
   }
 
   private async runMcpCommand(sessionId: string, rest: string[]) {

@@ -46,7 +46,14 @@ function startDetachedDaemon() {
   const paths = ensureDirs(rootDir)
   const lock = readDaemonLock(rootDir)
 
-  if (lock && isProcessRunning(lock.pid)) {
+  // A graceful restart spawns a replacement daemon while the current one is
+  // still alive. In that case the existing lock is the parent's, and skipping
+  // the duplicate-detection check lets the new process start and overwrite
+  // the lock with its own pid.
+  const isRestart = typeof process.env.MONOLITO_RESTART_PARENT_PID === "string"
+    && process.env.MONOLITO_RESTART_PARENT_PID.length > 0
+
+  if (!isRestart && lock && isProcessRunning(lock.pid)) {
     process.stdout.write(`monolitod-v2 already running\n`)
     process.stdout.write(`pid: ${lock.pid}\n`)
     process.stdout.write(`log: ${paths.daemonLog}\n`)
