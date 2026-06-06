@@ -20,7 +20,16 @@ interface SystemdLogger {
  * missing or its contents don't match this template.
  *
  * Robustness settings (vs the old unit):
- *   - Restart=always — restart on any non-zero exit.
+ *   - Restart=on-failure (was Restart=always) — restart on any non-zero
+ *     exit, signal, or timeout. The previous 'always' setting caused
+ *     an infinite restart loop because the daemon exits 0 when it
+ *     detects that another daemon is already running (lock-file
+ *     duplicate detection). systemd interpreted that clean exit as
+ *     'process ended, restart it', and the cycle repeated every
+ *     RestartSec.
+ *   - RestartPreventExitStatus=1 — combined with the sentinel
+ *     `intentional-stop.flag` ExecStartPre, this ensures that a
+ *     user-initiated stop does not trigger a restart.
  *   - RestartSec=10 — give the network/DB time to settle.
  *   - StartLimitBurst=10, StartLimitIntervalSec=300 — 10 restarts in 5
  *     minutes, then systemd gives up. Prevents the infinite loop.
@@ -55,7 +64,7 @@ StartLimitIntervalSec=300
 Type=simple
 ExecStart=/bin/sh -c 'cd "${escapedCwd}" && exec "${escapedExecPath}" --experimental-strip-types src/apps/daemon.ts --foreground'
 ExecStartPre=/bin/sh -c 'if [ -f "${escapedFlag}" ]; then rm -f "${escapedFlag}"; exit 1; fi; exit 0'
-Restart=always
+Restart=on-failure
 RestartPreventExitStatus=1
 RestartSec=10
 TimeoutStopSec=30
