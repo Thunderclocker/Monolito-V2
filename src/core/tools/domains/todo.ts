@@ -62,7 +62,7 @@ export const todoTools: ToolDefinition[] = [
   concurrencySafe: true,
   async run(input, context) {
     const profileId = context.profileId || "default"
-    const sessionId = (context as any).sessionId
+    const sessionId = context.sessionId
     if (!sessionId) {
       return formatToolError("No active session ID found in context.")
     }
@@ -96,7 +96,7 @@ export const todoTools: ToolDefinition[] = [
     }
 
     // Structural rule: exactly ONE todo may be in_progress at a time.
-    const inProgressCount = todos.filter(t => (t as any).status === "in_progress").length
+    const inProgressCount = todos.filter(t => t.status === "in_progress").length
     if (inProgressCount > 1) {
       return formatToolError(
         `Multiple todos are marked as in_progress (${inProgressCount}). ` +
@@ -176,7 +176,7 @@ export const todoTools: ToolDefinition[] = [
   async run(input, context) {
     const filter = optionalString(input, "filter") ?? "all"
     const profileId = context.profileId || "default"
-    const sessionId = (context as any).sessionId
+    const sessionId = context.sessionId
     if (!sessionId) {
       return formatToolError("No active session ID found in context.")
     }

@@ -516,7 +516,7 @@ export const mediaTools: ToolDefinition[] = [
         return formatToolError(`Anthropic Vision API failed (${response.status}): ${text}`)
       }
 
-      const data = await response.json() as any
+      const data = await response.json() as { content?: Array<{ text?: string }>; choices?: Array<{ message?: { content?: string } }> }
       const description = data.content?.[0]?.text || ""
       if (!description) {
         return formatToolError("Vision API returned an empty description. The active model may not support image inputs, or the image was rejected by the provider. Switch to a vision-capable model and try again.")
@@ -560,7 +560,7 @@ export const mediaTools: ToolDefinition[] = [
         return formatToolError(`OpenAI Vision API failed (${response.status}): ${text}`)
       }
 
-      const data = await response.json() as any
+      const data = await response.json() as { content?: Array<{ text?: string }>; choices?: Array<{ message?: { content?: string } }> }
       const description = data.choices?.[0]?.message?.content || ""
       if (!description) {
         return formatToolError("Vision API returned an empty description. The active model may not support image inputs, or the image was rejected by the provider. Switch to a vision-capable model and try again.")
@@ -724,7 +724,7 @@ export const mediaTools: ToolDefinition[] = [
         return formatToolError(`La API de generación de imágenes falló (${response.status}): ${errorText}`)
       }
 
-      const result = await response.json() as any
+      const result = await response.json() as { data?: Array<{ b64_json?: string; url?: string }> }
       const data = result.data || []
       if (data.length === 0) {
         return formatToolError("La API no devolvió ninguna imagen en la respuesta.")
