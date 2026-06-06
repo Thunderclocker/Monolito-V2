@@ -76,7 +76,6 @@ import {
   stopManagedSttContainer,
   transcribeManagedAudioFile,
 } from "../stt/managed.ts"
-import { analyzeManagedImage, deployManagedVisionContainer, normalizeVisionConfig } from "../vision/managed.ts"
 import { deploySearxng, SEARXNG_URL } from "../websearch/managed.ts"
 import { readWebSearchConfig } from "../websearch/config.ts"
 import { isBootWingName, BOOT_WING_ORDER } from "../bootstrap/bootWings.ts"
@@ -253,14 +252,14 @@ function buildTelegramPhotoWorkerTask(task: string, parentSessionId: string, lat
   const shouldVerify = requiresImageVerificationText(`${latestUserText}\n${task}`)
   const imageHandlingSteps = shouldVerify
     ? [
-        "2. Como el pedido exige verificacion visual, validá cada candidato prioritariamente con VisionAnalyze (usando la API del modelo activo en la nube) para que sea instantáneo. Si falla o no está disponible, usá la herramienta local AnalyzeImage como fallback. Descartá cualquier resultado sin descripción útil o que no coincida con el pedido.",
+        "2. Como el pedido exige verificacion visual, validá cada candidato con VisionAnalyze (usando el modelo activo, sea Anthropic, OpenAI-compatible o Grok). Si el modelo activo no soporta visión, la herramienta devuelve un error claro: reportalo y pedí al usuario cambiar de modelo antes de seguir. Descartá cualquier resultado sin descripción útil o que no coincida con el pedido.",
         "3. NO envíes mensajes ni archivos al usuario. Tu salida es solo para el coordinador.",
         "4. Devolvé los local_path validados por la herramienta y una descripción breve de cada imagen.",
         "5. No devuelvas solo URLs si el usuario pidió verificación; el coordinador necesita local_path validado.",
         "6. Si no lográs validar ninguna foto, respondé claramente que no hay local_path validado y por qué.",
       ]
     : [
-        "2. NO uses AnalyzeImage ni VisionAnalyze salvo que el pedido original solicite verificacion/analisis visual.",
+        "2. NO uses VisionAnalyze salvo que el pedido original solicite verificacion/analisis visual.",
         "3. NO uses WebFetch ni scraping de paginas fuente. Usá directamente los `image_url` que devuelve ImageSearch.",
         "4. NO envíes mensajes ni archivos al usuario. Tu salida es solo para el coordinador.",
         "5. Devolvé las mejores `image_url` directas, con título/fuente si están disponibles.",
@@ -1714,7 +1713,7 @@ Actions:
     name: "Bash",
     aliases: ["bash"],
     permissionTier: "edit",
-    description: "Execute a shell command locally from the workspace. Optional: run_in_background=true for long-running commands. PROHIBIDO: No uses esta herramienta para invocar APIs externas de LLM o visión (openai, anthropic, client.beta.vision, etc.) desde un script Python o shell. Para análisis visual de imágenes usá la herramienta AnalyzeImage.",
+    description: "Execute a shell command locally from the workspace. Optional: run_in_background=true for long-running commands. PROHIBIDO: No uses esta herramienta para invocar APIs externas de LLM o visión (openai, anthropic, client.beta.vision, etc.) desde un script Python o shell. Para análisis visual de imágenes usá la herramienta VisionAnalyze.",
     inputSchema: {
       type: "object",
       properties: {
@@ -3651,7 +3650,7 @@ Actions:
   {
     name: "ImageSearch",
     permissionTier: "read",
-    description: "Search for images on the internet via SearxNG. Auto-deploys SearxNG Docker container if not running (localhost only). Returns clean image candidates with `image_url` (direct download URL). For simple image requests, use these direct image_url values; do not use WebFetch or scrape source pages. Use AnalyzeImage only if the user explicitly asks to verify/analyze/describe the image content.",
+    description: "Search for images on the internet via SearxNG. Auto-deploys SearxNG Docker container if not running (localhost only). Returns clean image candidates with `image_url` (direct download URL). For simple image requests, use these direct image_url values; do not use WebFetch or scrape source pages. Use VisionAnalyze only if the user explicitly asks to verify/analyze/describe the image content.",
     inputSchema: {
       type: "object",
       properties: {
@@ -3857,86 +3856,6 @@ Actions:
     },
   },
   {
-    name: "AnalyzeImage",
-    permissionTier: "read",
-    description: "Descarga una imagen de una URL o analiza un path local usando el motor de visión local (Ollama/moondream). Devuelve la descripción visual y la ruta local del archivo (local_path). ATENCIÓN: Herramienta computacionalmente pesada (~60s por imagen en CPU). Usá esta herramienta como fallback únicamente si VisionAnalyze (nube) falla o no está disponible. Para análisis visual rápido preferí siempre VisionAnalyze primero. Para tareas masivas de imágenes o procesamiento paralelo extenso, delegá con delegate_background_task.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        url: { type: "string" },
-        path: { type: "string" },
-      },
-      additionalProperties: false,
-    },
-    concurrencySafe: false,
-    validate: input => {
-      const hasUrl = typeof input.url === "string" && input.url.trim().length > 0
-      const hasPath = typeof input.path === "string" && input.path.trim().length > 0
-      if (!hasUrl && !hasPath) return "Must provide 'url' or 'path'"
-      return null
-    },
-    async run(input, context) {
-      const url = optionalString(input, "url")
-      const pathArg = optionalString(input, "path")
-      const config = readChannelsConfig()
-      const vision = normalizeVisionConfig(config.vision)
-      if (!vision.managed) {
-        return formatToolError("La visión local no está habilitada en la configuración.")
-      }
-
-      const scratchpadDir = join(MONOLITO_ROOT, "workspace", "scratchpad")
-      mkdirSync(scratchpadDir, { recursive: true })
-      const tmpPath = join(scratchpadDir, `vision-${randomUUID()}.jpg`)
-
-      let buffer: Buffer
-      if (pathArg) {
-        const absolutePath = resolve(context.cwd, pathArg)
-        if (!existsSync(absolutePath)) return formatToolError(`Archivo no encontrado: ${absolutePath}`)
-        buffer = readFileSync(absolutePath)
-      } else {
-        const response = await fetch(url!, {
-          signal: AbortSignal.timeout(15_000),
-        })
-        if (!response.ok) {
-          return formatToolError(`Image download failed: HTTP ${response.status}`)
-        }
-        buffer = Buffer.from(await response.arrayBuffer())
-      }
-
-      writeFileSync(tmpPath, buffer)
-
-      if (!existsSync(tmpPath) || statSync(tmpPath).size === 0) {
-        return formatToolError("File validation failed: image could not be written or size is 0 bytes.")
-      }
-
-      let description: string
-      try {
-        description = await analyzeManagedImage(tmpPath, vision)
-      } catch (error) {
-        if (!vision.autoDeploy || !isVisionConnectionFailure(error)) return formatToolError(error)
-        const deploy = await deployManagedVisionContainer(vision)
-        if (!deploy.ok) {
-          return formatToolError(`Local vision service unavailable and auto-deploy failed: ${deploy.message}`)
-        }
-        
-        let attempts = 0
-        while (true) {
-          try {
-            description = await analyzeManagedImage(tmpPath, vision)
-            break
-          } catch (retryError) {
-            attempts++
-            if (attempts >= 10 || !isVisionConnectionFailure(retryError)) {
-              return formatToolError(`Local vision service failed to become ready after deploy: ${retryError instanceof Error ? retryError.message : String(retryError)}`)
-            }
-            await new Promise(resolve => setTimeout(resolve, 3000))
-          }
-        }
-      }
-      return { ok: true, description, local_path: tmpPath }
-    },
-  },
-  {
     name: "VisionAnalyze",
     permissionTier: "read",
     description: "Analiza una imagen desde una URL o un path local utilizando la API de visión del modelo de nube activo (Anthropic, OpenAI, Grok). Rápido (~3-5s). Es la herramienta preferida para análisis visual directo. Si la API de nube falla o devuelve resultado vacío, ejecuta fallback automático al motor de visión local. Retorna { description, local_path }. Usá esta herramienta directamente cuando el usuario pide describir, analizar o verificar el contenido de una imagen — no es necesario delegar a un sub-agente para casos simples.",
@@ -4064,11 +3983,7 @@ Actions:
         const data = await response.json() as any
         const description = data.content?.[0]?.text || ""
         if (!description) {
-          const visionConfig = normalizeVisionConfig(readChannelsConfig().vision)
-          const tmpPath = join(MONOLITO_ROOT, "workspace", "scratchpad", `vision-${randomUUID()}.jpg`)
-          writeFileSync(tmpPath, buffer)
-          const localDescription = await analyzeManagedImage(tmpPath, visionConfig)
-          return { ok: true, description: localDescription, local_path: tmpPath }
+          return formatToolError("Vision API returned an empty description. The active model may not support image inputs, or the image was rejected by the provider. Switch to a vision-capable model and try again.")
         }
         return { ok: true, description, local_path: localPath }
       } else {
@@ -4112,11 +4027,7 @@ Actions:
         const data = await response.json() as any
         const description = data.choices?.[0]?.message?.content || ""
         if (!description) {
-          const visionConfig = normalizeVisionConfig(readChannelsConfig().vision)
-          const tmpPath = join(MONOLITO_ROOT, "workspace", "scratchpad", `vision-${randomUUID()}.jpg`)
-          writeFileSync(tmpPath, buffer)
-          const localDescription = await analyzeManagedImage(tmpPath, visionConfig)
-          return { ok: true, description: localDescription, local_path: tmpPath }
+          return formatToolError("Vision API returned an empty description. The active model may not support image inputs, or the image was rejected by the provider. Switch to a vision-capable model and try again.")
         }
         return { ok: true, description, local_path: localPath }
       }
@@ -5100,7 +5011,6 @@ export function listModelTools(isSubAgent = false, lastUserText?: string | boole
     "ImageSearch",
     "DownloadFile",
     "GenerateImage",
-    "AnalyzeImage",
     "VisionAnalyze",
   ])
 
@@ -5185,8 +5095,8 @@ export async function indexRalphRulesInPalace(rootDir: string) {
     description: "Checks if the task requests visual verification, validation, analysis, description, or confirmation of images, photos, screenshots, or visual assets.",
     intentRegex: "\\b(imagen(?:es)?|foto(?:s)?|picture(?:s)?|photo(?:s)?|image(?:s)?|vision|visual)\\b",
     requiredRegex: "\\b(verifica(?:r|me|las|los)?|valid(?:a|ar|ame|alas|alos)|analiza(?:r|me|las|los)?|describe(?:me|las|los)?|confirm(?:a|ar|ame)|vision|visual|coincid(?:e|an)|contenido|real(?:es)?|correct(?:a|as|o|os))\\b",
-    requiredTools: ["AnalyzeImage", "VisionAnalyze"],
-    errorMessage: "[Ralph Loop] SYSTEM ALERT\nTu respuesta incluye el tag de éxito pero NO ejecutaste la herramienta de visión (AnalyzeImage o VisionAnalyze).\nPara tareas de imágenes, es OBLIGATORIO descargar y validar visualmente con una herramienta de visión.\nNo podés cerrar la tarea diciendo que lo hiciste sin haber llamado a la tool.\nCorregilo: buscá la imagen, descargala y pasale la ruta a la herramienta antes de responder."
+    requiredTools: ["VisionAnalyze"],
+    errorMessage: "[Ralph Loop] SYSTEM ALERT\nTu respuesta incluye el tag de éxito pero NO ejecutaste la herramienta de visión (VisionAnalyze).\nPara tareas de imágenes, es OBLIGATORIO descargar y validar visualmente con VisionAnalyze.\nNo podés cerrar la tarea diciendo que lo hiciste sin haber llamado a la tool.\nCorregilo: buscá la imagen, descargala y pasale la ruta a la herramienta antes de responder."
   }
 
   try {

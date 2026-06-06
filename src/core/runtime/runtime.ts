@@ -97,7 +97,6 @@ import {
   removeManagedSttContainer,
   stopManagedSttContainer,
 } from "../stt/managed.ts"
-import { normalizeVisionConfig } from "../vision/managed.ts"
 import { MONOLITO_ROOT } from "../system/root.ts"
 import { ToolExecutionError } from "../errors.ts"
 import { redactSensitiveText, redactSensitiveValue } from "../security/redact.ts"
@@ -3882,7 +3881,6 @@ When you finish an item, immediately call TodoWrite again marking it completed a
     const channels = readChannelsConfig()
     if (!action || action === "show") {
       const tts = channels.tts ?? {}
-      const vision = normalizeVisionConfig(channels.vision)
       return JSON.stringify({
         ...redactSensitiveModelSettings(settings),
         tts: {
@@ -3905,13 +3903,6 @@ When you finish an item, immediately call TodoWrite again marking it completed a
           language: typeof channels.stt?.language === "string" ? channels.stt.language : "",
           engine: typeof channels.stt?.engine === "string" ? channels.stt.engine : "",
           vadFilter: typeof channels.stt?.vadFilter === "boolean" ? channels.stt.vadFilter : "",
-        },
-        vision: {
-          managed: vision.managed,
-          autoDeploy: vision.autoDeploy,
-          port: vision.port,
-          containerName: vision.containerName,
-          model: vision.model,
         },
         heartbeat: readConfigWing(this.rootDir, "CONF_HEARTBEAT"),
       }, null, 2)
@@ -4046,29 +4037,6 @@ When you finish an item, immediately call TodoWrite again marking it completed a
           }
           nextChannels.stt.engine = value as "faster_whisper" | "openai_whisper" | "whisperx"
         }
-        writeChannelsConfig(nextChannels)
-        return `Saved ${field} = ${value}`
-      } else if (field === "vision_managed" || field === "vision_auto_deploy" || field === "vision_port" || field === "vision_container_name" || field === "vision_model") {
-        const nextChannels = { ...channels, vision: { ...(channels.vision ?? {}) } }
-        const isTruthy = ["true", "on", "yes", "1"].includes(value.toLowerCase())
-        const isBoolLike = ["true", "false", "on", "off", "yes", "no", "1", "0"].includes(value.toLowerCase())
-        if (field === "vision_managed") {
-          if (!isBoolLike) return "Invalid: vision_managed must be true or false"
-          nextChannels.vision.managed = isTruthy
-        }
-        if (field === "vision_auto_deploy") {
-          if (!isBoolLike) return "Invalid: vision_auto_deploy must be true or false"
-          nextChannels.vision.autoDeploy = isTruthy
-        }
-        if (field === "vision_port") {
-          const parsed = Number(value)
-          if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 65535) {
-            return "Invalid: vision_port must be a number between 1 and 65535"
-          }
-          nextChannels.vision.port = Math.trunc(parsed)
-        }
-        if (field === "vision_container_name") nextChannels.vision.containerName = value
-        if (field === "vision_model") nextChannels.vision.model = value
         writeChannelsConfig(nextChannels)
         return `Saved ${field} = ${value}`
       } else {

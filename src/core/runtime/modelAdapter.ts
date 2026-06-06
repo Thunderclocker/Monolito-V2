@@ -532,18 +532,18 @@ function buildSystemPrompt(args: {
     "## Visual & Media Processing Protocol",
     isSubAgent
       ? [
-          "- To analyze or describe visual content of an image when explicitly requested, you MUST use the VisionAnalyze tool (using the cloud API model) or the AnalyzeImage tool (local fallback). Never write a Python script calling external vision APIs.",
+          "- To analyze or describe visual content of an image when explicitly requested, you MUST use the VisionAnalyze tool. It uses the active model's vision capability (Anthropic, OpenAI-compatible, or Grok depending on the configured provider). Never write a Python script calling external vision APIs.",
           isImageIntent
-            ? "- To analyze images, first use WebSearch/WebFetch to obtain them, then invoke the VisionAnalyze / AnalyzeImage tool. NEVER use Bash."
+            ? "- To analyze images, first use WebSearch/WebFetch to obtain them, then invoke the VisionAnalyze tool. NEVER use Bash."
             : "- For simple image searches, use ImageSearch and return direct image_urls. Do not use WebFetch or scrape source pages.",
           "- If the task requires photos for Telegram without asking for visual verification, return direct image_urls; the coordinator will handle delivery.",
-          "- If the task requires visual verification of photos for Telegram, each valid image must pass through VisionAnalyze (or AnalyzeImage as fallback). Return the validated local_path; the coordinator will handle delivery.",
-          "- If VisionAnalyze or AnalyzeImage fails, report the error explicitly. Do not attempt workarounds via Bash.",
+          "- If the task requires visual verification of photos for Telegram, each valid image must pass through VisionAnalyze. Return the validated local_path; the coordinator will handle delivery.",
+          "- If VisionAnalyze fails, report the error explicitly. Do not attempt workarounds via Bash.",
         ].join("\n")
       : [
           "- PHOTO ANTI-HALLUCINATION AND DELEGATION RULE: If the user asks to send images and you have image_url or local_path available, you MUST execute TelegramSendPhoto BEFORE emitting any text response. NEVER reply with a list or text description of photos assuming that equals sending them.",
           "- NATIVE MULTIMODAL VISION: When the user sends a photo attachment (<attachment kind=\"photo\" local_path=\"...\">), the image is automatically embedded as binary in your context — you can see it directly. Describe or analyze it from what you actually see. Do NOT delegate to a sub-agent just to describe an image you can already see.",
-          "- EXPLICIT VISION ANALYSIS: If the user explicitly asks you to analyze, verify, or describe the visual content of an image (either from a URL or a local path), use the VisionAnalyze tool directly. It calls the cloud model API (~3-5s) and auto-falls back to local vision if needed. Only delegate visual tasks when they are high-volume (multiple images), require parallel scraping, or are part of a long background workflow.",
+          "- EXPLICIT VISION ANALYSIS: If the user explicitly asks you to analyze, verify, or describe the visual content of an image (either from a URL or a local path), use the VisionAnalyze tool directly. It calls the active model's vision API (~3-5s). If the active model does not support vision, the tool returns a clear error — switch to a vision-capable model instead of delegating. Only delegate visual tasks when they are high-volume (multiple images), require parallel scraping, or are part of a long background workflow.",
           "- DYNAMIC SKILLS RULE: You are FORBIDDEN from creating dynamic skills (CreateSkill) or custom tools for downloading, searching, or sending images/media. For any image search or Telegram delivery requests, you MUST always use the native ImageSearch and TelegramSendPhoto tools directly in your turn. Never write placeholders or dummy scripts in Bash.",
           "- For Telegram audio/voice requests, do not send a progress-only reply like 'generating audio' unless the same turn already started GenerateSpeech. Complete the sequence GenerateSpeech -> TelegramSendAudio/TelegramSendVoice, then confirm only after the send tool succeeds.",
         ].join("\n"),
@@ -558,7 +558,7 @@ function buildSystemPrompt(args: {
       "Level 1 (CRITICAL): Hard system safety constraints (tool harness limits, token budgets, API rate limits). These are infrastructure limits, not behavioral rules.",
       "Level 2 (HIGH): System prompt behavioral rules and defaults:",
       "- FORBIDDEN: Do not attempt WebSearch or WebFetch to search for images. For simple searches of photos/images, use ImageSearch directly and deliver image_urls or send them via TelegramSendPhoto.",
-      "- If the user asks to verify, validate, analyze, or visually describe images, delegate that verification using delegate_background_task. Do not use AnalyzeImage in the main turn.",
+      "- If the user asks to verify, validate, analyze, or visually describe images, delegate that verification using delegate_background_task. Do not use VisionAnalyze in the main turn.",
       "Level 3 (DEFAULT): Rules, facts, and preferences stored in BOOT_MEMORY, BOOT_TOOLS, BOOT_SOUL, BOOT_AGENTS, and dynamic skills (CONF_SKILLS). These are user-defined soft preferences that the user can override at any time by saying so in the chat.",
       "  - Default Rule: If a BOOT_MEMORY instruction requires analyzing images synchronously, you should by default fulfill the user's request by calling delegate_background_task internally and confirming it as your own action, without mentioning delegation, workers, or sub-agents unless asked.",
       "",

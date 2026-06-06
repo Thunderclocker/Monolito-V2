@@ -188,7 +188,7 @@ function evaluateMode(mode: PermissionMode, toolName: string, input: Record<stri
       return {
         behavior: "deny",
         source: "mode",
-        message: "Ad-hoc Bash LLM/vision calls are denied. Use AnalyzeImage or the dedicated runtime tools instead.",
+        message: "Ad-hoc Bash LLM/vision calls are denied. Use VisionAnalyze or the dedicated runtime tools instead.",
       }
     }
     if (mode === "default") {

@@ -35,8 +35,7 @@ const SUBAGENT_HARD_TIMEOUT_MS = 15 * 60 * 1000
 const WORKER_IMAGE_EXECUTION_POLICY = [
   "Image-search execution policy:",
   "- Para busquedas simples de imagenes, usa ImageSearch y devuelve `image_url` directas. No uses WebFetch ni scraping de paginas fuente.",
-  "- Para verificar, validar, analizar o describir el contenido visual, debés utilizar prioritariamente la herramienta VisionAnalyze (en la nube).",
-  "- Usá la herramienta local AnalyzeImage como fallback únicamente si VisionAnalyze no está disponible o falla.",
+  "- Para verificar, validar, analizar o describir el contenido visual, debés utilizar la herramienta VisionAnalyze. Llama al modelo activo (Anthropic, OpenAI-compatible o Grok) y no hay fallback local: si el modelo activo no soporta vision, cambiá a uno que sí antes de continuar.",
   "- Si la herramienta confirma que la imagen no coincide, descarta ese resultado y proba la siguiente `image_url` de la lista.",
   "- No crees perfiles, archivos de plan ni tareas auxiliares para buscar imagenes. Ejecuta el camino mas corto.",
 ].join("\n")
@@ -373,10 +372,10 @@ function extractPartialImageEvidence(rootDir: string, sessionId: string) {
   for (const event of events) {
     if (event.type !== "tool.finish" || !event.ok) continue
     const output = event.output as Record<string, unknown> | undefined
-    if (event.tool === "AnalyzeImage") {
+    if (event.tool === "VisionAnalyze") {
       const localPath = typeof output?.local_path === "string" ? output.local_path : ""
       const description = typeof output?.description === "string" ? clip(output.description, 220) : ""
-      if (localPath) imageRows.push(`- AnalyzeImage ok: ${localPath}${description ? ` | ${description}` : ""}`)
+      if (localPath) imageRows.push(`- VisionAnalyze ok: ${localPath}${description ? ` | ${description}` : ""}`)
     }
     if (event.tool === "TelegramSendPhoto") {
       sentRows.push(`- TelegramSendPhoto ok: ${clip(JSON.stringify(output ?? {}), 220)}`)
@@ -431,7 +430,7 @@ function getTaskProgress(rootDir: string, sessionId: string, profileId = "defaul
     const input = event.toolUseId ? startEventsMap.get(event.toolUseId) : undefined
     if (event.tool === "ImageSearch") {
       imageSearches += 1
-    } else if (event.tool === "AnalyzeImage") {
+    } else if (event.tool === "VisionAnalyze") {
       analyzed += 1
     } else if (event.tool === "TelegramSendPhoto") {
       telegramSends += 1
@@ -1082,7 +1081,6 @@ export const LIGHT_TOOLS = new Set([
   "WebFetch",
   "WebSearch",
   "ImageSearch",
-  "AnalyzeImage",
   "VisionAnalyze",
   "TodoList",
   "BootRead",
