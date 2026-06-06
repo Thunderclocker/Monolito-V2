@@ -2043,7 +2043,7 @@ Actions:
   {
     name: "TodoWrite",
     permissionTier: "edit",
-    description: "Replace the session task list with the supplied full state. Use this tool proactively for complex multi-step work (3+ steps) so the user can see progress. Each todo requires `content` (imperative, e.g. 'Run tests') and `activeForm` (present continuous, e.g. 'Running tests'). Exactly ONE todo may be in_progress at a time; mark previous ones as completed or pending before promoting a new one. The list is replaced atomically on each call: send the FULL desired state (any todo not in the new list is removed).",
+    description: "Replace the session task list with the supplied full state. Use this tool proactively for complex multi-step work (3+ steps) so the user can see progress. Input MUST be an object `{ todos: [{ content, activeForm, status: 'pending' | 'in_progress' | 'completed' }] }`. The `todos` key and the `status` field on every item are REQUIRED — omitting them produces a confusing 'requires at least one todo' error. Each todo: `content` (imperative, e.g. 'Run tests'), `activeForm` (present continuous, e.g. 'Running tests'), `status` (one of pending|in_progress|completed). Exactly ONE todo may be in_progress at a time; mark previous ones as completed or pending before promoting a new one. The list is replaced atomically on each call: send the FULL desired state (any todo not in the new list is removed).",
     inputSchema: {
       type: "object",
       properties: {
@@ -2077,14 +2077,20 @@ Actions:
     },
     concurrencySafe: true,
     async run(input, context) {
-      const todos = Array.isArray(input.todos) ? input.todos : []
       const profileId = context.profileId || "default"
       const sessionId = (context as any).sessionId
       if (!sessionId) {
         return formatToolError("No active session ID found in context.")
       }
+      if (!input || typeof input !== "object" || !("todos" in input)) {
+        const gotKeys = input && typeof input === "object" ? Object.keys(input).join(", ") : typeof input
+        return formatToolError(
+          `TodoWrite: input must be an object with a 'todos' array. Got keys: [${gotKeys}]. Expected: {todos: [{content, activeForm, status: 'pending'|'in_progress'|'completed'}]}.`,
+        )
+      }
+      const todos = Array.isArray(input.todos) ? input.todos : []
       if (todos.length === 0) {
-        return formatToolError("TodoWrite requires at least one todo. To clear the list, send an explicit empty todo per the schema; if you want to clear, call again with an explicit single-item clear (or use TodoList to confirm empty).")
+        return formatToolError("TodoWrite: todos array is empty. To mark all done, send [{content: 'All previous tasks completed', activeForm: 'Wrapping up', status: 'completed'}] explicitly. To clear the list, call TodoList first to confirm the state.")
       }
 
       // Validate each todo
