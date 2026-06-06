@@ -78,7 +78,20 @@ function startDetachedDaemon() {
   process.stdout.write(`lock: ${paths.lockFile}\n`)
 }
 
-if (process.argv.includes("--foreground")) {
+if (process.argv.includes("--write-unit-only")) {
+  // Headless bootstrap: materialise the systemd unit (with the hardcoded
+  // MONOLITO_ROOT and sentinel guard) and exit. Used by install.sh so the
+  // unit exists with the correct paths before `systemctl --user enable`.
+  try {
+    ensureSystemdService(createLogger("systemd"))
+    process.stdout.write("monolitod-v2 systemd unit materialised\n")
+    process.exit(0)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    process.stderr.write(`write-unit-only failed: ${message}\n`)
+    process.exit(1)
+  }
+} else if (process.argv.includes("--foreground")) {
   try {
     await runDaemon()
   } catch (error) {

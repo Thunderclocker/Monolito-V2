@@ -1221,6 +1221,7 @@ IMPORTANT: The human user did NOT send or write this message. Do not reference t
   }
 
   private restartRequested = false
+  private stopRequested = false
   private toolStallState = new Map<string, { key: string; count: number }>()
   private stallAlerts = new Map<string, string>()
   private currentBatchGroups = new Map<string, string>()
@@ -2832,6 +2833,16 @@ Review the existing skill library and apply the curation heuristics in your inst
     return requested
   }
 
+  consumeStopRequest() {
+    const requested = this.stopRequested
+    this.stopRequested = false
+    if (requested) {
+      // Stop wins over restart when both are requested in the same turn.
+      this.restartRequested = false
+    }
+    return requested
+  }
+
   private async transitionState(sessionId: string, state: "idle" | "running" | "error") {
     setSessionState(this.rootDir, sessionId, state)
     this.emit({ type: "state.changed", sessionId, state })
@@ -2892,7 +2903,12 @@ Review the existing skill library and apply the curation heuristics in your inst
           "/status",
           "/todos",
           "/update",
+          "/stop",
         ].join("\n")
+      case "/stop":
+      case "/shutdown":
+        this.stopRequested = true
+        return "Daemon stop requested. The daemon will shut down at the end of this turn and stay down until you run `monolito` again."
       case "/status":
         return this.formatSystemStatusText(await this.getSystemStatus())
       case "/todos": {

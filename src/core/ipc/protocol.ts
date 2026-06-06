@@ -139,6 +139,7 @@ export function getPaths(rootDir: string, profileId: string = "default") {
   const lockFile = join(runDir, "daemon-lock.json")
   const ownerFile = join(runDir, "daemon-owner.json")
   const envFile = join(baseDir, ".env")
+  const flagPath = join(runDir, "intentional-stop.flag")
 
   const tcpHost = "127.0.0.1"
   const tcpPort = 7355
@@ -156,6 +157,7 @@ export function getPaths(rootDir: string, profileId: string = "default") {
     lockFile,
     ownerFile,
     envFile,
+    flagPath,
     scratchpadDir,
     profileId,
     tcpHost,

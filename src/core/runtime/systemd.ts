@@ -20,19 +20,31 @@ interface SystemdLogger {
  * missing or its contents don't match this template.
  *
  * Robustness settings (vs the old unit):
- *   - Restart=always (was on-failure) — restart on ANY non-zero exit,
- *     including clean aborts, so a transient blip doesn't permanently
- *     disable the channel.
+ *   - Restart=always — restart on any non-zero exit.
  *   - RestartSec=10 — give the network/DB time to settle.
  *   - StartLimitBurst=10, StartLimitIntervalSec=300 — 10 restarts in 5
  *     minutes, then systemd gives up. Prevents the infinite loop.
- *   - WatchdogSec=120 + Type=notify — systemd kills the daemon if it
- *     doesn't send watchdog=alive within 2 minutes. (Disabled by default
- *     until the daemon implements sd_notify; see below.)
  *   - TimeoutStopSec=30 — systemd SIGKILLs the daemon if it doesn't
  *     exit cleanly within 30s of SIGTERM.
+ *   - Environment=MONOLITO_ROOT — hardcoded at install time so a stale
+ *     `~/.config/environment.d/*.conf` or a stray `export` in a shell rc
+ *     cannot divert the daemon onto a different state dir.
+ *   - ExecStartPre sentinel guard — if `intentional-stop.flag` exists,
+ *     the daemon does not start (the flag is removed and the pre-start
+ *     exits 1). `RestartPreventExitStatus=1` ensures that systemd does
+ *     NOT count that as a crash, so the daemon stays down until the user
+ *     re-runs `monolito` from the CLI, which removes the flag and
+ *     re-arms the service.
  */
-function buildServiceContent(escapedCwd: string, escapedExecPath: string, daemonLog: string): string {
+export function buildServiceContent(
+  escapedCwd: string,
+  escapedExecPath: string,
+  daemonLog: string,
+  monolitoRoot: string,
+  flagPath: string,
+): string {
+  const escapedRoot = monolitoRoot.replace(/"/g, '\\"')
+  const escapedFlag = flagPath.replace(/"/g, '\\"')
   return `[Unit]
 Description=Monolito V2 - AI Orchestration Daemon
 After=network.target
@@ -42,13 +54,16 @@ StartLimitIntervalSec=300
 [Service]
 Type=simple
 ExecStart=/bin/sh -c 'cd "${escapedCwd}" && exec "${escapedExecPath}" --experimental-strip-types src/apps/daemon.ts --foreground'
+ExecStartPre=/bin/sh -c 'if [ -f "${escapedFlag}" ]; then rm -f "${escapedFlag}"; exit 1; fi; exit 0'
 Restart=always
+RestartPreventExitStatus=1
 RestartSec=10
 TimeoutStopSec=30
 StandardOutput=append:${daemonLog}
 StandardError=append:${daemonLog}
 Environment=NODE_ENV=production
 Environment=MONOLITO_MODE=production
+Environment=MONOLITO_ROOT=${escapedRoot}
 
 [Install]
 WantedBy=default.target
@@ -82,12 +97,19 @@ export function ensureSystemdService(logger: SystemdLogger): void {
 
     const servicePath = join(configDir, "monolito.service")
     const daemonLog = join(MONOLITO_ROOT, "logs", "monolitod.log")
+    const flagPath = join(MONOLITO_ROOT, "run", "intentional-stop.flag")
 
     // Escape double quotes in paths if any exist (highly unlikely, but makes it robust)
     const escapedCwd = process.cwd().replace(/"/g, '\\"')
     const escapedExecPath = process.execPath.replace(/"/g, '\\"')
 
-    const desiredContent = buildServiceContent(escapedCwd, escapedExecPath, daemonLog)
+    const desiredContent = buildServiceContent(
+      escapedCwd,
+      escapedExecPath,
+      daemonLog,
+      MONOLITO_ROOT,
+      flagPath,
+    )
 
     // Idempotent: only rewrite if the file is missing or drifted.
     let needsRewrite = true

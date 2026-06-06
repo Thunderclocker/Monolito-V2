@@ -100,6 +100,45 @@ ensure_system_deps() {
   fi
 }
 
+enable_and_start_service() {
+  if [ "$(uname -s)" != "Linux" ] || ! command -v systemctl >/dev/null 2>&1; then
+    log "systemd no detectado; el daemon no se auto-arrancará al login. Iniciálo manualmente con 'monolito'."
+    return 0
+  fi
+
+  log "Habilitando linger para el usuario ${USER}..."
+  loginctl enable-linger "${USER}" >/dev/null 2>&1 || log "WARN: loginctl enable-linger falló (puede requerir sudo)."
+
+  log "Materializando unit de systemd con MONOLITO_ROOT hardcodeado..."
+  if ! node --experimental-strip-types src/apps/daemon.ts --write-unit-only >/dev/null 2>&1; then
+    log "WARN: no se pudo materializar el unit; abortando enable automático."
+    return 0
+  fi
+
+  if ! systemctl --user daemon-reload >/dev/null 2>&1; then
+    log "WARN: systemctl --user daemon-reload falló."
+    return 0
+  fi
+
+  log "Habilitando monolito.service (enable --now)..."
+  if ! systemctl --user enable --now monolito.service >/dev/null 2>&1; then
+    log "WARN: systemctl --user enable --now falló. El service quedó creado pero no habilitado."
+    return 0
+  fi
+
+  local waited=0
+  while [ "${waited}" -lt 10 ] && ! systemctl --user is-active monolito.service >/dev/null 2>&1; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  if systemctl --user is-active monolito.service >/dev/null 2>&1; then
+    log "Daemon corriendo bajo systemd (autostart al login)."
+  else
+    log "WARN: el service no quedó activo tras 10s. Corré 'systemctl --user status monolito.service' para diagnosticar."
+  fi
+}
+
 main() {
   log "Starting Monolito V2 production installation"
 
@@ -123,6 +162,13 @@ main() {
   log "Installing npm dependencies in ${APP_DIR}"
   npm install
 
+  log "Writing install pin at ${MONOLITO_DIR}/.install-root"
+  printf "%s\n" "${APP_DIR}" > "${MONOLITO_DIR}/.install-root"
+
+  if [ -n "${MONOLITO_ROOT:-}" ] && [ "${MONOLITO_ROOT}" != "${MONOLITO_DIR}" ]; then
+    log "WARN: MONOLITO_ROOT está exportado en tu shell (${MONOLITO_ROOT}); el daemon ignorará ese valor y usará el pin."
+  fi
+
   # Initialize default .env file in ~/.monolito/.env if not present
   if [ ! -f "${MONOLITO_DIR}/.env" ]; then
     log "Creating default configuration in ${MONOLITO_DIR}/.env"
@@ -144,6 +190,8 @@ exec node --experimental-strip-types src/apps/cli.ts "\$@"
 EOF
   chmod +x "${LAUNCHER_PATH}"
 
+  enable_and_start_service
+
   cat <<EOF
 
 Monolito V2 has been installed successfully in production mode!
@@ -155,8 +203,10 @@ Config path:      ${MONOLITO_DIR}/.env
 
 Next steps:
   1. Add ${BIN_DIR} to your PATH env var if you haven't already.
-  2. Run the CLI:
-     monolito
+  2. The daemon is managed by systemd and will auto-start on every login.
+     Run 'monolito' any time to open the TUI. To stop the daemon for
+     good, use 'monolito /stop' (it will stay down until you run 'monolito'
+     again) or './uninstall.sh' to remove everything.
   3. Configure a model profile inside the CLI:
      /model
 

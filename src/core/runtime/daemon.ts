@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from "node:child_process"
 import { appendFileSync, closeSync, existsSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
 import { createConnection, createServer, type Server, type Socket } from "node:net"
+import { join } from "node:path"
 import {
   type DaemonLock,
   type Request,
@@ -31,6 +32,7 @@ export class MonolitoV2Daemon {
   readonly runtime: MonolitoV2Runtime
   private server: Server | null = null
   private restartInFlight = false
+  private stopInFlight = false
   private ownerFd: number | null = null
   private ownershipMonitor: NodeJS.Timeout | null = null
 
@@ -79,7 +81,10 @@ export class MonolitoV2Daemon {
     }
     this.startOwnershipMonitor()
     void this.startEmbeddingsWarmup()
-    startChannels(this.runtime, { onRestartRequested: () => this.scheduleSelfRestart() })
+    startChannels(this.runtime, {
+      onRestartRequested: () => this.scheduleSelfRestart(),
+      onStopRequested: () => this.scheduleSelfStop(),
+    })
     return this.server
   }
 
@@ -260,6 +265,7 @@ export class MonolitoV2Daemon {
     this.restartInFlight = true
     stopChannels()
     this.writeDaemonLog("telegram channels stopped for self-restart")
+    void this.clearIntentionalStopFlag()
 
     setTimeout(() => {
       try {
@@ -362,6 +368,74 @@ export class MonolitoV2Daemon {
         process.exit(0)
       }
     }, 200)
+  }
+
+  /**
+   * Intentional stop. The user (or the runtime, on `/stop`) has asked for
+   * the daemon to come down and STAY down. We:
+   *   1. Run the standard shutdown path (close channels, runtime, server,
+   *      unlink socket/lock/pid/owner when we are the owner).
+   *   2. Drop a sentinel file at `~/.monolito/run/intentional-stop.flag`.
+   *   3. If systemd is managing us, ask it to stop the unit. The unit's
+   *      `ExecStartPre` will see the sentinel on the next start attempt,
+   *      remove it, and abort the start with exit 1. Combined with
+   *      `RestartPreventExitStatus=1` in the unit, systemd does NOT count
+   *      that abort as a crash, so the daemon stays down until the user
+   *      re-runs `monolito` from the CLI.
+   *   4. If we are not under systemd (dev, macOS, containers), just exit.
+   */
+  scheduleSelfStop() {
+    if (this.stopInFlight) return
+    this.stopInFlight = true
+    stopChannels()
+    this.writeDaemonLog("daemon stop requested by user/runtime")
+
+    try {
+      const paths = getPaths(this.rootDir)
+      const flagPath = paths.flagPath ?? join(paths.runDir, "intentional-stop.flag")
+      if (flagPath) {
+        writeFileSync(flagPath, "intentional-stop")
+      }
+    } catch (err) {
+      this.writeDaemonLog(`failed to write intentional-stop flag: ${err instanceof Error ? err.message : String(err)}`)
+    }
+
+    this.stop()
+
+    let underSystemd = false
+    try {
+      execFileSync("systemctl", ["--user", "is-active", "monolito.service"], { stdio: "ignore" })
+      underSystemd = true
+    } catch {}
+
+    if (underSystemd) {
+      try {
+        const child = spawn("systemctl", ["--user", "stop", "monolito.service"], {
+          detached: true,
+          stdio: "ignore",
+        })
+        child.unref()
+        this.writeDaemonLog("daemon stop delegated to systemctl (sentinel will block auto-restart)")
+      } catch (err) {
+        this.writeDaemonLog(`systemctl stop failed, falling back to process.exit: ${err instanceof Error ? err.message : String(err)}`)
+        process.exit(0)
+      }
+    } else {
+      process.exit(0)
+    }
+  }
+
+  /**
+   * Remove the intentional-stop sentinel so the unit can start again.
+   * Called on every `scheduleSelfRestart` (config-driven restart) and
+   * on the normal boot path so a stale flag from a prior stop is wiped.
+   */
+  private async clearIntentionalStopFlag(): Promise<void> {
+    try {
+      const paths = getPaths(this.rootDir)
+      const flagPath = paths.flagPath ?? join(paths.runDir, "intentional-stop.flag")
+      if (existsSync(flagPath)) unlinkSync(flagPath)
+    } catch {}
   }
 
   private listenUnix(socketPath: string) {
@@ -485,7 +559,8 @@ export class MonolitoV2Daemon {
         case "session.startup":
           void this.runtime.processSessionStartup(request.sessionId, request.prompt)
             .then(() => {
-              if (this.runtime.consumeRestartRequest()) this.scheduleSelfRestart()
+              if (this.runtime.consumeStopRequest()) this.scheduleSelfStop()
+              else if (this.runtime.consumeRestartRequest()) this.scheduleSelfRestart()
             })
             .catch(error => this.writeDaemonLog(`async session.startup failed: ${error instanceof Error ? error.message : String(error)}`))
           return { id: request.id, ok: true as const, data: { accepted: true } }
@@ -517,7 +592,8 @@ export class MonolitoV2Daemon {
         case "message.send":
           void this.runtime.processMessage(request.sessionId, request.text)
             .then(() => {
-              if (this.runtime.consumeRestartRequest()) this.scheduleSelfRestart()
+              if (this.runtime.consumeStopRequest()) this.scheduleSelfStop()
+              else if (this.runtime.consumeRestartRequest()) this.scheduleSelfRestart()
             })
             .catch(error => this.writeDaemonLog(`async message.send failed: ${error instanceof Error ? error.message : String(error)}`))
           return { id: request.id, ok: true as const, data: { accepted: true } }
@@ -530,7 +606,9 @@ export class MonolitoV2Daemon {
         case "daemon.command": {
           const req = request as { id: string; command: string }
           const reply = await this.runtime.runDaemonCommand(req.command)
-          if (this.runtime.consumeRestartRequest()) {
+          if (this.runtime.consumeStopRequest()) {
+            this.scheduleSelfStop()
+          } else if (this.runtime.consumeRestartRequest()) {
             this.scheduleSelfRestart()
           }
           return { id: req.id, ok: true as const, data: { output: reply } }
@@ -541,16 +619,16 @@ export class MonolitoV2Daemon {
           const sessionId = session.id
           void this.runtime.askAgent(sessionId, req.prompt, { stream: req.stream ?? false, socket })
             .then(() => {
-              if (this.runtime.consumeRestartRequest()) this.scheduleSelfRestart()
+              if (this.runtime.consumeStopRequest()) this.scheduleSelfStop()
+              else if (this.runtime.consumeRestartRequest()) this.scheduleSelfRestart()
             })
             .catch(error => this.writeDaemonLog(`async session.ask failed: ${error instanceof Error ? error.message : String(error)}`))
           return { id: req.id, ok: true as const, data: { sessionId, accepted: true } }
         }
         case "daemon.stop": {
-          this.stop()
           const response = { id: request.id, ok: true as const, data: { stopped: true } }
           this.safeWrite(socket, encodeEnvelope({ kind: "response", payload: response }))
-          setTimeout(() => process.exit(0), 200)
+          this.scheduleSelfStop()
           return response
         }
         case "query.cost":

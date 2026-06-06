@@ -7,6 +7,9 @@ node_modules/
 # Local runtime state
 .monolito-v2/
 
+# Install pin (written by install.sh, records the canonical install root)
+.install-root
+
 # Local reference material / vendored research
 _references/
 

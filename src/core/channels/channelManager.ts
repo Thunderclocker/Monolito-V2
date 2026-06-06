@@ -417,7 +417,7 @@ async function handleChannelsCallback(token: string, callback: TelegramCallbackQ
   return false
 }
 
-export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartRequested?: () => void }) {
+export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartRequested?: () => void; onStopRequested?: () => void }) {
   const config = readChannelsConfig()
   process.stderr.write(`[ChannelManager] startChannels called. Telegram enabled: ${!!config.telegram?.enabled}\n`)
 

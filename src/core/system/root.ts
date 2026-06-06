@@ -25,7 +25,21 @@ function loadEnvFile(envPath: string) {
 
 const defaultRoot = join(homedir(), ".monolito")
 
-export const MONOLITO_ROOT = process.env.MONOLITO_ROOT || defaultRoot
+function readInstallPin(): string | null {
+  const pinPath = join(defaultRoot, ".install-root")
+  if (!existsSync(pinPath)) return null
+  try {
+    const value = readFileSync(pinPath, "utf8").trim()
+    return value || null
+  } catch {
+    return null
+  }
+}
+
+// Precedence: install pin > env var > default. The pin is written by
+// install.sh and wins over stale environment.d or shell exports.
+const pin = readInstallPin()
+export const MONOLITO_ROOT = pin || process.env.MONOLITO_ROOT || defaultRoot
 
 // Cargar variables del .env global
 loadEnvFile(join(MONOLITO_ROOT, ".env"))
