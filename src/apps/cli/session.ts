@@ -414,23 +414,41 @@ class InteractiveTranscriptFormatter {
   }
 }
 
-export async function waitForTurnCompletion(client: DaemonClient, sessionId: string) {
-  return await new Promise<void>(resolve => {
+export async function waitForTurnCompletion(
+  client: DaemonClient,
+  sessionId: string,
+  timeoutMs = 90_000,
+) {
+  return await new Promise<void>((resolve, reject) => {
     let sawRunning = false
+    let settled = false
+    const finish = (fn: () => void) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      unsubscribeEvent()
+      unsubscribeConnection()
+      fn()
+    }
+    const timer = setTimeout(() => {
+      finish(() =>
+        reject(
+          new Error(
+            "El chat principal no respondió en 90s. Cancelá con /stop y reintentá — si vuelve a colgar, es bug del flujo principal; debería haber delegado automáticamente.",
+          ),
+        ),
+      )
+    }, timeoutMs)
     const unsubscribeEvent = client.onEvent((event: AgentEvent) => {
       if (event.sessionId !== sessionId) return
       if (event.type === "state.changed" && event.state === "running") sawRunning = true
       if (event.type === "state.changed" && sawRunning && (event.state === "idle" || event.state === "error")) {
-        unsubscribeEvent()
-        unsubscribeConnection()
-        resolve()
+        finish(() => resolve())
       }
     })
     const unsubscribeConnection = client.onConnectionChange(connected => {
       if (connected) return
-      unsubscribeEvent()
-      unsubscribeConnection()
-      resolve()
+      finish(() => reject(new Error("Daemon se desconectó mientras esperaba respuesta.")))
     })
   })
 }
