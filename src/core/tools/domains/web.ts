@@ -164,8 +164,8 @@ export const webTools: ToolDefinition[] = [
     const config = readWebSearchConfig()
 
     let isAdult = false
-    if (context.sessionId && context.runtime && typeof (context.runtime as any).hasAdultMode === "function") {
-      isAdult = (context.runtime as any).hasAdultMode(context.sessionId)
+    if (context.sessionId && context.runtime && typeof context.runtime.hasAdultMode === "function") {
+      isAdult = context.runtime.hasAdultMode(context.sessionId)
     }
 
     async function fetchWithBackoff(
