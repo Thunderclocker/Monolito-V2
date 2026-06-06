@@ -1,6 +1,18 @@
 # Monolito v2
 
-Local orchestration runtime with daemon mode, terminal UI, persistent sessions, SQLite-first memory, multi-agent delegation, structured tool execution, slash commands, channel integration, and basic MCP support.
+Local orchestration runtime for AI agents: daemon + terminal UI, SQLite-first memory, multi-agent delegation, structured tool execution, slash commands, Telegram channels, TTS/STT, and MCP support.
+
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Thunderclocker/Monolito-V2/main/install.sh | bash
+```
+
+## Uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Thunderclocker/Monolito-V2/main/uninstall.sh | bash -s -- --yes
+```
 
 Further documentation lives in [`docs/`](./docs/README.md).
 

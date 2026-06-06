@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR=""
 STATE_DIR="${HOME}/.monolito"
 LOCAL_STATE_DIR="${ROOT_DIR}/.monolito-v2"
 NODE_MODULES_DIR="${ROOT_DIR}/node_modules"
@@ -225,8 +225,25 @@ cleanup_filesystem_artifacts() {
   fi
 }
 
+detect_root_dir() {
+  local src="${BASH_SOURCE[0]:-}"
+  if [[ -n "$src" && "$src" != "bash" && "$src" != "stdin" && -e "$src" ]]; then
+    ROOT_DIR="$(cd "$(dirname "$src")" && pwd)"
+    return 0
+  fi
+  # Piped via 'curl | bash' or invoked with 'bash -s': search the default install path.
+  if [[ -d "${HOME}/.monolito/app" ]]; then
+    ROOT_DIR="${HOME}/.monolito/app"
+    return 0
+  fi
+  return 1
+}
+
 main() {
   parse_args "$@"
+  if ! detect_root_dir; then
+    fail "Cannot locate Monolito installation at ${HOME}/.monolito/app. Run from the app dir or install first."
+  fi
   confirm
   stop_monolito_daemon
   cleanup_docker_artifacts
