@@ -163,7 +163,7 @@ main() {
   npm install
 
   log "Writing install pin at ${MONOLITO_DIR}/.install-root"
-  printf "%s\n" "${APP_DIR}" > "${MONOLITO_DIR}/.install-root"
+  printf "%s\n" "${MONOLITO_DIR}" > "${MONOLITO_DIR}/.install-root"
 
   if [ -n "${MONOLITO_ROOT:-}" ] && [ "${MONOLITO_ROOT}" != "${MONOLITO_DIR}" ]; then
     log "WARN: MONOLITO_ROOT está exportado en tu shell (${MONOLITO_ROOT}); el daemon ignorará ese valor y usará el pin."
