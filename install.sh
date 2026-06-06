@@ -148,6 +148,11 @@ main() {
   log "Creating directory layout in ${MONOLITO_DIR}"
   mkdir -p "${MONOLITO_DIR}"
   mkdir -p "${WORKSPACE_DIR}"
+  # Pre-create the runtime subdirs the daemon needs to write to BEFORE
+  # systemd tries to open stdout/stderr log files. Otherwise the unit
+  # fails with 'Failed to set up standard output: No such file or
+  # directory' on first start.
+  mkdir -p "${MONOLITO_DIR}/memory" "${MONOLITO_DIR}/logs" "${MONOLITO_DIR}/logs/instances" "${MONOLITO_DIR}/run" "${MONOLITO_DIR}/agents" "${WORKSPACE_DIR}/scratchpad"
 
   if [ -d "${APP_DIR}" ]; then
     log "Monolito directory already exists in ${APP_DIR}. Updating repository..."
