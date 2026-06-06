@@ -1060,6 +1060,10 @@ export class MonolitoV2Runtime {
     return false
   }
 
+  public getDeliveryContext(sessionId: string): DeliveryContext | undefined {
+    return this.sessionDeliveryContexts.get(sessionId)
+  }
+
   public hasAdultMode(sessionId: string): boolean {
     return !this.adultModeDisabledSessions.has(sessionId)
   }

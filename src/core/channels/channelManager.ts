@@ -25,7 +25,7 @@ const pendingTelegramInputs = new Map<number, { kind: "channels-token" | "channe
  * is the FAST path — the user can click Allow/Deny in Telegram and the
  * agent unblocks within seconds instead of 60s.
  */
-const pendingTelegramPermissions = new Map<number, { permissionId: string; tool: string; path: string; reason: string }>()
+const pendingTelegramPermissions = new Map<number, { sessionId: string; permissionId: string; tool: string; path: string; reason: string }>()
 
 
 const TELEGRAM_BOT_COMMANDS = [
@@ -487,7 +487,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
               if (pending) pendingTelegramPermissions.delete(chatId)
 
               if (resolved) {
-                appendWorklog(runtime.rootDir, `telegram-${chatId}`, {
+                appendWorklog(runtime.rootDir, pending?.sessionId ?? `telegram-${chatId}`, {
                   type: "note",
                   summary: `PERMISSION_VIA_TELEGRAM: user clicked '${decision}' on permissionId=${permissionId} (tool=${pending?.tool ?? "?"}, path=${pending?.path ?? "?"})`,
                 })
@@ -703,10 +703,19 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
       const isDestructive = event.type === "destructive.confirm"
       // event is narrowed to permission.request or destructive.confirm
       // by the type check above. Both shapes include sessionId.
-      if (!event.sessionId.startsWith("telegram-")) return
-      const chatIdRaw = event.sessionId.slice("telegram-".length)
-      const chatId = Number(chatIdRaw)
-      if (!Number.isFinite(chatId) || chatId === 0) return
+      // Resolve chatId from session ID prefix (telegram-<chatId>) or from
+      // the session's active delivery context (e.g. main session used via Telegram).
+      let chatId: number | null = null
+      if (event.sessionId.startsWith("telegram-")) {
+        const chatIdRaw = event.sessionId.slice("telegram-".length)
+        chatId = Number(chatIdRaw)
+      } else {
+        const delivery = runtime.getDeliveryContext(event.sessionId)
+        if (delivery && delivery.channel === "telegram") {
+          chatId = Number(delivery.targetId)
+        }
+      }
+      if (!chatId || !Number.isFinite(chatId) || chatId === 0) return
 
       const permissionId = isDestructive
         ? (event as { confirmId: string }).confirmId
@@ -718,6 +727,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
       // Track the pending permission so the callback handler can resolve
       // it when the user clicks Allow/Deny.
       pendingTelegramPermissions.set(chatId, {
+        sessionId: event.sessionId,
         permissionId,
         tool: event.tool,
         path,
