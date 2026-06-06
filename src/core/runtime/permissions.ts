@@ -25,7 +25,7 @@ export type PermissionContext = {
 
 export type PermissionCheckResult = {
   behavior: "allow" | "deny" | "ask"
-  source: "mode" | "rule" | "hook"
+  source: "mode" | "rule" | "hook" | "destructive_guard"
   message?: string
 }
 
@@ -132,6 +132,19 @@ function isDangerousBash(command: string) {
     /\bsystemctl\s+(stop|restart|disable)\b/i.test(command)
 }
 
+export function isDestructiveAction(toolName: string, input: Record<string, unknown>): {
+  destructive: boolean
+  reason?: string
+} {
+  if (toolName === "Bash") {
+    const command = getBashCommand(input)
+    if (isDangerousBash(command)) {
+      return { destructive: true, reason: `Bash: "${command}" contains destructive commands.` }
+    }
+  }
+  return { destructive: false }
+}
+
 function isAdHocSpeechProcessingBash(command: string) {
   const normalized = command.replace(/\s+/g, " ").trim().toLowerCase()
   if (!normalized) return false
@@ -195,9 +208,6 @@ function evaluateMode(mode: PermissionMode, toolName: string, input: Record<stri
       return isSafeReadOnlyBash(command)
         ? { behavior: "allow", source: "mode" }
         : { behavior: "deny", source: "mode", message: "Bash command requires an allow rule or a less restrictive permission mode." }
-    }
-    if (isDangerousBash(command)) {
-      return { behavior: "deny", source: "mode", message: "Dangerous Bash command denied by permission mode." }
     }
     return { behavior: "allow", source: "mode" }
   }
@@ -399,12 +409,27 @@ export async function checkToolPermission(toolName: string, input: Record<string
   if (hookDecision) return hookDecision
 
   const ruleDecision = evaluateRules(toolName, input, policy.permissions.rules)
+  let decision: PermissionCheckResult
   if (ruleDecision?.behavior === "ask") {
-    return await evaluateSemanticPermission(toolName, input, context)
+    decision = await evaluateSemanticPermission(toolName, input, context)
+  } else if (ruleDecision) {
+    decision = ruleDecision
+  } else {
+    decision = evaluateMode(policy.permissions.mode, toolName, input, context.rootDir)
   }
-  if (ruleDecision) return ruleDecision
 
-  return evaluateMode(policy.permissions.mode, toolName, input, context.rootDir)
+  if (decision.behavior === "allow" && policy.permissions.mode !== "bypassPermissions") {
+    const dest = isDestructiveAction(toolName, input)
+    if (dest.destructive) {
+      return {
+        behavior: "ask",
+        source: "destructive_guard",
+        message: dest.reason,
+      }
+    }
+  }
+
+  return decision
 }
 
 export async function runPostToolHooks(toolName: string, input: Record<string, unknown>, context: PermissionContext, output: unknown) {

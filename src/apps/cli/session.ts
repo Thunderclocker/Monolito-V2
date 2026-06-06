@@ -526,11 +526,11 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       return
     }
 
-    if (event.type === "permission.request") {
+    if (event.type === "permission.request" || event.type === "destructive.confirm") {
       composer.permissionPrompt = {
-        permissionId: event.permissionId,
+        permissionId: event.type === "destructive.confirm" ? event.confirmId : event.permissionId,
         tool: event.tool,
-        path: event.path,
+        path: event.type === "destructive.confirm" ? event.command : event.path,
         reason: event.reason,
       }
       composer.busy = true

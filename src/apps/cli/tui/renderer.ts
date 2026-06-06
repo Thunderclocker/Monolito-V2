@@ -231,8 +231,9 @@ export function renderComposerLines(sessionId: string, composer: ComposerState, 
   if (composer.permissionPrompt) {
     const p = composer.permissionPrompt
     inputLinesPlain = [
-      `${ANSI.yellow}${ANSI.bold}⚠️ PERMISSION REQUEST:${ANSI.reset} Tool ${p.tool} wants to access path:`,
-      `  ${ANSI.cyan}${p.path}${ANSI.reset}`,
+      `${ANSI.yellow}${ANSI.bold}⚠️ DESTRUCTIVE ACTION DETECTED:${ANSI.reset} Tool ${p.tool} wants to execute:`,
+      `  ${ANSI.red}${ANSI.bold}${p.path}${ANSI.reset}`,
+      `  Reason: ${p.reason}`,
       `  [A]llow once  ·  [S]ave always  ·  [D]eny`,
     ]
   } else {

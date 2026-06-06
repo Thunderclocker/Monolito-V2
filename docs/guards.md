@@ -390,3 +390,19 @@ If you see the same guard rejecting on the same turn more than 3 times
 in a row, the agent is probably stuck in a contradiction with the user
 profile or the dynamic rules. Read the latest Palace memories and the
 active `RalphRule` rows; something is asserting an impossible prerequisite.
+
+---
+
+## 9. Destructive Action Guard (pre-execution, per-channel)
+
+Replaces the old `resolveWorkspacePath` interactive permission system.
+Instead of gating filesystem reads/writes by path (which caused friction and was bypassed by tools like `Bash`), the runtime now:
+- Allows **free reads** from any path (no prompt)
+- Allows **writes/edits** within workspace + `MONOLITO_ROOT` (no prompt)
+- Detects **destructive or irreversible actions** (such as dangerous `Bash` commands matching `rm`, `kill`, `shutdown`, etc.)
+- Adapts the confirmation prompt to the **active session channel**:
+  - **CLI session**: Shows a yellow `DESTRUCTIVE ACTION DETECTED` prompt in the TUI, allowing the user to select `[A]llow once`, `[S]ave always`, or `[D]eny`.
+  - **Telegram channel**: Sends an inline keyboard with `✅ Allow` / `❌ Deny` buttons.
+  - **Headless workers / Sub-agents**: Automatically denies the action immediately to avoid hanging.
+  - **Timeouts**: Auto-denies after 30s for interactive channels if the user does not respond.
+

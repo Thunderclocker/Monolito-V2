@@ -493,7 +493,10 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
                 // the user has visual confirmation.
                 if (callbackMessage && pending) {
                   const label = decision === "allow" ? "✅ Allowed" : "❌ Denied"
-                  const confirmation = `🔐 **Permission ${label}**\n\nTool: \`${pending.tool}\`\nPath: \`${pending.path}\`\n\nThe agent will ${decision === "allow" ? "proceed" : "be denied access"}.`
+                  const isDestructive = pending.reason.includes("contains destructive commands") || pending.tool === "Bash"
+                  const confirmation = isDestructive
+                    ? `⚠️ **Destructive Action ${label}**\n\nTool: \`${pending.tool}\`\nAction: \`${pending.path}\`\n\nThe agent will ${decision === "allow" ? "proceed" : "be denied execution"}.`
+                    : `🔐 **Permission ${label}**\n\nTool: \`${pending.tool}\`\nPath: \`${pending.path}\`\n\nThe agent will ${decision === "allow" ? "proceed" : "be denied access"}.`
                   await editTelegramMenu(
                     config.telegram!.token!,
                     chatId,
@@ -503,12 +506,11 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
                   ).catch(() => {})
                 }
               } else {
-                // The permission already resolved (probably via the
-                // 60s safety net). Tell the user.
+                // The permission already resolved (probably via safety net). Tell the user.
                 await sendTelegramText(
                   config.telegram!.token!,
                   chatId,
-                  "⚠️ Permission already resolved (likely the 60s safety net denied it). No action taken.",
+                  "⚠️ Request already resolved or timed out (no action taken).",
                 ).catch(() => {})
               }
               return
@@ -695,29 +697,36 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
     // before — this only kicks in for sessions whose sessionId starts
     // with "telegram-".
     const unsubscribePermissions = runtime.onEvent((event) => {
-      if (event.type !== "permission.request") return
-      const permEvent = event as { sessionId: string; permissionId: string; tool: string; path: string; reason: string }
+      if (event.type !== "permission.request" && event.type !== "destructive.confirm") return
+      const isDestructive = event.type === "destructive.confirm"
+      const permEvent = event as any
       if (!permEvent.sessionId.startsWith("telegram-")) return
       const chatIdRaw = permEvent.sessionId.slice("telegram-".length)
       const chatId = Number(chatIdRaw)
       if (!Number.isFinite(chatId) || chatId === 0) return
 
+      const permissionId = isDestructive ? permEvent.confirmId : permEvent.permissionId
+      const path = isDestructive ? permEvent.command : permEvent.path
+
       // Track the pending permission so the callback handler can resolve
       // it when the user clicks Allow/Deny.
       pendingTelegramPermissions.set(chatId, {
-        permissionId: permEvent.permissionId,
+        permissionId,
         tool: permEvent.tool,
-        path: permEvent.path,
+        path,
         reason: permEvent.reason,
       })
 
-      const text = `🔐 **Permission request**\n\nTool: \`${permEvent.tool}\`\nPath: \`${permEvent.path}\`\n\n${permEvent.reason}\n\nThe agent is waiting for your decision. You can also just wait — Monolito will auto-deny after 60s if you don't respond.`
+      const text = isDestructive
+        ? `⚠️ **Destructive Action Detected**\n\nTool: \`${permEvent.tool}\`\nAction: \`${path}\`\n\nReason: *${permEvent.reason}*\n\nThe agent is waiting for your decision. It will auto-deny after 30s if you don't respond.`
+        : `🔐 **Permission Request**\n\nTool: \`${permEvent.tool}\`\nPath: \`${path}\`\n\n${permEvent.reason}\n\nThe agent is waiting for your decision. It will auto-deny after 60s if you don't respond.`
+
       // Inline keyboard: Allow / Deny. Callback data encodes the
       // permissionId and decision so the callback handler can resolve.
       const buttons: TelegramInlineButton[][] = [
         [
-          { text: "✅ Allow", callback_data: `perm:${permEvent.permissionId}:allow` },
-          { text: "❌ Deny", callback_data: `perm:${permEvent.permissionId}:deny` },
+          { text: "✅ Allow", callback_data: `perm:${permissionId}:allow` },
+          { text: "❌ Deny", callback_data: `perm:${permissionId}:deny` },
         ],
       ]
       void sendTelegramMenu(config.telegram!.token!, chatId, text, buttons).catch((err) => {

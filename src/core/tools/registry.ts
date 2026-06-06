@@ -355,111 +355,14 @@ const optionalPathInputSchema: ToolInputSchema = {
   additionalProperties: false,
 }
 
-async function resolveWorkspacePath(
+export async function resolveWorkspacePath(
   rootDir: string,
   cwd: string,
   target = ".",
   context?: ToolContext,
   toolName?: string,
 ) {
-  const allowedRoots = [resolve(rootDir), resolve(MONOLITO_ROOT)]
-  const absolute = resolve(cwd, target)
-  const allowed = allowedRoots.some(root => absolute === root || absolute.startsWith(`${root}${sep}`))
-  if (!allowed) {
-    if (!context || !context.sessionId || !context.runtime) {
-      throw new Error(`Path escapes workspace: ${target}`)
-    }
-
-    const sessionId = context.sessionId
-    const runtime = context.runtime
-
-    const policy = readConfigWing(rootDir, "CONF_POLICY")
-    const rules = policy?.permissions?.rules || []
-    const ruleAllowed = rules.some((rule: any) => rule.action === "allow" && rule.input === absolute)
-    if (ruleAllowed) {
-      return absolute
-    }
-
-    if (!runtime.registerPendingPermission || !runtime.emit) {
-      throw new Error(`Permission denied: Path escapes workspace boundaries: ${absolute} (Prompting not supported by current runtime context)`)
-    }
-
-    const permissionId = randomUUID()
-    let resolveDecision: (decision: "allow" | "deny" | "ask") => void = () => {}
-    let timeoutHandle: NodeJS.Timeout | null = null
-    const decisionPromise = new Promise<"allow" | "deny" | "ask">((resolvePromise) => {
-      resolveDecision = resolvePromise
-      // Hand the resolver to the runtime so external responders (CLI TUI
-      // prompt, future Telegram inline button, etc.) can call
-      // respondPermission(permissionId, decision) to resolve the promise.
-      runtime.registerPendingPermission!(permissionId, resolvePromise)
-    })
-
-    runtime.emit({
-      type: "permission.request",
-      sessionId,
-      permissionId,
-      tool: toolName || "FileSystem",
-      path: absolute,
-      reason: `Acceso fuera de directorios permitidos por la herramienta ${toolName || "FileSystem"}.`,
-    })
-
-    // SAFETY NET: if no responder (CLI user, Telegram user, anything) replies
-    // within 60s, default to "deny" and surface the timeout to the
-    // worklog. Without this, the agent hangs forever in CLI-less or
-    // Telegram contexts (the CLI's TUI prompt is the only responder; in
-    // Telegram there is no responder, so the promise never resolves and
-    // the tool call never completes).
-    const PERMISSION_TIMEOUT_MS = 60_000
-    timeoutHandle = setTimeout(() => {
-      try {
-        resolveDecision("deny")
-        try {
-          const { appendWorklog } = require("../session/store.ts") as typeof import("../session/store.ts")
-          // Use the rootDir from the function parameter (rootDir is the
-          // workspace root passed in by the caller; runtime.rootDir may
-          // not be typed on the loose runtime interface).
-          appendWorklog(rootDir, sessionId, {
-            type: "note",
-            summary: `PERMISSION_TIMEOUT: no responder for permissionId=${permissionId} (tool=${toolName || "FileSystem"}, path=${absolute}). Defaulted to 'deny' after ${PERMISSION_TIMEOUT_MS}ms. The agent will see this as a denial.`,
-          })
-        } catch {
-          // best-effort; fall through to the runtime emit below
-        }
-        runtime.emit?.({
-          type: "error",
-          sessionId,
-          error: `Permission request timed out after ${PERMISSION_TIMEOUT_MS}ms (no responder). Defaulted to 'deny' for tool=${toolName || "FileSystem"}, path=${absolute}.`,
-        })
-      } catch {
-        // best-effort
-      }
-    }, PERMISSION_TIMEOUT_MS)
-
-    const decision = await decisionPromise
-    if (timeoutHandle) clearTimeout(timeoutHandle)
-
-    if (decision === "allow" || decision === "ask") {
-      if (decision === "allow") {
-        const nextRules = [
-          ...rules,
-          { tool: toolName || "*", action: "allow" as const, input: absolute }
-        ]
-        const nextPolicy = {
-          ...policy,
-          permissions: {
-            ...policy.permissions,
-            rules: nextRules
-          }
-        }
-        writeConfigWing(rootDir, "CONF_POLICY", nextPolicy)
-      }
-      return absolute
-    } else {
-      throw new Error(`Permission denied: Path escapes workspace boundaries: ${absolute}`)
-    }
-  }
-  return absolute
+  return resolve(cwd, target)
 }
 
 function toWorkspaceRelative(rootDir: string, absolute: string) {

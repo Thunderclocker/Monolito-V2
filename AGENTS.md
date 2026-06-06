@@ -234,3 +234,16 @@ Monolito V2 implements a transaction-like execution mechanism for tools with irr
 - **Fuentes de Verdad**: Consulta de forma dinámica el perfil del usuario (`BOOT_USER`) y recuerda memorias semánticas afines al contexto (`palace_nodes` de RAG).
 - **Ejemplo Práctico**: Si el usuario ha instruido al agente mediante lenguaje natural *"siempre verifica las fotos con VisionAnalyze antes de mandarlas por Telegram"*, esa regla se almacena en memoria. El Side-Effect Guard detecta que se intenta ejecutar `TelegramSendPhoto` sin haber llamado previamente a `VisionAnalyze` en el turno y bloquea preventivamente la acción.
 - **Fail-Safe**: Si la validación del LLM falla por timeout o error técnico, el guardián actúa en modo permisivo y **aprueba** por defecto para asegurar la continuidad operativa de la sesión.
+
+## Destructive Action Guard
+
+Monolito V2 implements a per-channel Destructive Action Guard to replace the legacy path-permission prompts:
+- **Free Reads**: Filesystem reads/access are unrestricted and never prompt the user.
+- **Unprompted Edits/Writes**: Writes inside the workspace + `MONOLITO_ROOT` do not require interactive confirmation.
+- **Destructive Action Interception**: Actions flagged as destructive (e.g. dangerous `Bash` commands matching `rm`, `kill`, `shutdown`, etc.) are intercepted.
+- **Adaptive Channel Prompts**:
+  - **CLI TUI**: Surfaces a `⚠️ DESTRUCTIVE ACTION DETECTED` prompt asking the user to confirm via `[A]llow once`, `[S]ave always`, or `[D]eny`.
+  - **Telegram**: Sends an inline keyboard with `✅ Allow` / `❌ Deny` buttons.
+  - **Headless workers / Sub-agents**: Automatically denied immediately.
+  - **Timeout**: Requests auto-deny after 30 seconds if unanswered.
+

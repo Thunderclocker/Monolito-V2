@@ -1,4 +1,5 @@
 import { type Socket } from "node:net"
+import { randomUUID } from "node:crypto"
 import { execFile, spawn } from "node:child_process"
 import { existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
 import { join, dirname } from "node:path"
@@ -3191,14 +3192,98 @@ When you finish an item, immediately call TodoWrite again marking it completed a
       lastUserText,
     })
     if (permission.behavior !== "allow") {
-      const message = permission.message ?? `Permission denied for tool ${tool.name}.`
-      appendWorklog(this.rootDir, sessionId, {
-        type: "tool",
-        summary: `Tool ${tool.name} blocked: ${message}`,
-      })
-      this.emit({ type: "error", sessionId, error: message })
-      this.recordToolFailureStall(sessionId, tool.name, message)
-      throw new Error(message)
+      if (permission.behavior === "ask" && permission.source === "destructive_guard") {
+        const isSubAgent = sessionId.startsWith("agent-")
+        if (isSubAgent) {
+          const message = `[Destructive Action Guard] Denied: Headless agent session cannot perform destructive action "${permission.message}".`
+          appendWorklog(this.rootDir, sessionId, {
+            type: "tool",
+            summary: `Tool ${tool.name} blocked by Destructive Action Guard (headless session): ${message}`,
+          })
+          this.emit({ type: "error", sessionId, error: message })
+          this.recordToolFailureStall(sessionId, tool.name, message)
+          throw new Error(message)
+        }
+
+        const confirmId = randomUUID()
+        let resolveDecision: (decision: "allow" | "deny" | "ask") => void = () => {}
+        let timeoutHandle: NodeJS.Timeout | null = null
+        const decisionPromise = new Promise<"allow" | "deny" | "ask">((resolvePromise) => {
+          resolveDecision = resolvePromise
+          this.registerPendingPermission(confirmId, resolvePromise)
+        })
+
+        const commandStr = normalizedInput.command as string || JSON.stringify(normalizedInput)
+        this.emit({
+          type: "destructive.confirm",
+          sessionId,
+          confirmId,
+          tool: tool.name,
+          command: commandStr,
+          reason: permission.message || "Destructive action confirmation required.",
+        })
+
+        const CONFIRM_TIMEOUT_MS = 30_000
+        timeoutHandle = setTimeout(() => {
+          try {
+            resolveDecision("deny")
+            try {
+              appendWorklog(this.rootDir, sessionId, {
+                type: "note",
+                summary: `CONFIRM_TIMEOUT: no responder for destructive action confirmId=${confirmId} (tool=${tool.name}, command=${commandStr}). Defaulted to 'deny' after ${CONFIRM_TIMEOUT_MS}ms.`,
+              })
+            } catch {}
+            this.emit?.({
+              type: "error",
+              sessionId,
+              error: `Destructive action confirmation request timed out after ${CONFIRM_TIMEOUT_MS}ms (no responder). Defaulted to 'deny'.`,
+            })
+          } catch {}
+        }, CONFIRM_TIMEOUT_MS)
+
+        const decision = await decisionPromise
+        if (timeoutHandle) clearTimeout(timeoutHandle)
+
+        if (decision === "allow" || decision === "ask") {
+          if (decision === "allow") {
+            try {
+              const policy = readConfigWing(this.rootDir, "CONF_POLICY")
+              const rules = policy?.permissions?.rules || []
+              const nextRules = [
+                ...rules,
+                { tool: tool.name, action: "allow" as const, input: commandStr }
+              ]
+              const nextPolicy = {
+                ...policy,
+                permissions: {
+                  ...policy.permissions,
+                  rules: nextRules
+                }
+              }
+              writeConfigWing(this.rootDir, "CONF_POLICY", nextPolicy)
+            } catch {}
+          }
+          // Allowed: proceed to execute tool.
+        } else {
+          const message = `[Destructive Action Guard] Denied: ${permission.message || "Destructive action rejected by user"}.`
+          appendWorklog(this.rootDir, sessionId, {
+            type: "tool",
+            summary: `Tool ${tool.name} blocked by Destructive Action Guard: ${message}`,
+          })
+          this.emit({ type: "error", sessionId, error: message })
+          this.recordToolFailureStall(sessionId, tool.name, message)
+          throw new Error(message)
+        }
+      } else {
+        const message = permission.message ?? `Permission denied for tool ${tool.name}.`
+        appendWorklog(this.rootDir, sessionId, {
+          type: "tool",
+          summary: `Tool ${tool.name} blocked: ${message}`,
+        })
+        this.emit({ type: "error", sessionId, error: message })
+        this.recordToolFailureStall(sessionId, tool.name, message)
+        throw new Error(message)
+      }
     }
     this.emit({ type: "tool.start", sessionId, toolUseId, tool: tool.name, input: normalizedInput })
     const startLine = renderToolStart(tool.name, normalizedInput)
