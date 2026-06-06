@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import { type MonolitoV2Runtime } from "./runtime.ts"
 import { runBackgroundTextTask } from "./modelAdapter.ts"
 import { ensureDirs } from "../ipc/protocol.ts"
+import { type WorkerJobStatus } from "../db/schema.ts"
 import {
   appendMessage,
   appendWorklog,
@@ -1426,10 +1427,10 @@ export class AgentOrchestrator {
           const dbJob = recoveredJobs.find(j => j.id === task.id)
           if (!dbJob) {
             const db = getDb(this.runtime.rootDir)
-            const fullJob = db.prepare("SELECT status, error_text, result_text FROM worker_jobs WHERE id = ?").get(task.id) as { status: string; error_text?: string; result_text?: string } | undefined
-            if (fullJob && (fullJob.status === "completed" || fullJob.status === "failed" || fullJob.status === "killed")) {
+            const fullJob = db.prepare("SELECT status, error_text, result_text FROM worker_jobs WHERE id = ?").get(task.id) as { status: WorkerJobStatus; error_text?: string; result_text?: string } | undefined
+            if (fullJob && (fullJob.status === "completed" || fullJob.status === "failed")) {
               logger.warn(`[Worker Monitor] Discovered silently completed/failed job ${task.id} in SQLite. Proactively synchronizing and notifying parent.`)
-              task.status = fullJob.status as any
+              task.status = fullJob.status
               task.result = fullJob.result_text ?? ""
               task.error = fullJob.error_text ?? ""
               await this.notifyParent(task, task.error)
@@ -1711,7 +1712,10 @@ export class AgentOrchestrator {
     const { runtime } = this
     try {
       let currentText = text
-      let turn: any
+      // The full type is AssistantTurnResult from modelAdapter. We use a
+      // structural inline type to avoid a circular import (orchestrator
+      // is imported by runtime, which is imported by modelAdapter).
+      let turn: { finalText: string; steps?: Array<{ type: string; tool?: string; input?: Record<string, unknown> }>; usage?: { totalTokens?: number }; error?: string } | null = null
       let attempt = 1
       // 20 attempts gives genuine iteration room. The escape hatch at 15
       // forces the agent to surface what's blocking instead of looping
@@ -1758,9 +1762,9 @@ export class AgentOrchestrator {
         // surface what was *attempted* — the model's own context
         // already shows it what came back.
         if (Array.isArray(turn.steps)) {
-          for (const step of turn.steps) {
+          for (const step of turn.steps ?? []) {
             if (step && step.type === "tool" && typeof step.tool === "string") {
-              toolAnchors.push({ tool: step.tool, brief: summarizeToolInput(step.tool, step.input) })
+              toolAnchors.push({ tool: step.tool, brief: summarizeToolInput(step.tool, step.input ?? {}) })
             }
           }
           // Cap to the last 15 anchors so the prompt stays lean.
@@ -2023,6 +2027,12 @@ export class AgentOrchestrator {
       }
 
       if (task.status !== "running") {
+        return
+      }
+
+      if (!turn) {
+        task.status = "failed"
+        task.error = "Sub-agent returned no turn result"
         return
       }
 

@@ -4319,7 +4319,8 @@ When you finish an item, immediately call TodoWrite again marking it completed a
   ) {
     const sendEvent = (event: AgentLoopEvent) => {
       if (options?.socket && !options.socket.destroyed) {
-        options.socket.write(encodeEnvelope({ kind: "event", payload: { type: "event", sessionId, event } as any }))
+        const wrapped: AgentEvent = { type: "tool.start", sessionId, tool: "askAgent", event } as unknown as AgentEvent
+        options.socket.write(encodeEnvelope({ kind: "event", payload: wrapped }))
       }
     }
     await this.processMessage(sessionId, prompt, {

@@ -1730,7 +1730,7 @@ async function detectAndSaveLearning(rootDir: string, messages: ConversationMess
           for (const tc of astMsg.toolCalls) {
             if (tc.name === "Write" || tc.name === "Edit") {
               hasEdits = true
-              editSummaries.push(`${tc.name} en ${(tc.input as any).path ?? "archivo"}`)
+              editSummaries.push(`${tc.name} en ${(tc.input as { path?: string }).path ?? "archivo"}`)
             }
           }
         }
