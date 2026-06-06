@@ -52,7 +52,7 @@ import {
 import { isEmbeddingsUnavailableError } from "../session/embeddings.ts"
 import { type AgentOrchestrator } from "../runtime/orchestrator.ts"
 import { redactSensitiveValue } from "../security/redact.ts"
-import { type Logger } from "../logging/logger.ts"
+import { type Logger, createLogger } from "../logging/logger.ts"
 import { CONFIG_WING_ORDER, type ConfigWingName } from "../config/configWings.ts"
 import { coerceConfigRecord } from "../config/wingValue.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "../runtime/modelConfig.ts"
@@ -1043,13 +1043,28 @@ function readSkillGuardConfig(rootDir: string): boolean {
  * bad SOPs that would otherwise look innocuous.
  */
 const SKILL_THREAT_PATTERNS: { name: string; regex: RegExp }[] = [
-  { name: "rm -rf root", regex: /\brm\s+(-\w*r\w*f\w*\s+)*\/\s*$/m },
-  { name: "rm -rf home", regex: /\brm\s+-\w*r\w*f\w*\s+~(?:\s|$)/m },
-  { name: "rm -rf ssh", regex: /\brm\s+-\w*r\w*f\w*\s+\.?\.?\/?\.ssh/m },
-  { name: "curl pipe bash", regex: /curl[^|]*\|\s*(sudo\s+)?(ba)?sh/m },
+  // Matches rm with any combination of -r and -f flags in either order, and
+  // any dangerous path. Catches:
+  //   rm -rf /, rm -fr /, rm -Rf /, rm --remove-files /
+  //   rm -rf .         (recursive delete of cwd)
+  //   rm -rf /tmp      (recursive delete of /tmp)
+  //   rm -rf /etc, /var, /home, /usr, /opt, /root, /srv, /mnt
+  //   rm -rf ~         (recursive delete of home)
+  //   rm -rf .ssh      (deletes SSH keys)
+  { name: "rm recursive dangerous", regex: /\brm\s+(-\w*[rf]\w*[rf]\w*\s+|--\S+\s+)+\.?(\/|\.\.?\/|~\/|\$HOME|\$\{HOME\}|\/tmp|\/etc|\/var|\/home|\/usr|\/opt|\/root|\/srv|\/mnt|\/bin|\/sbin|\/lib|\.ssh|\.\/|\.\.\/)/im },
+  // Catches rm -rf / at end of line (legacy) and any rm -rf <path>
+  { name: "rm recursive path", regex: /\brm\s+-\w*[rf]\w*[rf]\w*[\s\u00A0]+(?!\/dev\/null)[^\s]/im },
+  // Catches shell download-and-execute on any common shell.
+  // sh | bash | zsh | ksh | fish | csh | tcsh | dash | ash | oil | elvish | xonsh
+  { name: "curl pipe shell", regex: /\b(curl|wget)\b[^|;&]*\|\s*(sudo\s+)?(ba)?sh|zsh|ksh|fish|csh|tcsh|dash|ash|oil|elvish|xonsh(?:\s|$)/m },
   { name: "exfiltrate env", regex: /\b(cat|printenv|env)\b[^.\n]*\b(AWS_|GITHUB_|OPENAI_|ANTHROPIC_|API_KEY|SECRET|TOKEN)/m },
   { name: "chmod 777", regex: /\bchmod\s+777\b/ },
-  { name: "dd overwrite disk", regex: /\bdd\s+if=[^\n]*\s+of=\/dev\/(sd|nvme|hd)/m },
+  { name: "dd overwrite disk", regex: /\bdd\s+if=[^\n]*\s+of=\/dev\/(sd|nvme|hd|xvd|vd|mmcblk|loop|disk|dasd)/m },
+  // Whole-disk wipe via redirections (echo > /dev/sda, truncate < /dev/sdb, etc.)
+  { name: "truncate device (output redirect)", regex: />\s*\/dev\/(sd[a-z]*|nvme[0-9]*|hd[a-z]*|xvd[a-z]*|vd[a-z]*|mmcblk[0-9]*|loop[0-9]*|disk[0-9]*|dasd[a-z]*)/m },
+  { name: "truncate device (input redirect)", regex: /<\s*\/dev\/(sd[a-z]*|nvme[0-9]*|hd[a-z]*|xvd[a-z]*|vd[a-z]*|mmcblk[0-9]*|loop[0-9]*|disk[0-9]*|dasd[a-z]*)/m },
+  // Classic fork bomb
+  { name: "fork bomb", regex: /:\(\)\s*\{[^}]*:\s*\|:\s*&?\s*\};:/m },
 ]
 
 function scanSkillGuideForThreats(guide: string): { threat: boolean; pattern: string | null } {
@@ -4830,6 +4845,8 @@ Actions:
 
 const tools: ToolDefinition[] = rawTools.map(withSafeToolFailure)
 
+const logger = createLogger("tools")
+
 function isValidJson(value: string) {
   try {
     JSON.parse(value)
@@ -4940,7 +4957,7 @@ export function listModelTools(isSubAgent = false, lastUserText?: string | boole
     .map(tool => ({
       name: tool.name,
       description: tool.description,
-      input_schema: tool.inputSchema,
+      inputSchema: tool.inputSchema,
     }))
   return staticMapped
 }
@@ -4977,7 +4994,7 @@ export async function indexToolsInPalace(rootDir: string) {
     try {
       await upsertSemanticTool(rootDir, tool.name, formattedDesc)
     } catch (err) {
-      console.error(`[indexToolsInPalace] Failed to index ${tool.name}:`, err)
+      logger.error("Failed to index tool", { toolName: tool.name, errorMessage: String(err), errorStack: err instanceof Error ? err.stack : undefined })
     }
   }
 
@@ -4988,7 +5005,7 @@ export async function indexToolsInPalace(rootDir: string) {
       await upsertSemanticTool(rootDir, skill.name, formattedDesc)
     }
   } catch (err) {
-    console.error(`[indexToolsInPalace] Failed to index dynamic skills:`, err)
+    logger.error("Failed to index dynamic skills:", { errorMessage: String(err), errorStack: (err instanceof Error ? err.stack : undefined) })
   }
 }
 
@@ -5005,7 +5022,7 @@ export async function indexRalphRulesInPalace(rootDir: string) {
   try {
     upsertRalphRule(rootDir, "image_verification", JSON.stringify(imageVerificationRule, null, 2))
   } catch (err) {
-    console.error("[indexRalphRulesInPalace] Failed to index image_verification rule:", err)
+    logger.error("[indexRalphRulesInPalace] Failed to index image_verification rule:", { errorMessage: String(err), errorStack: (err instanceof Error ? err.stack : undefined) })
   }
 
   // The enumerate_dynamic_state rule is enforced semantically via the
@@ -5030,7 +5047,7 @@ export async function indexRalphRulesInPalace(rootDir: string) {
   try {
     upsertRalphRule(rootDir, "enumerate_dynamic_state", JSON.stringify(enumerateDynamicStateRule, null, 2))
   } catch (err) {
-    console.error("[indexRalphRulesInPalace] Failed to index enumerate_dynamic_state rule:", err)
+    logger.error("[indexRalphRulesInPalace] Failed to index enumerate_dynamic_state rule:", { errorMessage: String(err), errorStack: (err instanceof Error ? err.stack : undefined) })
   }
 }
 

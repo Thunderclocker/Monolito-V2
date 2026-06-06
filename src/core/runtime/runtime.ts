@@ -58,6 +58,7 @@ import {
   applyModelSettingsToEnv,
   draftToSettings,
   loadAndApplyModelSettings,
+  bootstrapConfigFromEnv,
   maskApiKey,
   readModelSettings,
   redactSensitiveModelSettings,
@@ -1254,6 +1255,12 @@ IMPORTANT: The human user did NOT send or write this message. Do not reference t
     const db = getDb(this.rootDir)
     ensureConfigWings(this.rootDir)
     reconcileSystemWings(db, rootDir)
+    // On a brand-new install, copy .env values into CONF_SYSTEM / CONF_MODELS
+    // so the model settings have a usable base. Idempotent: skipped if the
+    // wings already have content.
+    bootstrapConfigFromEnv(process.env).catch(err => {
+      console.error(`bootstrapConfigFromEnv failed:`, err)
+    })
     loadAndApplyModelSettings(process.env)
     this.reconcileModelConfigWing()
 
@@ -4312,7 +4319,8 @@ When you finish an item, immediately call TodoWrite again marking it completed a
   ) {
     const sendEvent = (event: AgentLoopEvent) => {
       if (options?.socket && !options.socket.destroyed) {
-        options.socket.write(encodeEnvelope({ kind: "event", payload: { type: "event", sessionId, event } as any }))
+        const wrapped: AgentEvent = { type: "tool.start", sessionId, tool: "askAgent", event } as unknown as AgentEvent
+        options.socket.write(encodeEnvelope({ kind: "event", payload: wrapped }))
       }
     }
     await this.processMessage(sessionId, prompt, {

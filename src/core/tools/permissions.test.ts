@@ -27,10 +27,20 @@ test("resolveWorkspacePath resolves any absolute path without prompting", async 
 test("isDestructiveAction detects dangerous bash commands", () => {
   const dangerous = [
     "rm -rf /",
+    "rm -fr /",
+    "rm -Rf /",
     "kill -9 123",
+    "killall nginx",
     "systemctl stop nginx",
+    "systemctl restart sshd",
+    "systemctl disable nginx",
     "dd if=/dev/zero of=/dev/sda",
     "shutdown now",
+    "unlink /etc/passwd",
+    "shred -vfz /dev/sda",
+    "init 0",
+    "VAR=val sudo rm -rf /etc",
+    ":(){ :|:& };:",
   ]
   for (const cmd of dangerous) {
     const res = isDestructiveAction("Bash", { command: cmd })
@@ -46,10 +56,20 @@ test("isDestructiveAction allows safe read-only commands", () => {
     "git status",
     "npm run build",
     "node bin/monolito.js ask",
+    // Regression: these used to be false positives
+    "echo rm is dangerous",
+    "man rm",
+    "systemctl reboot",      // legitimate user-initiated reboot
+    "systemctl poweroff",    // legitimate user-initiated poweroff
+    "systemctl halt",        // legitimate user-initiated halt
+    "sudo apt update",
+    "apt install nginx",
+    "git commit -m fix",
+    "echo $HOME",
   ]
   for (const cmd of safe) {
     const res = isDestructiveAction("Bash", { command: cmd })
-    assert.equal(res.destructive, false, `Should allow ${cmd}`)
+    assert.equal(res.destructive, false, `Should allow ${cmd} (got reason: ${res.reason})`)
   }
 })
 

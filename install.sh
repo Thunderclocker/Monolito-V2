@@ -72,31 +72,54 @@ ensure_system_deps() {
     fi
   fi
 
-  # 4. Check Node.js and version (Node >= 22 required)
-  local install_node=false
-  if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-    install_node=true
+  # 4. Check Node.js and version (Node >= 22 required).
+  #
+  # IMPORTANT: We intentionally do NOT auto-install Node.js via
+  # `curl ... | sudo bash` (e.g. NodeSource's setup_22.x script). The Monolito
+  # runtime blocks `curl | bash` patterns in agent-generated skill guides
+  # because they are an arbitrary-code-execution vector if the upstream
+  # endpoint is ever compromised. Auto-installing the same way for our own
+  # installer would be inconsistent and expose users to the same risk.
+  #
+  # Instead, we require Node.js 22+ as a prerequisite (already documented in
+  # the README) and fail with concrete install instructions if missing.
+  local node_ok=true
+  if ! command -v node >/dev/null 2>&1; then
+    node_ok=false
+  elif ! command -v npm >/dev/null 2>&1; then
+    node_ok=false
   else
     local node_major
     node_major="$(parse_node_major)"
     if [[ ! "$node_major" =~ ^[0-9]+$ ]] || (( node_major < 22 )); then
-      install_node=true
+      node_ok=false
     fi
   fi
 
-  if [ "$install_node" = true ]; then
-    if command -v apt-get >/dev/null 2>&1; then
-      log "Installing/upgrading to Node.js 22 via NodeSource..."
-      if [[ "$EUID" -ne 0 ]]; then
-        curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-        sudo apt-get install -y nodejs
-      else
-        curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-        apt-get install -y nodejs
-      fi
-    else
-      fail "Node.js 22 or newer is required, but we could not auto-install it. Please install Node.js 22+ manually."
-    fi
+  if [ "$node_ok" = false ]; then
+    cat <<'NODE_HELP' >&2
+
+[monolito-install] Node.js 22+ is required but was not found.
+
+Recommended install options (choose one):
+
+  • Official binary tarball (verifiable SHA256):
+      curl -fsSLO https://nodejs.org/dist/v22.11.0/node-v22.11.0-linux-x64.tar.xz
+      curl -fsSLO https://nodejs.org/dist/v22.11.0/SHASUMS256.txt
+      grep node-v22.11.0-linux-x64.tar.xz SHASUMS256.txt | sha256sum -c -
+      tar -xJf node-v22.11.0-linux-x64.tar.xz -C /usr/local --strip-components=1
+      (or into ~/.local for a user-local install)
+
+  • nvm (Node Version Manager):
+      https://github.com/nvm-sh/nvm#installing-and-updating
+      nvm install 22 && nvm use 22
+
+  • Your distribution's package manager (apt/dnf/brew/etc):
+      e.g. on Debian/Ubuntu: see https://nodejs.org/en/download/package-manager/
+
+Re-run this installer after installing Node.js 22+.
+NODE_HELP
+    fail "Node.js 22+ is required. See the instructions above."
   fi
 }
 

@@ -4,6 +4,10 @@ import { coerceConfigRecord } from "../config/wingValue.ts"
 import { readConfigWing, writeConfigWing, appendActionLog } from "../session/store.ts"
 import { MONOLITO_ROOT } from "../system/root.ts"
 import { MODEL_PROTOCOL } from "./modelConstants.ts"
+import { createLogger } from "../logging/logger.ts"
+
+const logger = createLogger("model-config")
+
 
 export type ModelSettings = {
   modelConfig: {
@@ -114,6 +118,81 @@ export function saveModelSettings(settings: ModelSettings) {
     model: settings.env.ANTHROPIC_MODEL,
     baseUrl: settings.env.ANTHROPIC_BASE_URL,
   })
+}
+
+/**
+ * Bootstrap CONF_MODELS and CONF_SYSTEM wings from process.env on first run.
+ *
+ * Background: `loadEnvFile` populates process.env from the user's .env file,
+ * but the runtime source of truth for model config is the SQLite CONF_MODELS
+ * and CONF_SYSTEM wings. Without this bridge, a fresh installation starts
+ * with empty wings, and any model call lands on the Anthropic SDK default
+ * with an empty apiKey — which produces a 401 from api.anthropic.com.
+ *
+ * This runs only when CONF_MODELS has no profiles AND the env has at least
+ * an auth token. It infers the provider from the base URL (matching
+ * inferProviderFromUrl in modelRegistry) and writes one active profile.
+ *
+ * Idempotent: if a profile already exists, this is a no-op.
+ */
+export async function bootstrapConfigFromEnv(env: NodeJS.ProcessEnv = process.env) {
+  try {
+    const existing = readModelSettings()
+    const hasUsableEnv = Boolean(
+      (env.ANTHROPIC_AUTH_TOKEN && env.ANTHROPIC_AUTH_TOKEN.trim()) ||
+      (env.ANTHROPIC_BASE_URL && env.ANTHROPIC_BASE_URL.trim()),
+    )
+    if (!hasUsableEnv) return
+
+    const baseUrl = (env.ANTHROPIC_BASE_URL ?? existing.env.ANTHROPIC_BASE_URL ?? "").trim()
+    const authToken = (env.ANTHROPIC_AUTH_TOKEN ?? existing.env.ANTHROPIC_AUTH_TOKEN ?? "").trim()
+    const model = (env.ANTHROPIC_MODEL ?? existing.env.ANTHROPIC_MODEL ?? "").trim()
+    const apiTimeout = (env.API_TIMEOUT_MS ?? existing.env.API_TIMEOUT_MS ?? "3000000").trim()
+    const maxBudget = (env.MAX_BUDGET_USD ?? existing.env.MAX_BUDGET_USD ?? "0").trim()
+
+    const settings: ModelSettings = {
+      modelConfig: { protocol: "anthropic_compatible" },
+      env: {
+        ANTHROPIC_BASE_URL: baseUrl,
+        ANTHROPIC_AUTH_TOKEN: authToken,
+        ANTHROPIC_MODEL: model,
+        API_TIMEOUT_MS: apiTimeout,
+        MAX_BUDGET_USD: maxBudget,
+      },
+    }
+    saveModelSettings(settings)
+
+    // Also create a default profile in CONF_MODELS so getActiveProfile()
+    // returns something useful on first run.
+    try {
+      const { listProfiles, addProfile } = await import("./modelRegistry.ts")
+      const existingProfiles = listProfiles()
+      if (existingProfiles.length === 0 && baseUrl && authToken) {
+        const lowerUrl = baseUrl.toLowerCase()
+        let provider: "minimax" | "ollama" | "openai_compatible" | "anthropic_compatible" = "anthropic_compatible"
+        if (lowerUrl.includes("minimax")) provider = "minimax"
+        else if (lowerUrl.includes("localhost:11434") || lowerUrl.includes("ollama")) provider = "ollama"
+        else if (lowerUrl.includes("openai")) provider = "openai_compatible"
+        addProfile({
+          provider,
+          baseUrl,
+          apiKey: authToken,
+          model: model || "claude-3-5-sonnet-latest",
+        })
+      }
+    } catch (profileErr) {
+      // If the profile write fails, the env settings alone are still useful.
+      logger.error("failed to create default profile:", { errorMessage: String(profileErr), errorStack: (profileErr instanceof Error ? profileErr.stack : undefined) })
+    }
+
+    appendActionLog(MONOLITO_ROOT, "Bootstrap de configuracion inicial desde .env", {
+      wing: "CONF_SYSTEM",
+      model: model || "(unset)",
+      baseUrl: baseUrl || "(unset)",
+    })
+  } catch (err) {
+    logger.error("failed:", { errorMessage: String(err), errorStack: (err instanceof Error ? err.stack : undefined) })
+  }
 }
 
 export function maskApiKey(value: string) {

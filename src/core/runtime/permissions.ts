@@ -127,9 +127,93 @@ function getBashCommand(input: Record<string, unknown>) {
   return typeof input.command === "string" ? input.command.trim() : ""
 }
 
+// Destructive command tokens that we want to flag at the start of a pipeline
+// segment. Matched case-insensitively. Order matters: longer tokens first so
+// "systemctl" is not preempted by "systemctl-reboot-subcommand" weirdness.
+const DESTRUCTIVE_TOKENS = new Set([
+  // Filesystem destruction
+  "rm", "rmdir", "unlink", "shred", "wipe", "srm",
+  // Disk / partition tools
+  "dd", "mkfs", "mkfs.ext4", "mkfs.xfs", "mkfs.btrfs", "fdisk", "parted", "sfdisk",
+  // Process / system control
+  "shutdown", "reboot", "poweroff", "halt", "init", "telinit",
+  "kill", "killall", "pkill", "pkillall",
+  // Privilege escalation often used in destructive flows
+  // (sudo is matched separately below)
+])
+
+const DESTRUCTIVE_SUBCOMMANDS: Array<{ cmd: RegExp; verbs: string[] }> = [
+  { cmd: /^systemctl$/i, verbs: ["stop", "restart", "disable", "mask", "kill", "isolate"] },
+  { cmd: /^service$/i,    verbs: ["stop", "restart", "disable"] },
+  { cmd: /^rc-service$/i,  verbs: ["stop", "restart"] },
+  { cmd: /^docker$/i,      verbs: ["rm", "rmi", "system", "prune", "kill", "stop"] },
+  { cmd: /^podman$/i,      verbs: ["rm", "rmi", "system", "prune", "kill", "stop"] },
+  { cmd: /^kubectl$/i,     verbs: ["delete", "drain", "cordon", "taint"] },
+  { cmd: /^firewall-cmd$/i, verbs: ["--reload", "panic-on", "panic-off"] },
+]
+
+/**
+ * Tokenize a shell command into pipeline segments and yield the first
+ * "real" command token of each segment, after stripping:
+ *   - leading `VAR=value` env-var assignments
+ *   - leading `sudo` / `doas` / `su -c`
+ *   - leading `command` builtin
+ *   - leading `nohup` / `time`
+ * Returns lowercase tokens. Stops at `--`.
+ */
+function* iterateHeadTokens(command: string): Generator<string> {
+  const segments = command.split(/[|&;]\|?|\$\(|\)/)
+  for (const segment of segments) {
+    const trimmed = segment.trim()
+    if (!trimmed || trimmed.startsWith("#")) continue
+    const tokens = trimmed.split(/\s+/)
+    let i = 0
+    // Strip env-var assignments: NAME=VALUE
+    while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]!)) i++
+    // Strip leading wrappers
+    const wrappers = new Set(["sudo", "doas", "command", "nohup", "time", "nice", "stdbuf", "env"])
+    while (i < tokens.length && wrappers.has(tokens[i]!.toLowerCase())) {
+      i++
+      // After sudo, there may be options like `-u root` or `-E` — skip flags.
+      while (i < tokens.length && tokens[i]!.startsWith("-")) i++
+    }
+    if (i < tokens.length) {
+      const head = tokens[i]!.toLowerCase()
+      // Strip a leading path (e.g. /bin/rm, /usr/bin/systemctl)
+      const base = head.split("/").pop() ?? head
+      yield base
+    }
+  }
+}
+
 function isDangerousBash(command: string) {
-  return /\b(rm|dd|mkfs|fdisk|parted|shutdown|reboot|poweroff|halt|kill|pkill|killall)\b/i.test(command) ||
-    /\bsystemctl\s+(stop|restart|disable)\b/i.test(command)
+  const segments: string[] = []
+  for (const head of iterateHeadTokens(command)) {
+    if (DESTRUCTIVE_TOKENS.has(head)) return true
+    for (const { cmd, verbs } of DESTRUCTIVE_SUBCOMMANDS) {
+      if (cmd.test(head)) {
+        // Find the verb in the original segment (case-insensitive).
+        const segmentText = command.toLowerCase()
+        // Look for the head token followed by whitespace and a verb
+        const escapedHead = head.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+        const verbMatch = new RegExp(`\\b${escapedHead}\\s+(\\S+)`, "i").exec(segmentText)
+        if (verbMatch && verbs.includes(verbMatch[1]!.toLowerCase())) return true
+      }
+    }
+  }
+  // Also catch obvious systemctl/service state-mutating verbs at the head.
+  // We intentionally do NOT include poweroff/reboot/halt here because those
+  // are legitimate user-initiated operations that the original code wrongly
+  // flagged as destructive (false positive). The standalone commands
+  // (reboot, poweroff, halt) are still caught via DESTRUCTIVE_TOKENS.
+  if (/^\s*(sudo\s+)?(systemctl|service)\s+(stop|restart|disable|mask|kill|isolate|panic-on|panic-off)\b/i.test(command)) {
+    return true
+  }
+  // Classic fork bomb pattern
+  if (/:\(\)\s*\{.*:\|:.*\};:/m.test(command)) return true
+  // Truncate / wipe a whole device (catches cases not in head tokens)
+  if (/\bdd\b[^|;&]*\bof=\/dev\/(sd|nvme|hd|xvd|vd|mmcblk|loop|disk|dasd)/i.test(command)) return true
+  return false
 }
 
 export function isDestructiveAction(toolName: string, input: Record<string, unknown>): {

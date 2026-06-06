@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process"
-import { appendFileSync, closeSync, existsSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
+import { appendFileSync, chmodSync, closeSync, existsSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
 import { createConnection, createServer, type Server, type Socket } from "node:net"
 import { join } from "node:path"
 import {
@@ -442,7 +442,18 @@ export class MonolitoV2Daemon {
     return new Promise<Server>((resolve, reject) => {
       const server = createServer(socket => this.handleConnection(socket))
       server.once("error", reject)
-      server.listen(socketPath, () => resolve(server))
+      server.listen(socketPath, () => {
+        // Lock the Unix socket to owner-only access. Default is 0755 which
+        // lets any local user on a multi-user host connect and drive the
+        // IPC protocol. The daemon has no auth layer beyond filesystem
+        // permissions on this socket, so this is the only barrier.
+        try {
+          chmodSync(socketPath, 0o600)
+        } catch (err) {
+          this.writeDaemonLog(`warning: failed to chmod socket ${socketPath} to 0600: ${err}`)
+        }
+        resolve(server)
+      })
     })
   }
 
