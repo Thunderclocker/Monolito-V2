@@ -1060,8 +1060,9 @@ const SKILL_THREAT_PATTERNS: { name: string; regex: RegExp }[] = [
   { name: "exfiltrate env", regex: /\b(cat|printenv|env)\b[^.\n]*\b(AWS_|GITHUB_|OPENAI_|ANTHROPIC_|API_KEY|SECRET|TOKEN)/m },
   { name: "chmod 777", regex: /\bchmod\s+777\b/ },
   { name: "dd overwrite disk", regex: /\bdd\s+if=[^\n]*\s+of=\/dev\/(sd|nvme|hd|xvd|vd|mmcblk|loop|disk|dasd)/m },
-  // Whole-disk wipe via redirections
-  { name: "truncate device", regex: />\s*\/dev\/(sd|nvme|hd|xvd|vd|mmcblk|loop|disk|dasd)\b/m },
+  // Whole-disk wipe via redirections (echo > /dev/sda, truncate < /dev/sdb, etc.)
+  { name: "truncate device (output redirect)", regex: />\s*\/dev\/(sd[a-z]*|nvme[0-9]*|hd[a-z]*|xvd[a-z]*|vd[a-z]*|mmcblk[0-9]*|loop[0-9]*|disk[0-9]*|dasd[a-z]*)/m },
+  { name: "truncate device (input redirect)", regex: /<\s*\/dev\/(sd[a-z]*|nvme[0-9]*|hd[a-z]*|xvd[a-z]*|vd[a-z]*|mmcblk[0-9]*|loop[0-9]*|disk[0-9]*|dasd[a-z]*)/m },
   // Classic fork bomb
   { name: "fork bomb", regex: /:\(\)\s*\{[^}]*:\s*\|:\s*&?\s*\};:/m },
 ]
