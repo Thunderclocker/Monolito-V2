@@ -17,6 +17,7 @@ import {
   isLocalPath,
   isPhotoAlreadySent,
   markPhotoAsSent,
+  optionalNumber,
   optionalString,
   requireString,
   resolveMonolitoPath,
@@ -34,7 +35,46 @@ import {
   readChannelsConfig,
 } from "../../channels/config.ts"
 
+import {
+  getDb,
+} from "../../session/store.ts"
+
 import type { ToolDefinition } from "../registry.ts"
+
+interface TelegramPhotoResult {
+  ok: boolean
+  result?: {
+    message_id?: number
+    photo?: Array<{ file_id: string; width?: number; height?: number; file_size?: number }>
+    caption?: string
+  }
+  description?: string
+}
+
+function extractTelegramPhotoFields(data: TelegramPhotoResult): { messageId: number | null; fileId: string | null } {
+  if (!data?.result) return { messageId: null, fileId: null }
+  const photos = Array.isArray(data.result.photo) ? data.result.photo : []
+  const largest = photos[photos.length - 1]
+  const messageId = typeof data.result.message_id === "number" ? data.result.message_id : null
+  const fileId = largest?.file_id ?? null
+  return { messageId, fileId }
+}
+
+function persistSentPhoto(rootDir: string, row: { chatId: number; messageId: number; fileId: string | null; localPath: string; caption: string | null }) {
+  try {
+    const db = getDb(rootDir)
+    db.prepare(`
+      INSERT INTO telegram_sent_photos (chat_id, message_id, file_id, local_path, caption)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(row.chatId, row.messageId, row.fileId, row.localPath, row.caption)
+  } catch (err) {
+    // Persistence is best-effort: a DB hiccup must not make the tool
+    // report the photo as unsent when Telegram already accepted it.
+    // Surface a warning so the operator can investigate, but do not
+    // fail the tool result.
+    console.warn(`[TelegramSendPhoto] failed to persist sent photo: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
 
 export const telegramTools: ToolDefinition[] = [
 {
@@ -218,18 +258,144 @@ export const telegramTools: ToolDefinition[] = [
       const params: Record<string, unknown> = { chat_id: chatId, photo }
       if (caption) params.caption = caption
       if (parseMode) params.parse_mode = parseMode
-      const data = await telegramApiCallWithFile(config.telegram.token, "sendPhoto", "photo", photo, params)
-      if (data.ok) markPhotoAsSent(context.rootDir, resolvedPath)
-      if (!data.ok) return formatToolError(`Telegram API error: ${data.description ?? "sendPhoto failed"}`)
-      return { ok: true, chat_id: chatId, message: data.result }
+      const data = (await telegramApiCallWithFile(config.telegram.token, "sendPhoto", "photo", photo, params)) as TelegramPhotoResult
+      if (!data?.ok) {
+        return formatToolError(`Telegram API error: ${data?.description ?? "sendPhoto failed"}`)
+      }
+      const { messageId, fileId } = extractTelegramPhotoFields(data)
+      // Hard failure: Telegram accepted the upload but did not return
+      // a usable message_id. We must NOT report ok:true in that case —
+      // the 25-may-2026 incident showed that an undocumented success
+      // path can leave the user staring at a chat with nothing
+      // attached while the assistant announces "ya te mandé". Surface
+      // the partial result so the orchestrator can retry with
+      // ignore_cache=true or report the failure.
+      if (messageId === null) {
+        return formatToolError(
+          `Telegram returned ok=true but no message_id. The photo may not have been delivered. ` +
+          `Response: ${JSON.stringify(data.result).slice(0, 200)}`,
+        )
+      }
+      markPhotoAsSent(context.rootDir, resolvedPath)
+      persistSentPhoto(context.rootDir, {
+        chatId,
+        messageId,
+        fileId,
+        localPath: resolvedPath,
+        caption: caption ?? null,
+      })
+      return {
+        ok: true,
+        chat_id: chatId,
+        message_id: messageId,
+        file_id: fileId,
+        local_path: resolvedPath,
+        message: data.result,
+      }
     }
 
     const params: Record<string, unknown> = { chat_id: chatId, photo }
     if (caption) params.caption = caption
     if (parseMode) params.parse_mode = parseMode
-    const data = await telegramApiCall(config.telegram.token, "sendPhoto", params)
-    if (!data.ok) return formatToolError(`Telegram API error: ${data.description ?? "sendPhoto failed"}`)
-    return { ok: true, chat_id: chatId, message: data.result }
+    const data = (await telegramApiCall(config.telegram.token, "sendPhoto", params)) as TelegramPhotoResult
+    if (!data?.ok) {
+      return formatToolError(`Telegram API error: ${data?.description ?? "sendPhoto failed"}`)
+    }
+    const { messageId, fileId } = extractTelegramPhotoFields(data)
+    if (messageId === null) {
+      return formatToolError(
+        `Telegram returned ok=true but no message_id for the remote photo. ` +
+        `Response: ${JSON.stringify(data.result).slice(0, 200)}`,
+      )
+    }
+    // For remote/file_id/URL inputs we don't have a local_path; persist
+    // a synthetic marker so the post-send lookup can still find it.
+    persistSentPhoto(context.rootDir, {
+      chatId,
+      messageId,
+      fileId,
+      localPath: `<remote:${photo.slice(0, 200)}>`,
+      caption: caption ?? null,
+    })
+    return {
+      ok: true,
+      chat_id: chatId,
+      message_id: messageId,
+      file_id: fileId,
+      message: data.result,
+    }
+  },
+},
+
+{
+  name: "TelegramGetRecentPhotos",
+  permissionTier: "read",
+  description: "Lista las últimas fotos enviadas a un chat de Telegram, devolviendo `file_id`, `message_id`, `local_path` y `caption` por cada una. Usala cuando el usuario pida verificar o revisar una foto enviada previamente (ej. 'verifica la última foto que te mandé'). Para analizar visualmente la foto, pasá el `file_id` o `local_path` a `VisionAnalyze`.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      chat_id: { type: "number", description: "Telegram chat ID. Si se omite, devuelve las últimas fotos de todos los chats." },
+      limit: { type: "number", description: "Cantidad máxima de fotos a devolver (default 5, máximo 20)." },
+    },
+    additionalProperties: false,
+  },
+  concurrencySafe: true,
+  validate: input => {
+    if (input.chat_id !== undefined && typeof input.chat_id !== "number") return "chat_id must be a number"
+    if (input.limit !== undefined && (typeof input.limit !== "number" || input.limit < 1)) return "limit must be a positive number"
+    return null
+  },
+  async run(input, context) {
+    const chatId = typeof input.chat_id === "number" ? input.chat_id : null
+    const requestedLimit = optionalNumber(input, "limit") ?? 5
+    const limit = Math.min(Math.max(requestedLimit, 1), 20)
+    try {
+      const db = getDb(context.rootDir)
+      const rows = chatId !== null
+        ? db.prepare(`
+            SELECT id, chat_id, message_id, file_id, local_path, caption, sent_at
+            FROM telegram_sent_photos
+            WHERE chat_id = ?
+            ORDER BY sent_at DESC, id DESC
+            LIMIT ?
+          `).all(chatId, limit) as Array<{
+            id: number
+            chat_id: number
+            message_id: number
+            file_id: string | null
+            local_path: string
+            caption: string | null
+            sent_at: string
+          }>
+        : db.prepare(`
+            SELECT id, chat_id, message_id, file_id, local_path, caption, sent_at
+            FROM telegram_sent_photos
+            ORDER BY sent_at DESC, id DESC
+            LIMIT ?
+          `).all(limit) as Array<{
+            id: number
+            chat_id: number
+            message_id: number
+            file_id: string | null
+            local_path: string
+            caption: string | null
+            sent_at: string
+          }>
+      return {
+        ok: true,
+        count: rows.length,
+        photos: rows.map(r => ({
+          message_id: r.message_id,
+          file_id: r.file_id,
+          local_path: r.local_path.startsWith("<remote:") ? null : r.local_path,
+          caption: r.caption,
+          sent_at: r.sent_at,
+          chat_id: r.chat_id,
+        })),
+      }
+    } catch (err: any) {
+      return formatToolError(`Failed to read recent photos: ${err?.message ?? String(err)}`)
+    }
   },
 },
 

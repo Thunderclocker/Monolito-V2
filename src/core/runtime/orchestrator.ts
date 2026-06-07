@@ -33,11 +33,12 @@ import { monolitoEvents } from "../events/bus.ts"
 const SUBAGENT_VERIFICATION_TAG = "<verified>SUCCESS</verified>"
 const SUBAGENT_TIMEOUT_MS = 10 * 60 * 1000
 const SUBAGENT_HARD_TIMEOUT_MS = 15 * 60 * 1000
-const WORKER_IMAGE_EXECUTION_POLICY = [
-  "Image-search execution policy:",
-  "- Para busquedas simples de imagenes, usa ImageSearch y devuelve `image_url` directas. No uses WebFetch ni scraping de paginas fuente.",
-  "- Para verificar, validar, analizar o describir el contenido visual, debés utilizar la herramienta VisionAnalyze. Llama al modelo activo (Anthropic, OpenAI-compatible o Grok) y no hay fallback local: si el modelo activo no soporta vision, cambiá a uno que sí antes de continuar.",
-  "- Si la herramienta confirma que la imagen no coincide, descarta ese resultado y proba la siguiente `image_url` de la lista.",
+const WORKER_IMAGE_GUIDANCE = [
+  "Image-search guidance (soft, not contractual):",
+  "- Para busquedas simples de imagenes, usá ImageSearch y devolvé `image_url` directas. Evitá WebFetch y scraping de paginas fuente.",
+  "- VisionAnalyze es la herramienta recomendada cuando hay que analizar o describir el contenido visual (ej. verificar que la imagen coincida con el query). No es obligatoria: si el usuario pidió 'solo mandá' o equivalente, saltala.",
+  "- VisionAnalyze usa la API de visión del modelo activo (Anthropic, OpenAI-compatible o Grok). No hay fallback local: si la API falla o el modelo activo no soporta vision, devolvé un error claro y sugerí cambiar de modelo.",
+  "- Si VisionAnalyze confirma que la imagen no coincide, podés descartar ese resultado y probar la siguiente `image_url` de la lista.",
   "- No crees perfiles, archivos de plan ni tareas auxiliares para buscar imagenes. Ejecuta el camino mas corto.",
 ].join("\n")
 
@@ -619,7 +620,7 @@ function buildSubagentRetryPrompt(
   return [
     task.trim(),
     "",
-    WORKER_IMAGE_EXECUTION_POLICY,
+    WORKER_IMAGE_GUIDANCE,
     "",
     `[Ralph Loop] ATTEMPT ${attempt}/20 — a tool execution failed.`,
     `Technical error: ${clip(message, 240)}`,
@@ -1529,7 +1530,7 @@ export class AgentOrchestrator {
       options.task.trim(),
       ...projectContextBlock,
       "",
-      WORKER_IMAGE_EXECUTION_POLICY,
+      WORKER_IMAGE_GUIDANCE,
       "",
       `When your task is fully done, end your final response with exactly: ${SUBAGENT_VERIFICATION_TAG}`,
     ].join("\n")

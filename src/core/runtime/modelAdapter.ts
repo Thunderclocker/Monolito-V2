@@ -550,11 +550,28 @@ function buildSystemPrompt(args: {
           "- If VisionAnalyze fails, report the error explicitly. Do not attempt workarounds via Bash.",
         ].join("\n")
       : [
-          "- PHOTO ANTI-HALLUCINATION AND DELEGATION RULE: If the user asks to send images and you have image_url or local_path available, you MUST execute TelegramSendPhoto BEFORE emitting any text response. NEVER reply with a list or text description of photos assuming that equals sending them.",
-          "- NATIVE MULTIMODAL VISION: When the user sends a photo attachment (<attachment kind=\"photo\" local_path=\"...\">), the image is automatically embedded as binary in your context — you can see it directly. Describe or analyze it from what you actually see. Do NOT delegate to a sub-agent just to describe an image you can already see.",
-          "- EXPLICIT VISION ANALYSIS: If the user explicitly asks you to analyze, verify, or describe the visual content of an image (either from a URL or a local path), use the VisionAnalyze tool directly. It calls the active model's vision API (~3-5s). If the active model does not support vision, the tool returns a clear error — switch to a vision-capable model instead of delegating. Only delegate visual tasks when they are high-volume (multiple images), require parallel scraping, or are part of a long background workflow.",
-          "- DYNAMIC SKILLS RULE: You are FORBIDDEN from creating dynamic skills (CreateSkill) or custom tools for downloading, searching, or sending images/media. For any image search or Telegram delivery requests, you MUST always use the native ImageSearch and TelegramSendPhoto tools directly in your turn. Never write placeholders or dummy scripts in Bash.",
-          "- For Telegram audio/voice requests, do not send a progress-only reply like 'generating audio' unless the same turn already started GenerateSpeech. Complete the sequence GenerateSpeech -> TelegramSendAudio/TelegramSendVoice, then confirm only after the send tool succeeds.",
+          // Consolidated Visual & Media Protocol — single source of truth.
+          // The previous version had three contradictory rules about
+          // VisionAnalyze (use directly, delegate, do not use in main
+          // turn) that caused the LLM to fire VisionAnalyze on simple
+          // delivery tasks and then announce "ya te mandé" without
+          // anything actually attached. The new policy is a single
+          // decision tree, not a stack of MUST/NEVER clauses.
+          "Reglas de imagen y medios (una sola fuente de verdad):",
+          "",
+          "1. ENTREGA DE FOTOS (caso por defecto): si el usuario pidió una foto o imagen sin pedir verificación explícita, usá ImageSearch para obtener `image_url` y pasalas directo a TelegramSendPhoto. NO llames VisionAnalyze salvo que vos mismo decidas que ayuda (ej. query ambigua: 'verificá que sea la persona correcta'). Si el usuario dice 'no analices, solo mandá' o equivalente, saltá VisionAnalyze sin preguntar.",
+          "",
+          "2. VERIFICACIÓN VISUAL (cuando el usuario la pide): si el usuario pide verificar/analizar/describir una imagen, usá VisionAnalyze directamente en este turno. Pasale `url`, `path` o `file_id`. Para re-verificar una foto que ya enviaste, primero llamá TelegramGetRecentPhotos para recuperar su `file_id` y luego pasáselo a VisionAnalyze. Para verificar ANTES de enviar, encadená ImageSearch → VisionAnalyze → TelegramSendPhoto en ese orden; el resultado es informativo, no bloqueante.",
+          "",
+          "3. ANTI-ALUCINACIÓN DE FOTOS: si el usuario pide enviar imágenes y ya tenés `image_url` o `local_path` disponible, ejecutá TelegramSendPhoto ANTES de emitir cualquier respuesta en texto. NUNCA respondas con una lista o descripción de fotos asumiendo que eso es equivalente a mandarlas.",
+          "",
+          "4. VISIÓN NATIVA: cuando el usuario envía una foto adjunta (<attachment kind=\"photo\" local_path=\"...\">), la imagen ya viene embebida en tu contexto — podés verla directamente. Describila o analizála desde lo que ves. NO delegues a un sub-agente solo para describir una imagen que ya tenés en contexto.",
+          "",
+          "5. DELEGACIÓN: delegá con delegate_background_task solo cuando la tarea sea de alto volumen (muchas imágenes), requiera scraping paralelo, o sea parte de un workflow de background largo. Para una sola foto con verificación, hacelo inline en este turno.",
+          "",
+          "6. SKILLS DINÁMICOS: NO crees dynamic skills (CreateSkill) ni tools custom para descargar, buscar o enviar imágenes. Usá siempre las tools nativas ImageSearch, TelegramSendPhoto, VisionAnalyze, TelegramGetRecentPhotos y DownloadFile.",
+          "",
+          "7. AUDIO/VOZ EN TELEGRAM: para audio/voice no respondas 'generando audio' a menos que el mismo turno ya haya iniciado GenerateSpeech. Completá la secuencia GenerateSpeech → TelegramSendAudio/TelegramSendVoice, y confirmá solo después de que el envío sea exitoso.",
         ].join("\n"),
     "Available tools:",
     buildToolSummary(isSubAgent, args.extras?.blockedTools || [], args.allowedToolNames, args.rootDir, exposeTelegramDownload),
@@ -567,7 +584,6 @@ function buildSystemPrompt(args: {
       "Level 1 (CRITICAL): Hard system safety constraints (tool harness limits, token budgets, API rate limits). These are infrastructure limits, not behavioral rules.",
       "Level 2 (HIGH): System prompt behavioral rules and defaults:",
       "- FORBIDDEN: Do not attempt WebSearch or WebFetch to search for images. For simple searches of photos/images, use ImageSearch directly and deliver image_urls or send them via TelegramSendPhoto.",
-      "- If the user asks to verify, validate, analyze, or visually describe images, delegate that verification using delegate_background_task. Do not use VisionAnalyze in the main turn.",
       "Level 3 (DEFAULT): Rules, facts, and preferences stored in BOOT_MEMORY, BOOT_TOOLS, BOOT_SOUL, BOOT_AGENTS, and dynamic skills (CONF_SKILLS). These are user-defined soft preferences that the user can override at any time by saying so in the chat.",
       "  - Default Rule: If a BOOT_MEMORY instruction requires analyzing images synchronously, you should by default fulfill the user's request by calling delegate_background_task internally and confirming it as your own action, without mentioning delegation, workers, or sub-agents unless asked.",
       "",

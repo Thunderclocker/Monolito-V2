@@ -106,13 +106,24 @@ export function listModelTools(isSubAgent = false, lastUserText?: string | boole
     hiddenFromMainSession.delete("TelegramDownloadFile")
   }
 
+  // Narrow the main-session tool lockdown: previously any user message
+  // that contained an image word (imagen/foto/vision/visual) caused
+  // Bash/Write/Edit/MultiEdit/TodoWrite to be dropped, which forced
+  // every image task through delegate_background_task even for trivial
+  // "mandame una foto de X". Now we only apply that lockdown when the
+  // user text also carries an edit-verb (modifica/cambia/edita/escribe/
+  // crea), which is the actual dangerous case.
+  const isImageWithEditIntent = (text: string) =>
+    /(imagen(?:es)?|foto(?:s)?|picture(?:s)?|photo(?:s)?|image(?:s)?)\b/i.test(text) &&
+    /(modific|cambi|edit|escrib|crea|reescrib|reemplaz|borra|elimin)/i.test(text)
+
   const blockedTools = Array.isArray(lastUserText)
     ? lastUserText
     : typeof lastUserText === "boolean"
       ? (lastUserText ? ["AgentList", "ProfileCreate", "Write", "Edit", "MultiEdit", "Bash", "TodoWrite"] : [])
       : (typeof lastUserText === "string" && lastUserText === "true")
         ? ["AgentList", "ProfileCreate", "Write", "Edit", "MultiEdit", "Bash", "TodoWrite"]
-        : (typeof lastUserText === "string" && /imagen|imagenes|foto|fotos|picture|pictures|image|images|vision|visual/i.test(lastUserText))
+        : (typeof lastUserText === "string" && isImageWithEditIntent(lastUserText))
           ? ["AgentList", "ProfileCreate", "Write", "Edit", "MultiEdit", "Bash", "TodoWrite"]
           : []
 
@@ -134,6 +145,7 @@ export function listModelTools(isSubAgent = false, lastUserText?: string | boole
     "DownloadFile",
     "GenerateImage",
     "VisionAnalyze",
+    "TelegramGetRecentPhotos",
   ])
 
   const staticMapped = tools
@@ -255,20 +267,21 @@ export async function indexToolsInPalace(rootDir: string) {
 }
 
 export async function indexRalphRulesInPalace(rootDir: string) {
-  const imageVerificationRule = {
-    name: "Image Verification Rule",
-    description: "Checks if the task requests visual verification, validation, analysis, description, or confirmation of images, photos, screenshots, or visual assets.",
-    intentRegex: "\\b(imagen(?:es)?|foto(?:s)?|picture(?:s)?|photo(?:s)?|image(?:s)?|vision|visual)\\b",
-    requiredRegex: "\\b(verifica(?:r|me|las|los)?|valid(?:a|ar|ame|alas|alos)|analiza(?:r|me|las|los)?|describe(?:me|las|los)?|confirm(?:a|ar|ame)|vision|visual|coincid(?:e|an)|contenido|real(?:es)?|correct(?:a|as|o|os))\\b",
-    requiredTools: ["VisionAnalyze"],
-    errorMessage: "[Ralph Loop] SYSTEM ALERT\nTu respuesta incluye el tag de éxito pero NO ejecutaste la herramienta de visión (VisionAnalyze).\nPara tareas de imágenes, es OBLIGATORIO descargar y validar visualmente con VisionAnalyze.\nNo podés cerrar la tarea diciendo que lo hiciste sin haber llamado a la tool.\nCorregilo: buscá la imagen, descargala y pasale la ruta a la herramienta antes de responder."
-  }
-
-  try {
-    upsertRalphRule(rootDir, "image_verification", JSON.stringify(imageVerificationRule, null, 2))
-  } catch (err) {
-    logger.error("[indexRalphRulesInPalace] Failed to index image_verification rule:", { errorMessage: String(err), errorStack: (err instanceof Error ? err.stack : undefined) })
-  }
+  // The previous "image_verification" rule has been removed.
+  //
+  // Rationale: it forced VisionAnalyze on every image task that matched
+  // the verification regex, but the regex fired on bare words like
+  // "vision" / "visual" which produced false positives ("tengo
+  // problemas de vision", "buena visual"). The user has expressed
+  // a preference for soft guidance: the LLM should decide based on
+  // context, with no hard rule forcing the tool. The new
+  // consolidated guidance lives in BOOT_TOOLS and in the main
+  // system prompt's "Visual & Media Processing Protocol" section.
+  //
+  // Any pre-existing rows in palace_nodes are left in place but
+  // become inert — they are no longer re-indexed here, and the
+  // checkDynamicRalphRules flow will simply not find a rule with
+  // name "image_verification" unless something else adds it back.
 
   // The enumerate_dynamic_state rule is enforced semantically via the
   // EVIDENCE-FIRST RULE in the orchestrator system prompt. The orchestrator's

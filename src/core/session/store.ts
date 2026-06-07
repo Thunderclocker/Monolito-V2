@@ -595,6 +595,25 @@ export function getDb(rootDir: string): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_telegram_raw_unprocessed
       ON telegram_raw_updates(processed_at) WHERE processed_at IS NULL;
 
+    -- telegram_sent_photos: durable log of every photo Monolito sent.
+    -- Populated by TelegramSendPhoto on every successful delivery.
+    -- Read by TelegramGetRecentPhotos to support post-send verification
+    -- ("verifica la última foto que te mandé"). The file_id is the key
+    -- that VisionAnalyze can re-download from Telegram servers.
+    -- See db/migrations/20260606_telegram_sent_photos.sql for the
+    -- original schema declaration.
+    CREATE TABLE IF NOT EXISTS telegram_sent_photos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id INTEGER NOT NULL,
+      message_id INTEGER NOT NULL,
+      file_id TEXT,
+      local_path TEXT NOT NULL,
+      caption TEXT,
+      sent_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_telegram_sent_photos_chat_time
+      ON telegram_sent_photos(chat_id, sent_at DESC);
+
     CREATE TABLE IF NOT EXISTS knowledge_graph (
       id TEXT PRIMARY KEY,
       profile_id TEXT,

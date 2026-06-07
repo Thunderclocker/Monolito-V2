@@ -395,7 +395,7 @@ export const mediaTools: ToolDefinition[] = [
 {
   name: "VisionAnalyze",
   permissionTier: "read",
-  description: "Analiza una imagen desde una URL o un path local utilizando la API de visión del modelo de nube activo (Anthropic, OpenAI, Grok). Rápido (~3-5s). Es la herramienta preferida para análisis visual directo. Si la API de nube falla o devuelve resultado vacío, ejecuta fallback automático al motor de visión local. Retorna { description, local_path }. Usá esta herramienta directamente cuando el usuario pide describir, analizar o verificar el contenido de una imagen — no es necesario delegar a un sub-agente para casos simples.",
+  description: "Analiza una imagen desde una URL, un path local o un file_id de Telegram, utilizando la API de visión del modelo de nube activo (Anthropic, OpenAI, Grok). Rápido (~3-5s). No hay fallback local: si la API de nube falla o el modelo activo no soporta visión, devuelve un error claro y sugerí cambiar a un modelo con visión. Retorna { description, local_path }. Usá esta herramienta directamente cuando el usuario pide describir, analizar o verificar el contenido de una imagen — no es necesario delegar a un sub-agente para casos simples.",
   inputSchema: {
     type: "object",
     properties: {

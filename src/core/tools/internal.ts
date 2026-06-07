@@ -233,9 +233,48 @@ export function isTelegramPhotoDeliveryRequest(value: string) {
   return isImageIntentText(value) && /\b(pasame|pasa(?:me)?|mandame|manda(?:me)?|enviame|envia(?:me)?|send|send me|pasar|mandar|enviar)\b/.test(normalized)
 }
 
+// Soft detector for "the user wants visual verification of an image".
+//
+// The previous regex also matched the bare words `vision` and `visual`,
+// which produced false positives on medical ("tengo problemas de
+// visión") and aesthetic ("dame una imagen con buena visual") uses.
+// The LLM was forced to call VisionAnalyze on every "visión" mention.
+//
+// This new version:
+//   - drops the bare `vision|visual` branches
+//   - keeps all the explicit verification verbs
+//   - adds the "que sea la/el <person>" and "correcta/as/o/os" patterns
+//   - the soft "real" branch is kept (used in "es la imagen real?")
+//
+// The function is still binary (true/false) but the caller should treat
+// the result as a soft default, not a hard requirement: the user can
+// always say "no analices, solo mandá" (see imageVerificationSkipped)
+// to override.
 export function requiresImageVerificationText(value: string) {
   const normalized = normalizeIntentText(value)
-  return /\b(verifica(?:r|me|las|los)?|valid(?:a|ar|ame|alas|alos)|analiza(?:r|me|las|los)?|describe(?:me|las|los)?|confirm(?:a|ar|ame)|vision|visual|coincid(?:e|an)|contenido|real(?:es)?|correct(?:a|as|o|os))\b/.test(normalized)
+  return /\b(verifica(?:r|me|las|los)?|valid(?:a|ar|ame|alas|alos)|analiza(?:r|me|las|los)?|describe(?:me|las|los)?|confirm(?:a|ar|ame)|coincid(?:e|an)|que sea (la|el) (persona|actor|actriz|mismo|misma)|correct(a|as|o|os)|real(es)?)\b/.test(normalized)
+}
+
+// Soft opt-out detector: when the user says "no analices", "skip verify",
+// "solo mandá", etc., the flow MUST skip VisionAnalyze regardless of
+// what requiresImageVerificationText says. This makes the policy
+// overridable in plain Spanish/English without the LLM having to
+// discover a special keyword.
+export function imageVerificationSkipped(value: string) {
+  const normalized = normalizeIntentText(value)
+  // Pattern A: explicit negation of the verify action
+  //   "no analices", "no analices las fotos", "no verifiques",
+  //   "sin verificar", "skip verify", "skip verification",
+  //   "no quiero verificación", "evitá el análisis"
+  // Match: <negation-word> <up to 3 intervening words> <verify-verb>
+  // The intervening words are bounded to avoid swallowing the whole
+  // sentence (e.g. "no quiero que analices" still matches).
+  const negationPattern =
+    /\b(no|sin|skip|evit(a|ar|ame))\b(?:\s+\S+){0,3}\s+(analices|analizar|verifiques?|verific(ar|aciones?|acion)|verificar|verify|verification|analisis|vision(es)?|visual|valid(ar|aci[oó]n))\b/
+  // Pattern B: "solo mandá/enviá" — user explicitly wants delivery only
+  //   "solo mandá", "solo enviá", "just send"
+  const soloDeliveryPattern = /\b(solo|just|simplemente)\b\s+(mand(a|ame|ar|emos)|envi(a|ame|ar|emos)|send)\b/
+  return negationPattern.test(normalized) || soloDeliveryPattern.test(normalized)
 }
 
 export function latestActionableUserText(rootDir: string, sessionId: string) {
@@ -254,29 +293,44 @@ export function latestActionableUserText(rootDir: string, sessionId: string) {
 export function buildTelegramPhotoWorkerTask(task: string, parentSessionId: string, latestUserText: string) {
   const chatId = parentSessionId.startsWith("telegram-") ? parentSessionId.slice("telegram-".length) : ""
   if (!chatId) return task
-  const shouldVerify = requiresImageVerificationText(`${latestUserText}\n${task}`)
+  // Decision logic (soft policy):
+  //   1. If the user explicitly opts out ("no analices", "solo mandá"),
+  //      skip VisionAnalyze even if the verification regex would match.
+  //   2. Otherwise, if the user asked for verification explicitly,
+  //      recommend VisionAnalyze but do not force it.
+  //   3. Otherwise, default to no verification (fast delivery).
+  const combinedText = `${latestUserText}\n${task}`
+  const skipped = imageVerificationSkipped(combinedText)
+  const shouldVerify = !skipped && requiresImageVerificationText(combinedText)
   const imageHandlingSteps = shouldVerify
     ? [
-        "2. Como el pedido exige verificacion visual, validá cada candidato con VisionAnalyze (usando el modelo activo, sea Anthropic, OpenAI-compatible o Grok). Si el modelo activo no soporta visión, la herramienta devuelve un error claro: reportalo y pedí al usuario cambiar de modelo antes de seguir. Descartá cualquier resultado sin descripción útil o que no coincida con el pedido.",
+        "2. Como el pedido parece pedir verificación visual, se sugiere validar cada candidato con VisionAnalyze. Si el modelo activo no soporta visión, la herramienta devuelve un error claro: reportalo y sugerí al usuario cambiar de modelo. Descartá cualquier resultado sin descripción útil o que no coincida con el pedido.",
         "3. NO envíes mensajes ni archivos al usuario. Tu salida es solo para el coordinador.",
         "4. Devolvé los local_path validados por la herramienta y una descripción breve de cada imagen.",
-        "5. No devuelvas solo URLs si el usuario pidió verificación; el coordinador necesita local_path validado.",
+        "5. Si la verificación es informativa, podés devolver URLs directas junto con la descripción de VisionAnalyze; el coordinador decidirá.",
         "6. Si no lográs validar ninguna foto, respondé claramente que no hay local_path validado y por qué.",
       ]
-    : [
-        "2. NO uses VisionAnalyze salvo que el pedido original solicite verificacion/analisis visual.",
-        "3. NO uses WebFetch ni scraping de paginas fuente. Usá directamente los `image_url` que devuelve ImageSearch.",
-        "4. NO envíes mensajes ni archivos al usuario. Tu salida es solo para el coordinador.",
-        "5. Devolvé las mejores `image_url` directas, con título/fuente si están disponibles.",
-        "6. Si no lográs obtener URLs directas, respondé claramente que no hubo resultados usables y por qué.",
-      ]
+    : skipped
+      ? [
+          "2. El usuario pidió explícitamente saltarse la verificación visual. NO uses VisionAnalyze en este turno.",
+          "3. NO uses WebFetch ni scraping de paginas fuente. Usá directamente los `image_url` que devuelve ImageSearch.",
+          "4. NO envíes mensajes ni archivos al usuario. Tu salida es solo para el coordinador.",
+          "5. Devolvé las mejores `image_url` directas, con título/fuente si están disponibles.",
+        ]
+      : [
+          "2. NO uses VisionAnalyze salvo que el pedido original solicite verificacion/analisis visual (o que el query sea ambiguo y vos mismo decidas que ayuda validar).",
+          "3. NO uses WebFetch ni scraping de paginas fuente. Usá directamente los `image_url` que devuelve ImageSearch.",
+          "4. NO envíes mensajes ni archivos al usuario. Tu salida es solo para el coordinador.",
+          "5. Devolvé las mejores `image_url` directas, con título/fuente si están disponibles.",
+          "6. Si no lográs obtener URLs directas, respondé claramente que no hubo resultados usables y por qué.",
+        ]
   return [
     "Tarea interna de obtención y verificación de fotos para entrega por Telegram.",
     "",
     "Pedido original del usuario:",
     latestUserText.trim() || task.trim(),
     "",
-    "Contrato obligatorio:",
+    "Recomendaciones operativas (no contractuales):",
     "1. Usá ImageSearch para buscar candidatos directos de imagen (`image_url`).",
     ...imageHandlingSteps,
     "",
