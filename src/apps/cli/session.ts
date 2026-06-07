@@ -46,6 +46,7 @@ import { openModelMenu, processMenuInput } from "./tui/modelMenu.ts"
 import { openChannelMenu, processChannelMenuInput } from "./tui/channelMenu.ts"
 import { openWebSearchMenu, processWebSearchMenuInput } from "./tui/websearchMenu.ts"
 import { isMenuSchemaEnvelope } from "../../core/menu/schema.ts"
+import { isRuntimeControlCommand } from "./runtimeControlCommands.ts"
 import { buildMasterDashboard } from "../../core/menu/masterDashboard.ts"
 import { openMasterDashboard, processMasterMenuInput } from "./tui/uiManager.ts"
 import { getWorkspaceContext } from "../../core/context/workspaceContext.ts"
@@ -901,6 +902,18 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     await monitorCodeRevision()
   }
 
+  // Commands that control the daemon or the current session and must
+  // not wait behind an in-flight user turn. When the user types one of
+  // these while the composer is busy, we abort the in-flight turn so
+  // the control command can run as soon as the daemon releases the
+  // session. Read-only commands (/help, /status, /sessions, /doctor,
+  // /config) are deliberately NOT in this set — they can wait.
+  //
+  // The set and the predicate live in a sibling module so the
+  // predicate is testable in isolation. Keep the set in sync with
+  // the slash commands listed in src/apps/cli/tui/autocomplete.ts
+  // and the special-cases in submitCurrentInput.
+
   async function tryLocalCommand(client: DaemonClient, line: string): Promise<FormattedBlock | null> {
     const trimmed = line.trim()
     if (!trimmed.startsWith("/")) return null
@@ -1563,6 +1576,18 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
               { type: "event", label: "queued", tone: "info", text: `Queued for later: ${line}` },
             ])
             transcript.scrollOffset = 0
+            // If the queued line is a runtime control command (e.g. /update,
+            // /stop, /reset), do NOT wait for the in-flight turn to finish
+            // naturally. Abort it now so the control command can run as soon
+            // as the daemon releases the session. Without this, /update
+            // typed during a slow memory consolidation sits in the queue
+            // forever (or until the daemon is killed by some other path).
+            if (isRuntimeControlCommand(line)) {
+              void client.abortSession(activeSessionId)
+              transcript = appendTranscriptBlocks(transcript, [
+                { type: "event", label: "control", tone: "info", text: `Aborting current turn to run ${line}.` },
+              ])
+            }
           }
         }
         didHandle = true
