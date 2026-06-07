@@ -4,16 +4,6 @@ Local orchestration runtime for AI agents: daemon + terminal UI, SQLite-first me
 
 ## Install
 
-The installer is itself a shell script. We recommend downloading and inspecting it before running it:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Thunderclocker/Monolito-V2/main/install.sh -o install.sh
-less install.sh   # optional: read it before running
-bash install.sh
-```
-
-If you trust the source and want a one-liner, the conventional form still works:
-
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Thunderclocker/Monolito-V2/main/install.sh | bash
 ```
@@ -205,9 +195,7 @@ Prerequisites:
 Install with:
 
 ```bash
-git clone https://github.com/Thunderclocker/Monolito-V2.git
-cd Monolito-V2
-./install.sh
+git clone https://github.com/Thunderclocker/Monolito-V2.git && cd Monolito-V2 && ./install.sh
 ```
 
 Manual install is also valid:
