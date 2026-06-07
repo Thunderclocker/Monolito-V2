@@ -2162,10 +2162,10 @@ export async function upsertSemanticTool(rootDir: string, name: string, descript
 }
 
 export async function querySemanticTools(rootDir: string, prompt: string, limit = 5): Promise<string[]> {
-  const db = getDb(rootDir)
   const wing = "CONF_TOOLS"
   const room = "registry"
   try {
+    const db = getDb(rootDir)
     const floatArray = await generateEmbedding(prompt)
     const sql = `
       SELECT m.memory_key as name

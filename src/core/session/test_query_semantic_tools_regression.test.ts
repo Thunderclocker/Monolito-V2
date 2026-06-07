@@ -11,12 +11,25 @@
  * calling the embedding model.
  */
 
-import test from "node:test"
+import test, { after } from "node:test"
 import assert from "node:assert/strict"
-import { upsertSemanticTool, querySemanticTools } from "./store.ts"
-import { ensureDirs } from "../ipc/protocol.ts"
+import { rmSync, mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
-const TEST_ROOT = "/tmp/monolito-regression-semantic"
+// Set isolated environment root before importing Monolito core modules
+const testMonolitoRoot = mkdtempSync(join(tmpdir(), "monolito-regression-semantic-root-"))
+process.env.MONOLITO_ROOT = testMonolitoRoot
+
+// Dynamically import the core modules so they pick up the environment variable
+const { upsertSemanticTool, querySemanticTools } = await import("./store.ts")
+const { ensureDirs } = await import("../ipc/protocol.ts")
+
+const TEST_ROOT = testMonolitoRoot
+
+after(() => {
+  rmSync(testMonolitoRoot, { recursive: true, force: true })
+})
 
 test("upsertSemanticTool + querySemanticTools: returns string[] not object[]", async () => {
   await ensureDirs(TEST_ROOT)
@@ -40,10 +53,10 @@ test("upsertSemanticTool + querySemanticTools: returns string[] not object[]", a
 })
 
 test("querySemanticTools: returns empty array on errors (not throws)", async () => {
-  // Pass an invalid rootDir that will cause the underlying sqlite to fail.
+  // Pass an invalid rootDir (undefined) that will cause the underlying path/hash resolution to fail.
   // Per the function's contract, errors should be caught and return [].
   // This pins down the failure mode so callers can rely on array semantics.
-  const result = await querySemanticTools("/nonexistent/path/that/does/not/exist", "anything")
+  const result = await querySemanticTools(undefined as any, "anything")
   assert.ok(Array.isArray(result), "errors must yield array, not throw")
   assert.equal(result.length, 0, "errors must yield empty array")
 })
