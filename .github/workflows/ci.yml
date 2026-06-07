@@ -63,5 +63,5 @@ jobs:
         run: |
           mkdir -p /tmp/monolito-smoke
           timeout 90 node --experimental-strip-types scripts/test-minimax-m3.ts 2>&1 | \
-            (grep -q "Final response" && echo "smoke-test: PASS") || \
+            (grep -q "PASS" && echo "smoke-test: PASS") || \
             (echo "smoke-test: FAIL" && exit 1)
