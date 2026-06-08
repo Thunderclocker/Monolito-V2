@@ -19,6 +19,11 @@ export type TtsConfig = {
   port: number
   image: string
   containerName: string
+  // Nuevos campos para soporte MiniMax (voice clone + T2A v2).
+  provider?: "openai" | "minimax"
+  clonedVoices?: Record<string, string>
+  defaultClonedVoice?: string
+  t2aModel?: string
 }
 
 export type SttConfig = {
@@ -56,7 +61,7 @@ type LooseChannelsConfig = ChannelsConfig & {
 
 const CHANNELS_TOP_LEVEL_KEYS = new Set(["telegram", "tts", "stt"])
 const TELEGRAM_KEYS = new Set(["token", "enabled", "allowedChats"])
-const TTS_KEYS = new Set(["baseUrl", "apiKey", "voice", "model", "responseFormat", "speed", "managed", "autoDeploy", "port", "image", "containerName"])
+const TTS_KEYS = new Set(["baseUrl", "apiKey", "voice", "model", "responseFormat", "speed", "managed", "autoDeploy", "port", "image", "containerName", "provider", "clonedVoices", "defaultClonedVoice", "t2aModel"])
 const STT_KEYS = new Set(["managed", "autoDeploy", "autoTranscribe", "port", "image", "containerName", "engine", "model", "language", "vadFilter"])
 
 function hasOwn(object: Record<string, unknown>, key: string) {

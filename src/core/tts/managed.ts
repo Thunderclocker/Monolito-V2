@@ -38,6 +38,14 @@ export function normalizeTtsConfig(config?: Partial<TtsConfig>): TtsConfig {
     port,
     image: typeof config?.image === "string" && config.image.trim() ? config.image.trim() : "travisvn/openai-edge-tts:latest",
     containerName: typeof config?.containerName === "string" && config.containerName.trim() ? config.containerName.trim() : "monolito-openai-edge-tts",
+    provider: config?.provider === "minimax" ? "minimax" : "openai",
+    clonedVoices: config?.clonedVoices && typeof config.clonedVoices === "object" && !Array.isArray(config.clonedVoices)
+      ? Object.fromEntries(
+          Object.entries(config.clonedVoices).filter(([k, v]) => typeof k === "string" && typeof v === "string"),
+        )
+      : {},
+    defaultClonedVoice: typeof config?.defaultClonedVoice === "string" ? config.defaultClonedVoice.trim() : "",
+    t2aModel: typeof config?.t2aModel === "string" && config.t2aModel.trim() ? config.t2aModel.trim() : "speech-2.8-hd",
   }
 }
 

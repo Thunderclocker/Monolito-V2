@@ -860,6 +860,51 @@ export async function telegramApiCallWithFile(
   return await response.json() as { ok: boolean; result?: unknown; description?: string }
 }
 
+// Helper genérico de multipart upload. Usado por VoiceClone para subir
+// audio de muestra a MiniMax /v1/files/upload. Análogo a
+// telegramApiCallWithFile pero apuntando a una URL arbitraria con headers
+// custom (Authorization Bearer) y timeout configurable.
+export async function multipartUploadFile(
+  url: string,
+  filePath: string,
+  fileField: string,
+  fields: Record<string, string>,
+  headers: Record<string, string>,
+  timeoutMs = 60_000,
+): Promise<{ ok: boolean; status: number; json: unknown }> {
+  let resolvedPath = filePath.startsWith("~/")
+    ? filePath.replace("~/", `${process.env.HOME ?? ""}/`)
+    : filePath
+  resolvedPath = resolveMonolitoPath(resolvedPath)
+
+  if (!existsSync(resolvedPath)) {
+    return { ok: false, status: 0, json: { error: `File not found: ${resolvedPath}` } }
+  }
+
+  const fileData = readFileSync(resolvedPath)
+  const fileName = resolvedPath.split("/").at(-1) ?? "upload.bin"
+  const formData = new FormData()
+  formData.append(fileField, new Blob([fileData]), fileName)
+  for (const [k, v] of Object.entries(fields)) {
+    if (v !== undefined && v !== null) formData.append(k, v)
+  }
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    body: formData,
+    signal: AbortSignal.timeout(timeoutMs),
+  })
+  const text = await response.text()
+  let json: unknown = text
+  try {
+    json = JSON.parse(text)
+  } catch {
+    // keep as text
+  }
+  return { ok: response.ok, status: response.status, json }
+}
+
 export async function resolveTelegramDownload(
   token: string,
   fileId: string,

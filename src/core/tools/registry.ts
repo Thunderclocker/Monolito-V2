@@ -92,6 +92,7 @@ export function listModelTools(isSubAgent = false, lastUserText?: string | boole
     "TtsServiceRemove",
     "TtsServiceList",
     "GenerateSpeech",
+    "VoiceClone",
     "tool_manage_config",
     "ProfileCreate",
     "AgentList",
