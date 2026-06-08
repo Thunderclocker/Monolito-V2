@@ -732,8 +732,18 @@ export const mediaTools: ToolDefinition[] = [
           aspect_ratio: aspect_ratio,
           resolution: "1k"
         }
+      } else if (provider === "minimax") {
+        // MiniMax image_generation API (no es OpenAI-compatible).
+        // Docs: https://platform.minimax.io/docs/guides/image-generation
+        endpoint = `${baseUrl.replace(/\/+$/, "")}/image_generation`
+        payload = {
+          model: model || "image-01",
+          prompt: prompt,
+          aspect_ratio: aspect_ratio,
+          response_format: "base64"
+        }
       } else {
-        // OpenAI / MiniMax — mismo body OpenAI-style.
+        // OpenAI DALL-E — body OpenAI-style.
         let size = "1024x1024"
         if (aspect_ratio === "16:9") {
           size = "1792x1024"
@@ -744,9 +754,8 @@ export const mediaTools: ToolDefinition[] = [
         } else if (aspect_ratio === "3:4") {
           size = "768x1024"
         }
-        const defaultModel = provider === "minimax" ? "image-01" : "dall-e-3"
         payload = {
-          model: model || defaultModel,
+          model: model || "dall-e-3",
           prompt: prompt,
           size: size,
           n: 1
@@ -771,15 +780,32 @@ export const mediaTools: ToolDefinition[] = [
         return formatToolError(`La API de generación de imágenes falló (${response.status}): ${errorText}`)
       }
 
-      const result = await response.json() as { data?: Array<{ b64_json?: string; url?: string }> }
-      const data = result.data || []
-      if (data.length === 0) {
-        return formatToolError("La API no devolvió ninguna imagen en la respuesta.")
+      const result = await response.json() as {
+        data?:
+          | Array<{ b64_json?: string; url?: string }>
+          | { image_base64?: string[] }
       }
+      let b64: string | undefined
+      let imageUrl: string | undefined
 
-      const first = data[0]
-      const b64 = first.b64_json
-      const imageUrl = first.url
+      if (provider === "minimax") {
+        // MiniMax: data es { image_base64: [base64, ...] } (no array).
+        const dataObj = (result.data as { image_base64?: string[] } | undefined) ?? {}
+        const arr = dataObj.image_base64 || []
+        if (arr.length === 0) {
+          return formatToolError("La API de MiniMax no devolvió ninguna imagen en la respuesta.")
+        }
+        b64 = arr[0]
+      } else {
+        // OpenAI / xAI: data es array de { b64_json, url }.
+        const arr = (result.data as Array<{ b64_json?: string; url?: string }> | undefined) || []
+        if (arr.length === 0) {
+          return formatToolError("La API no devolvió ninguna imagen en la respuesta.")
+        }
+        const first = arr[0]
+        b64 = first.b64_json
+        imageUrl = first.url
+      }
 
       // 4. Save Locally
       const scratchpadDir = join(MONOLITO_ROOT, "workspace", "scratchpad")
