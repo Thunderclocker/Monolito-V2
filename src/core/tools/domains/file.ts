@@ -164,7 +164,7 @@ export const fileTools: ToolDefinition[] = [
     const file = await resolveWorkspacePath(context.rootDir, context.cwd, path, context, "Write")
 
     // Notebook reject
-    const { isNotebookFile, isMarkdownFile, isSettingsFile, checkEditSize } = await import("./file-edit-helpers.ts")
+    const { isNotebookFile, isMarkdownFile, checkEditSize } = await import("./file-edit-helpers.ts")
     if (isNotebookFile(file)) {
       return formatToolError("Cannot Write a .ipynb file. Use the notebook tooling instead.")
     }
@@ -174,6 +174,13 @@ export const fileTools: ToolDefinition[] = [
     const safety = isSafeToWrite(content)
     if (!safety.safe) {
       return formatToolError(`Secret scanner blocked Write: ${safety.findings.map(f => f.patternId).join(", ")}`)
+    }
+
+    // Settings file validation
+    const { validateSettingsFileContent, findSimilarFiles } = await import("./file-validators.ts")
+    const settingsCheck = validateSettingsFileContent(file, content)
+    if (!settingsCheck.valid) {
+      return formatToolError(`Settings file validation failed: ${settingsCheck.reason}`)
     }
 
     // Pre-read check (soft)
