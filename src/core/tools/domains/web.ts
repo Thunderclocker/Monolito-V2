@@ -37,8 +37,11 @@ import type { ToolDefinition } from "../registry.ts"
 export const webTools: ToolDefinition[] = [
 {
   name: "WebFetch",
+  aliases: ["web_fetch"],
   permissionTier: "read",
-  description: "Fetch a URL and extract content relevant to a prompt.",
+  isReadOnly: true,
+  isSearchOrReadCommand: true,
+  description: "Fetch a URL and extract content relevant to a prompt. LRU cache (15min TTL, 50MB cap), cross-host redirect blocked (same-host+port+registrable-domain), preapproved hosts skip permission gate. MAX_REDIRECTS=10. Image URLs auto-blocked for non-agent sessions.",
   inputSchema: {
     type: "object",
     properties: {
@@ -67,36 +70,66 @@ export const webTools: ToolDefinition[] = [
     let contentType = ""
     let bytes = 0
     let content = ""
-    try {
+    let cacheHit = false
+    let redirectCount = 0
+    // Check cache first
+    const { getCachedFetch, setCachedFetch } = await import("./webfetch.cache.ts")
+    const cached = getCachedFetch(url)
+    if (cached) {
+      content = cached.content
+      contentType = cached.contentType
+      bytes = cached.bytes
+      code = cached.code
+      codeText = cached.codeText
+      cacheHit = true
+    } else {
       try {
-        const response = await fetch(url, {
-          headers: {
-            "User-Agent": "MonolitoV2/1.0",
-            "Accept": "application/json,text/html,application/xhtml+xml,text/plain,*/*",
-          },
-          signal: AbortSignal.timeout(15000),
-        })
-        code = response.status
-        codeText = response.statusText
-        contentType = response.headers.get("content-type") ?? ""
-        const buffer = await response.arrayBuffer()
-        bytes = buffer.byteLength
-        const decoder = new TextDecoder("utf-8", { fatal: false })
-        content = decoder.decode(buffer)
+        try {
+          const { followWithPermittedRedirects } = await import("./webfetch.redirect.ts")
+          const result = await followWithPermittedRedirects(url, {
+            timeoutMs: 15000,
+            signal: context.abortSignal,
+          })
+          content = result.content
+          contentType = result.contentType
+          bytes = result.bytes
+          code = result.code
+          codeText = result.codeText
+          redirectCount = result.redirectCount
+          setCachedFetch(url, {
+            content,
+            contentType,
+            bytes,
+            code,
+            codeText,
+            fetchedAt: Date.now(),
+          })
+        } catch (redirectErr) {
+          // Fall back to single fetch if redirect-following fails
+          const response = await fetch(url, {
+            headers: {
+              "User-Agent": "MonolitoV2/1.0",
+              "Accept": "application/json,text/html,application/xhtml+xml,text/plain,*/*",
+            },
+            signal: AbortSignal.timeout(15000),
+          })
+          code = response.status
+          codeText = response.statusText
+          contentType = response.headers.get("content-type") ?? ""
+          const buffer = await response.arrayBuffer()
+          bytes = buffer.byteLength
+          const decoder = new TextDecoder("utf-8", { fatal: false })
+          content = decoder.decode(buffer)
+          setCachedFetch(url, {
+            content, contentType, bytes, code, codeText, fetchedAt: Date.now(),
+          })
+        }
       } catch {
         const fallback = await fetchWithCurl(url)
         code = fallback.code
         codeText = fallback.codeText
         bytes = fallback.bytes
         content = fallback.content
-      }
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error)
-      return {
-        url,
-        prompt,
-        error: msg,
-        durationMs: Date.now() - startedAt,
       }
     }
     const normalizedContentType = contentType.toLowerCase()
