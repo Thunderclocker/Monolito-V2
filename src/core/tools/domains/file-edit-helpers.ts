@@ -146,6 +146,54 @@ export function generateUnifiedDiff(before: string, after: string, path: string)
   return lines.join("\n")
 }
 
+/** Aplica un array de edits atómicamente. Si alguno falla, ninguno se aplica. */
+export type MultiEdit = {
+  old_string: string
+  new_string: string
+  replace_all?: boolean
+}
+
+export type MultiEditResult = {
+  success: boolean
+  result?: string
+  applied: number
+  error?: string
+  failedAt?: number
+}
+
+export function applyMultiEditToFile(
+  original: string,
+  edits: MultiEdit[],
+  options: { preserveQuoteStyle?: boolean } = {},
+): MultiEditResult {
+  // Validar todos los edits primero
+  for (let i = 0; i < edits.length; i++) {
+    const edit = edits[i]
+    if (!edit.old_string || typeof edit.old_string !== "string") {
+      return { success: false, applied: 0, error: `edit[${i}]: old_string must be non-empty`, failedAt: i }
+    }
+  }
+  // Aplicar todos los edits en una pasada, sobre copias intermedias
+  let current = original
+  for (let i = 0; i < edits.length; i++) {
+    const edit = edits[i]
+    const result = applyEditToFile(current, edit.old_string, edit.new_string, {
+      replaceAll: edit.replace_all,
+      preserveQuoteStyle: options.preserveQuoteStyle,
+    })
+    if (!result.success) {
+      return {
+        success: false,
+        applied: i,
+        error: `edit[${i}]: ${result.error}`,
+        failedAt: i,
+      }
+    }
+    current = result.result!
+  }
+  return { success: true, result: current, applied: edits.length }
+}
+
 /** Verifica que el archivo no exceda MAX_EDIT_FILE_SIZE. */
 export function checkEditSize(path: string): { ok: boolean; size: number; error?: string } {
   try {

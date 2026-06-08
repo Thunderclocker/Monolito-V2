@@ -215,42 +215,72 @@ export const fileTools: ToolDefinition[] = [
   aliases: ["edit_file"],
   permissionTier: "edit",
   sideEffect: true,
-  description: "Edit a file in place by replacing an existing string. Snapshots prior content to fileHistory. Detects mtime drift vs last Read. Rejects .ipynb. Quote normalization supported. Returns structuredPatch on success.",
+  description: "Edit a file in place. Single edit (old_string/new_string) or atomic multi-edit (edits: [...] array, all-or-nothing). Snapshots prior content to fileHistory. Detects mtime drift vs last Read. Rejects .ipynb. Quote normalization supported. Returns structuredPatch on success.",
   inputSchema: {
     type: "object",
     properties: {
       path: { type: "string" },
-      old_string: { type: "string" },
-      new_string: { type: "string" },
+      old_string: { type: "string", description: "Single-edit mode: the string to replace" },
+      new_string: { type: "string", description: "Single-edit mode: the replacement" },
       replace_all: { type: "boolean" },
       match_index: { type: "number", description: "Optional 0-based match index to replace when old_string appears multiple times." },
+      edits: {
+        type: "array",
+        description: "Multi-edit mode: array of {old_string, new_string, replace_all?}. Applied atomically (all-or-nothing).",
+        items: {
+          type: "object",
+          properties: {
+            old_string: { type: "string" },
+            new_string: { type: "string" },
+            replace_all: { type: "boolean" },
+          },
+          required: ["old_string", "new_string"],
+          additionalProperties: false,
+        },
+      },
     },
-    required: ["path", "old_string", "new_string"],
+    required: ["path"],
     additionalProperties: false,
   },
   concurrencySafe: false,
   validate: input => {
     if (typeof input.path !== "string" || input.path.length === 0) return "path must be a non-empty string"
-    if (typeof input.old_string !== "string" || input.old_string.length === 0) return "old_string must be a non-empty string"
-    if (typeof input.new_string !== "string") return "new_string must be a string"
-    if (input.match_index !== undefined && (typeof input.match_index !== "number" || !Number.isInteger(input.match_index) || input.match_index < 0)) {
-      return "match_index must be a non-negative integer"
+    const hasSingle = typeof input.old_string === "string"
+    const hasMulti = Array.isArray(input.edits)
+    if (!hasSingle && !hasMulti) return "either old_string/new_string or edits[] is required"
+    if (hasSingle && hasMulti) return "use either old_string/new_string or edits[], not both"
+    if (hasSingle) {
+      if ((input.old_string as string).length === 0) return "old_string must be a non-empty string"
+      if (typeof input.new_string !== "string") return "new_string must be a string"
+      if (input.match_index !== undefined && (typeof input.match_index !== "number" || !Number.isInteger(input.match_index) || input.match_index < 0)) {
+        return "match_index must be a non-negative integer"
+      }
+      if (input.match_index !== undefined && input.replace_all === true) {
+        return "match_index cannot be combined with replace_all=true"
+      }
     }
-    if (input.match_index !== undefined && input.replace_all === true) {
-      return "match_index cannot be combined with replace_all=true"
+    if (hasMulti) {
+      if ((input.edits as any[]).length === 0) return "edits[] must not be empty"
+      for (let i = 0; i < (input.edits as any[]).length; i++) {
+        const e = (input.edits as any[])[i]
+        if (typeof e.old_string !== "string" || e.old_string.length === 0) {
+          return `edits[${i}].old_string must be a non-empty string`
+        }
+        if (typeof e.new_string !== "string") {
+          return `edits[${i}].new_string must be a string`
+        }
+      }
     }
     return null
   },
   async run(input, context) {
     const path = requireString(input, "path")
-    const oldString = requireString(input, "old_string")
-    const newString = requireString(input, "new_string")
-    const replaceAll = optionalBoolean(input, "replace_all") ?? false
-    const matchIndex = optionalNumber(input, "match_index")
     const file = await resolveWorkspacePath(context.rootDir, context.cwd, path, context, "Edit")
+    const hasMulti = Array.isArray(input.edits)
 
     const {
       applyEditToFile,
+      applyMultiEditToFile,
       isNotebookFile,
       isNoOpEdit,
       checkEditSize,
@@ -264,11 +294,6 @@ export const fileTools: ToolDefinition[] = [
     const sizeCheck = checkEditSize(file)
     if (!sizeCheck.ok) {
       return formatToolError(sizeCheck.error ?? "File too large for edit")
-    }
-
-    // No-op detection
-    if (isNoOpEdit(oldString, newString)) {
-      return formatToolError("No-op edit: old_string and new_string are equivalent after normalization.")
     }
 
     // Pre-read check (soft)
@@ -286,28 +311,60 @@ export const fileTools: ToolDefinition[] = [
     }
 
     const original = readFileSync(file, "utf8")
-    const applyResult = applyEditToFile(original, oldString, newString, {
-      replaceAll,
-      matchIndex,
-      preserveQuoteStyle: true,
-    })
-    if (!applyResult.success) {
-      return formatToolError(applyResult.error ?? "Edit failed")
+    let finalContent: string
+    let editSummary: Record<string, unknown>
+
+    if (hasMulti) {
+      const edits = (input.edits as any[]).map(e => ({
+        old_string: e.old_string,
+        new_string: e.new_string,
+        replace_all: e.replace_all,
+      }))
+      const multiResult = applyMultiEditToFile(original, edits, { preserveQuoteStyle: true })
+      if (!multiResult.success) {
+        return formatToolError(`Multi-edit failed: ${multiResult.error}`)
+      }
+      finalContent = multiResult.result!
+      editSummary = {
+        path,
+        mode: "multi-edit",
+        applied: multiResult.applied,
+        bytes: Buffer.byteLength(finalContent),
+        structuredPatch: generateUnifiedDiff(original, finalContent, path),
+      }
+    } else {
+      const oldString = requireString(input, "old_string")
+      const newString = requireString(input, "new_string")
+      const replaceAll = optionalBoolean(input, "replace_all") ?? false
+      const matchIndex = optionalNumber(input, "match_index")
+      if (isNoOpEdit(oldString, newString)) {
+        return formatToolError("No-op edit: old_string and new_string are equivalent after normalization.")
+      }
+      const applyResult = applyEditToFile(original, oldString, newString, {
+        replaceAll,
+        matchIndex,
+        preserveQuoteStyle: true,
+      })
+      if (!applyResult.success) {
+        return formatToolError(applyResult.error ?? "Edit failed")
+      }
+      finalContent = applyResult.result!
+      editSummary = {
+        path,
+        mode: "single-edit",
+        replaced: applyResult.matches,
+        bytes: Buffer.byteLength(finalContent),
+        structuredPatch: generateUnifiedDiff(original, finalContent, path),
+      }
     }
 
     // Snapshot before write
     const { trackEdit } = await import("../file-history.ts")
     trackEdit(context.rootDir, sessionId, file, original)
 
-    writeFileSync(file, applyResult.result!, "utf8")
-    const out: Record<string, unknown> = {
-      path,
-      replaced: applyResult.matches,
-      bytes: Buffer.byteLength(applyResult.result!),
-      structuredPatch: generateUnifiedDiff(original, applyResult.result!, path),
-    }
-    if (preReadWarning) out.warning = preReadWarning
-    return out
+    writeFileSync(file, finalContent, "utf8")
+    if (preReadWarning) editSummary.warning = preReadWarning
+    return editSummary
   },
 },
 
