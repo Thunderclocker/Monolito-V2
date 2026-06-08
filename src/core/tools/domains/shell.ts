@@ -335,13 +335,26 @@ Requires: message, chat_id, timezone. Plus either delay_seconds, at/time, OR cro
       })
       clearTimeout(timeoutId)
       outputStream.end()
+      const rawStdout = Buffer.concat(stdoutChunks).toString()
+      const rawStderr = Buffer.concat(stderrChunks).toString()
+      // Apply output limits + command semantics
+      const { truncateOutput, looksLikeImageOutput } = await import("./bash/outputLimits.ts")
+      const { interpretCommandExitCode } = await import("./bash/commandSemantics.ts")
+      const stdoutTrunc = truncateOutput(rawStdout, { limit: 30_000 })
+      const stderrTrunc = truncateOutput(rawStderr, { limit: 30_000 })
+      const segment0 = gateResult.parsed.segments[0]?.argv[0]
+      const exitInterpretation = segment0 ? interpretCommandExitCode(segment0, exitCode ?? -1) : `exit code ${exitCode}`
       runResult = {
         command,
         cwd: context.cwd,
-        stdout: Buffer.concat(stdoutChunks).toString(),
-        stderr: Buffer.concat(stderrChunks).toString(),
+        stdout: stdoutTrunc.output,
+        stderr: stderrTrunc.output,
+        stdoutTruncated: stdoutTrunc.truncated,
+        stderrTruncated: stderrTrunc.truncated,
         interrupted: exitCode === null,
         exitCode,
+        exitInterpretation,
+        looksLikeBinary: looksLikeImageOutput(rawStdout),
       }
     } else {
       try {
@@ -352,26 +365,49 @@ Requires: message, chat_id, timezone. Plus either delay_seconds, at/time, OR cro
           env,
           signal: context.abortSignal,
         })
+        const { truncateOutput, looksLikeImageOutput } = await import("./bash/outputLimits.ts")
+        const { interpretCommandExitCode } = await import("./bash/commandSemantics.ts")
+        const stdoutTrunc = truncateOutput(result.stdout, { limit: 30_000 })
+        const stderrTrunc = truncateOutput(result.stderr, { limit: 30_000 })
+        const segment0 = gateResult.parsed.segments[0]?.argv[0]
+        const exitInterpretation = segment0 ? interpretCommandExitCode(segment0, 0) : "exit code 0"
         runResult = {
           command,
           cwd: context.cwd,
-          stdout: result.stdout,
-          stderr: result.stderr,
+          stdout: stdoutTrunc.output,
+          stderr: stderrTrunc.output,
+          stdoutTruncated: stdoutTrunc.truncated,
+          stderrTruncated: stderrTrunc.truncated,
           interrupted: false,
           exitCode: 0,
+          exitInterpretation,
+          looksLikeBinary: looksLikeImageOutput(result.stdout),
         }
       } catch (error) {
         const typed = error as Error & { code?: number | string; killed?: boolean; stdout?: string; stderr?: string }
+        const { truncateOutput, looksLikeImageOutput } = await import("./bash/outputLimits.ts")
+        const { interpretCommandExitCode } = await import("./bash/commandSemantics.ts")
+        const stdoutTrunc = truncateOutput(typed.stdout ?? "", { limit: 30_000 })
+        const stderrTrunc = truncateOutput(typed.stderr ?? typed.message, { limit: 30_000 })
+        const exitCodeVal = typeof typed.code === "number" ? typed.code : null
+        const segment0 = gateResult.parsed.segments[0]?.argv[0]
+        const exitInterpretation = segment0 && exitCodeVal !== null ? interpretCommandExitCode(segment0, exitCodeVal) : `exit code ${exitCodeVal}`
         runResult = {
           command,
           cwd: context.cwd,
-          stdout: typed.stdout ?? "",
-          stderr: typed.stderr ?? typed.message,
+          stdout: stdoutTrunc.output,
+          stderr: stderrTrunc.output,
+          stdoutTruncated: stdoutTrunc.truncated,
+          stderrTruncated: stderrTrunc.truncated,
           interrupted: typed.killed ?? false,
-          exitCode: typeof typed.code === "number" ? typed.code : null,
+          exitCode: exitCodeVal,
+          exitInterpretation,
+          looksLikeBinary: looksLikeImageOutput(typed.stdout ?? ""),
         }
       }
     }
+
+    // Attach low/medium security findings + destructive warning
 
     // Attach low/medium security findings + destructive warning
     const lowSeverity = securityFindings.filter(f => f.severity === "low" || f.severity === "medium")
