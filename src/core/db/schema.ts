@@ -24,6 +24,25 @@ export const VECTOR_SCHEMA_SQL = `
     id INTEGER PRIMARY KEY,
     embedding float[1024]
   );
+
+  -- Multi-chunk embeddings for long memory drawers.
+  -- See db/migrations/20260608_vec_drawer_chunks.sql.
+  -- Schema rationale:
+  --   - vec0 (sqlite-vec) only supports a single INTEGER PRIMARY KEY column.
+  --   - SQLite does NOT allow CREATE INDEX on virtual tables.
+  --   - Therefore: vec_drawer_chunks holds ONLY the vector + an autoincrement
+  --     id (sqlite rowid). The (drawer_rowid, chunk_index) metadata is kept
+  --     in a regular table named drawer_chunk_meta, FK-style.
+  --   - The unique invariant (one vector per chunk per drawer) is enforced
+  --     by a UNIQUE INDEX on drawer_chunk_meta(drawer_rowid, chunk_index).
+  --   - Inserts go through insertChunkEmbeddings which first upserts the
+  --     meta row (to get a stable chunk_id), then INSERT OR IGNORE into
+  --     vec_drawer_chunks keyed by that chunk_id. Re-runs are idempotent.
+  -- Convives con vec_drawers (legacy single-vector per drawer).
+  CREATE VIRTUAL TABLE IF NOT EXISTS vec_drawer_chunks USING vec0(
+    id INTEGER PRIMARY KEY,
+    embedding float[1024]
+  );
 `
 
 export interface PalaceNode {

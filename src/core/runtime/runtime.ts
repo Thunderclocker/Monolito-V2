@@ -50,6 +50,7 @@ import {
   upsertMutablePalaceNode,
 } from "../session/store.ts"
 import { generateEmbedding, isEmbeddingsUnavailableError } from "../session/embeddings.ts"
+import { isIncrementalConsolidationEnabled } from "./memoryConsolidationPipeline.ts"
 import { getTool, listTools, type ToolContext, type ToolInputSchema } from "../tools/registry.ts"
 import { getEffectiveModelConfig, runAgentLoop, runAssistantTurn, runBackgroundTextTask, type AgentLoopEvent, type AssistantTurnResult } from "./modelAdapter.ts"
 import { getActiveProfile } from "./modelRegistry.ts"
@@ -1630,6 +1631,15 @@ reference this automated system check in your response. Do not say
       }
     }
 
+    // Feature flag: incremental pipeline. When enabled, replace the
+    // "tirarle 100K tokens al LLM" approach with process-and-flush
+    // (one drawer at a time → ficha estructurada → palace_node).
+    // See src/core/runtime/memoryConsolidationPipeline.ts.
+    if (isIncrementalConsolidationEnabled()) {
+      await this.runMemoryConsolidationIncremental(sessionId, profileId)
+      return
+    }
+
     this.activeSessions.add(sessionId)
     this._isSyntheticSkillsTurn = true
     const turnStartedAt = Date.now()
@@ -1758,6 +1768,85 @@ Please analyze the preceding conversation and run your memory consolidation tool
       this._memoryConsolidationFailures += 1
       this._lastMemoryConsolidationFailureAt = Date.now()
       logger.error(`[MemoryAgent] Execution error (${this._memoryConsolidationFailures} consecutive): ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      clearTimeout(turnTimeout)
+      this._isSyntheticSkillsTurn = false
+      await this.transitionState(sessionId, "idle")
+      this.releaseSessionLock(sessionId)
+    }
+  }
+
+  /**
+   * Incremental memory consolidation. Process-and-flush: one drawer at a
+   * time, extract ficha via LLM, persist as palace_node immediately. No
+   * 100K-token prompt, no synthetic session, no runAssistantTurn.
+   *
+   * Backoff semantics are preserved: a turn that throws counts as a failure.
+   */
+  private async runMemoryConsolidationIncremental(sessionId: string, profileId: string) {
+    this.activeSessions.add(sessionId)
+    this._isSyntheticSkillsTurn = true
+    const turnStartedAt = Date.now()
+    const abortController = new AbortController()
+    const turnTimeout = setTimeout(() => abortController.abort(), 90_000)
+    const { getDb } = await import("../session/store.ts")
+    const { runMemoryConsolidationIncremental: runPipeline } = await import("./memoryConsolidationPipeline.ts")
+
+    try {
+      logger.info(`[MemoryAgent] Starting incremental consolidation for session ${sessionId}...`)
+      await this.transitionState(sessionId, "running")
+      const db = getDb(this.rootDir)
+      const result = await runPipeline(db, {
+        rootDir: this.rootDir,
+        sessionId,
+        profileId,
+        batchSize: 20,
+        resume: true,
+        abortSignal: abortController.signal,
+        llmExtractFicha: async (drawerContent, drawerId) => {
+          // Use the same runBackgroundTextTask path the legacy code uses,
+          // so cost tracking and telemetry keep working.
+          const { runBackgroundTextTask } = await import("./modelAdapter.ts")
+          const system = `You are MemoryAgent's ficha extractor. Given a single memory drawer, output a strict JSON object with EXACTLY these keys:
+{
+  "topics": string[],          // 1-10 short topic labels
+  "key_facts": string[],       // 1-20 concrete facts (entities, dates, decisions)
+  "action_items": string[],    // 0-20 outstanding actions or commitments
+  "person_refs": string[]      // 0-10 names of people mentioned
+}
+No prose, no markdown. Only valid JSON.`
+          const user = `Drawer id: ${drawerId}\n\nContent:\n"""${drawerContent.slice(0, 6000)}"""`
+          const out = await runBackgroundTextTask(this.rootDir, system, user, { maxTokens: 600 })
+          return out.text
+        },
+      })
+
+      if (result.totalErrors === 0) {
+        this._memoryConsolidationFailures = 0
+        this._lastMemoryConsolidationFailureAt = 0
+        logger.info(
+          `[MemoryAgent] Incremental consolidation finished. ${result.fichasInserted} fichas inserted, ${result.fichasSkipped} skipped, ${result.drawersScanned} drawers scanned.`,
+        )
+        appendWorklog(this.rootDir, sessionId, {
+          type: "note",
+          summary: `MemoryAgent incremental: ${result.fichasInserted} fichas inserted, ${result.fichasSkipped} skipped`,
+        })
+      } else {
+        this._memoryConsolidationFailures += 1
+        this._lastMemoryConsolidationFailureAt = Date.now()
+        logger.error(
+          `[MemoryAgent] Incremental consolidation had ${result.totalErrors} errors (${this._memoryConsolidationFailures} consecutive).`,
+        )
+        appendWorklog(this.rootDir, sessionId, {
+          type: "note",
+          summary: `MemoryAgent incremental failed: ${result.totalErrors} errors`,
+        })
+      }
+      void turnStartedAt // unused but kept for symmetry with legacy path
+    } catch (e) {
+      this._memoryConsolidationFailures += 1
+      this._lastMemoryConsolidationFailureAt = Date.now()
+      logger.error(`[MemoryAgent] Incremental consolidation error (${this._memoryConsolidationFailures} consecutive): ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       clearTimeout(turnTimeout)
       this._isSyntheticSkillsTurn = false

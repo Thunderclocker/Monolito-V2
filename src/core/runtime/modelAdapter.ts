@@ -10,7 +10,8 @@ import { AbortError, ApiError, ContextOverflowError, HttpError, ProviderOverload
 import { createLogger, type Logger } from "../logging/logger.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider } from "./modelRegistry.ts"
-import { compactSession, getSession, readSessionSources, updateWorkerJobStatus, upsertWorkerJob, tailEvents, listSessionTasks, listDynamicSkills, appendWorklog, saveResolvedError, querySimilarErrors } from "../session/store.ts"
+import { compactSession, fileMemory, getSession, getRawMessagesForSession, getDb, readSessionSources, updateWorkerJobStatus, upsertWorkerJob, tailEvents, listSessionTasks, listDynamicSkills, appendWorklog, saveResolvedError, querySimilarErrors, deleteMessages, rewriteMessageInPlace } from "../session/store.ts"
+import { incrementalFlushSession, getContextFlushThresholdChars } from "../context/incrementalFlush.ts"
 import { callProvider, type ConversationMessage, type ProviderConfig, type ProviderResponse, type ToolCall } from "./providers/index.ts"
 import { ensureMonolitoRoot } from "../system/root.ts"
 import { redactSensitiveText } from "../security/redact.ts"
@@ -1023,18 +1024,41 @@ export async function* runAgentLoop(
             logger.info(`[context-engine] Proactive Tier 1 (in-memory) freed ${inMemResult.freedChars} chars.`)
           }
 
-          // Step 2: Proactive Tier 2 (LLM Summary of DB messages)
+          // Step 2: Proactive Tier 2 — branch by zone size.
+          //   - Region > threshold (default 150K chars / ~43K tokens):
+          //     use incrementalFlushSession (process-and-flush, no LLM call).
+          //     Persists each message as a memory_drawer with a cheap
+          //     heuristic summary, then deletes them from `messages`.
+          //   - Region ≤ threshold: use smartCompactSession (LLM summary).
+          //     One LLM call is fine for small zones; the LLM produces a
+          //     more coherent summary than the heuristic.
+          // See src/core/context/incrementalFlush.ts.
           const currentEstimated = estimateContextTokens(prompt.system, messages)
           if (currentEstimated > budget.compactTriggerTokens) {
-            logger.info(`[context-engine] Proactive Tier 1 not enough (${currentEstimated} > ${budget.compactTriggerTokens}). Launching Tier 2 DB compaction...`)
-            const compResult = await smartCompactSession(rootDir, session.id)
-            if (compResult.compacted) {
-              const refreshed = getSession(rootDir, session.id)
-              if (refreshed) {
-                activeSession = refreshed
-                // Reload DB history but preserve current turn's assistant and tool messages!
-                const currentTurnMessages = messages.filter(m => m.role === "assistant" || m.role === "tool")
-                messages.splice(0, messages.length, ...sessionToMessages(refreshed), ...currentTurnMessages)
+            const threshold = getContextFlushThresholdChars()
+            const regionChars = currentEstimated * 3.5
+            const useIncremental = regionChars > threshold
+            if (useIncremental) {
+              logger.info(`[context-engine] Region ${regionChars.toFixed(0)} chars > ${threshold}. Using incremental flush (process-and-flush, no LLM summary).`)
+              const flushResult = await runIncrementalFlush(rootDir, session.id, regionChars)
+              if (flushResult.flushed > 0) {
+                const refreshed = getSession(rootDir, session.id)
+                if (refreshed) {
+                  activeSession = refreshed
+                  const currentTurnMessages = messages.filter(m => m.role === "assistant" || m.role === "tool")
+                  messages.splice(0, messages.length, ...sessionToMessages(refreshed), ...currentTurnMessages)
+                }
+              }
+            } else {
+              logger.info(`[context-engine] Region ${regionChars.toFixed(0)} chars ≤ ${threshold}. Using Tier 2 LLM summary.`)
+              const compResult = await smartCompactSession(rootDir, session.id)
+              if (compResult.compacted) {
+                const refreshed = getSession(rootDir, session.id)
+                if (refreshed) {
+                  activeSession = refreshed
+                  const currentTurnMessages = messages.filter(m => m.role === "assistant" || m.role === "tool")
+                  messages.splice(0, messages.length, ...sessionToMessages(refreshed), ...currentTurnMessages)
+                }
               }
             }
           }
@@ -1861,5 +1885,99 @@ Respond ONLY with a valid JSON object in this format:
   } catch (err) {
     // Fail-safe: no herramientas bloqueadas si el clasificador falla
     return { blockedTools: [] }
+  }
+}
+
+/**
+ * Run an incremental context flush (process-and-flush variant of the
+ * legacy LLM-summary compaction). For each message in the middle zone:
+ *   1. Extract a cheap heuristic summary (no LLM call).
+ *   2. Persist it as a memory_drawer under wing="CHAT" / room=sessionId
+ *      via fileMemory (which handles single- or multi-chunk embedding
+ *      depending on env).
+ *   3. Mark the message as compacted in DB.
+ * Then deleteMessages frees the agent's in-context window.
+ *
+ * Returns counters; the caller (runAgentLoop) refreshes the session and
+ * splices in the active turn's in-flight messages.
+ */
+export async function runIncrementalFlush(
+  rootDir: string,
+  sessionId: string,
+  _regionChars: number,
+): Promise<{ flushed: number; skipped: number; freedChars: number }> {
+  const db = getDb(rootDir)
+  const session = getSession(rootDir, sessionId)
+  if (!session) {
+    return { flushed: 0, skipped: 0, freedChars: 0 }
+  }
+  const profileId = session.profileId ?? "default"
+  const rawMessages = getRawMessagesForSession(rootDir, sessionId)
+  if (rawMessages.length <= 4) {
+    return { flushed: 0, skipped: 0, freedChars: 0 }
+  }
+  // Find head/tail protected zones (mirrors smartCompactor.findProtectedZones).
+  const protectTailTurns = 3
+  let headCount = 0
+  while (headCount < rawMessages.length && rawMessages[headCount]!.role === "system") {
+    headCount++
+  }
+  let userFound = false
+  let assistantFound = false
+  for (let i = headCount; i < rawMessages.length; i++) {
+    const m = rawMessages[i]!
+    if (m.role === "user" && !userFound) {
+      userFound = true
+      headCount = i + 1
+    } else if (m.role === "assistant" && userFound && !assistantFound) {
+      assistantFound = true
+      headCount = i + 1
+      break
+    } else if (m.role === "user" && userFound) {
+      break
+    }
+  }
+  let userCount = 0
+  let tailStartIdx = rawMessages.length
+  for (let i = rawMessages.length - 1; i >= 0; i--) {
+    if (rawMessages[i]!.role === "user") {
+      userCount++
+      tailStartIdx = i
+      if (userCount >= protectTailTurns) break
+    }
+  }
+  if (tailStartIdx <= headCount + 1) {
+    return { flushed: 0, skipped: 0, freedChars: 0 }
+  }
+  const compressible = rawMessages.slice(headCount, tailStartIdx)
+  if (compressible.length === 0) {
+    return { flushed: 0, skipped: 0, freedChars: 0 }
+  }
+  const totalChars = compressible.reduce((s, m) => s + m.text.length, 0)
+
+  const flushResult = await incrementalFlushSession(db, compressible, {
+    rootDir,
+    sessionId,
+    fileMemory: (rd, wing, room, content, pid, key) => fileMemory(rd, wing, room, content, pid, key),
+    profileId,
+  })
+
+  // After successful flush, delete the messages and rewrite the first one
+  // as a pointer (same pattern as smartCompactor).
+  if (flushResult.totalProcessed > 0) {
+    const firstMsg = compressible[0]!
+    const pointer = `[CONTEXT FLUSHED — ${flushResult.totalProcessed} messages filed in CHAT/${sessionId}]`
+    rewriteMessageInPlace(rootDir, firstMsg.id, pointer, 1)
+    const restIds = compressible.slice(1).map((m) => m.id)
+    deleteMessages(rootDir, restIds)
+    appendWorklog(rootDir, sessionId, {
+      type: "note",
+      summary: `Context engine incremental-flush: ${flushResult.totalProcessed} messages → drawers, freed ~${totalChars} chars`,
+    })
+  }
+  return {
+    flushed: flushResult.totalProcessed,
+    skipped: flushResult.totalErrors,
+    freedChars: totalChars,
   }
 }

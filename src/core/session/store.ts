@@ -12,6 +12,12 @@ import {
 } from "../ipc/protocol.ts"
 import { bindSemanticSearchDb, generateEmbedding, isEmbeddingsUnavailableError } from "./embeddings.ts"
 import {
+  isMultiChunkEmbeddingsEnabled,
+  embedChunked,
+  insertChunkEmbeddings,
+  recallMultiChunk,
+} from "./multiChunkEmbeddings.ts"
+import {
   BOOT_WING_ORDER,
   DEFAULT_BOOT_WING_CONTENT,
   type BootWingEntry,
@@ -112,6 +118,25 @@ function ensureVectorSchema(db: Database.Database) {
       PRIMARY KEY (provider, model, hash)
     );
     CREATE INDEX IF NOT EXISTS idx_embedding_cache_updated_at ON embedding_cache(updated_at);
+  `)
+
+  // Multi-chunk embeddings metadata. Lives in a regular table because:
+  //   1. vec0 only allows single-column INTEGER PRIMARY KEY.
+  //   2. CREATE INDEX on virtual tables is not allowed in SQLite.
+  // The (drawer_rowid, chunk_index) → chunk_id mapping is here, and the
+  // uniqueness invariant is enforced by idx_drawer_chunk_meta_unique.
+  // The actual float vector lives in vec_drawer_chunks keyed by chunk_id.
+  // See db/migrations/20260608_vec_drawer_chunks.sql.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS drawer_chunk_meta (
+      chunk_id INTEGER PRIMARY KEY,
+      drawer_rowid INTEGER NOT NULL,
+      chunk_index INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_drawer_chunk_meta_unique
+      ON drawer_chunk_meta(drawer_rowid, chunk_index);
+    CREATE INDEX IF NOT EXISTS idx_drawer_chunk_meta_by_drawer
+      ON drawer_chunk_meta(drawer_rowid);
   `)
 }
 
@@ -1605,13 +1630,27 @@ export async function fileMemory(rootDir: string, wing: string, room: string, co
       content,
       now,
     })
-    
-    // Guardar vector matematico
-    if (floatArray) {
+
+    // Vector storage. Two paths:
+    //   - Legacy (default): one vector in vec_drawers keyed by drawer rowid.
+    //   - Multi-chunk (env MONOLITO_USE_MULTI_CHUNK_EMBEDDINGS=1): one vector
+    //     per chunk in vec_drawer_chunks. The legacy vec_drawers row still
+    //     gets a fallback vector (first chunk) so old recall paths keep working.
+    if (isMultiChunkEmbeddingsEnabled()) {
+      const chunked = await embedChunked(content, { targetTokens: 1500, overlapTokens: 150 })
+      if (chunked.length > 0) {
+        const drawerRowid = Number(result.lastInsertRowid)
+        insertChunkEmbeddings(db, drawerRowid, chunked)
+        // Legacy fallback: insert the first chunk's vector into vec_drawers.
+        const stmtVec = db.prepare(`INSERT OR IGNORE INTO vec_drawers (id, embedding) VALUES (?, ?)`)
+        stmtVec.run(BigInt(drawerRowid), chunked[0]!.embedding)
+      }
+      // No embedding at all: skip both tables.
+    } else if (floatArray) {
       const stmtVec = db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`)
       stmtVec.run(BigInt(result.lastInsertRowid), floatArray)
     }
-    
+
     db.exec("COMMIT")
   } catch (err) {
     db.exec("ROLLBACK")
@@ -1645,8 +1684,37 @@ export async function recallMemory(rootDir: string, wing?: string, room?: string
   }
   
   if (query && query.trim().length > 0) {
+    // Multi-chunk path: vector stored as one row per chunk in vec_drawer_chunks.
+    if (isMultiChunkEmbeddingsEnabled()) {
+      const queryVector = await generateEmbedding(query)
+      const hits = recallMultiChunk(
+        db,
+        queryVector,
+        {
+          wing,
+          room,
+          key,
+          profileId,
+          excludeWings: ["BOOT\\_", "CONF\\_"],
+        },
+        15,
+        200,
+      )
+      // Reshape to legacy contract: { id, profile_id, wing, room, memory_key, content, created_at, distance }.
+      return hits.map((h) => ({
+        id: h.drawerId,
+        profile_id: h.profileId,
+        wing: h.wing,
+        room: h.room,
+        memory_key: h.memoryKey,
+        content: h.content,
+        created_at: h.createdAt,
+        distance: h.meanDistance,
+      }))
+    }
+
     const floatArray = await generateEmbedding(query)
-    let sql = `SELECT m.id, m.profile_id, m.wing, m.room, m.memory_key, m.content, m.created_at, 
+    let sql = `SELECT m.id, m.profile_id, m.wing, m.room, m.memory_key, m.content, m.created_at,
                       v.distance
                FROM vec_drawers v
                JOIN memory_drawers m ON m.rowid = v.id
