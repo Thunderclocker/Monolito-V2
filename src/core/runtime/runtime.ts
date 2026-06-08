@@ -670,28 +670,10 @@ export function clearUpdateRestartState(rootDir: string) {
   } catch {}
 }
 
-function acquireUpdateLock(rootDir: string) {
-  const paths = getPaths(rootDir)
-  mkdirSync(paths.runDir, { recursive: true })
-  const lockPath = join(paths.runDir, "update.lock")
-  try {
-    const fd = openSync(lockPath, "wx")
-    writeFileSync(fd, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`, "utf8")
-    return {
-      ok: true as const,
-      release() {
-        try {
-          unlinkSync(lockPath)
-        } catch {}
-      },
-    }
-  } catch {
-    return {
-      ok: false as const,
-      message: "Update already in progress in another Monolito process. Wait for it to finish and try /update again.",
-    }
-  }
-}
+// Acquire the exclusive /update lock. The implementation lives in
+// ./updateLock.ts so it can be unit-tested in isolation. The robustness
+// contract (stale lock detection, retry, logging) is documented there.
+import { acquireUpdateLock } from "./updateLock.ts"
 
 function getTelegramChatId(sessionId: string) {
   return sessionId.startsWith("telegram-") ? sessionId.slice("telegram-".length) : null
