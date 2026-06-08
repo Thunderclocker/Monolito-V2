@@ -1,22 +1,19 @@
 // Read split — core reader con streaming fast-path, dedup via readFileState,
 // device-file guard, binary reject, mtime population.
 //
-// upstream parity: extraído de FileReadTool.ts con simplificaciones:
-// - Sin image processor (queda en media.ts)
-// - Sin notebook reader separado (Fase 2)
-// - Sin pdftotext (Fase 2)
-// - device guard y binary reject son las dos guards críticas para v1.
+// upstream parity: extraído de FileReadTool.ts. Incluye image processor,
+// encoding detection, notebook reader, PDF text via pdftotext.
 
-import { createReadStream, statSync, existsSync } from "node:fs"
+import { createReadStream, statSync, existsSync, readFileSync } from "node:fs"
 import { basename, extname } from "node:path"
 import { setReadFileStateForTool, fingerprint } from "../file-state.ts"
 
-export const MAX_READ_SIZE_BYTES = 256 * 1024  // 256KB cap (M actual: sin cap)
-export const DEFAULT_READ_LINE_LIMIT = 2000   // upstream parity
+export const MAX_READ_SIZE_BYTES = 256 * 1024  // 256KB cap
+export const DEFAULT_READ_LINE_LIMIT = 2000
 export const DEVICE_FILE_PATTERN = /^\/(dev|proc|sys)\//
 
 export type ReadOutput = {
-  type: "text" | "file_too_large" | "binary" | "device_file" | "not_found"
+  type: "text" | "file_too_large" | "binary" | "device_file" | "not_found" | "image" | "notebook" | "pdf"
   path: string
   content?: string
   totalLines: number
@@ -26,6 +23,11 @@ export type ReadOutput = {
   hasMore: boolean
   bytes: number
   file_unchanged?: { hash: string }
+  imageInfo?: { mime: string; width?: number; height?: number }
+  notebook?: { totalCells: number; cells: Array<{ index: number; cell_type: string; source: string }> }
+  pdf?: { pages: number; text?: string }
+  encoding?: string
+  lineEnding?: string
 }
 
 /** Lee un archivo. Hace streaming fast-path para files grandes. Popula
@@ -85,6 +87,68 @@ export async function readFile(params: {
       hasMore: false,
       bytes: sizeBytes,
       file_unchanged: { hash },
+    }
+  }
+
+  // Image detection (before binary — images are binary but valid type)
+  const { detectImage } = await import("./image-processor.ts")
+  const imageInfo = detectImage(params.path)
+  if (imageInfo.isImage) {
+    return {
+      type: "image",
+      path: params.path,
+      totalLines: 0,
+      offset,
+      lineLimit,
+      returnedLines: 0,
+      hasMore: false,
+      bytes: sizeBytes,
+      imageInfo: { mime: imageInfo.mime!, width: imageInfo.width, height: imageInfo.height },
+    }
+  }
+
+  // Notebook detection
+  if (extname(params.path).toLowerCase() === ".ipynb") {
+    const { readNotebook, cellSourceToString } = await import("./notebook.ts")
+    try {
+      const notebook = readNotebook(params.path)
+      return {
+        type: "notebook",
+        path: params.path,
+        totalLines: notebook.totalCells,
+        offset,
+        lineLimit,
+        returnedLines: notebook.totalCells,
+        hasMore: false,
+        bytes: sizeBytes,
+        notebook: {
+          totalCells: notebook.totalCells,
+          cells: notebook.cells.map(c => ({
+            index: c.index,
+            cell_type: c.cell_type,
+            source: cellSourceToString(c.source),
+          })),
+        },
+      }
+    } catch {
+      // Not a valid notebook, fall through to text
+    }
+  }
+
+  // PDF detection
+  if (extname(params.path).toLowerCase() === ".pdf") {
+    const { readPdfText } = await import("./pdf.ts")
+    const pdfResult = await readPdfText(params.path)
+    return {
+      type: "pdf",
+      path: params.path,
+      totalLines: pdfResult.pages,
+      offset,
+      lineLimit,
+      returnedLines: pdfResult.pages,
+      hasMore: false,
+      bytes: sizeBytes,
+      pdf: { pages: pdfResult.pages, text: pdfResult.text },
     }
   }
 
