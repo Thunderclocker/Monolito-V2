@@ -189,6 +189,18 @@ export async function readFile(params: {
     { offset, limit: lineLimit },
   )
 
+  // Track read in fileHistory so users can recover via restoreFromHistory
+  // (parity with Write/Edit which track prior content; for Read, we
+  // store the just-read content under a special "current" version)
+  if (existsSync(params.path)) {
+    try {
+      const { trackEdit } = await import("../file-history.ts")
+      trackEdit(params.rootDir, params.sessionId, params.path, out)
+    } catch {
+      // file-history failures shouldn't break Read
+    }
+  }
+
   return {
     type: "text",
     path: params.path,

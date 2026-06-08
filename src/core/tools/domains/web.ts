@@ -400,13 +400,14 @@ export const webTools: ToolDefinition[] = [
   permissionTier: "read",
   isReadOnly: true,
   isSearchOrReadCommand: true,
-  description: "Search the web for current text results via the configured provider (SearxNG, Brave, Serper, Tavily, default). Supports allowed_domains/blocked_domains filters (provider-dependent). PROHIBIDO: usar para buscar/analizar imágenes o fotos.",
+  description: "Search the web for current text results via the configured provider (SearxNG, Brave, Serper, Tavily, default). Supports allowed_domains/blocked_domains (provider-dependent translation) and recency filter. PROHIBIDO: usar para buscar/analizar imágenes o fotos.",
   inputSchema: {
     type: "object",
     properties: {
       query: { type: "string", description: "Free-text search query." },
       allowed_domains: { type: "array", items: { type: "string" }, description: "Restrict results to these domains. Not supported by all providers." },
       blocked_domains: { type: "array", items: { type: "string" }, description: "Exclude these domains. Not supported by all providers." },
+      recency: { type: "string", enum: ["day", "week", "month", "year"], description: "Filter by time range (provider-dependent support)." },
     },
     required: ["query"],
     additionalProperties: false,
@@ -429,10 +430,14 @@ export const webTools: ToolDefinition[] = [
     try {
       if (config.provider === "brave" && config.apiKey) {
         // Brave doesn't support domain filters via the public API; log warning if used
+        const warnings: string[] = []
         if (allowedDomains.length > 0 || blockedDomains.length > 0) {
-          // No-op silently per upstream parity; could log to runtime events
+          warnings.push("Brave does not support domain filters")
         }
-        const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}`
+        const recency = typeof input.recency === "string" ? input.recency : undefined
+        const extraParams: string[] = []
+        if (recency) extraParams.push(`&freshness=${recency}`)
+        const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}${extraParams.join("")}`
         const response = await fetch(url, {
           headers: { "X-Subscription-Token": config.apiKey, "Accept": "application/json" },
           signal: AbortSignal.timeout(15_000)
