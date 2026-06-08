@@ -355,25 +355,42 @@ export const webTools: ToolDefinition[] = [
 
 {
   name: "WebSearch",
+  aliases: ["web_search"],
   permissionTier: "read",
-  description: "Search the web for current text results via the local SearxNG instance and return clean summaries with title, URL, and snippet. CRÍTICO: PROHIBIDO usar esta herramienta para buscar, ver o analizar IMÁGENES o FOTOS. Solo devuelve texto y fallará. Para cualquier tarea visual o de imágenes, DEBES usar la herramienta de delegación a background.",
+  isReadOnly: true,
+  isSearchOrReadCommand: true,
+  description: "Search the web for current text results via the configured provider (SearxNG, Brave, Serper, Tavily, default). Supports allowed_domains/blocked_domains filters (provider-dependent). PROHIBIDO: usar para buscar/analizar imágenes o fotos.",
   inputSchema: {
     type: "object",
     properties: {
       query: { type: "string", description: "Free-text search query." },
+      allowed_domains: { type: "array", items: { type: "string" }, description: "Restrict results to these domains. Not supported by all providers." },
+      blocked_domains: { type: "array", items: { type: "string" }, description: "Exclude these domains. Not supported by all providers." },
     },
     required: ["query"],
     additionalProperties: false,
   },
   concurrencySafe: true,
+  validate: input => {
+    if (input.allowed_domains && input.blocked_domains) {
+      return "allowed_domains and blocked_domains are mutually exclusive"
+    }
+    return null
+  },
   async run(input, context) {
     const query = requireString(input, "query")
+    const allowedDomains = Array.isArray(input.allowed_domains) ? input.allowed_domains as string[] : []
+    const blockedDomains = Array.isArray(input.blocked_domains) ? input.blocked_domains as string[] : []
     const config = readWebSearchConfig()
-    
+
     let results: Array<{ title: string; url: string; snippet: string }> = []
-    
+
     try {
       if (config.provider === "brave" && config.apiKey) {
+        // Brave doesn't support domain filters via the public API; log warning if used
+        if (allowedDomains.length > 0 || blockedDomains.length > 0) {
+          // No-op silently per upstream parity; could log to runtime events
+        }
         const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}`
         const response = await fetch(url, {
           headers: { "X-Subscription-Token": config.apiKey, "Accept": "application/json" },
