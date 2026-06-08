@@ -141,7 +141,8 @@ export const fileTools: ToolDefinition[] = [
   name: "Write",
   aliases: ["write_file"],
   permissionTier: "edit",
-  description: "Create or overwrite a file in the workspace.",
+  sideEffect: true,
+  description: "Create or overwrite a file in the workspace. Snapshots prior content to fileHistory (TTL 30d). Runs secret guard on content. Soft pre-read warning if file existed but Read was not called in this session.",
   inputSchema: {
     type: "object",
     properties: {
@@ -161,10 +162,51 @@ export const fileTools: ToolDefinition[] = [
     const path = requireString(input, "path")
     const content = requireString(input, "content")
     const file = await resolveWorkspacePath(context.rootDir, context.cwd, path, context, "Write")
+
+    // Notebook reject
+    const { isNotebookFile, isMarkdownFile, isSettingsFile, checkEditSize } = await import("./file-edit-helpers.ts")
+    if (isNotebookFile(file)) {
+      return formatToolError("Cannot Write a .ipynb file. Use the notebook tooling instead.")
+    }
+
+    // Secret guard
+    const { isSafeToWrite } = await import("../secret-scanner.ts")
+    const safety = isSafeToWrite(content)
+    if (!safety.safe) {
+      return formatToolError(`Secret scanner blocked Write: ${safety.findings.map(f => f.patternId).join(", ")}`)
+    }
+
+    // Pre-read check (soft)
+    const { isFileStale, getReadFileStateForTool } = await import("../file-state.ts")
+    const sessionId = context.sessionId ?? "default"
+    const entry = getReadFileStateForTool(sessionId, context.rootDir, file)
+    let preReadWarning: string | undefined
+    if (existsSync(file) && entry === undefined) {
+      preReadWarning = "File existed but no prior Read in this session. Recommend Read first to see current state."
+    } else if (existsSync(file) && entry !== undefined) {
+      const { stale } = isFileStale(sessionId, context.rootDir, file)
+      if (stale) {
+        preReadWarning = "File changed since last Read. Re-Read recommended to avoid clobbering concurrent edits."
+      }
+    }
+
+    // Snapshot before overwrite
     mkdirSync(dirname(file), { recursive: true })
     const existed = existsSync(file)
+    if (existed) {
+      const { trackEdit } = await import("../file-history.ts")
+      const prior = readFileSync(file, "utf8")
+      trackEdit(context.rootDir, sessionId, file, prior)
+    }
+
     writeFileSync(file, content, "utf8")
-    return { path, type: existed ? "update" : "create", bytes: Buffer.byteLength(content) }
+    const out: Record<string, unknown> = {
+      path,
+      type: existed ? "update" : "create",
+      bytes: Buffer.byteLength(content),
+    }
+    if (preReadWarning) out.warning = preReadWarning
+    return out
   },
 },
 
@@ -172,7 +214,8 @@ export const fileTools: ToolDefinition[] = [
   name: "Edit",
   aliases: ["edit_file"],
   permissionTier: "edit",
-  description: "Edit a file in place by replacing an existing string.",
+  sideEffect: true,
+  description: "Edit a file in place by replacing an existing string. Snapshots prior content to fileHistory. Detects mtime drift vs last Read. Rejects .ipynb. Quote normalization supported. Returns structuredPatch on success.",
   inputSchema: {
     type: "object",
     properties: {
@@ -205,38 +248,66 @@ export const fileTools: ToolDefinition[] = [
     const replaceAll = optionalBoolean(input, "replace_all") ?? false
     const matchIndex = optionalNumber(input, "match_index")
     const file = await resolveWorkspacePath(context.rootDir, context.cwd, path, context, "Edit")
-    const original = readFileSync(file, "utf8")
-    const matches = findStringOccurrences(original, oldString)
-    const occurrences = matches.length
-    if (occurrences === 0) return formatToolError(`old_string not found in ${path}`)
-    if (replaceAll && matchIndex !== undefined) {
-      return formatToolError("match_index cannot be combined with replace_all=true")
+
+    const {
+      applyEditToFile,
+      isNotebookFile,
+      isNoOpEdit,
+      checkEditSize,
+      generateUnifiedDiff,
+    } = await import("./file-edit-helpers.ts")
+
+    if (isNotebookFile(file)) {
+      return formatToolError("Cannot Edit a .ipynb file. Use the notebook tooling instead.")
     }
-    if (!replaceAll && occurrences > 1) {
-      if (matchIndex === undefined) {
-        const lineSummary = matches.map((match, index) => `${index}:${match.line}`).join(", ")
-        return formatToolError(`old_string matched ${occurrences} times in ${path} at match_index:line ${lineSummary}; retry with match_index or set replace_all=true`)
-      }
-      if (!Number.isInteger(matchIndex) || matchIndex < 0 || matchIndex >= occurrences) {
-        return formatToolError(`match_index ${matchIndex} is out of range for ${occurrences} matches in ${path}`)
-      }
+
+    const sizeCheck = checkEditSize(file)
+    if (!sizeCheck.ok) {
+      return formatToolError(sizeCheck.error ?? "File too large for edit")
     }
-    let updated = original
-    let replaced = 0
-    if (replaceAll) {
-      updated = original.split(oldString).join(newString)
-      replaced = occurrences
-    } else if (matchIndex !== undefined) {
-      const match = matches[matchIndex]
-      if (!match) return formatToolError(`match_index ${matchIndex} is out of range for ${occurrences} matches in ${path}`)
-      updated = `${original.slice(0, match.index)}${newString}${original.slice(match.index + oldString.length)}`
-      replaced = 1
+
+    // No-op detection
+    if (isNoOpEdit(oldString, newString)) {
+      return formatToolError("No-op edit: old_string and new_string are equivalent after normalization.")
+    }
+
+    // Pre-read check (soft)
+    const { getReadFileStateForTool, isFileStale } = await import("../file-state.ts")
+    const sessionId = context.sessionId ?? "default"
+    const readEntry = getReadFileStateForTool(sessionId, context.rootDir, file)
+    let preReadWarning: string | undefined
+    if (readEntry === undefined) {
+      preReadWarning = "No prior Read in this session. Recommend Read first to see current state."
     } else {
-      updated = original.replace(oldString, newString)
-      replaced = 1
+      const { stale } = isFileStale(sessionId, context.rootDir, file)
+      if (stale) {
+        preReadWarning = "File changed since last Read. Re-Read recommended to avoid clobbering concurrent edits."
+      }
     }
-    writeFileSync(file, updated, "utf8")
-    return { path, replaced, bytes: Buffer.byteLength(updated) }
+
+    const original = readFileSync(file, "utf8")
+    const applyResult = applyEditToFile(original, oldString, newString, {
+      replaceAll,
+      matchIndex,
+      preserveQuoteStyle: true,
+    })
+    if (!applyResult.success) {
+      return formatToolError(applyResult.error ?? "Edit failed")
+    }
+
+    // Snapshot before write
+    const { trackEdit } = await import("../file-history.ts")
+    trackEdit(context.rootDir, sessionId, file, original)
+
+    writeFileSync(file, applyResult.result!, "utf8")
+    const out: Record<string, unknown> = {
+      path,
+      replaced: applyResult.matches,
+      bytes: Buffer.byteLength(applyResult.result!),
+      structuredPatch: generateUnifiedDiff(original, applyResult.result!, path),
+    }
+    if (preReadWarning) out.warning = preReadWarning
+    return out
   },
 },
 
