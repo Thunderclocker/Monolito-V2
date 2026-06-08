@@ -694,11 +694,14 @@ export const mediaTools: ToolDefinition[] = [
         baseUrl = "https://api.minimax.io/v1"
         if (activeProfile && (activeProfile.provider as string) === "minimax") {
           apiKey = activeProfile.apiKey.trim()
-          model = activeProfile.model.trim() || "image-01"
         } else {
           apiKey = (process.env.MINIMAX_API_KEY ?? process.env.ANTHROPIC_AUTH_TOKEN ?? "").trim()
-          model = "image-01"
         }
+        // Importante: ignorar activeProfile.model porque es el modelo de
+        // CHAT (ej: "MiniMax-M3") y MiniMax rechaza con 2013 cuando se
+        // le pasa un modelo que no soporta image_generation. Hardcodeamos
+        // image-01 que es el único modelo de imagen soportado.
+        model = "image-01"
       } else {
         // OpenAI
         if (activeProfile) {
