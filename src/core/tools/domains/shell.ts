@@ -217,7 +217,7 @@ Requires: message, chat_id, timezone. Plus either delay_seconds, at/time, OR cro
   permissionTier: "edit",
   sideEffect: true,
   isReadOnly: false,
-  description: "Execute a shell command locally from the workspace. Optional: run_in_background=true for long-running commands. Runs 12 security validators (subset of bashSecurity) and emits destructive command warnings. PROHIBIDO: No uses esta herramienta para invocar APIs externas de LLM o visión.",
+  description: "Execute a shell command locally from the workspace. Optional: run_in_background=true for long-running commands. Permission gate: AST-parses command, runs 12 security validators, evaluates per-segment with permission rules, blocks critical/high findings, asks on parse-unavailable or cross-segment cd+git, returns exit code interpretation. Output truncated at 30K chars (64MB cap). PROHIBIDO: No uses esta herramienta para invocar APIs externas de LLM o visión.",
   inputSchema: {
     type: "object",
     properties: {
@@ -235,18 +235,47 @@ Requires: message, chat_id, timezone. Plus either delay_seconds, at/time, OR cro
     const timeout = optionalNumber(input, "timeout") ?? DEFAULT_BASH_TIMEOUT_MS
     const runInBackground = optionalBoolean(input, "run_in_background") ?? false
 
-    // Security validators (subset of bashSecurity bashSecurity.ts)
-    const { runSecurityValidators, detectDestructiveCommand } = await import("./bash/bash-helpers.ts")
-    const securityFindings = runSecurityValidators(command)
-    const criticalFindings = securityFindings.filter(f => f.severity === "critical" || f.severity === "high")
-    if (criticalFindings.length > 0) {
-      return formatToolError(
-        `Bash blocked by security validator: ${criticalFindings.map(f => `${f.rule}(${f.description})`).join("; ")}`
-      )
+    // Permission gate: AST + permission rules + segmentation + security validators
+    const { gateBashCommand } = await import("./bash/permissionGate.ts")
+    type BashPermissionRule = {
+      tool: string
+      action: "allow" | "deny" | "ask"
+      prefix?: string
+      input?: string
     }
-
-    // Destructive command warning (non-blocking)
-    const destructiveFindings = detectDestructiveCommand(command)
+    // Read permission rules from policyConfigZod
+    const { readConfigWing } = await import("../../session/store.ts")
+    const policyRaw = (() => {
+      try {
+        return readConfigWing(context.rootDir, "CONF_POLICY" as any) as unknown
+      } catch { return null }
+    })()
+    const bashRules: BashPermissionRule[] = []
+    if (typeof policyRaw === "string" && policyRaw) {
+      try {
+        const policy = JSON.parse(policyRaw)
+        for (const rule of policy?.permissions?.rules ?? []) {
+          if (rule.tool?.startsWith("Bash") && rule.prefix) {
+            bashRules.push({
+              tool: "Bash",
+              action: rule.action,
+              prefix: rule.prefix,
+              input: rule.input,
+            })
+          }
+        }
+      } catch { /* ignore */ }
+    }
+    const gateResult = gateBashCommand(command, {
+      rules: bashRules,
+      acceptEditsMode: false,
+    })
+    if (gateResult.decision === "deny") {
+      return formatToolError(`Bash denied: ${gateResult.reason}`)
+    }
+    // attach findings to result
+    const securityFindings = gateResult.findings
+    const destructiveFindings = gateResult.findings.filter(f => f.rule === "destructive")
     const destructiveWarning = destructiveFindings.length > 0
       ? `Destructive command detected: ${destructiveFindings.map(f => f.description).join("; ")}`
       : undefined
