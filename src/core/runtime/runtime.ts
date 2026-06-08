@@ -2655,7 +2655,15 @@ Review the existing skill library and apply the curation heuristics in your inst
             summary: `${gate.unfinished.length} unfinished: ${gate.unfinished.map(t => t.content).slice(0, 3).join(" | ")}`,
           })
           if (gate.feedbackPrompt) {
-            appendMessage(this.rootDir, sessionId, "user", gate.feedbackPrompt)
+            // The Ralph Gate's feedback is internal orchestration: the
+            // sub-agent (or main agent) needs to see it so it re-attempts
+            // the unfinished work, but it is NOT user-facing output.
+            // Sub-agents report to the orchestrator, not to the user.
+            // Marked hiddenFromUser so getSession filters it out of the
+            // CLI transcript. The model still reads it on the next turn.
+            appendMessage(this.rootDir, sessionId, "user", gate.feedbackPrompt, {
+              hiddenFromUser: true,
+            })
             lastUserTextForRalph = gate.feedbackPrompt
           }
           ralphAttempt++

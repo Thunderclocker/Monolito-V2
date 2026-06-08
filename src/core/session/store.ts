@@ -534,6 +534,7 @@ export function getDb(rootDir: string): Database.Database {
       at TEXT,
       is_compacted INTEGER DEFAULT 0,
       room_id TEXT,
+      hidden_from_user INTEGER DEFAULT 0,
       FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
     );
     
@@ -670,6 +671,22 @@ export function getDb(rootDir: string): Database.Database {
     if (!sessionInfo.find(c => c.name === "profile_id")) {
       try {
         db.exec(`ALTER TABLE sessions ADD COLUMN profile_id TEXT DEFAULT 'default'`)
+      } catch (e) {
+        if (!String(e).includes("duplicate column")) throw e
+      }
+    }
+
+    // Migration: Add hidden_from_user to messages if missing.
+    // See runtime.ts:2657 — the Top-level Ralph Gate injects a feedback
+    // prompt into the session via appendMessage so the model re-attempts.
+    // That message is internal orchestration (sub-agent talking to the
+    // orchestrator), not user-facing output. Marking it hidden keeps it
+    // in the DB for audit/replay but excludes it from the transcript the
+    // CLI renders to the user. See src/apps/cli/tui/renderer.ts.
+    const messageInfo = db.prepare(`PRAGMA table_info(messages)`).all() as Array<{ name: string; type: string; dflt_value: unknown; pk: number }>
+    if (!messageInfo.find(c => c.name === "hidden_from_user")) {
+      try {
+        db.exec(`ALTER TABLE messages ADD COLUMN hidden_from_user INTEGER DEFAULT 0`)
       } catch (e) {
         if (!String(e).includes("duplicate column")) throw e
       }
@@ -1155,7 +1172,11 @@ export function getSession(rootDir: string, sessionId: string): SessionRecord | 
   const row = stmtSession.get(sessionId) as { id: string; profile_id: string | null; title: string | null; state: string | null; created_at: string; updated_at: string } | undefined
   if (!row) return null
 
-  const stmtMsgs = db.prepare(`SELECT role, text, at FROM messages WHERE session_id = ? ORDER BY id ASC`)
+  const stmtMsgs = db.prepare(
+    `SELECT role, text, at FROM messages
+     WHERE session_id = ? AND (hidden_from_user IS NULL OR hidden_from_user = 0)
+     ORDER BY id ASC`,
+  )
   const messages = stmtMsgs.all(sessionId) as Array<{ role: string; text: string; at: string }>
 
   const stmtLogs = db.prepare(`SELECT type, summary, at FROM worklog WHERE session_id = ? ORDER BY id ASC`)
@@ -1222,15 +1243,37 @@ export function getSemanticMessageContext(rootDir: string, vector: number[] | Fl
   return rows
 }
 
-export function appendMessage(rootDir: string, sessionId: string, role: "user" | "assistant" | "system", text: string) {
+export interface AppendMessageOptions {
+  /**
+   * If true, the message is persisted to the DB but excluded from the
+   * user-facing transcript (filtered by getSession). Used for internal
+   * orchestration messages that the model needs to see (Ralph Gate
+   * feedback, system event triggers, sub-agent interjections) but that
+   * are not user output. The model still sees them on the next turn.
+   *
+   * Default: false.
+   */
+  hiddenFromUser?: boolean
+}
+
+export function appendMessage(
+  rootDir: string,
+  sessionId: string,
+  role: "user" | "assistant" | "system",
+  text: string,
+  options: AppendMessageOptions = {},
+) {
   const db = getDb(rootDir)
   const now = new Date().toISOString()
+  const hiddenFromUser = options.hiddenFromUser === true ? 1 : 0
   let messageId: number | null = null
   
   db.exec("BEGIN TRANSACTION")
   try {
-    const stmtMsg = db.prepare(`INSERT INTO messages (session_id, role, text, at) VALUES (?, ?, ?, ?)`)
-    const messageResult = stmtMsg.run(sessionId, role, text, now)
+    const stmtMsg = db.prepare(
+      `INSERT INTO messages (session_id, role, text, at, hidden_from_user) VALUES (?, ?, ?, ?, ?)`,
+    )
+    const messageResult = stmtMsg.run(sessionId, role, text, now, hiddenFromUser)
     messageId = Number(messageResult.lastInsertRowid)
     const sessionRow = db.prepare(`SELECT profile_id FROM sessions WHERE id = ?`).get(sessionId) as { profile_id: string | null } | undefined
     appendPalaceNode(db, {
