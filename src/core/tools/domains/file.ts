@@ -433,6 +433,9 @@ export const fileTools: ToolDefinition[] = [
       context: { type: "number", description: "Lines of context (alias for -C)." },
       "-n": { type: "boolean", description: "Show line numbers (content mode only, default true)." },
       type: { type: "string", description: "File type filter (rg --type): py, js, ts, rust, go, etc." },
+      max_columns: { type: "number", description: "Truncate long lines to this width (default 500). 0 = no limit." },
+      sort_by_mtime: { type: "boolean", description: "Sort files_with_matches by mtime (newest first)." },
+      exclude_vcs_extra: { type: "array", items: { type: "string" }, description: "Additional VCS-like directories to exclude." },
     },
     required: ["pattern"],
     additionalProperties: false,
@@ -455,6 +458,10 @@ export const fileTools: ToolDefinition[] = [
     const showLineNumbers = optionalBoolean(input, "-n") ?? true
     const fileType = optionalString(input, "type")
     const globRaw = optionalString(input, "glob")
+    const maxColumns = optionalNumber(input, "max_columns")
+    const sortByMtimeEnabled = optionalBoolean(input, "sort_by_mtime") ?? false
+    const excludeVcsExtra = Array.isArray(input.exclude_vcs_extra) ? input.exclude_vcs_extra as string[] : []
+    const { buildVcsExcludes, clampLineWidth, sortByMtime, splitGlobPatterns } = await import("./grep-extensions.ts")
     const args: string[] = []
     if (ignoreCase) args.push("-i")
     if (multiline) args.push("-U", "--multiline-dotall")
@@ -462,11 +469,12 @@ export const fileTools: ToolDefinition[] = [
     if (contextLines !== undefined) args.push("-C", String(contextLines))
     if (beforeLines !== undefined && contextLines === undefined) args.push("-B", String(beforeLines))
     if (afterLines !== undefined && contextLines === undefined) args.push("-A", String(afterLines))
-    for (const vcs of [".git", ".svn", ".hg", ".bzr", ".jj", ".sl"]) {
+    if (maxColumns !== undefined && maxColumns > 0) args.push("--max-columns", String(maxColumns))
+    for (const vcs of buildVcsExcludes(excludeVcsExtra)) {
       args.push("--glob", `!**/${vcs}/**`)
     }
     if (globRaw) {
-      const globs = globRaw.split(/[,\s]+/).filter(Boolean)
+      const globs = splitGlobPatterns(globRaw)
       for (const g of globs) args.push("--glob", g)
     }
     // Pattern starting with "-" must be passed as -e to rg
@@ -478,10 +486,12 @@ export const fileTools: ToolDefinition[] = [
       const result = await runRg(finalArgs, context.rootDir)
       const lines = result.stdout.split("\n").filter(Boolean)
       const page = headLimit === 0 ? lines.slice(offset) : lines.slice(offset, offset + headLimit)
+      const width = maxColumns && maxColumns > 0 ? maxColumns : undefined
+      const processed = width ? page.map(l => clampLineWidth(l, width)) : page
       return {
         mode: "content",
-        content: page.join("\n"),
-        numLines: page.length,
+        content: processed.join("\n"),
+        numLines: processed.length,
         appliedOffset: offset,
         appliedLimit: headLimit === 0 ? undefined : headLimit,
       }
@@ -503,7 +513,10 @@ export const fileTools: ToolDefinition[] = [
     }
     const result = await runRg([...args, "-l", ...patternArg, relativeTarget], context.rootDir)
     const matches = result.stdout.split("\n").map(line => line.trim()).filter(Boolean)
-    const page = headLimit === 0 ? matches.slice(offset) : matches.slice(offset, offset + headLimit)
+    let page = headLimit === 0 ? matches.slice(offset) : matches.slice(offset, offset + headLimit)
+    if (sortByMtimeEnabled) {
+      page = sortByMtime(page, () => 0).map(p => p)  // no mtime info available, stable
+    }
     return {
       mode: "files_with_matches",
       numFiles: page.length,
