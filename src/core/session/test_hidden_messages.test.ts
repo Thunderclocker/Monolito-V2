@@ -26,7 +26,6 @@ test("appendMessage: defaults to hiddenFromUser=false (visible)", async () => {
   process.env.MONOLITO_ROOT = root
   const { appendMessage, getSession } = await import("./store.ts")
   const { ensureMonolitoRoot } = await import("../system/root.ts")
-  const { createProfile } = await import("../bootstrap/profile.ts").catch(() => ({ createProfile: null }))
 
   try {
     ensureMonolitoRoot()
