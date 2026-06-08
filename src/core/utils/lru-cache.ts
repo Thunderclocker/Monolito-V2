@@ -1,5 +1,5 @@
 // Generic LRU cache with optional byte-aware eviction and TTL.
-// FC parity: extraído del cache de WebFetch (15min TTL) y Bash output limits.
+// upstream parity: extraído del cache de WebFetch (15min TTL) y Bash output limits.
 
 type Entry<V> = {
   value: V

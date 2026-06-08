@@ -142,7 +142,7 @@ additions and `PATCH` on fixes that do not change behavior.
   when the tool returns, so each tool call renders as a single bullet
   (rose) instead of the previous two-bullet pattern (`● …` rose + `● …`
   green). The `done`/`error` label is dropped; only the text changes
-  in place. Matches Claude Code's CLI style. The one-shot
+  in place. Matches upstream reference's CLI style. The one-shot
   `ToolUseRenderer` (used in non-interactive logs) keeps its
   `done`/`error` label and color.
 - `monolito` CLI is now a `node --experimental-strip-types` shim; no

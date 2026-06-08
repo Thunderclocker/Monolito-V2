@@ -6,7 +6,7 @@
 // prompt back as a user message, and re-runs the agent loop.
 //
 // This file pins the contract for `evaluateTopLevelRalphGate`. Mirrors
-// the same approach Claude Code uses with the Ralph Wiggum Stop hook.
+// the same approach upstream reference uses with the Ralph Wiggum Stop hook.
 
 import test from "node:test"
 import assert from "node:assert/strict"

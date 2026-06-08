@@ -50,7 +50,7 @@ function openBrowser(url: string) {
 export async function runGrokOAuthLogin(noBrowser: boolean, manualPaste: boolean): Promise<void> {
   const { code_verifier, code_challenge, state, nonce } = generatePKCE();
   const redirectUri = `http://127.0.0.1:${XAI_OAUTH_REDIRECT_PORT}${XAI_OAUTH_REDIRECT_PATH}`;
-  const authUrl = `${XAI_OAUTH_AUTHORIZE_URL}?response_type=code&client_id=${XAI_OAUTH_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(XAI_OAUTH_SCOPE)}&code_challenge=${code_challenge}&code_challenge_method=S256&state=${state}&nonce=${nonce}&plan=generic&referrer=hermes-agent`;
+  const authUrl = `${XAI_OAUTH_AUTHORIZE_URL}?response_type=code&client_id=${XAI_OAUTH_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(XAI_OAUTH_SCOPE)}&code_challenge=${code_challenge}&code_challenge_method=S256&state=${state}&nonce=${nonce}&plan=generic&referrer=legacy runtime`;
 
   console.log("\n============================================================");
   console.log("    Inicio de Sesión en xAI Grok (SuperGrok / Premium+)");

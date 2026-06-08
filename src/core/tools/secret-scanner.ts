@@ -1,7 +1,7 @@
 // Secret scanner: detecta credenciales comunes en texto antes de que entren
 // a disco via Write/Edit.
 //
-// FC parity: subset del `checkTeamMemSecrets` de Free Code, enfocado en las
+// upstream parity: subset del `checkTeamMemSecrets` de upstream reference, enfocado en las
 // 6 categorías más comunes. Cubre los ataques típicos: leak de API keys
 // en código, commit accidentales de private keys, etc.
 //

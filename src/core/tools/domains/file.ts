@@ -71,7 +71,9 @@ export const fileTools: ToolDefinition[] = [
   name: "Read",
   aliases: ["read_file"],
   permissionTier: "read",
-  description: "Read a UTF-8 file from the workspace.",
+  isReadOnly: true,
+  isSearchOrReadCommand: true,
+  description: "Read a UTF-8 file from the workspace. Returns either content, a stub (file_too_large/binary/device_file), or not_found. Populates readFileState so subsequent Edit/Write can detect mtime drift.",
   inputSchema: {
     type: "object",
     properties: {
@@ -98,19 +100,40 @@ export const fileTools: ToolDefinition[] = [
     const offset = optionalNumber(input, "offset") ?? 0
     const lineLimit = optionalNumber(input, "line_limit")
     const file = await resolveWorkspacePath(context.rootDir, context.cwd, path, context, "Read")
-    const content = readFileSync(file, "utf8")
-    const lines = content.split("\n")
-    const totalLines = lines.length
-    const pagedLines = lineLimit === undefined ? lines.slice(offset) : lines.slice(offset, offset + lineLimit)
-    return {
-      path,
-      content: pagedLines.join("\n"),
-      totalLines,
+    const { readFile, MAX_READ_SIZE_BYTES } = await import("../file/read.ts")
+    const result = await readFile({
+      sessionId: context.sessionId ?? "default",
+      rootDir: context.rootDir,
+      cwd: context.cwd,
+      path: file,
       offset,
-      lineLimit,
-      returnedLines: pagedLines.length,
-      hasMore: offset + pagedLines.length < totalLines,
+      line_limit: lineLimit,
+    })
+    if (result.type === "not_found") {
+      return formatToolError(`File not found: ${path}`)
     }
+    if (result.type === "binary") {
+      return {
+        ...result,
+        error: "binary_file_detected",
+        message: "Binary file detected. Use a different tool (e.g. media pipeline) to handle binary content.",
+      }
+    }
+    if (result.type === "device_file") {
+      return {
+        ...result,
+        error: "device_file_blocked",
+        message: "Reading from /dev, /proc, or /sys is blocked.",
+      }
+    }
+    if (result.type === "file_too_large") {
+      return {
+        ...result,
+        error: "file_too_large",
+        message: `File is ${result.bytes} bytes (max ${MAX_READ_SIZE_BYTES}). Use offset/line_limit to paginate.`,
+      }
+    }
+    return result
   },
 },
 

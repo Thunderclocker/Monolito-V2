@@ -305,7 +305,7 @@ function handleAddProvider(input: string, state: MenuState): MenuResult {
   if (provider === "xai-oauth") {
     const pkce = generatePKCE();
     const redirectUri = `http://127.0.0.1:${XAI_OAUTH_REDIRECT_PORT}${XAI_OAUTH_REDIRECT_PATH}`;
-    const authUrl = `${XAI_OAUTH_AUTHORIZE_URL}?response_type=code&client_id=${XAI_OAUTH_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(XAI_OAUTH_SCOPE)}&code_challenge=${pkce.code_challenge}&code_challenge_method=S256&state=${pkce.state}&nonce=${pkce.nonce}&plan=generic&referrer=hermes-agent`;
+    const authUrl = `${XAI_OAUTH_AUTHORIZE_URL}?response_type=code&client_id=${XAI_OAUTH_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(XAI_OAUTH_SCOPE)}&code_challenge=${pkce.code_challenge}&code_challenge_method=S256&state=${pkce.state}&nonce=${pkce.nonce}&plan=generic&referrer=legacy runtime`;
 
     const lines = [
       `[+] Configurando Grok OAuth (xai-oauth)`,

@@ -2478,7 +2478,7 @@ Review the existing skill library and apply the curation heuristics in your inst
         // model turn, the runtime refuses to deliver the assistant reply
         // and re-feeds a structured retry prompt. This mirrors the
         // sub-agent Ralph Loop in AgentOrchestrator.executeTurn and the
-        // Ralph Wiggum Stop hook in Claude Code: the runtime has the
+        // Ralph Wiggum Stop hook in upstream reference: the runtime has the
         // last word, not the LLM.
         let ralphAttempt = 1
         const ralphAttemptHistory: Array<{ attempt: number; kind: string; summary: string }> = []

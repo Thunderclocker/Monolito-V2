@@ -762,7 +762,7 @@ export function buildRalphLoopUnfinishedTasksPrompt(
 // (buildRalphLoopUnfinishedTasksPrompt inside executeTurn); the top-level
 // path did not.
 //
-// Approach mirrors Claude Code's Ralph Wiggum Stop hook: a runtime-level
+// Approach mirrors upstream reference's Ralph Wiggum Stop hook: a runtime-level
 // guard that reads external state (the Memory Palace `active_tasks` table),
 // and — if the task list is not clean — re-feeds a structured retry prompt
 // back to the model instead of delivering. The model can satisfy the gate
@@ -1187,7 +1187,7 @@ export function checkDelegateThreshold(
 // session sees a real failure with a reason.
 //
 // This is the runtime-level analog of "the operator decides" in
-// Claude Code's --max-iterations. The verifier IS the operator here,
+// upstream reference's --max-iterations. The verifier IS the operator here,
 // reading the sub-agent's TodoWrite list and recent worklog to make
 // the call.
 // =============================================================================

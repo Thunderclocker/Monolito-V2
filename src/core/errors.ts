@@ -1,6 +1,6 @@
 /**
  * Structured error types and utilities for Monolito V2.
- * Adapted from Free Code's error infrastructure for robust error handling.
+ * Adapted from upstream reference's error infrastructure for robust error handling.
  */
 
 export class MonolitoError extends Error {

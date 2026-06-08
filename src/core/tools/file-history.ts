@@ -2,7 +2,7 @@
 // que Write/Edit los modifiquen, para que el usuario pueda recuperar
 // versiones anteriores si algo sale mal.
 //
-// FC parity: extraído del `fileHistoryTrackEdit` de Claude Code. Mismo
+// upstream parity: extraído del `fileHistoryTrackEdit` de upstream reference. Mismo
 // schema v1 con TTL de 30 días.
 
 import { createHash } from "node:crypto"

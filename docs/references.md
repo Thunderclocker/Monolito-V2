@@ -19,12 +19,12 @@ side-by-side.
 
 | Path                 | Upstream                                                | Used for                                              |
 |----------------------|---------------------------------------------------------|-------------------------------------------------------|
-| `claude-code/`       | Anthropic Claude Code                                   | IPC patterns, slash-command conventions, settings     |
+| `claude-code/`       | Anthropic upstream reference                                   | IPC patterns, slash-command conventions, settings     |
 | `free-code/`         | A fork of OpenClaude used as a starting point           | Base architecture, tool harness ideas                 |
 | `gemini-cli/`        | Google Gemini CLI                                       | TUI conventions, command routing                      |
-| `hermes-agent/`      | Prior Monolito-V2 lineage (`.hermes/` runtime)          | Multi-agent patterns, channel management              |
+| `legacy runtime/`      | Prior Monolito-V2 lineage (`.hermes/` runtime)          | Multi-agent patterns, channel management              |
 | `mempalace/`         | Memory Palace concept reference                         | Schema design, recall semantics                       |
-| `openclaw/`          | OpenClaw agent framework                                | Agent profiles, OAuth flows                           |
+| `upstream framework/`          | upstream framework agent framework                                | Agent profiles, OAuth flows                           |
 | `symphony/`          | Elixir-based agent orchestrator (read-only)             | Multi-agent coordination patterns                     |
 
 The `claude-code/` and `free-code/` directories also include

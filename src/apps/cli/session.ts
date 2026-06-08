@@ -480,7 +480,7 @@ class InteractiveTranscriptFormatter {
           // Replace the in-flight `tool.start` block (same bullet, only the
           // text changes) instead of appending a second one with a "done"
           // label. Keeps a single colored bullet per tool call, like
-          // Claude Code's CLI.
+          // upstream reference's CLI.
           return [{
             type: "event",
             label: "",

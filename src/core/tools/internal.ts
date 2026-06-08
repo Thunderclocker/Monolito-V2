@@ -387,31 +387,31 @@ export type ToolDefinition = {
   validate?: (input: Record<string, unknown>) => string | null
   run: (input: Record<string, unknown>, context: ToolContext) => Promise<unknown>
   // ── Fase 0 extension (additive, all optional, no breaking) ────────────────
-  /** FC parity: marker for read-only tools. Lets permission gate fast-path
+  /** upstream parity: marker for read-only tools. Lets permission gate fast-path
    *  allow decisions without invoking the AST parser. */
   isReadOnly?: boolean
-  /** FC parity: marker for tools whose results can be safely collapsed in UI
+  /** upstream parity: marker for tools whose results can be safely collapsed in UI
    *  (Grep, Glob, Read, WebSearch). */
   isSearchOrReadCommand?: boolean
-  /** FC parity: optional per-tool permission gate. Returns the gate result
+  /** upstream parity: optional per-tool permission gate. Returns the gate result
    *  before the tool runs. If undefined, the runtime default applies
    *  (permissionTier-based + global policyConfigZod rules). */
   checkPermissions?: (input: Record<string, unknown>, context: ToolContext) => Promise<"allow" | "ask" | "deny"> | "allow" | "ask" | "deny"
-  /** FC parity: marker for MCP-sourced tools. Affects UI rendering and
+  /** upstream parity: marker for MCP-sourced tools. Affects UI rendering and
    *  isOpenWorld defaults. */
   isMcp?: boolean
-  /** FC parity: MCP open-world flag. Defaults to true for MCP tools. */
+  /** upstream parity: MCP open-world flag. Defaults to true for MCP tools. */
   isOpenWorld?: boolean
-  /** FC parity: result size cap in characters. Triggers truncation marker
+  /** upstream parity: result size cap in characters. Triggers truncation marker
    *  when exceeded. */
   maxResultSizeChars?: number
-  /** FC parity: optional function to truncate results. If undefined and
+  /** upstream parity: optional function to truncate results. If undefined and
    *  maxResultSizeChars is set, the runtime applies a default truncate. */
   isResultTruncated?: (output: unknown) => boolean
-  /** FC parity: optional async prompt extension. Lets tools contribute extra
+  /** upstream parity: optional async prompt extension. Lets tools contribute extra
    *  prompt text to the model call. */
   prompt?: string | (() => string | Promise<string>)
-  /** FC parity: small string passed to the auto-classifier for fast
+  /** upstream parity: small string passed to the auto-classifier for fast
    *  permission routing. */
   toAutoClassifierInput?: (input: Record<string, unknown>) => string
 }

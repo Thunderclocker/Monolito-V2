@@ -1,12 +1,12 @@
 // Per-session read file state — populado por Read, consultado por Edit/Write
 // para pre-read enforcement, mtime staleness detection y file_unchanged dedup.
 //
-// FC parity: mapea la idea de readFileState que mantiene Claude Code por
+// upstream parity: mapea la idea de readFileState que mantiene upstream reference por
 // sesión, con scope más acotado (LRU + TTL) para evitar leaks.
 
 import { createHash } from "node:crypto"
 import { statSync } from "node:fs"
-import { join, relative } from "node:path"
+import { isAbsolute, resolve } from "node:path"
 
 const DEFAULT_MAX_ENTRIES = 10_000
 
@@ -64,7 +64,7 @@ export function setReadFileStateForTool(
     map = new Map()
     sessionState.set(sessionId, map)
   }
-  const absPath = join(rootDir, toWorkspaceRelative(rootDir, path))
+  const absPath = isAbsolute(path) ? path : resolve(rootDir, path)
   let mtime = 0
   let sizeBytes = 0
   try {
@@ -106,7 +106,7 @@ export function isFileStale(
 ): { stale: boolean; recordedMtime: number; currentMtime: number } {
   const entry = getReadFileStateForTool(sessionId, rootDir, path)
   if (!entry) return { stale: false, recordedMtime: 0, currentMtime: 0 }
-  const absPath = join(rootDir, toWorkspaceRelative(rootDir, path))
+  const absPath = isAbsolute(path) ? path : resolve(rootDir, path)
   let currentMtime = 0
   try {
     currentMtime = Math.floor(statSync(absPath).mtimeMs)

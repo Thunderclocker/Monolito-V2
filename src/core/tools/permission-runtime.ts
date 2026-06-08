@@ -1,7 +1,7 @@
 // Permission runtime gate: consume policyConfigZod y ejecuta el check
 // por tool. Diseñado para reemplazar el chequeo ad-hoc de permissionTier.
 //
-// FC parity: implementación simplificada del sistema de rules de FC.
+// upstream parity: implementación simplificada del sistema de rules de bashSecurity.
 // Sin async LLM classifier, sin bash AST parser (eso viene en Fase 5).
 // Lo que sí hace:
 //   1. Match exacto de tool name
