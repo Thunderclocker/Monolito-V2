@@ -555,16 +555,27 @@ export const mediaTools: ToolDefinition[] = [
     const action = input.action as "clone" | "list" | "delete"
     const config = readChannelsConfig()
     const tts = normalizeTtsConfig(config.tts)
+    const activeProfile = getActiveProfile()
 
-    if (tts.provider !== "minimax") {
-      return formatToolError("Voice clone requiere tts.provider='minimax'. Configuralo con /config set tts_provider minimax.")
+    // Provider resolution: explicit tts.provider wins, but if unset, fall
+    // back to the active model profile (when it's minimax) so users who
+    // have a working MiniMax model profile can call VoiceClone without an
+    // extra /config set tts_provider step. This is the most common case
+    // in practice.
+    const explicitProvider = tts.provider
+    const activeIsMiniMax = !!activeProfile && ((activeProfile.provider as string) === "minimax" || activeProfile.baseUrl.toLowerCase().includes("minimax"))
+    if (explicitProvider !== "minimax" && !activeIsMiniMax) {
+      return formatToolError(
+        "Voice clone requiere tts.provider='minimax' o un profile activo de minimax. " +
+        "Configuralo con /config set tts_provider minimax (y tts.apiKey si tu profile activo no es minimax)."
+      )
     }
+
     // Resolucion de credenciales: prioriza tts.apiKey, despues el profile activo
     // (si es minimax o su baseUrl contiene "minimax"), despues env vars.
-    const activeProfile = getActiveProfile()
     let apiKey = (tts.apiKey || "").trim()
-    if (!apiKey && activeProfile && ((activeProfile.provider as string) === "minimax" || activeProfile.baseUrl.toLowerCase().includes("minimax"))) {
-      apiKey = (activeProfile.apiKey || "").trim()
+    if (!apiKey && activeIsMiniMax) {
+      apiKey = (activeProfile!.apiKey || "").trim()
     }
     if (!apiKey) apiKey = (process.env.MINIMAX_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN || "").trim()
     if (!apiKey) {
@@ -692,9 +703,17 @@ export const mediaTools: ToolDefinition[] = [
     // 5. Persistir
     const newVoices = { ...(tts.clonedVoices || {}), [alias]: voiceId }
     const setDefault = input.set_default === true
+    // Also persist the inferred provider (when the user hadn't set tts.provider
+    // explicitly but the clone succeeded via the active minimax profile) so
+    // subsequent calls don't have to re-derive it.
+    const persistedTts: Record<string, unknown> = { ...(config.tts || {}), clonedVoices: newVoices, defaultClonedVoice: setDefault ? alias : tts.defaultClonedVoice }
+    if (!explicitProvider && activeIsMiniMax) {
+      persistedTts.provider = "minimax"
+      if (!persistedTts.apiKey && activeProfile?.apiKey) persistedTts.apiKey = activeProfile.apiKey
+    }
     writeChannelsConfig({
       ...config,
-      tts: { ...(config.tts || {}), clonedVoices: newVoices, defaultClonedVoice: setDefault ? alias : tts.defaultClonedVoice },
+      tts: persistedTts,
     })
     appendActionLog(context.rootDir, "Voz clonada creada", {
       alias,
