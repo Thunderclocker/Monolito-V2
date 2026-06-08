@@ -12,7 +12,47 @@ additions and `PATCH` on fixes that do not change behavior.
 
 ## [Unreleased]
 
-### Added (Fase 8-16 — upstream parity deep dive)
+### Added (Fase 17-24 — final parity push)
+
+- **Fase 17 — 13 bash security validators restantes**:
+  `comment_quote_desync`, `quoted_newline`, `cr_injection`,
+  `heredoc_injection`, `suspicious_env_path`, `proc_subst_fd`,
+  `fork_bomb`, `shebang_in_arg`, `multi_cd_up`, `chmod_777`,
+  `find_exec`, `xargs_dangerous`, `base64_exec`. Brings bash-helpers
+  from 12 to 25 validators.
+- **Fase 18 — WebFetch validateUrlStrict + HTTPS upgrade**:
+  `webfetch-validators.ts` with `validateUrlStrict` (http→https,
+  protocol allowlist, length check), `isPrivateHost` (RFC 1918 +
+  loopback detection). data: URLs get 1MB limit for tests/dev.
+- **Fase 19 — Recency filter WebSearch + Read file history**:
+  WebSearch inputSchema adds `recency` enum (day/week/month/year),
+  Brave provider translates to `&freshness=`. Read now tracks read
+  content via fileHistory.trackEdit for recovery.
+- **Fase 20 — Bash async LLM classifier (Haiku-style)**:
+  `semantic-classifier.ts` with anthropicHaikuClassifier (real) and
+  ollamaClassifier (local), opt-in via
+  `MONOLITO_BASH_SEMANTIC_PERMISSIONS=1`. Default stub returns
+  "unsure" (deny-by-default). 1h cache TTL.
+- **Fase 21 — Settings file validator + similar file suggestion**:
+  `file-validators.ts` with `isSettingsFile`,
+  `validateSettingsFileContent` (JSON parse),
+  `findSimilarFiles` (same-dir ranking), `suggestPathUnderCwd`.
+- **Fase 22 — MCP isResultTruncated + isOpenWorld enforcement**:
+  `mcp/permissions.ts` with `isMcpPermissionEnabled` (reads
+  CONF_POLICY, default-allow). `toolOutputTruncated` checks if
+  output exceeds maxResultSizeChars. McpInvokeTool enforces
+  isOpenWorld for write tools.
+- **Fase 23 — Skill discovery from path**:
+  `skill-discovery.ts` with 10 SKILL_PATH_PATTERNS covering TS, JS,
+  Python, Markdown, JSON, YAML, Docker, tests, migrations, Bash,
+  SQL, docs. Also integrates with listDynamicSkills.
+- **Fase 24 — E2E smoke test + docs**:
+  `scripts/test-tools-e2e.ts` runs Read→Edit→Bash→Grep sequence
+  with MiniMax M3. `docs/security-parity.md` documents parity
+  status, 25 security validators, destructive detection,
+  permission gate modes, and de-scope decisions.
+
+### Added (Fase 0-16)
 
 - **Fase 8 — Bash AST + permission rules machinery**:
   - `core/tools/domains/bash/parseForSecurity.ts`: shell-quote-based AST

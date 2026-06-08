@@ -57,11 +57,12 @@ export async function discoverSkillsForPath(rootDir: string, path: string): Prom
       result.push({ id: "skills-meta", source: "directory", reason: `in ${skillsDir}` })
     }
   }
-  // 4. Buscar skills dinámicos disponibles que matchean por metadata
+  // 4. Buscar skills dinámicos disponibles que matchean por nombre/description
   try {
     const allSkills = listDynamicSkills(rootDir)
     for (const skill of allSkills) {
-      if (skill.path && path.startsWith(dirname(skill.path))) {
+      // Match by name or description keyword
+      if (skill.active && (path.includes(skill.name) || skill.description.toLowerCase().split(/\s+/).some(w => w.length > 4 && path.toLowerCase().includes(w)))) {
         result.push({ id: skill.name, source: "directory", reason: `matches skill ${skill.name}` })
       }
     }
