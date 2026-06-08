@@ -215,7 +215,9 @@ Requires: message, chat_id, timezone. Plus either delay_seconds, at/time, OR cro
   name: "Bash",
   aliases: ["bash"],
   permissionTier: "edit",
-  description: "Execute a shell command locally from the workspace. Optional: run_in_background=true for long-running commands. PROHIBIDO: No uses esta herramienta para invocar APIs externas de LLM o visión (openai, anthropic, client.beta.vision, etc.) desde un script Python o shell. Para análisis visual de imágenes usá la herramienta VisionAnalyze.",
+  sideEffect: true,
+  isReadOnly: false,
+  description: "Execute a shell command locally from the workspace. Optional: run_in_background=true for long-running commands. Runs 12 security validators (subset of bashSecurity) and emits destructive command warnings. PROHIBIDO: No uses esta herramienta para invocar APIs externas de LLM o visión.",
   inputSchema: {
     type: "object",
     properties: {
@@ -232,9 +234,27 @@ Requires: message, chat_id, timezone. Plus either delay_seconds, at/time, OR cro
     const command = requireString(input, "command")
     const timeout = optionalNumber(input, "timeout") ?? DEFAULT_BASH_TIMEOUT_MS
     const runInBackground = optionalBoolean(input, "run_in_background") ?? false
+
+    // Security validators (subset of bashSecurity bashSecurity.ts)
+    const { runSecurityValidators, detectDestructiveCommand } = await import("./bash/bash-helpers.ts")
+    const securityFindings = runSecurityValidators(command)
+    const criticalFindings = securityFindings.filter(f => f.severity === "critical" || f.severity === "high")
+    if (criticalFindings.length > 0) {
+      return formatToolError(
+        `Bash blocked by security validator: ${criticalFindings.map(f => `${f.rule}(${f.description})`).join("; ")}`
+      )
+    }
+
+    // Destructive command warning (non-blocking)
+    const destructiveFindings = detectDestructiveCommand(command)
+    const destructiveWarning = destructiveFindings.length > 0
+      ? `Destructive command detected: ${destructiveFindings.map(f => f.description).join("; ")}`
+      : undefined
+
     const shell = process.env.SHELL || "/bin/zsh"
     const env = buildTraceEnv(context.traceId)
     const instanceLogPath = context.logger?.logPath
+    let runResult: Record<string, unknown>
     if (runInBackground) {
       const taskId = randomUUID()
       const paths = ensureDirs(context.rootDir)
@@ -250,15 +270,14 @@ Requires: message, chat_id, timezone. Plus either delay_seconds, at/time, OR cro
       })
       child.on("error", () => {})
       child.unref()
-      return {
+      runResult = {
         background: true,
         taskId,
         pid: child.pid,
         outputPath,
         command,
       }
-    }
-    if (instanceLogPath) {
+    } else if (instanceLogPath) {
       const stdoutChunks: Buffer[] = []
       const stderrChunks: Buffer[] = []
       const outputStream = createWriteStream(instanceLogPath, { flags: "a" })
@@ -287,7 +306,7 @@ Requires: message, chat_id, timezone. Plus either delay_seconds, at/time, OR cro
       })
       clearTimeout(timeoutId)
       outputStream.end()
-      return {
+      runResult = {
         command,
         cwd: context.cwd,
         stdout: Buffer.concat(stdoutChunks).toString(),
@@ -295,34 +314,45 @@ Requires: message, chat_id, timezone. Plus either delay_seconds, at/time, OR cro
         interrupted: exitCode === null,
         exitCode,
       }
-    }
-    try {
-      const result = await execFileAsync(shell, ["-lc", command], {
-        cwd: context.cwd,
-        timeout,
-        maxBuffer: MAX_EXEC_BUFFER,
-        env,
-        signal: context.abortSignal,
-      })
-      return {
-        command,
-        cwd: context.cwd,
-        stdout: result.stdout,
-        stderr: result.stderr,
-        interrupted: false,
-        exitCode: 0,
+    } else {
+      try {
+        const result = await execFileAsync(shell, ["-lc", command], {
+          cwd: context.cwd,
+          timeout,
+          maxBuffer: MAX_EXEC_BUFFER,
+          env,
+          signal: context.abortSignal,
+        })
+        runResult = {
+          command,
+          cwd: context.cwd,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          interrupted: false,
+          exitCode: 0,
+        }
+      } catch (error) {
+        const typed = error as Error & { code?: number | string; killed?: boolean; stdout?: string; stderr?: string }
+        runResult = {
+          command,
+          cwd: context.cwd,
+          stdout: typed.stdout ?? "",
+          stderr: typed.stderr ?? typed.message,
+          interrupted: typed.killed ?? false,
+          exitCode: typeof typed.code === "number" ? typed.code : null,
+        }
       }
-    } catch (error) {
-      const typed = error as Error & { code?: number | string; killed?: boolean; stdout?: string; stderr?: string }
-      return {
-        command,
-        cwd: context.cwd,
-        stdout: typed.stdout ?? "",
-        stderr: typed.stderr ?? typed.message,
-        interrupted: typed.killed ?? false,
-        exitCode: typeof typed.code === "number" ? typed.code : null,
-      }
     }
+
+    // Attach low/medium security findings + destructive warning
+    const lowSeverity = securityFindings.filter(f => f.severity === "low" || f.severity === "medium")
+    if (lowSeverity.length > 0) {
+      runResult.security_notices = lowSeverity.map(f => `${f.rule}: ${f.description}`)
+    }
+    if (destructiveWarning) {
+      runResult.warning = destructiveWarning
+    }
+    return runResult
   },
 },
 
