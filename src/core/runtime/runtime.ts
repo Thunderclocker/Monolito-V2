@@ -524,6 +524,18 @@ function parseAllowedChats(input: string) {
 }
 
 function getToolFailureMessage(toolName: string, output: unknown) {
+  // Universal signal: any tool that returns {success: false} or {ok: false}
+  // (with an error message) is a failure for Ralph Loop purposes, not just
+  // Bash. Without this, McpInvokeTool can return `{success:false, error:"..."}`
+  // (or a stringified version of it, which is what `withSafeToolFailure`
+  // emits) and the runtime still emits `ok: true`, letting the no-op
+  // success guard slip through and letting the agent claim success on
+  // work that did not happen.
+  const normalized = normalizeToolOutputForFailureCheck(output)
+  if (normalized && (normalized.success === false || (normalized.ok === false && typeof normalized.error === "string" && normalized.error.length > 0))) {
+    const errMsg = typeof normalized.error === "string" ? normalized.error : "success=false"
+    return `Tool ${toolName} reported failure: ${truncateFailureDetail(errMsg)}`
+  }
   if (toolName !== "Bash") return null
   const value = asRecord(output)
   if (!value) return null
@@ -534,6 +546,24 @@ function getToolFailureMessage(toolName: string, output: unknown) {
   }
   if (/(sudo:|se requiere una contraseña|a terminal is required|operaci[oó]n no permitida|operation not permitted|permission denied|kill:.*failed)/i.test(stderr)) {
     return `Command reported a permission/error condition: ${truncateFailureDetail(stderr)}`
+  }
+  return null
+}
+
+function normalizeToolOutputForFailureCheck(output: unknown): Record<string, unknown> | null {
+  if (output && typeof output === "object" && !Array.isArray(output)) {
+    return output as Record<string, unknown>
+  }
+  if (typeof output === "string") {
+    const trimmed = output.trim()
+    if (trimmed.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(trimmed)
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          return parsed as Record<string, unknown>
+        }
+      } catch {}
+    }
   }
   return null
 }
@@ -862,6 +892,121 @@ function extractTelegramAudioFileId(text: string) {
   return null
 }
 
+type ChannelAttachment = {
+  kind: string
+  fileId?: string
+  fileUniqueId?: string
+  mimeType?: string
+  fileName?: string
+  fileSize?: number
+  width?: number
+  height?: number
+  duration?: number
+  caption?: string
+  source: string
+  chatId?: string
+  raw: string
+}
+
+const ATTACHMENT_TAG_RE = /<attachment\b([^>]*)\/?>(?:[\s\S]*?<\/attachment>)?/gi
+const ATTR_RE = /([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"([^"]*)"/g
+
+function parseAttachmentTag(raw: string, source: string, chatId?: string): ChannelAttachment | null {
+  const body = raw.replace(/^<attachment\b/i, "").replace(/\/?>$/, "")
+  const attrs: Record<string, string> = {}
+  let m: RegExpExecArray | null
+  ATTR_RE.lastIndex = 0
+  while ((m = ATTR_RE.exec(body)) !== null) {
+    attrs[m[1].toLowerCase()] = m[2]
+  }
+  const kind = attrs.kind?.trim()
+  if (!kind) return null
+  const out: ChannelAttachment = {
+    kind,
+    source,
+    chatId,
+    raw,
+  }
+  if (attrs.file_id) out.fileId = attrs.file_id
+  if (attrs.file_unique_id) out.fileUniqueId = attrs.file_unique_id
+  if (attrs.mime_type) out.mimeType = attrs.mime_type
+  if (attrs.file_name) out.fileName = attrs.file_name
+  if (attrs.file_size) {
+    const n = Number(attrs.file_size)
+    if (Number.isFinite(n)) out.fileSize = n
+  }
+  if (attrs.width) {
+    const n = Number(attrs.width)
+    if (Number.isFinite(n)) out.width = n
+  }
+  if (attrs.height) {
+    const n = Number(attrs.height)
+    if (Number.isFinite(n)) out.height = n
+  }
+  if (attrs.duration) {
+    const n = Number(attrs.duration)
+    if (Number.isFinite(n)) out.duration = n
+  }
+  if (attrs.caption) out.caption = attrs.caption
+  return out
+}
+
+export function collectRecentChannelAttachments(
+  rootDir: string,
+  sessionId: string,
+  maxMessages = 5,
+): ChannelAttachment[] {
+  const out: ChannelAttachment[] = []
+  try {
+    const s = getSession(rootDir, sessionId)
+    const messages = s?.messages ?? []
+    for (let i = messages.length - 1; i >= 0 && out.length < 32; i--) {
+      if (out.length >= 32) break
+      const msg = messages[i]
+      if (msg.role !== "user") continue
+      const text = msg.text || ""
+      const channelMatch = text.match(/<channel\b([^>]*)>/i)
+      const source = channelMatch?.[1].match(/source="([^"]+)"/i)?.[1] ?? "unknown"
+      const chatId = channelMatch?.[1].match(/chat_id="([^"]+)"/i)?.[1]
+      ATTACHMENT_TAG_RE.lastIndex = 0
+      let m: RegExpExecArray | null
+      while ((m = ATTACHMENT_TAG_RE.exec(text)) !== null) {
+        const parsed = parseAttachmentTag(m[0], source, chatId)
+        if (parsed) out.push(parsed)
+      }
+      if (out.length > 0 && --maxMessages <= 0) break
+    }
+  } catch {}
+  return out
+}
+
+function renderAttachmentBlock(attachments: ChannelAttachment[]): string {
+  if (attachments.length === 0) return ""
+  const lines: string[] = [
+    "<delegation-attachments>",
+    "The parent session's most recent inbound channel payload(s) included these attachments.",
+    "When the user's request refers to a media file (e.g. 'ese audio', 'esa imagen', 'este video'),",
+    "use the corresponding file_id directly with the right tool (e.g. VoiceClone source.type='telegram_file_id').",
+    "Do not ask the user to re-send the file — the attachment is here.",
+    "",
+  ]
+  for (const a of attachments) {
+    const parts: string[] = []
+    parts.push(`kind=${a.kind}`)
+    if (a.mimeType) parts.push(`mime=${a.mimeType}`)
+    if (a.fileSize !== undefined) parts.push(`size=${a.fileSize}`)
+    if (a.duration !== undefined) parts.push(`duration=${a.duration}s`)
+    if (a.width !== undefined) parts.push(`width=${a.width}`)
+    if (a.height !== undefined) parts.push(`height=${a.height}`)
+    if (a.fileId) parts.push(`file_id=${a.fileId}`)
+    if (a.fileUniqueId) parts.push(`file_unique_id=${a.fileUniqueId}`)
+    if (a.caption) parts.push(`caption=${JSON.stringify(a.caption).slice(0, 200)}`)
+    lines.push(`- [${a.source}${a.chatId ? ` chat_id=${a.chatId}` : ""}] ${parts.join(" ")}`)
+  }
+  lines.push("</delegation-attachments>")
+  return lines.join("\n")
+}
+
 function hasTelegramTranscriptText(text: string) {
   return /<transcript\b[^>]*>[^<\s][\s\S]*?<\/transcript>/i.test(text)
 }
@@ -1024,7 +1169,7 @@ export class MonolitoV2Runtime {
   // with the reason + the user message that should be passed to the
   // sub-agent.
   private _turnExecutedTools: Map<string, string[]> = new Map()
-  private _delegationTriggered: { sessionId: string; reason: string; lastUserText: string; profileId: string } | null = null
+  private _delegationTriggered: { sessionId: string; reason: string; lastUserText: string; profileId: string; recentAttachments?: ChannelAttachment[] } | null = null
   private costState = createCostState()
   private adultModeDisabledSessions = new Set<string>()
   private pendingPermissions = new Map<string, { resolve: (decision: "allow" | "deny" | "ask") => void }>()
@@ -3163,11 +3308,13 @@ Review the existing skill library and apply the curation heuristics in your inst
           } catch {}
           return ""
         })()
+        const recentAttachments = collectRecentChannelAttachments(this.rootDir, sessionId, 5)
         this._delegationTriggered = {
           sessionId,
           reason: gate.reason,
           lastUserText,
           profileId: profileId ?? context.profileId ?? "default",
+          recentAttachments,
         }
         // Throwing makes the agent loop see a tool error and stop
         // trying more tools in this turn. The post-loop handler in
@@ -3187,18 +3334,19 @@ Review the existing skill library and apply the curation heuristics in your inst
    * whose finalText tells the user what happened.
    */
   private async autoDelegateToSubAgent(
-    deleg: { sessionId: string; reason: string; lastUserText: string; profileId: string },
+    deleg: { sessionId: string; reason: string; lastUserText: string; profileId: string; recentAttachments?: ChannelAttachment[] },
     previousTurn: AssistantTurnResult,
   ): Promise<AssistantTurnResult> {
-    const { sessionId, reason, lastUserText, profileId } = deleg
+    const { sessionId, reason, lastUserText, profileId, recentAttachments } = deleg
     const taskText = lastUserText || "(the user did not provide a message; check the worklog)"
+    const attachmentBlock = renderAttachmentBlock(recentAttachments ?? [])
     const injectedContext = `## AUTO-DELEGATION (runtime decision)
 
 The runtime intercepted this turn because the model started running multi-step Bash work in the main user-facing session without first planning (TodoWrite) or delegating (AgentSpawn / delegate_background_task). This is the rule: the main session is for the user; heavy work goes to sub-agents.
 
 Reason from gate: ${reason}
 
-## MANDATORY: Your first action MUST be TodoWrite
+${attachmentBlock ? attachmentBlock + "\n\n" : ""}## MANDATORY: Your first action MUST be TodoWrite
 
 Before doing any other tool call, call TodoWrite with your full plan. The runtime's renewal-review verifier reads this list to decide whether to give you more turns when you hit the limit. Without it, the verifier will cancel you.
 

@@ -237,11 +237,30 @@ function sanitizeTextForOllama(text: string): string {
     .trim()
 }
 
+// bge-m3 (and most modern embedding models served by Ollama) have a
+// context length around 8K tokens. Beyond that, /api/embeddings returns
+// HTTP 500 "input length exceeds the context length" and the runtime
+// degrades to a zero-vector, which silently poisons semantic recall.
+// Pre-truncate aggressively to keep the input well under the limit.
+// 24000 chars ≈ 6000 tokens for a typical English/Code mix — leaves
+// headroom for the model's own tokenization quirks.
+const MAX_OLLAMA_EMBED_CHARS = 24_000
+
+function truncateForEmbedding(text: string): string {
+  if (text.length <= MAX_OLLAMA_EMBED_CHARS) return text
+  // Keep the head and the tail (often the actionable parts of a tool result
+  // or a long conversation): the start gives the model the topic, the
+  // end usually has the conclusion / error / file path.
+  const half = Math.floor(MAX_OLLAMA_EMBED_CHARS / 2) - 32
+  return text.slice(0, half) + "\n\n[...truncated for embedding context budget...]\n\n" + text.slice(text.length - half)
+}
+
 export async function generateEmbedding(text: string): Promise<Float32Array> {
   if (mockGenerator) {
     return mockGenerator(text)
   }
-  const normalizedText = text.trim()
+  const truncated = truncateForEmbedding(text)
+  const normalizedText = truncated.trim()
   if (!normalizedText) {
     return new Float32Array(EMBEDDING_DIMENSIONS)
   }

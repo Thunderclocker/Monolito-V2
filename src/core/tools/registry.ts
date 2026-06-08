@@ -63,6 +63,8 @@ export function listTools() {
 }
 
 export function listModelTools(isSubAgent = false, lastUserText?: string | boolean | string[], allowedToolNames?: string[], rootDir?: string, exposeTelegramDownload = false) {
+  // Service-management and infra tools: ALWAYS hidden from sub-agents
+  // (these deploy/manage daemons, change config, spawn new agents, etc.).
   const hiddenFromSubAgents = new Set([
     "AgentSpawn",
     "AgentSendMessage",
@@ -85,19 +87,25 @@ export function listModelTools(isSubAgent = false, lastUserText?: string | boole
     "SttServiceStop",
     "SttServiceRemove",
     "SttServiceList",
-    "TranscribeAudio",
     "TtsServiceStatus",
     "TtsServiceDeploy",
     "TtsServiceStop",
     "TtsServiceRemove",
     "TtsServiceList",
-    "GenerateSpeech",
-    "VoiceClone",
     "tool_manage_config",
     "ProfileCreate",
     "AgentList",
     "TelegramDownloadFile"
   ])
+
+  // Note: User-facing media operations (VoiceClone, GenerateSpeech,
+  // TranscribeAudio) are intentionally NOT hidden from sub-agents. The
+  // previous blanket hide forced workers to call them via McpInvokeTool
+  // (which returns "Unknown MCP server: tts") instead of directly,
+  // causing the cloning tool to silently fail and the agent to
+  // hallucinate success. The infra/service-management tools above stay
+  // hidden so sub-agents can't spin up daemons or reconfigure channels.
+
   const hiddenFromMainSession = new Set([
     "TelegramDownloadFile"
   ])

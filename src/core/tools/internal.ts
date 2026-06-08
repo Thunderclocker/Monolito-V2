@@ -982,10 +982,170 @@ export async function runRg(args: string[], cwd: string) {
       return { stdout: typed.stdout ?? "", stderr: typed.stderr ?? "" }
     }
     if (typed.code === "ENOENT") {
-      throw new Error("rg is required but not installed")
+      // rg is not installed. Fall back to a Node-based recursive walker so
+      // Glob/Grep degrade gracefully on machines without ripgrep (e.g. a
+      // fresh VPS where the user hasn't installed it yet). The fallback is
+      // intentionally minimal: handles only --files and content searches
+      // with a single literal pattern. For everything else, surface a clear
+      // error message so the caller can install rg.
+      const fallback = await runRgFallback(args, cwd)
+      if (fallback) return { stdout: fallback, stderr: "" }
+      throw new Error(
+        "rg (ripgrep) is not installed and no fallback applies to this invocation. " +
+        "Install rg (apt: ripgrep, brew: ripgrep) or use a simpler Glob/Grep query."
+      )
     }
     throw error
   }
+}
+
+async function runRgFallback(args: string[], cwd: string): Promise<string | null> {
+  // --files <target> -g <pattern>  →  list files matching glob
+  if (args[0] === "--files") {
+    const targetIdx = args[1] && !args[1].startsWith("-") ? 1 : 0
+    const target = targetIdx > 0 ? args[targetIdx] : "."
+    const gIdx = args.indexOf("-g")
+    const glob = gIdx >= 0 ? args[gIdx + 1] : null
+    return listFilesFallback(cwd, target, glob)
+  }
+  // content search fallback: rg <flags> <pattern> <path>
+  // detect single literal pattern + a path arg
+  const flagArgs: string[] = []
+  let pattern: string | null = null
+  let path: string | null = null
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]
+    if (a.startsWith("-")) {
+      flagArgs.push(a)
+      if ((a === "-g" || a === "-t" || a === "--type") && i + 1 < args.length) {
+        flagArgs.push(args[i + 1])
+        i++
+      }
+    } else if (pattern === null) {
+      pattern = a
+    } else {
+      path = a
+    }
+  }
+  if (!pattern) return null
+  if (flagArgs.includes("--files")) return listFilesFallback(cwd, path ?? ".", null)
+  return contentSearchFallback(cwd, path ?? ".", pattern, flagArgs)
+}
+
+async function listFilesFallback(cwd: string, target: string, glob: string | null): Promise<string> {
+  const { readdir, stat } = await import("node:fs/promises")
+  const { join, relative, sep } = await import("node:path")
+  const root = join(cwd, target === "." ? "." : target)
+  const out: string[] = []
+  const ignoreDirs = new Set([".git", "node_modules", ".cache", "dist", "build", ".next", ".venv"])
+  const matchesGlob = (rel: string) => {
+    if (!glob) return true
+    return simpleGlobMatch(rel, glob)
+  }
+  async function walk(dir: string) {
+    let entries: { name: string; isFile: boolean; isDir: boolean }[]
+    try {
+      const list = await readdir(dir, { withFileTypes: true })
+      entries = list.map(e => ({ name: e.name, isFile: e.isFile(), isDir: e.isDirectory() }))
+    } catch {
+      return
+    }
+    for (const e of entries) {
+      const abs = join(dir, e.name)
+      if (e.isDir) {
+        if (ignoreDirs.has(e.name)) continue
+        await walk(abs)
+      } else if (e.isFile) {
+        const rel = relative(cwd, abs).split(sep).join("/")
+        if (matchesGlob(rel)) out.push(rel)
+      }
+    }
+  }
+  try {
+    const s = await stat(root)
+    if (s.isFile()) {
+      const rel = relative(cwd, root).split(sep).join("/")
+      if (matchesGlob(rel)) out.push(rel)
+    } else {
+      await walk(root)
+    }
+  } catch {}
+  out.sort()
+  return out.join("\n")
+}
+
+async function contentSearchFallback(cwd: string, target: string, pattern: string, flags: string[]): Promise<string | null> {
+  const { readdir, readFile } = await import("node:fs/promises")
+  const { join, relative, sep } = await import("node:path")
+  const root = join(cwd, target === "." ? "." : target)
+  const ignoreCase = flags.includes("-i") || flags.includes("--ignore-case")
+  const contentMode = flags.includes("-c") || flags.includes("--count") || flags.includes("-l") || flags.includes("--files-with-matches")
+  const isLiteral = !/[\\^$.*+?()[\]{}|]/.test(pattern)
+  if (!isLiteral) return null
+  const re = new RegExp(escapeRegex(pattern), ignoreCase ? "i" : "")
+  const out: string[] = []
+  const ignoreDirs = new Set([".git", "node_modules", ".cache", "dist", "build", ".next", ".venv"])
+  async function walk(dir: string) {
+    let entries: { name: string; isFile: boolean; isDir: boolean }[]
+    try {
+      const list = await readdir(dir, { withFileTypes: true })
+      entries = list.map(e => ({ name: e.name, isFile: e.isFile(), isDir: e.isDirectory() }))
+    } catch {
+      return
+    }
+    for (const e of entries) {
+      const abs = join(dir, e.name)
+      if (e.isDir) {
+        if (ignoreDirs.has(e.name)) continue
+        await walk(abs)
+      } else if (e.isFile) {
+        try {
+          const content = await readFile(abs, "utf8")
+          const lines = content.split("\n")
+          for (let i = 0; i < lines.length; i++) {
+            if (re.test(lines[i])) {
+              if (flags.includes("-l") || flags.includes("--files-with-matches")) {
+                out.push(relative(cwd, abs).split(sep).join("/"))
+                break
+              }
+              if (flags.includes("-c") || flags.includes("--count")) {
+                out.push(`${relative(cwd, abs).split(sep).join("/")}:${lines.filter(l => re.test(l)).length}`)
+                break
+              }
+              out.push(`${relative(cwd, abs).split(sep).join("/")}:${i + 1}:${lines[i]}`)
+            }
+          }
+        } catch {}
+      }
+    }
+  }
+  try {
+    await walk(root)
+  } catch {}
+  return contentMode ? out.join("\n") : out.join("\n")
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+function simpleGlobMatch(path: string, glob: string): boolean {
+  // Convert a simple glob to a regex. Supports **, *, ?, and literal chars.
+  let re = ""
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i]
+    if (c === "*" && glob[i + 1] === "*") {
+      re += ".*"
+      i++
+    } else if (c === "*") {
+      re += "[^/]*"
+    } else if (c === "?") {
+      re += "[^/]"
+    } else {
+      re += c.replace(/[.+^$|()[\]{}\\]/g, "\\$&")
+    }
+  }
+  return new RegExp("^" + re + "$").test(path)
 }
 
 export async function getMcpClient(context: ToolContext, serverName: string) {

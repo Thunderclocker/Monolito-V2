@@ -179,7 +179,20 @@ export const adminTools: ToolDefinition[] = [
       }
       const { listTools } = await import("../registry.ts")
       const matchedTools = listTools().filter(t => results.includes(t.name))
-      return `Herramientas encontradas:\n${matchedTools.map(t => `- ${t.name}: ${t.description}`).join("\n")}`
+      // Sort: native (direct invocation) tools first, MCP tools last.
+      // This nudges the model to call VoiceClone/GenerateSpeech/TranscribeAudio
+      // directly instead of wrapping them in McpInvokeTool, which only works
+      // for tools exposed by an actual MCP server (these are not).
+      const sortedTools = [...matchedTools].sort((a, b) => {
+        const aMcp = a.isMcp === true ? 1 : 0
+        const bMcp = b.isMcp === true ? 1 : 0
+        return aMcp - bMcp
+      })
+      return `Herramientas encontradas (native tools listed first — invoke them by name directly, do NOT wrap in McpInvokeTool):\n${sortedTools.map(t => {
+        const kind = t.isMcp === true ? "mcp" : "native"
+        const invocation = t.isMcp === true ? "McpInvokeTool(server, tool)" : `direct call: ${t.name}(...)`
+        return `- [${kind}] ${t.name} (${invocation}): ${t.description}`
+      }).join("\n")}`
     } catch (err) {
       return `Error buscando herramientas: ${err}`
     }

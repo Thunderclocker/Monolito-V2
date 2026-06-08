@@ -72,7 +72,21 @@ export const todoTools: ToolDefinition[] = [
         `TodoWrite: input must be an object with a 'todos' array. Got keys: [${gotKeys}]. Expected: {todos: [{content, activeForm, status: 'pending'|'in_progress'|'completed'}]}.`,
       )
     }
-    const todos = Array.isArray(input.todos) ? input.todos : []
+    // Schema-flex: some clients/models send `{todos: {item: [...]}}` (an
+    // extra nesting level, likely a function-call JSON schema artifact).
+    // Normalize to the flat array form so the rest of the handler can
+    // trust `todos` is always an array.
+    const rawTodos = (input as { todos: unknown }).todos
+    let todos: unknown[]
+    if (Array.isArray(rawTodos)) {
+      todos = rawTodos
+    } else if (rawTodos && typeof rawTodos === "object" && Array.isArray((rawTodos as { item?: unknown }).item)) {
+      todos = (rawTodos as { item: unknown[] }).item
+    } else if (rawTodos && typeof rawTodos === "object" && Array.isArray((rawTodos as { todos?: unknown }).todos)) {
+      todos = (rawTodos as { todos: unknown[] }).todos
+    } else {
+      todos = []
+    }
     if (todos.length === 0) {
       return formatToolError("TodoWrite: todos array is empty. To mark all done, send [{content: 'All previous tasks completed', activeForm: 'Wrapping up', status: 'completed'}] explicitly. To clear the list, call TodoList first to confirm the state.")
     }
@@ -96,7 +110,7 @@ export const todoTools: ToolDefinition[] = [
     }
 
     // Structural rule: exactly ONE todo may be in_progress at a time.
-    const inProgressCount = todos.filter(t => t.status === "in_progress").length
+    const inProgressCount = todos.filter(t => (t as { status?: unknown }).status === "in_progress").length
     if (inProgressCount > 1) {
       return formatToolError(
         `Multiple todos are marked as in_progress (${inProgressCount}). ` +

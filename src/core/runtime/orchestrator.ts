@@ -230,7 +230,7 @@ Respond ONLY with a valid JSON object in this format:
         maxTokens: 150,
       })
 
-      const parsed = JSON.parse(text.trim())
+      const parsed = JSON.parse(stripMarkdownCodeFence(text).trim())
       if (parsed && typeof parsed === "object") {
         if (typeof parsed.send_telegram_photo === "boolean") send_telegram_photo = parsed.send_telegram_photo
         if (typeof parsed.send_telegram_file === "boolean") send_telegram_file = parsed.send_telegram_file
@@ -1352,6 +1352,21 @@ function createTraceparent() {
   const traceId = randomUUID().replace(/-/g, "")
   const spanId = randomUUID().replace(/-/g, "").slice(0, 16)
   return `00-${traceId}-${spanId}-01`
+}
+
+/**
+ * Strip markdown code-fence wrappers from an LLM response before JSON.parse.
+ * The semantic verification LLM sometimes wraps its JSON output in ```json ... ```
+ * blocks even when told to respond with raw JSON. Without this, JSON.parse
+ * fails with "Unexpected token '`'" and the orchestrator falls back to regex
+ * heuristics, losing the precision of the LLM classifier.
+ */
+function stripMarkdownCodeFence(text: string): string {
+  if (!text) return text
+  const trimmed = text.trim()
+  const fenceMatch = trimmed.match(/^```(?:json|JSON)?\s*\n([\s\S]*?)\n?```\s*$/)
+  if (fenceMatch?.[1]) return fenceMatch[1].trim()
+  return trimmed
 }
 
 
