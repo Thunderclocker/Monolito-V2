@@ -59,7 +59,15 @@ export const webTools: ToolDefinition[] = [
     return null
   },
   async run(input, context) {
-    const url = requireString(input, "url")
+    let url = requireString(input, "url")
+    const { validateUrlStrict } = await import("./webfetch-validators.ts")
+    const urlCheck = validateUrlStrict(url)
+    if (!urlCheck.valid) {
+      return formatToolError(`Invalid URL: ${urlCheck.reason}`)
+    }
+    if (urlCheck.upgraded) {
+      url = urlCheck.url!
+    }
     if (!context.sessionId?.startsWith("agent-") && /\.(jpe?g|png|webp|gif|avif|svg)(\?.*)?$/i.test(url)) {
       return formatToolError("Action denied. Use delegate_background_task instead.")
     }
