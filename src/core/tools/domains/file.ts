@@ -355,7 +355,9 @@ export const fileTools: ToolDefinition[] = [
   name: "Grep",
   aliases: ["grep"],
   permissionTier: "read",
-  description: "Search file contents with ripgrep.",
+  isReadOnly: true,
+  isSearchOrReadCommand: true,
+  description: "Search file contents with ripgrep. Supports context lines (-A/-B/-C), type filter (rg --type), VCS exclusions, and glob comma-split. Dual-accepts `ignore_case` and `-i`.",
   inputSchema: {
     type: "object",
     properties: {
@@ -364,9 +366,16 @@ export const fileTools: ToolDefinition[] = [
       output_mode: { type: "string", enum: ["files_with_matches", "content", "count"] },
       glob: { type: "string" },
       ignore_case: { type: "boolean" },
+      "-i": { type: "boolean", description: "Alias for ignore_case (upstream parity)." },
       multiline: { type: "boolean" },
       head_limit: { type: "number" },
       offset: { type: "number" },
+      "-B": { type: "number", description: "Lines before each match (content mode only)." },
+      "-A": { type: "number", description: "Lines after each match (content mode only)." },
+      "-C": { type: "number", description: "Lines of context (alias for context)." },
+      context: { type: "number", description: "Lines of context (alias for -C)." },
+      "-n": { type: "boolean", description: "Show line numbers (content mode only, default true)." },
+      type: { type: "string", description: "File type filter (rg --type): py, js, ts, rust, go, etc." },
     },
     required: ["pattern"],
     additionalProperties: false,
@@ -379,17 +388,37 @@ export const fileTools: ToolDefinition[] = [
     const absoluteTarget = await resolveWorkspacePath(context.rootDir, context.cwd, target, context, "Grep")
     const relativeTarget = toWorkspaceRelative(context.rootDir, absoluteTarget)
     const outputMode = optionalString(input, "output_mode") ?? "files_with_matches"
-    const glob = optionalString(input, "glob")
-    const ignoreCase = optionalBoolean(input, "ignore_case") ?? false
+    const ignoreCase = optionalBoolean(input, "ignore_case") ?? optionalBoolean(input, "-i") ?? false
     const multiline = optionalBoolean(input, "multiline") ?? false
     const headLimit = optionalNumber(input, "head_limit") ?? DEFAULT_GREP_LIMIT
     const offset = optionalNumber(input, "offset") ?? 0
+    const beforeLines = optionalNumber(input, "-B") ?? optionalNumber(input, "context")
+    const afterLines = optionalNumber(input, "-A") ?? optionalNumber(input, "context")
+    const contextLines = optionalNumber(input, "-C")
+    const showLineNumbers = optionalBoolean(input, "-n") ?? true
+    const fileType = optionalString(input, "type")
+    const globRaw = optionalString(input, "glob")
     const args: string[] = []
     if (ignoreCase) args.push("-i")
     if (multiline) args.push("-U", "--multiline-dotall")
-    if (glob) args.push("--glob", glob)
+    if (fileType) args.push("--type", fileType)
+    if (contextLines !== undefined) args.push("-C", String(contextLines))
+    if (beforeLines !== undefined && contextLines === undefined) args.push("-B", String(beforeLines))
+    if (afterLines !== undefined && contextLines === undefined) args.push("-A", String(afterLines))
+    for (const vcs of [".git", ".svn", ".hg", ".bzr", ".jj", ".sl"]) {
+      args.push("--glob", `!**/${vcs}/**`)
+    }
+    if (globRaw) {
+      const globs = globRaw.split(/[,\s]+/).filter(Boolean)
+      for (const g of globs) args.push("--glob", g)
+    }
+    // Pattern starting with "-" must be passed as -e to rg
+    const patternArg = pattern.startsWith("-") ? ["-e", pattern] : [pattern]
     if (outputMode === "content") {
-      const result = await runRg([...args, "-n", pattern, relativeTarget], context.rootDir)
+      const finalArgs = [...args]
+      if (showLineNumbers) finalArgs.push("-n")
+      finalArgs.push(...patternArg, relativeTarget)
+      const result = await runRg(finalArgs, context.rootDir)
       const lines = result.stdout.split("\n").filter(Boolean)
       const page = headLimit === 0 ? lines.slice(offset) : lines.slice(offset, offset + headLimit)
       return {
@@ -401,7 +430,7 @@ export const fileTools: ToolDefinition[] = [
       }
     }
     if (outputMode === "count") {
-      const result = await runRg([...args, "-c", pattern, relativeTarget], context.rootDir)
+      const result = await runRg([...args, "-c", ...patternArg, relativeTarget], context.rootDir)
       const lines = result.stdout.split("\n").filter(Boolean)
       const page = headLimit === 0 ? lines.slice(offset) : lines.slice(offset, offset + headLimit)
       return {
@@ -415,7 +444,7 @@ export const fileTools: ToolDefinition[] = [
         appliedLimit: headLimit === 0 ? undefined : headLimit,
       }
     }
-    const result = await runRg([...args, "-l", pattern, relativeTarget], context.rootDir)
+    const result = await runRg([...args, "-l", ...patternArg, relativeTarget], context.rootDir)
     const matches = result.stdout.split("\n").map(line => line.trim()).filter(Boolean)
     const page = headLimit === 0 ? matches.slice(offset) : matches.slice(offset, offset + headLimit)
     return {
