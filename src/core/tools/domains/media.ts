@@ -358,7 +358,13 @@ export const mediaTools: ToolDefinition[] = [
     const model = optionalString(input, "model") ?? (provider === "minimax" ? (tts.t2aModel || "speech-2.8-hd") : tts.model)
     const responseFormat = optionalString(input, "response_format") ?? tts.responseFormat
     const speed = optionalNumber(input, "speed") ?? tts.speed
-    const apiKey = (optionalString(input, "api_key") ?? tts.apiKey ?? process.env.MINIMAX_API_KEY ?? process.env.ANTHROPIC_AUTH_TOKEN ?? "").trim()
+    // Resolucion de credenciales: tts.apiKey > profile activo (si minimax) > env vars.
+    const activeProfile = getActiveProfile()
+    let apiKey = (optionalString(input, "api_key") ?? tts.apiKey ?? "").trim()
+    if (!apiKey && activeProfile && ((activeProfile.provider as string) === "minimax" || activeProfile.baseUrl.toLowerCase().includes("minimax"))) {
+      apiKey = (activeProfile.apiKey || "").trim()
+    }
+    if (!apiKey) apiKey = (process.env.MINIMAX_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN || "").trim()
 
     const paths = ensureDirs(context.rootDir, context.profileId)
     const speechDir = join(paths.scratchpadDir, "tts")
@@ -553,11 +559,18 @@ export const mediaTools: ToolDefinition[] = [
     if (tts.provider !== "minimax") {
       return formatToolError("Voice clone requiere tts.provider='minimax'. Configuralo con /config set tts_provider minimax.")
     }
-    const apiKey = (tts.apiKey || process.env.MINIMAX_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN || "").trim()
-    if (!apiKey) {
-      return formatToolError("Voice clone requiere tts.apiKey, MINIMAX_API_KEY o ANTHROPIC_AUTH_TOKEN.")
+    // Resolucion de credenciales: prioriza tts.apiKey, despues el profile activo
+    // (si es minimax o su baseUrl contiene "minimax"), despues env vars.
+    const activeProfile = getActiveProfile()
+    let apiKey = (tts.apiKey || "").trim()
+    if (!apiKey && activeProfile && ((activeProfile.provider as string) === "minimax" || activeProfile.baseUrl.toLowerCase().includes("minimax"))) {
+      apiKey = (activeProfile.apiKey || "").trim()
     }
-    const baseUrl = (tts.baseUrl || "https://api.minimax.io/v1").replace(/\/+$/g, "")
+    if (!apiKey) apiKey = (process.env.MINIMAX_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN || "").trim()
+    if (!apiKey) {
+      return formatToolError("Voice clone requiere tts.apiKey, profile activo minimax con apiKey, MINIMAX_API_KEY o ANTHROPIC_AUTH_TOKEN.")
+    }
+    const baseUrl = (tts.baseUrl || activeProfile?.baseUrl || "https://api.minimax.io/v1").replace(/\/+$/g, "")
     const headers = { Authorization: `Bearer ${apiKey}` }
 
     if (action === "list") {
