@@ -14,6 +14,92 @@ additions and `PATCH` on fixes that do not change behavior.
 
 ### Added
 
+- **upstream parity tool extensions** — `feat/tools-parity-fase0..fase6`
+  brings the 8 shared tools (Bash, Read, Write, Edit, Grep, MCP,
+  WebFetch, WebSearch) closer to upstream reference parity.
+- **Tool framework extensions** (Fase 0): 9 additive optional
+  fields on `ToolDefinition`: `isReadOnly`, `isSearchOrReadCommand`,
+  `checkPermissions`, `isMcp`, `isOpenWorld`, `maxResultSizeChars`,
+  `isResultTruncated`, `prompt` (async), `toAutoClassifierInput`.
+  Backwards compatible.
+- **Foundation modules** (Fase 0):
+  - `core/tools/file-state.ts` — per-session read state LRU
+    (10K cap) with mtime staleness detection.
+  - `core/tools/file-history.ts` — snapshot store for rollback
+    (TTL 30d, hash-based dedup).
+  - `core/tools/secret-scanner.ts` — AWS / GitHub PAT (classic +
+    fine-grained) / Slack / PEM / JWT detection + high-entropy
+    heuristic. 6 patterns.
+  - `core/utils/lru-cache.ts` — byte-aware LRU with TTL utility.
+  - `core/tools/permission-runtime.ts` — consumes
+    `policyConfigZod`, runs PreToolUse hook chains, default-allow
+    (explicit `deny` rule always wins).
+- **Read port** (Fase 1) — `core/tools/file/read.ts` with
+  streaming fast-path, 256KB cap, device-file guard (`/dev`,
+  `/proc`, `/sys`), binary detection (NUL bytes), and
+  `readFileState` population. Discriminated output: `text` |
+  `file_too_large` | `binary` | `device_file` | `not_found`.
+  Mtime staleness exposed via `isFileStale()`.
+- **Edit + Write ports** (Fase 2) — `file-edit-helpers.ts` with
+  `applyEditToFile` (matchIndex/replaceAll), curly-quote
+  normalization, `.ipynb` rejection, `MAX_EDIT_FILE_SIZE` (1 GiB
+  cap), `generateUnifiedDiff`. Edit rejects `.ipynb`, runs size
+  check, no-op detection, soft mtime-staleness warning via
+  readFileState, snapshots prior content to fileHistory, returns
+  `structuredPatch`. Write runs secret guard (blocks on
+  AWS/GitHub PAT/Slack/PEM/JWT detection), soft pre-read warning,
+  snapshots to fileHistory before overwrite.
+- **Grep port** (Fase 3) — extended with `-A`/`-B`/`-C`/`context`
+  for lines of context, `type` filter (rg `--type`), VCS
+  exclusions (`.git`, `.svn`, `.hg`, `.bzr`, `.jj`, `.sl`), glob
+  comma-split, dual-accept `ignore_case` and `-i`, and `-e pattern`
+  for safety against patterns starting with `-`.
+- **WebSearch extension** (Fase 4) — `allowed_domains` and
+  `blocked_domains` inputSchema fields, mutually exclusive
+  validation, upstream parity on Brave silent-ignore semantics.
+- **Bash security** (Fase 5) — 12 security validators (subset of
+  bashSecurity's 25) covering control chars, IFS injection, mid-word hash,
+  brace expansion, backslash escape, unicode whitespace, dangerous
+  patterns (curl|sh, wget|bash), shell metachars, dangerous
+  redirection (to /etc, /System, ~/.ssh, ~/.bashrc), embedded
+  newlines, backslash-escaped operators, and dangerous variables
+  (LD_PRELOAD, DYLD_INSERT_LIBRARIES). Critical/high findings
+  block execution; low/medium attach as `security_notices`.
+  Destructive command detection (10 patterns: rm -rf, git
+  reset --hard, git push --force, fork bomb, DROP TABLE,
+  kubectl delete, terraform destroy) emits `warning` field but
+  does not block. Análisis de seguridad por omission de los 13
+  validators NO porteados: comment-quote desync, quoted newlines,
+  CR injection específico, heredoc malicioso — documentados.
+- **MCP facade** (Fase 6) — `mcp-collapse.ts` classifies MCP tools
+  into search/read/write/default with server allowlists for
+  Slack/GitHub/Linear/Sentry/Notion/Gmail. `mcp-truncation.ts`
+  applies token-budget truncation (chars/4 estimator, 25K token
+  default budget). All three MCP tools marked with the new
+  bashSecurity-parity flags.
+
+### Security
+
+- `Bash` now blocks commands with critical/high security findings
+  (curl|sh, IFS injection, LD_PRELOAD override, etc). Destructive
+  commands (rm -rf, git reset --hard, fork bomb) emit a warning
+  field but still execute.
+- `Write` now runs secret scanner before writing. Leaks of AWS
+  access keys, GitHub PATs (classic + fine-grained), Slack tokens,
+  PEM private keys, JWTs, and high-entropy strings are blocked.
+- `Edit` checks `.ipynb` and rejects edits (notebook tooling
+  required).
+
+### Changed
+
+- Read returns discriminated output type (was always returning
+  text). Consumers that assumed a flat `{ path, content, ... }`
+  shape must check `type` first. Existing flat shape is preserved
+  when `type === "text"`.
+- `Edit` and `Write` return `warning` field on pre-read concerns
+  (soft, non-blocking).
+- `Grep` accepts `-i` as alias for `ignore_case` (dual-accept).
+
 - **GitHub Actions CI** (`.github/workflows/ci.yml`): runs `tsc --noEmit`
   + `npm test` on every push and PR. Includes a smoke-test job that
   exercises the agent against MiniMax M3 on `main` branch pushes.
