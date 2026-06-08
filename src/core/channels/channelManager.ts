@@ -294,7 +294,11 @@ function buildTelegramInboundText(
   if (!msg) return null
   const text = msg.text?.trim() || msg.caption?.trim() || ""
   const hasAudioLikeAttachment = Boolean(msg.audio || msg.voice)
-  const hideAudioAttachmentFromModel = Boolean(transcript?.text)
+  // NOTA: el attachment de audio/voice se emite siempre (con file_id) aunque haya
+  // transcript, para que el modelo pueda invocar VoiceClone con source.type='telegram_file_id'.
+  // Antes se ocultaba cuando habia transcript (`hideAudioAttachmentFromModel`), pero eso
+  // rompia voice clone porque el modelo no veia el file_id del audio entrante.
+  const hideAudioAttachmentFromModel = false
   const slashCommand = normalizeTelegramCommand(text)
   if (slashCommand && !msg.photo && !msg.document && !msg.audio && !msg.video && !msg.voice && !msg.video_note) {
     return slashCommand
