@@ -6,6 +6,10 @@ import {
 } from "node:url"
 
 import {
+  formatToolError,
+} from "../internal.ts"
+
+import {
   getMcpClient,
   optionalString,
   requireString,
@@ -135,6 +139,59 @@ export const mcpTools: ToolDefinition[] = [
       uri: fileUri,
       position: { line, character },
       result,
+    }
+  },
+},
+
+{
+  name: "McpInvokeTool",
+  aliases: ["mcp_invoke"],
+  permissionTier: "edit",
+  isMcp: true,
+  isOpenWorld: true,
+  maxResultSizeChars: 100_000,
+  description: "Dynamic facade for invoking MCP server tools. Discovers available tools via listMcpTools() cache, validates input, applies token-budget truncation (25K tokens), collapse classification (search/read/write).",
+  inputSchema: {
+    type: "object",
+    properties: {
+      server: { type: "string", description: "MCP server name" },
+      tool: { type: "string", description: "Tool name to invoke" },
+      arguments: { type: "object", description: "Tool arguments" },
+    },
+    required: ["server", "tool"],
+    additionalProperties: false,
+  },
+  concurrencySafe: true,
+  validate: input => {
+    if (typeof input.server !== "string" || input.server.length === 0) return "server must be a non-empty string"
+    if (typeof input.tool !== "string" || input.tool.length === 0) return "tool must be a non-empty string"
+    return null
+  },
+  async run(input, context) {
+    const server = requireString(input, "server")
+    const tool = requireString(input, "tool")
+    const args = (input.arguments && typeof input.arguments === "object" ? input.arguments : {}) as Record<string, unknown>
+    const { getMcpClient } = await import("../internal.ts")
+    const { listMcpTools } = await import("../../../core/mcp/tool-registry.ts")
+    const { classifyMcpToolForCollapse, normalizeMcpToolName } = await import("./mcp-collapse.ts")
+    const { truncateMcpResult } = await import("./mcp-truncation.ts")
+    const client = await getMcpClient(context, server)
+    const descriptors = await listMcpTools(server, client)
+    const normTool = normalizeMcpToolName(tool)
+    const descriptor = descriptors.find(d => normalizeMcpToolName(d.name) === normTool)
+    if (!descriptor) {
+      return formatToolError(`Tool ${tool} not found on server ${server}. Available: ${descriptors.map(d => d.name).join(", ")}`)
+    }
+    const collapseClass = classifyMcpToolForCollapse(descriptor.name, server)
+    const raw = await client.callTool(descriptor.name, args)
+    const trunc = truncateMcpResult(raw)
+    return {
+      server,
+      tool: descriptor.name,
+      collapseClass,
+      truncated: trunc.truncated,
+      removedChars: trunc.removedChars,
+      result: trunc.result,
     }
   },
 },
