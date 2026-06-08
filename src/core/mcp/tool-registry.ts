@@ -8,6 +8,8 @@ export type McpToolDescriptor = {
   name: string
   description: string
   inputSchema: unknown
+  /** True si el tool mutates state. Read-only tools skip permission gate. */
+  requiresWritePermission?: boolean
 }
 
 type ServerEntry = {

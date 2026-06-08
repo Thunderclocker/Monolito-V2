@@ -25,6 +25,18 @@ export function isResultTruncatedByMcp(content: string): boolean {
   return content.includes(TRUNCATION_MARKER_PREFIX)
 }
 
+/** Verifica si un output arbitrario fue truncado (aplica el contract del tool). */
+export function toolOutputTruncated(output: unknown, maxResultSizeChars?: number): boolean {
+  if (maxResultSizeChars === undefined) return false
+  if (typeof output === "string") {
+    return output.length > maxResultSizeChars
+  }
+  if (Array.isArray(output)) {
+    return JSON.stringify(output).length > maxResultSizeChars
+  }
+  return false
+}
+
 /** Aplica truncation a un objeto arbitrario (string, array, object). */
 export function truncateMcpResult(result: unknown, budget: number = DEFAULT_TOKEN_BUDGET): {
   truncated: boolean

@@ -173,14 +173,22 @@ export const mcpTools: ToolDefinition[] = [
     const args = (input.arguments && typeof input.arguments === "object" ? input.arguments : {}) as Record<string, unknown>
     const { getMcpClient } = await import("../internal.ts")
     const { listMcpTools } = await import("../../../core/mcp/tool-registry.ts")
-    const { classifyMcpToolForCollapse, normalizeMcpToolName } = await import("./mcp-collapse.ts")
-    const { truncateMcpResult } = await import("./mcp-truncation.ts")
+    const { classifyMcpToolForCollapse, normalizeMcpToolName, isReadOnlyMcpTool } = await import("./mcp-collapse.ts")
+    const { truncateMcpResult, toolOutputTruncated } = await import("./mcp-truncation.ts")
+    const { isMcpPermissionEnabled } = await import("../../../core/mcp/permissions.ts")
     const client = await getMcpClient(context, server)
     const descriptors = await listMcpTools(server, client)
     const normTool = normalizeMcpToolName(tool)
     const descriptor = descriptors.find(d => normalizeMcpToolName(d.name) === normTool)
     if (!descriptor) {
       return formatToolError(`Tool ${tool} not found on server ${server}. Available: ${descriptors.map(d => d.name).join(", ")}`)
+    }
+    // isOpenWorld enforcement: MCP tools that mutate need explicit permission
+    if (descriptor.requiresWritePermission && !isReadOnlyMcpTool(descriptor.name)) {
+      const allowed = await isMcpPermissionEnabled(context, server, descriptor.name)
+      if (!allowed) {
+        return formatToolError(`MCP tool ${server}:${descriptor.name} requires explicit permission`)
+      }
     }
     const collapseClass = classifyMcpToolForCollapse(descriptor.name, server)
     const raw = await client.callTool(descriptor.name, args)
@@ -192,6 +200,7 @@ export const mcpTools: ToolDefinition[] = [
       truncated: trunc.truncated,
       removedChars: trunc.removedChars,
       result: trunc.result,
+      isResultTruncated: toolOutputTruncated(raw, 100_000),
     }
   },
 },
