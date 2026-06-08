@@ -24,6 +24,9 @@ export const mcpTools: ToolDefinition[] = [
   name: "ListMcpResourcesTool",
   aliases: ["mcp_list_resources"],
   permissionTier: "read",
+  isReadOnly: true,
+  isMcp: true,
+  isOpenWorld: true,
   description: "List resources exposed by an MCP server.",
   inputSchema: {
     type: "object",
@@ -47,6 +50,9 @@ export const mcpTools: ToolDefinition[] = [
   name: "ReadMcpResourceTool",
   aliases: ["mcp_read_resource"],
   permissionTier: "read",
+  isReadOnly: true,
+  isMcp: true,
+  isOpenWorld: true,
   description: "Read a specific MCP resource by URI.",
   inputSchema: {
     type: "object",
@@ -74,6 +80,8 @@ export const mcpTools: ToolDefinition[] = [
 {
   name: "LspQuery",
   permissionTier: "read",
+  isReadOnly: true,
+  isSearchOrReadCommand: true,
   description: "Query TypeScript semantic information through the workspace LSP server.",
   inputSchema: {
     type: "object",
