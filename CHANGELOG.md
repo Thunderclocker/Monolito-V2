@@ -12,7 +12,83 @@ additions and `PATCH` on fixes that do not change behavior.
 
 ## [Unreleased]
 
-### Added
+### Added (Fase 8-16 — upstream parity deep dive)
+
+- **Fase 8 — Bash AST + permission rules machinery**:
+  - `core/tools/domains/bash/parseForSecurity.ts`: shell-quote-based AST
+    parser with operator splitting (|, &&, ||, ;, &), env var stripping,
+    wrapper detection (env, sudo, nice, nohup, timeout, command),
+    per-segment CommandSegment
+  - `permissionRules.ts`: matchWildcardPattern, stripAllLeadingEnvVars,
+    stripWrappersFromArgv, stripCommentLines (quote-aware), filterRulesByContentsMatchingInput,
+    isReadOnlyCommand, BINARY_HIJACK_VARS, hasUnquotedCommandSubstitution
+  - `segmentation.ts`: per-segment evaluation, detectCdGitChain (cross-segment
+    cd+git suspicion), pipeline aggregation
+  - `permissionGate.ts`: integrates AST + rules + segmentation + bashSecurity
+    validators + readOnly + path. Returns allow/ask/deny with reason.
+    Handles parse-unavailable conservatively. Reads Bash-specific rules
+    from policyConfigZod.
+  - `outputLimits.ts`: truncateOutput with 30K default (64MB cap), marker,
+    persistToFile, looksLikeImageOutput
+  - `shouldUseSandbox.ts`: decision logic for sandboxed execution
+  - `commandSemantics.ts`: exit code → human-readable interpretation
+    (grep/rg/find/diff/cmp/test)
+  - Bash tool now wires the full permission gate + output limits + command
+    semantics. Result extended with stdoutTruncated, stderrTruncated,
+    exitInterpretation, looksLikeBinary fields.
+  - Tests: 49 new tests (parseForSecurity, permissionRules, permissionGate)
+- **Fase 9 — Bash output limits + command semantics wiring** (see Fase 8)
+- **Fase 10 — WebFetch LRU cache + redirect validation + preapproved**:
+  - `webfetch.cache.ts`: LRU URL cache (15min TTL, 50MB cap, byte-aware)
+    wired into WebFetch with cacheHit field
+  - `webfetch.redirect.ts`: isPermittedRedirect (same-host+port+registrable
+    domain), followWithPermittedRedirects (MAX_REDIRECTS=10)
+  - `webfetch.preapproved.ts`: 20-host curated list (MDN, npm, PyPI,
+    GitHub, Stack Overflow, RFC, IETF, man7, etc.) with www-stripping
+  - Tests: 14 new tests
+- **Fase 11 — MCP dynamic facade + truncation real**:
+  - `core/mcp/tool-registry.ts`: per-server tool cache (5min TTL) with
+    listMcpTools, clearMcpServerCache
+  - McpInvokeTool: dynamic facade (server, tool, arguments), discovers via
+    cache, validates via normalizeMcpToolName, invokes via client.callTool,
+    applies truncateMcpResult (25K token budget), returns with
+    collapseClass classification
+  - `mcp-truncation.ts` extended with truncateMcpResult (handles string,
+    array, object), proper TRUNCATION_MARKER_PREFIX/SUFFIX split
+  - Tests: 6 new tests
+- **Fase 12 — Read deep features**:
+  - `file/image-processor.ts`: detectImage via magic bytes, extracts
+    width/height from PNG/JPEG headers
+  - `file/encoding.ts`: detectEncoding (UTF-8/UTF-16/ASCII/Latin-1/binary
+    with BOM detection), detectLineEnding (lf/crlf/cr/mixed/none),
+    decodeBuffer
+  - `file/notebook.ts`: readNotebook parses .ipynb JSON, returns cells
+    with index/cell_type/source, extracts kernel/language from metadata
+  - `file/pdf.ts`: readPdfText via pdftotext (timeout + maxBuffer fallback),
+    page range support
+  - read.ts: image (magic bytes), notebook (.ipynb), pdf (.pdf) detection
+    before binary/text fallback
+  - Output type extended to 'image' | 'notebook' | 'pdf'
+- **Fase 13 — Edit multi-edit atómico**:
+  - `file-edit-helpers.ts`: applyMultiEditToFile applies array of edits
+    atomically (all-or-nothing), validates all first
+  - file.ts Edit tool: supports single-edit (old_string/new_string) or
+    multi-edit (edits: [...]) modes (mutually exclusive)
+- **Fase 14 — Grep configurable**:
+  - `grep-extensions.ts`: buildVcsExcludes (configurable VCS dirs),
+    clampLineWidth (max_columns truncation), splitGlobPatterns
+    (brace-aware comma/whitespace split), sortByMtime
+  - Grep tool: inputSchema adds max_columns, sort_by_mtime,
+    exclude_vcs_extra
+- **Fase 15 — WebSearch filter translation per provider**:
+  - `core/websearch/filter-translation.ts`: translateFilters handles brave
+    (silent ignore + warning), searxng (site:/ -site: query), serper
+    (inline site:), tavily (include_domains/exclude_domains in postBody),
+    default (warning)
+  - domainFilterValid validates mutual exclusion
+  - Tests: 13 new tests
+
+### Added (Fase 0-7)
 
 - **upstream parity tool extensions** — `feat/tools-parity-fase0..fase6`
   brings the 8 shared tools (Bash, Read, Write, Edit, Grep, MCP,
