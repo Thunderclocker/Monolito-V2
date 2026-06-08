@@ -601,14 +601,14 @@ export const mediaTools: ToolDefinition[] = [
 {
   name: "GenerateImage",
   permissionTier: "edit",
-  description: "Genera una imagen a partir de una descripción detallada (prompt). Soporta xAI Grok (grok-imagine-image) por defecto si la sesión está autenticada, o DALL-E si está configurado.",
+  description: "Genera una imagen a partir de una descripción detallada (prompt). Soporta xAI Grok (grok-imagine-image) por defecto si la sesión está autenticada, MiniMax (image-01) si el perfil activo es MiniMax, o DALL-E si está configurado.",
   inputSchema: {
     type: "object",
     properties: {
       prompt: { type: "string", description: "Descripción detallada de la imagen a generar (ej: 'Un gato de estilo cyberpunk con ojos de neón brillante')." },
       aspect_ratio: { type: "string", enum: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"], description: "Relación de aspecto de la imagen generada. Por defecto es '1:1'." },
       quality: { type: "string", enum: ["standard", "quality"], description: "Calidad de generación. Por defecto es 'standard'. 'quality' produce mayor nivel de detalle (solo soportado por Grok)." },
-      provider: { type: "string", enum: ["xai", "openai"], description: "Forzar un proveedor específico. Por defecto detecta automáticamente basándose en las credenciales del perfil activo." }
+      provider: { type: "string", enum: ["xai", "openai", "minimax"], description: "Forzar un proveedor específico. Por defecto detecta automáticamente basándose en las credenciales del perfil activo." }
     },
     required: ["prompt"],
     additionalProperties: false
@@ -639,10 +639,14 @@ export const mediaTools: ToolDefinition[] = [
         provider = "xai"
       } else if (providerOverride === "openai") {
         provider = "openai"
+      } else if (providerOverride === "minimax") {
+        provider = "minimax"
       } else {
         // Auto-detect
         if (activeProfile && ((activeProfile.provider as string) === "xai-oauth" || (activeProfile.provider as string) === "xai" || activeProfile.baseUrl.includes("x.ai"))) {
           provider = "xai"
+        } else if (activeProfile && ((activeProfile.provider as string) === "minimax" || activeProfile.baseUrl.toLowerCase().includes("minimax"))) {
+          provider = "minimax"
         } else {
           const { loadGrokTokens } = await import("../../runtime/providers/grokAuth.ts")
           const hasGrokTokens = await loadGrokTokens().then(t => !!t).catch(() => false)
@@ -683,6 +687,18 @@ export const mediaTools: ToolDefinition[] = [
           }
         }
         model = quality === "quality" ? "grok-imagine-image-quality" : "grok-imagine-image"
+      } else if (provider === "minimax") {
+        // MiniMax — image-01 (default). API key del perfil activo, o
+        // fallback a MINIMAX_API_KEY / ANTHROPIC_AUTH_TOKEN (la misma que
+        // se usa para chat con el endpoint Anthropic-compatible).
+        baseUrl = "https://api.minimax.io/v1"
+        if (activeProfile && (activeProfile.provider as string) === "minimax") {
+          apiKey = activeProfile.apiKey.trim()
+          model = activeProfile.model.trim() || "image-01"
+        } else {
+          apiKey = (process.env.MINIMAX_API_KEY ?? process.env.ANTHROPIC_AUTH_TOKEN ?? "").trim()
+          model = "image-01"
+        }
       } else {
         // OpenAI
         if (activeProfile) {
@@ -699,8 +715,9 @@ export const mediaTools: ToolDefinition[] = [
       if (!apiKey) {
         return formatToolError(
           `No se encontraron credenciales válidas para el proveedor '${provider}'. ` +
-          `Por favor, configura xAI Grok OAuth ejecutando 'monolito auth xai-oauth' en tu terminal, ` +
-          `o configura la variable de entorno XAI_API_KEY / OPENAI_API_KEY.`
+          `Para xAI Grok, ejecutá 'monolito auth xai-oauth' en tu terminal o configurá XAI_API_KEY. ` +
+          `Para OpenAI, configurá OPENAI_API_KEY. ` +
+          `Para MiniMax, asegurate de tener un perfil activo con provider='minimax' o configurá MINIMAX_API_KEY (o ANTHROPIC_AUTH_TOKEN como fallback).`
         )
       }
 
@@ -716,6 +733,7 @@ export const mediaTools: ToolDefinition[] = [
           resolution: "1k"
         }
       } else {
+        // OpenAI / MiniMax — mismo body OpenAI-style.
         let size = "1024x1024"
         if (aspect_ratio === "16:9") {
           size = "1792x1024"
@@ -726,8 +744,9 @@ export const mediaTools: ToolDefinition[] = [
         } else if (aspect_ratio === "3:4") {
           size = "768x1024"
         }
+        const defaultModel = provider === "minimax" ? "image-01" : "dall-e-3"
         payload = {
-          model: model || "dall-e-3",
+          model: model || defaultModel,
           prompt: prompt,
           size: size,
           n: 1

@@ -12,6 +12,17 @@ additions and `PATCH` on fixes that do not change behavior.
 
 ## [Unreleased]
 
+### Added
+
+- **`GenerateImage` soporta `provider: "minimax"` con auto-detección**:
+  cuando el perfil activo es MiniMax (o el `baseUrl` contiene `minimax`),
+  la tool enruta a `https://api.minimax.io/v1/images/generations` con
+  modelo `image-01` por default. La API key se reusa del perfil activo
+  (la misma del chat) y, si se fuerza el provider con un perfil distinto,
+  cae a `MINIMAX_API_KEY` con `ANTHROPIC_AUTH_TOKEN` como fallback.
+  Mismo body OpenAI-style que la rama DALL-E. Sin cambios para Grok /
+  OpenAI. (`src/core/tools/domains/media.ts`).
+
 ### Added (Fase 17-24 — final parity push)
 
 - **Fase 17 — 13 bash security validators restantes**:

@@ -124,9 +124,24 @@ Supported provider labels are:
 - `openai_compatible`
 - `anthropic_compatible`
 - `ollama`
-- `minimax`
+- `minimax` — provider de chat (endpoint Anthropic-compatible) **y** de
+  `GenerateImage` (endpoint OpenAI-compatible en
+  `https://api.minimax.io/v1/images/generations`, modelo `image-01`)
 
 The first created profile becomes active automatically.
+
+`GenerateImage` auto-detecta el proveedor de imagen siguiendo este orden:
+
+1. `provider` explícito en el input del tool.
+2. Perfil activo Grok / OAuth → Grok (`grok-imagine-image`).
+3. Perfil activo con `provider="minimax"` o `baseUrl` conteniendo
+   `minimax` → MiniMax (`image-01`).
+4. Tokens Grok o `XAI_API_KEY` en env → Grok.
+5. Perfil `openai_compatible` / `anthropic_compatible` → OpenAI/DALL-E.
+6. Default → Grok.
+
+Si forzás `provider: "minimax"` con un perfil activo distinto, se lee
+`MINIMAX_API_KEY` del entorno (con fallback a `ANTHROPIC_AUTH_TOKEN`).
 
 ## Effective configuration
 
