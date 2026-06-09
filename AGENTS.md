@@ -234,6 +234,7 @@ Monolito V2 implements a transaction-like execution mechanism for tools with irr
 - **Fuentes de Verdad**: Consulta de forma dinámica el perfil del usuario (`BOOT_USER`) y recuerda memorias semánticas afines al contexto (`palace_nodes` de RAG).
 - **Ejemplo Práctico**: Si el usuario ha instruido al agente mediante lenguaje natural *"siempre verifica las fotos con VisionAnalyze antes de mandarlas por Telegram"*, esa regla se almacena en memoria. El Side-Effect Guard detecta que se intenta ejecutar `TelegramSendPhoto` sin haber llamado previamente a `VisionAnalyze` en el turno y bloquea preventivamente la acción.
 - **Fail-Safe**: Si la validación del LLM falla por timeout o error técnico, el guardián actúa en modo permisivo y **aprueba** por defecto para asegurar la continuidad operativa de la sesión.
+- **Diagnóstico de bloqueos**: cada rechazo del guard emite un `logger.warn` estructurado a `~/.monolito/logs/monolitod.log` con el prefijo `[SideEffectGuard] BLOCKED`. Para investigar un bloqueo desde la tool loop, llamá a `QueryGuardStatus` (tool read-only en `admin.ts`) — devuelve los últimos N eventos del worklog con `at`, `reason` y `level0Override`. La tool se complementa con `grep "[SideEffectGuard]" ~/.monolito/logs/monolitod.log` para el audit trail completo (incluye el pending tool list).
 
 ## Destructive Action Guard
 
