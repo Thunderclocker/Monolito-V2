@@ -2514,16 +2514,42 @@ Review the existing skill library and apply the curation heuristics in your inst
         let lastAssistantReplyForRalph = ""
         let lastUserTextForRalph = preparedUserText
         let effectiveRagSession = ragSession
+        // Ralph feedback is in-memory only: it MUST be visible to the agent
+        // loop on the next iteration (so the model re-attempts the work) but
+        // MUST NOT be persisted as a user-rol message. Persisting it would
+        // (a) inflate the DB with up to 20 synthetic user messages per loop,
+        // (b) trip the veracity guard into auditing phantom user turns, and
+        // (c) pollute the transcript seen by forensics and SessionForensics.
+        let pendingRalphFeedback: string | null = null
+        // Set when the gate hits TOP_LEVEL_RALPH_MAX_ATTEMPTS so we can hand
+        // the user a real TASK_FAILED message instead of falling into the
+        // "Suppressed empty assistant response" silent path.
+        let ralphExhaustedMessage: string | null = null
 
         while (true) {
           const apiStartedAt = Date.now()
-          // Re-read the session on subsequent iterations so the
-          // re-fed feedback prompt (appended as a user message) is
-          // visible to the agent loop.
+          // Re-read the session on subsequent iterations so any persisted
+          // state (e.g. user message the orchestrator already appended via
+          // a sub-agent's <task-notification>) is visible to the agent loop.
           if (ralphAttempt > 1) {
             const refreshed = getSession(this.rootDir, sessionId)
             if (refreshed) {
               effectiveRagSession = await prepareSemanticRagSession(this.rootDir, refreshed, profileId)
+            }
+          }
+          // Inject the ephemeral Ralph feedback into the in-memory session
+          // for THIS iteration only. The model still sees it (so it can
+          // re-attempt the unfinished work) but it is not persisted to the
+          // `messages` table — see comment on `pendingRalphFeedback` above.
+          if (pendingRalphFeedback) {
+            const feedback = pendingRalphFeedback
+            pendingRalphFeedback = null
+            effectiveRagSession = {
+              ...effectiveRagSession,
+              messages: [
+                ...effectiveRagSession.messages,
+                { role: "user", text: feedback, at: new Date().toISOString() },
+              ],
             }
           }
           // Reset the auto-delegate gate at the start of each turn /
@@ -2596,15 +2622,27 @@ Review the existing skill library and apply the curation heuristics in your inst
           if (!gate.blocked) break
 
           if (ralphAttempt >= TOP_LEVEL_RALPH_MAX_ATTEMPTS) {
+            // Build an honest user-facing TASK_FAILED message so the user
+            // actually gets told the model gave up, instead of the silent
+            // "Suppressed empty assistant response" path that leaves them
+            // staring at a stale "Thinking." spinner.
+            const unfinishedSummary = gate.unfinished
+              .slice(0, 5)
+              .map(t => t.content)
+              .join(", ")
+            ralphExhaustedMessage =
+              `⚠️ No pude completar la tarea después de ${TOP_LEVEL_RALPH_MAX_ATTEMPTS} intentos. ` +
+              `Quedaron pendientes: ${unfinishedSummary}. ` +
+              `Si querés que reintente con otra estrategia, mandame el pedido explícito.`
             appendWorklog(this.rootDir, sessionId, {
               type: "note",
-              summary: `[Top-level Ralph] Exhausted ${TOP_LEVEL_RALPH_MAX_ATTEMPTS} attempts with ${gate.unfinished.length} unfinished tasks. Delivering last turn with task failure marker.`,
+              summary: `[Top-level Ralph] Exhausted ${TOP_LEVEL_RALPH_MAX_ATTEMPTS} attempts with ${gate.unfinished.length} unfinished tasks. Delivering user-facing TASK_FAILED message.`,
             })
             break
           }
           appendWorklog(this.rootDir, sessionId, {
             type: "note",
-            summary: `[Top-level Ralph] Blocked delivery on attempt ${ralphAttempt}/${TOP_LEVEL_RALPH_MAX_ATTEMPTS}: ${gate.unfinished.length} unfinished tasks. Re-feeding feedback prompt.`,
+            summary: `[Top-level Ralph] Blocked delivery on attempt ${ralphAttempt}/${TOP_LEVEL_RALPH_MAX_ATTEMPTS}: ${gate.unfinished.length} unfinished tasks. Re-feeding feedback prompt (ephemeral, not persisted).`,
           })
           ralphAttemptHistory.push({
             attempt: ralphAttempt,
@@ -2612,15 +2650,14 @@ Review the existing skill library and apply the curation heuristics in your inst
             summary: `${gate.unfinished.length} unfinished: ${gate.unfinished.map(t => t.content).slice(0, 3).join(" | ")}`,
           })
           if (gate.feedbackPrompt) {
-            // The Ralph Gate's feedback is internal orchestration: the
-            // sub-agent (or main agent) needs to see it so it re-attempts
-            // the unfinished work, but it is NOT user-facing output.
-            // Sub-agents report to the orchestrator, not to the user.
-            // Marked hiddenFromUser so getSession filters it out of the
-            // CLI transcript. The model still reads it on the next turn.
-            appendMessage(this.rootDir, sessionId, "user", gate.feedbackPrompt, {
-              hiddenFromUser: true,
-            })
+            // Ephemeral feedback: we keep it in `pendingRalphFeedback` and
+            // inject it into the next iteration's in-memory session below.
+            // It is NOT appended to the `messages` table — that caused the
+            // 2026-06-09 incident where 19 identical user-role messages
+            // were persisted in 540 ms, triggering 20 LLM-judge veracity
+            // calls (each failing on markdown-fenced JSON) and ballooning
+            // the context window.
+            pendingRalphFeedback = gate.feedbackPrompt
             lastUserTextForRalph = gate.feedbackPrompt
           }
           ralphAttempt++
@@ -2652,6 +2689,18 @@ Review the existing skill library and apply the curation heuristics in your inst
 
         let userFacingText = sanitizeExternalAssistantText(sessionId, turn.finalText, preparedUserText)
         const hasSideEffects = turn.steps?.some(step => step.type === "tool" && getTool(step.tool)?.sideEffect === true)
+
+        // Ralph Gate escape hatch: when the top-level Ralph loop hit
+        // TOP_LEVEL_RALPH_MAX_ATTEMPTS, override the user-facing text with
+        // the honest TASK_FAILED message we built inside the loop. Without
+        // this override, the `shouldSuppressEmit` path below would treat
+        // the empty assistant reply as "nothing to say" and silently
+        // deliver nothing — leaving the user staring at a stale
+        // "Thinking." spinner with no explanation. See 2026-06-09 incident
+        // (19 silent attempts, no user-visible signal).
+        if (ralphExhaustedMessage) {
+          userFacingText = ralphExhaustedMessage
+        }
 
         // Robustness: when the turn ended with an error/timeout but the
         // Ralph gate has already closed the cognitive task list (every

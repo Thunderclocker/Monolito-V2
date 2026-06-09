@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { checkTurnIntegrity } from "./veracityGuard.ts"
+import { checkTurnIntegrity, parseAuditorJson } from "./veracityGuard.ts"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -287,5 +287,93 @@ test("LLM auditor: pass-through when LLM reports no violation", async () => {
     )
     assert.equal(res.verified, true)
     assert.equal(res.type, "none")
+  } finally { cleanupRootDir(rootDir) }
+})
+
+// -----------------------------------------------------------------------------
+// parseAuditorJson — defensive JSON parser for the LLM auditor's response.
+// Regression tests for the markdown-fence bug observed in production on
+// 2026-06-09: the auditor responded with ```json ... ``` and JSON.parse threw,
+// producing 14+ [VERACITY_GUARD_UNVERIFIED] log lines per Ralph Loop attempt.
+// -----------------------------------------------------------------------------
+
+test("parseAuditorJson: clean JSON passes through", () => {
+  const r = parseAuditorJson(
+    JSON.stringify({ hasBrokenPromise: false, hasFalsifiedExecution: true, reason: "x" }),
+  )
+  assert.ok(r)
+  assert.equal(r.hasFalsifiedExecution, true)
+  assert.equal(r.hasBrokenPromise, false)
+  assert.equal(r.reason, "x")
+})
+
+test("parseAuditorJson: extracts from ```json ... ``` markdown fence", () => {
+  const fenced = [
+    "```json",
+    "{",
+    '  "hasBrokenPromise": false,',
+    '  "hasFalsifiedExecution": true,',
+    '  "hasUnverifiedIncapacity": false,',
+    '  "reason": "matched structural pattern"',
+    "}",
+    "```",
+  ].join("\n")
+  const r = parseAuditorJson(fenced)
+  assert.ok(r)
+  assert.equal(r.hasFalsifiedExecution, true)
+  assert.equal(r.reason, "matched structural pattern")
+})
+
+test("parseAuditorJson: extracts from ``` ... ``` fence without language tag", () => {
+  const r = parseAuditorJson("```\n{\"hasBrokenPromise\":true}\n```")
+  assert.ok(r)
+  assert.equal(r.hasBrokenPromise, true)
+})
+
+test("parseAuditorJson: ignores prose prefix/suffix around JSON object", () => {
+  const r = parseAuditorJson(
+    'Here is my verdict:\n{"hasBrokenPromise":false,"hasFalsifiedExecution":false,"reason":""}\nDone.',
+  )
+  assert.ok(r)
+  assert.equal(r.hasFalsifiedExecution, false)
+})
+
+test("parseAuditorJson: returns null on pure garbage", () => {
+  assert.equal(parseAuditorJson("definitely not json"), null)
+  assert.equal(parseAuditorJson(""), null)
+  assert.equal(parseAuditorJson("```\nsome prose without json\n```"), null)
+})
+
+test("parseAuditorJson: returns null when no boolean field is present", () => {
+  // We captured a fragment of unrelated JSON (e.g. response metadata), not the verdict.
+  assert.equal(parseAuditorJson('{"unrelated":"object","foo":42}'), null)
+})
+
+test("checkTurnIntegrity: survives LLM auditor returning markdown-fenced JSON", async () => {
+  const rootDir = createRootDir()
+  try {
+    const mockLLM = async () => ({
+      text: [
+        "```json",
+        "{",
+        '  "hasBrokenPromise": false,',
+        '  "hasFalsifiedExecution": true,',
+        '  "hasUnverifiedIncapacity": false,',
+        '  "reason": "Fenced JSON response"',
+        "}",
+        "```",
+      ].join("\n"),
+    })
+    // Text must NOT trigger deterministic pre-check (no first-person past claim,
+    // no structural tool output). Long enough to pass the trivial length gate.
+    const res = await checkTurnIntegrity(
+      rootDir,
+      "Status of the local container: socket not present. Permission model denies the request.",
+      [],
+      mockLLM,
+    )
+    assert.equal(res.verified, false)
+    assert.equal(res.type, "falsified_execution")
+    assert.equal(res.reason, "Fenced JSON response")
   } finally { cleanupRootDir(rootDir) }
 })

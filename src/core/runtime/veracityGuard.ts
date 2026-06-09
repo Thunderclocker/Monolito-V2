@@ -165,11 +165,16 @@ Tools executed in this turn: [${toolsCalledInTurn.join(", ")}]`;
       maxTokens: 160,
     })
 
-    const parsed = JSON.parse(text.trim()) as {
-      hasBrokenPromise: boolean
-      hasFalsifiedExecution: boolean
-      hasUnverifiedIncapacity: boolean
-      reason?: string
+    const parsed = parseAuditorJson(text)
+    if (parsed === null) {
+      // Malformed JSON (e.g. model wrapped response in ```json ... ``` fence
+      // or output got truncated). Fail-graceful: log and let the turn through.
+      console.error(
+        `[VERACITY_GUARD_UNVERIFIED] malformed auditor JSON. ` +
+        `Raw: ${text.slice(0, 200).replace(/\s+/g, " ")}. ` +
+        `Assistant text was NOT validated this turn.`,
+      )
+      return { verified: true, type: "none" }
     }
 
     if (parsed.hasFalsifiedExecution === true) {
@@ -210,6 +215,56 @@ Tools executed in this turn: [${toolsCalledInTurn.join(", ")}]`;
   }
 
   return { verified: true, type: "none" }
+}
+
+/**
+ * Defensive JSON parser for the LLM auditor's response.
+ *
+ * The auditor is asked to respond with strict JSON, but in practice the model
+ * often wraps its answer in a ```json ... ``` markdown fence, prefixes it with
+ * prose, or appends trailing text. This parser handles all three cases
+ * without throwing — returns `null` when no valid JSON object can be extracted.
+ *
+ * Strategy (same shape as `parseFicha` in memoryConsolidationPipeline.ts):
+ *   1. Trim outer whitespace.
+ *   2. If wrapped in a ``` ... ``` fence, extract the inner content.
+ *   3. Find the first `{` and the last `}` and parse that substring.
+ *   4. Return `null` on any failure (caller logs and fail-opens).
+ */
+export function parseAuditorJson(raw: string): {
+  hasBrokenPromise: boolean
+  hasFalsifiedExecution: boolean
+  hasUnverifiedIncapacity: boolean
+  reason?: string
+} | null {
+  if (!raw) return null
+  let text = raw.trim()
+  // Strip ```json ... ``` or ``` ... ``` fence
+  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/)
+  if (fenceMatch) text = fenceMatch[1].trim()
+  // Locate the JSON object boundaries defensively
+  const first = text.indexOf("{")
+  const last = text.lastIndexOf("}")
+  if (first < 0 || last < 0 || last <= first) return null
+  const candidate = text.slice(first, last + 1)
+  try {
+    const obj = JSON.parse(candidate) as Record<string, unknown>
+    // Minimal shape validation: must have at least one boolean field, otherwise
+    // we likely captured a fragment of unrelated prose.
+    const hasAnyFlag =
+      typeof obj.hasBrokenPromise === "boolean" ||
+      typeof obj.hasFalsifiedExecution === "boolean" ||
+      typeof obj.hasUnverifiedIncapacity === "boolean"
+    if (!hasAnyFlag) return null
+    return {
+      hasBrokenPromise: Boolean(obj.hasBrokenPromise),
+      hasFalsifiedExecution: Boolean(obj.hasFalsifiedExecution),
+      hasUnverifiedIncapacity: Boolean(obj.hasUnverifiedIncapacity),
+      reason: typeof obj.reason === "string" ? obj.reason : undefined,
+    }
+  } catch {
+    return null
+  }
 }
 
 /**
