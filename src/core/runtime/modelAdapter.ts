@@ -11,6 +11,7 @@ import { createLogger, type Logger } from "../logging/logger.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider } from "./modelRegistry.ts"
 import { compactSession, fileMemory, getSession, getRawMessagesForSession, getDb, readSessionSources, updateWorkerJobStatus, upsertWorkerJob, tailEvents, listSessionTasks, listDynamicSkills, appendWorklog, saveResolvedError, querySimilarErrors, deleteMessages, rewriteMessageInPlace } from "../session/store.ts"
+import { wrapAuditFeedback } from "./auditFeedback.ts"
 import { incrementalFlushSession, getContextFlushThresholdChars } from "../context/incrementalFlush.ts"
 import { callProvider, type ConversationMessage, type ProviderConfig, type ProviderResponse, type ToolCall } from "./providers/index.ts"
 import { ensureMonolitoRoot } from "../system/root.ts"
@@ -1251,9 +1252,12 @@ Considera esta estrategia de solución.`
 
           messages.push({
             role: "user",
-            content: `[SYSTEM ALERT - TDD FAIL-SAFE] Tu respuesta ha sido RECHAZADA.
-No puedes dar por finalizada la tarea porque el último comando o prueba ejecutada en este turno falló (error de herramienta "${lastFailureTool}" o exitCode != 0).
-Debes corregir el código del workspace y ejecutar con éxito las pruebas correspondientes antes de responder al usuario.${semanticHelper}`
+            content: wrapAuditFeedback(
+              `TDD fail-safe rechazó tu última respuesta: el último comando o prueba falló ` +
+              `(error de herramienta "${lastFailureTool}" o exitCode != 0). ` +
+              `Corregí el código del workspace y ejecutá las pruebas con éxito antes de responder al usuario.` +
+              semanticHelper,
+            ),
           })
           continue
         }
@@ -1623,7 +1627,9 @@ ACCION REQUERIDA: ejecutá al menos una tool en este turno ANTES de declarar que
               toolCallId: buffered.toolCall.id,
               toolName: buffered.toolCall.name,
               content: formatToolEvidenceResult(buffered.toolCall, "blocked", {
-                error: `[Side-Effect Guard] Ejecución bloqueada: ${evaluation.reason}`
+                error: wrapAuditFeedback(
+                  `Side-Effect Guard rechazó la ejecución: ${evaluation.reason}`,
+                ),
               }),
             }
           }
@@ -1775,8 +1781,13 @@ Considera esta estrategia de solución.`
 
         messages.push({
           role: "user",
-          content: `[SYSTEM ALERT - TDD-REACT FAIL-SAFE] Se detectó un fallo de ejecución en la herramienta "${failedToolName}".
-Si esto corresponde a un error de compilación, una excepción no controlada o una prueba unitaria rota (FAIL/tests failed), debes analizar con absoluta precisión el log de error anterior, localizar el archivo fuente correspondiente en el workspace y aplicar la corrección técnica en este mismo turno. No ignores el error ni finalices el turno diciendo que completaste la tarea sin haber resuelto y verificado exitosamente el problema.${semanticHelper}`
+          content: wrapAuditFeedback(
+            `TDD-react fail-safe detectó un fallo de ejecución en la herramienta "${failedToolName}". ` +
+            `Si es un error de compilación, excepción no controlada o prueba rota, analizá el log anterior, ` +
+            `localizá el archivo fuente en el workspace y aplicá la corrección en este mismo turno. ` +
+            `No ignores el error ni finalices el turno diciendo que completaste la tarea sin haberla resuelto.` +
+            semanticHelper,
+          ),
         })
       }
       // NOTE: Turn integrity (veracity + commitment) is already checked

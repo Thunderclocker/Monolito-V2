@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { type MonolitoV2Runtime } from "./runtime.ts"
 import { runBackgroundTextTask } from "./modelAdapter.ts"
+import { wrapAuditFeedback } from "./auditFeedback.ts"
 import { ensureDirs } from "../ipc/protocol.ts"
 import { type WorkerJobStatus } from "../db/schema.ts"
 import {
@@ -713,29 +714,26 @@ function buildRalphLoopPrompt(
   escapeAt: number,
   toolAnchors: Array<{ tool: string; brief: string }> = [],
 ): string {
-  return [
-    task.trim(),
+  // Same wrapper treatment as the top-level unfinished-tasks prompt:
+  // sub-agents otherwise leak audit vocabulary into their <task-notification>
+  // replies back to the orchestrator.
+  const body = [
+    `El tag de verificación (${SUBAGENT_VERIFICATION_TAG}) no se emitió o no es válido en la última respuesta.`,
     "",
-    `[Ralph Loop] ATTEMPT ${attempt}/20 — you tried to finalize without the required verification tag.`,
+    "Caminos válidos:",
+    "1. Ejecutá las tool calls que faltan y re-emití el tag cuando el trabajo esté hecho de verdad.",
+    "2. Si el task no requiere tool execution, devolvé TASK_FAILED:<razón>.",
+    "3. Si sos un sub-agent sin tools suficientes, emití TASK_FAILED:INSUFFICIENT_TOOLS — el orchestrator re-delegará con el toolset correcto.",
     "",
-    "Why this is not a workaround for the verification tag:",
-    `- The tag (${SUBAGENT_VERIFICATION_TAG}) is the runtime's way to know that the work has actually been performed with real tool evidence.`,
-    "- Emitting it without doing the work creates a no-op success claim that the Coherence Guard and the veracity checks will catch downstream.",
-    "- The tag is reserved for genuine completion. A task you cannot complete should return a structured failure instead of a fake success.",
-    "",
-    "To satisfy the tag legitimately, you need to demonstrate (with real tool calls) that the work was done. Possible paths:",
-    "1. Actually execute the missing tool calls and re-emit the tag once they succeed.",
-    "2. If the task doesn't require tool execution, return a STRUCTURED FAILURE (TASK_FAILED:<reason>) explaining why instead of the success tag.",
-    "3. If a sub-agent, report TASK_FAILED:INSUFFICIENT_TOOLS — the orchestrator will re-delegate with the right toolset.",
-    "",
-    "REACTIVE LOOP: the TOOL ANCHORS section below lists every tool you have already called in this task. To produce a valid tag you must do work that is NOT in that list. Either run a new tool, or run one of those tools with a meaningfully different input. Re-issuing an already-attempted tool call with the same input is not progress and the tag will be rejected again.",
+    "No emitas el tag sin trabajo real. Re-correr la misma tool con el mismo input no es progreso.",
     "",
     buildAttemptHistorySection(history),
     buildToolAnchorSection(toolAnchors),
     buildEscapeHatchSection(attempt, escapeAt, history),
-    "Your last rejected response (DO NOT repeat the same response, even with a different preamble):",
+    "Última respuesta rechazada (no repitas el mismo contenido):",
     clip(assistantReply, 500),
   ].filter(Boolean).join("\n")
+  return wrapAuditFeedback(body)
 }
 
 
@@ -749,31 +747,31 @@ export function buildRalphLoopUnfinishedTasksPrompt(
   toolAnchors: Array<{ tool: string; brief: string }> = [],
 ): string {
   const listStr = unfinished.map(t => `- [${t.status.toUpperCase()}] ${t.content}`).join("\n")
-  return [
-    task.trim(),
-    "",
-    `[Ralph Loop] ATTEMPT ${attempt}/20 — you tried to finalize while the cognitive task list has pending or in-progress items.`,
-    "",
-    "The task list is the orchestrator's source of truth for what you committed to do. Closing the turn while items remain in_progress means you're claiming success on incomplete work.",
-    "",
-    "Items still open:",
+  // The previous version of this prompt leaked audit vocabulary into the
+  // model's replies ("the Coherence Guard", "task list source of truth",
+  // "TOOL ANCHORS", "verification tag"), which the model then parroted
+  // back to the user in defensive disclaimers. We now route the body
+  // through wrapAuditFeedback so the model gets explicit demarcation and
+  // a "respond naturally" reminder, instead of a plain user-rol message
+  // that reads like orchestration notes.
+  const body = [
+    `Tareas en tu lista que quedaron abiertas:`,
     listStr,
     "",
-    "To close the loop, you have two valid paths:",
-    "1. COMPLETE THE WORK: for each pending item, actually do the work, then call TodoWrite with the full updated list marking them as completed. The verification tag is required ONLY when the work is genuinely done.",
-    "2. RESTRUCTURE: if the work breakdown was wrong, call TodoWrite with a corrected list (add blockers as new in_progress items, mark abandoned items as completed with a note in activeForm explaining why, etc.).",
-    "3. STRUCTURED FAILURE: if the work cannot be completed, return TASK_FAILED:<reason> instead of the success tag.",
+    "Para cerrar:",
+    "1. Si podés completar las tareas pendientes, hacelo y marcalas con TodoWrite.",
+    "2. Si el breakdown estaba mal, corregilo con TodoWrite.",
+    "3. Si no podés, emití TASK_FAILED:<razón>.",
     "",
-    "Do NOT mark items as completed without doing the work. The Coherence Guard treats that as INCOHERENT.",
-    "",
-    "REACTIVE LOOP: the TOOL ANCHORS section below lists every tool you have already called in this task. Re-running a tool with the same input is not progress. Either build on the output you have or pick a different tool.",
+    "No marques tasks como completed sin haberlas hecho.",
     "",
     buildAttemptHistorySection(history),
     buildToolAnchorSection(toolAnchors),
     buildEscapeHatchSection(attempt, escapeAt, history),
-    "Your last rejected response (DO NOT repeat the same response):",
+    `Última respuesta rechazada (no repitas el mismo contenido):`,
     clip(assistantReply, 500),
   ].filter(Boolean).join("\n")
+  return wrapAuditFeedback(body)
 }
 
 // =============================================================================

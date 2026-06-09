@@ -83,8 +83,12 @@ test("evaluateTopLevelRalphGate: blocks when there are pending tasks", () => {
   assert.ok(typeof result.feedbackPrompt === "string", "Gate must return a feedback prompt")
   assert.ok(result.feedbackPrompt.length > 0, "Feedback prompt must be non-empty")
   assert.ok(
-    result.feedbackPrompt.includes("Ralph Loop") || result.feedbackPrompt.includes("unfinished"),
-    "Feedback prompt must reference the Ralph Loop mechanism",
+    result.feedbackPrompt.includes("AUDIT FEEDBACK"),
+    "Feedback prompt must be wrapped with the audit demarcation",
+  )
+  assert.ok(
+    result.feedbackPrompt.includes("Tareas en tu lista que quedaron abiertas"),
+    "Feedback prompt must reference the unfinished tasks list",
   )
   assert.ok(
     result.feedbackPrompt.includes("Save preferences and tasks to Memory Palace rooms"),
