@@ -185,6 +185,7 @@ ${pendingTools.map(t => `${t.name}(${JSON.stringify(t.input).slice(0, 200)})`).j
         .join(", ")
       guardLogger?.warn(
         `[SideEffectGuard] BLOCKED profileId=${profileId} ` +
+        `adultMode=${options?.adultMode === true ? "true" : "false"} ` +
         `pendingTools=[${pendingSummary}] ` +
         `reason=${JSON.stringify(parsed.reason || "").slice(0, 240)} ` +
         `lastUserMessage=${JSON.stringify(lastUserMessage).slice(0, 200)}`,
