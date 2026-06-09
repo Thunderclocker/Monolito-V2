@@ -127,7 +127,7 @@ export const telegramTools: ToolDefinition[] = [
   name: "TelegramSendAudio",
   aliases: ["telegram_send_audio"],
   permissionTier: "edit",
-  description: "Send an audio file to a Telegram chat. Accepts a Telegram file_id, an HTTP URL, or a local file path. Local files should usually be mp3, m4a, or aac.",
+  description: "Send an audio file to a Telegram chat. Accepts a Telegram file_id, an HTTP URL, or a local file path (use the local_path returned by GenerateSpeech, VoiceClone, or scratchpad files). Local files should be mp3, m4a, or aac. The `audio` field MUST be a non-empty string — do NOT pass an empty string or omit the field; if the path is unknown, fetch the file first with Read/Glob. TelegramSendAudio is a side-effect tool; if the side-effect guard blocks it, call QueryGuardStatus to find out why before retrying.",
   inputSchema: {
     type: "object",
     properties: {
@@ -176,7 +176,7 @@ export const telegramTools: ToolDefinition[] = [
   name: "TelegramSendVoice",
   aliases: ["telegram_send_voice"],
   permissionTier: "edit",
-  description: "Send a voice note to a Telegram chat. Accepts a Telegram file_id, an HTTP URL, or a local file path. Local files should usually be ogg or opus.",
+  description: "Send a voice note to a Telegram chat. Accepts a Telegram file_id, an HTTP URL, or a local file path (use the local_path returned by GenerateSpeech or scratchpad files). Local files should be ogg or opus. The `voice` field MUST be a non-empty string — do NOT pass an empty string or omit the field. TelegramSendVoice is a side-effect tool; if the side-effect guard blocks it, call QueryGuardStatus to find out why before retrying.",
   inputSchema: {
     type: "object",
     properties: {
