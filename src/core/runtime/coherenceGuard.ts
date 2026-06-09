@@ -7,6 +7,56 @@ export interface CoherenceCheckResult {
 }
 
 /**
+ * Bug #8 (09-jun-2026): capability snapshot passed to the LLM judge so it
+ * can validate 'claims of limitation' against ground truth. Without this,
+ * the agent can claim 'Bash can't reach the host' or 'I don't have
+ * access to docker' and the judge has no way to know the claim is false.
+ * Before: empirically the agent did exactly that — said "Bash no sale al
+ * host" when Bash has full host access (confirmed by `docker ps` running
+ * 3 containers from the runtime CWD).
+ */
+export interface AvailableCapabilities {
+  tools: Array<{ name: string; description?: string }>
+  bins: string[]
+}
+
+export const DEFAULT_AVAILABLE_BINS = [
+  "docker",
+  "git",
+  "ssh",
+  "curl",
+  "ls",
+  "cat",
+  "grep",
+  "find",
+  "ps",
+  "awk",
+  "sed",
+  "head",
+  "tail",
+  "wc",
+  "sort",
+  "uniq",
+  "tr",
+  "cut",
+  "xargs",
+  "tee",
+  "rm",
+  "cp",
+  "mv",
+  "mkdir",
+  "chmod",
+  "tar",
+  "gzip",
+  "node",
+  "npm",
+  "npx",
+  "python3",
+  "bash",
+  "sh",
+] as const
+
+/**
  * Valida síncronamente si la respuesta propuesta contradice la información de referencia.
  */
 export async function checkTurnCoherence(
@@ -19,7 +69,8 @@ export async function checkTurnCoherence(
     userPrompt: string,
     options?: { model?: string; maxTokens?: number }
   ) => Promise<{ text: string }>,
-  recentMessages?: Array<{ role: string; text: string }>
+  recentMessages?: Array<{ role: string; text: string }>,
+  availableCapabilities?: AvailableCapabilities
 ): Promise<CoherenceCheckResult> {
   if (!modelText || modelText.trim().length < 15) {
     return { coherent: true }
@@ -52,7 +103,12 @@ export async function checkTurnCoherence(
       ].join("\n")
     }
 
-    // 3. Prompt de verificación basado puramente en coherencia lógica universal.
+    // 3. Build the capabilities block. If no snapshot was passed (legacy
+    //    callers, tests), still emit a generic block so the judge has
+    //    SOMETHING to compare against instead of going blind.
+    const capabilitiesBlock = renderCapabilitiesBlock(availableCapabilities)
+
+    // 4. Prompt de verificación basado puramente en coherencia lógica universal.
     //    Language-agnostic: el judge razona semánticamente, los ejemplos cubren
     //    varios idiomas para que el patrón (no las palabras) sea lo que detecta.
     const systemPrompt = `You are the universal logical-consistency validator for the assistant's proposed response. Your only function is to determine whether there is any logical conflict, contradiction, or incompatibility (direct or indirect) between the assertions in the proposed response and the supplied reference information (recent conversation, user profile, and memory facts).
@@ -74,6 +130,17 @@ ALSO INCOHERENT (sub-agent context):
 - A sub-agent asking for delegation to another worker, escalation, or "I need a different agent with X access"
 - A sub-agent reporting the literal verification tag (the agent's standard sub-agent success tag) when the response also says the task was not completed
 
+FALSIFIED LIMITATION CLAIM (bug #8, 09-jun-2026):
+- If the response claims the agent CANNOT or DOES NOT HAVE access to a capability that IS in fact available per the CAPABILIDADES list below, mark it as INCOHERENT.
+- Examples that MUST be marked INCOHERENT when the capability is listed below:
+  - "Bash can't reach the host" / "Bash no sale al host" / "Bash solo ejecuta dentro del workspace" — when Bash is in the tools list
+  - "I don't have access to docker" / "no tengo docker" / "docker is not available" — when docker is in the bins list
+  - "I cannot read files outside the workspace" / "no puedo leer archivos" — when Read is in the tools list
+  - "I have no visibility of running processes" / "no veo tus contenedores" — when Bash (with docker ps) is in the tools list
+  - "I don't have git" / "no tengo git instalado" — when git is in the bins list
+- Mark these as INCOHERENT with a reason like: "The response falsely claims limitation X, but the capability is in fact available (see CAPABILIDADES). The agent can execute the task itself."
+- Do NOT mark as INCOHERENT legitimate limitations (e.g. "I don't have access to the Slack API" when Slack is not in the tools list — that's a true limitation).
+
 Respond strictly in JSON format:
 {
   "coherent": boolean,
@@ -85,6 +152,8 @@ ${bootUser}
 
 === MEMORIAS SEMÁNTICAS RELACIONADAS ===
 ${semanticMemories || "(No hay memorias semánticas relacionadas)"}
+
+${capabilitiesBlock}
 
 === RESPUESTA A EVALUAR ===
 "${modelText}"`;
@@ -102,6 +171,25 @@ ${semanticMemories || "(No hay memorias semánticas relacionadas)"}
     // Fallback de seguridad operativa: dejar pasar el turno si algo falla en la validación
     return { coherent: true };
   }
+}
+
+/**
+ * Render the capabilities block for the system prompt. Exported for
+ * testing.
+ */
+export function renderCapabilitiesBlock(caps?: AvailableCapabilities): string {
+  if (!caps) {
+    // Legacy fallback: emit a default block based on DEFAULT_AVAILABLE_BINS.
+    // This is worse than a real snapshot but better than nothing.
+    return `=== CAPACIDADES DISPONIBLES ===
+Tools: (snapshot no provisto; el judge debe ser conservador con limitation claims)
+Host bins: ${DEFAULT_AVAILABLE_BINS.join(", ")}`
+  }
+  const toolNames = caps.tools.map(t => t.name).join(", ")
+  const binList = caps.bins.length > 0 ? caps.bins.join(", ") : "(no bin snapshot provided)"
+  return `=== CAPACIDADES DISPONIBLES ===
+Tools registradas: ${toolNames || "(ninguna)"}
+Host bins disponibles en PATH: ${binList}`
 }
 
 /**

@@ -1259,12 +1259,19 @@ Debes corregir el código del workspace y ejecutar con éxito las pruebas corres
 
         // --- COHERENCE GUARD VERIFICATION ---
         const profileId = context.profileId || "default";
+        // Bug #8 (09-jun-2026): pass the live tool registry snapshot so the
+        // coherence-guard judge can validate 'claims of limitation' against
+        // ground truth. Without this, the agent can claim 'Bash no sale
+        // al host' or 'no tengo docker' and the judge has no way to know
+        // the claim is false.
+        const liveTools = listModelTools(false, undefined, undefined, rootDir, false)
         const coherence = await checkTurnCoherence(
           rootDir,
           response.text,
           profileId,
           runBackgroundTextTask,
-          session.messages.slice(-3)
+          session.messages.slice(-3),
+          { tools: liveTools.map(t => ({ name: t.name, description: t.description })), bins: [] }
         );
 
         if (!coherence.coherent) {
