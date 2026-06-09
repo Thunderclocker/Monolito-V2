@@ -1,4 +1,5 @@
 import { readBootWing, recallMemory } from "../session/store.ts"
+import { type Logger } from "../logging/logger.ts"
 
 export interface SideEffectCheckResult {
   approved: boolean
@@ -9,6 +10,23 @@ export interface SideEffectCheckResult {
    * a side-effect tool through despite a profile-level directive.
    */
   level0OverrideDetected?: boolean
+}
+
+let guardLogger: Logger | null = null
+
+/**
+ * Inject a logger so the guard can emit structured `logger.warn` events
+ * when it rejects a side-effect tool. The events land in
+ * `~/.monolito/logs/monolitod.log` (and the daemon's stdout) so users
+ * and agents can `grep "[SideEffectGuard]"` to diagnose why a Telegram
+ * send or other irreversible tool was blocked.
+ *
+ * The injection is a one-shot: callers (typically the runtime at
+ * construction time) pass the daemon logger and forget. Tests can pass
+ * `null` to disable logging.
+ */
+export function setSideEffectGuardLogger(logger: Logger | null) {
+  guardLogger = logger
 }
 
 export async function checkSideEffects(
@@ -101,9 +119,24 @@ ${pendingTools.map(t => `${t.name}(${JSON.stringify(t.input).slice(0, 200)})`).j
     const { text } = await runBackgroundTextTask(rootDir, systemPrompt, userPrompt, {
       maxTokens: 200,
     })
-    const parsed = JSON.parse(text.trim())
+    const parsed = JSON.parse(stripMarkdownCodeFence(text).trim())
     const approved = parsed.approved !== false
     const level0Override = parsed.level0Override === true
+    if (!approved) {
+      // Structured warn so the audit trail is greppable in
+      // monolitod.log. Format intentionally stays one-line JSON-ish so
+      // tools like `grep "[SideEffectGuard]" ~/.monolito/logs/monolitod.log`
+      // can surface the exact reason + pending tool list at a glance.
+      const pendingSummary = pendingTools
+        .map(t => `${t.name}(${JSON.stringify(t.input).slice(0, 80)})`)
+        .join(", ")
+      guardLogger?.warn(
+        `[SideEffectGuard] BLOCKED profileId=${profileId} ` +
+        `pendingTools=[${pendingSummary}] ` +
+        `reason=${JSON.stringify(parsed.reason || "").slice(0, 240)} ` +
+        `lastUserMessage=${JSON.stringify(lastUserMessage).slice(0, 200)}`,
+      )
+    }
     return {
       approved,
       reason: parsed.reason || undefined,
@@ -111,6 +144,25 @@ ${pendingTools.map(t => `${t.name}(${JSON.stringify(t.input).slice(0, 200)})`).j
     }
   } catch (e) {
     // Fail-safe: aprobar si el guard falla (mismo principio que coherenceGuard)
+    guardLogger?.warn(
+      `[SideEffectGuard] LLM_JUDGE_FAILED falling back to approve. ` +
+      `profileId=${profileId} ` +
+      `pendingTools=[${pendingTools.map(t => t.name).join(", ")}] ` +
+      `error=${e instanceof Error ? e.message : String(e)}`,
+    )
     return { approved: true }
   }
+}
+
+/**
+ * Strip markdown code-fence wrappers from an LLM JSON response. Some
+ * judges wrap the JSON object in ```json ... ``` even when told to
+ * respond with raw JSON. Without this, JSON.parse throws.
+ */
+function stripMarkdownCodeFence(text: string): string {
+  if (!text) return text
+  const trimmed = text.trim()
+  const fenceMatch = trimmed.match(/^```(?:json|JSON)?\s*\n([\s\S]*?)\n?```\s*$/)
+  if (fenceMatch?.[1]) return fenceMatch[1].trim()
+  return trimmed
 }

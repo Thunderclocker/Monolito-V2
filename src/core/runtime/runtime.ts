@@ -83,6 +83,7 @@ import { createLogger, createSessionContext, runWithContext, type Logger } from 
 const logger = createLogger("runtime")
 import type { DelegationTask } from "./orchestrator.ts"
 import { normalizeTtsConfig } from "../channels/config.ts"
+import { setSideEffectGuardLogger } from "./sideEffectGuard.ts"
 import {
   deployManagedSttContainer,
   getManagedSttBaseUrl,
@@ -1175,6 +1176,11 @@ reference this automated system check in your response. Do not say
   constructor(rootDir: string) {
     this.rootDir = rootDir
     this.orchestrator = new AgentOrchestrator(this)
+    // Wire the side-effect guard to the runtime logger so that when the
+    // guard rejects a tool the event lands in ~/.monolito/logs/monolitod.log
+    // (and stdout) as a structured `[SideEffectGuard] BLOCKED ...` line.
+    // Users and agents can then `grep` for the reason instead of guessing.
+    setSideEffectGuardLogger(logger)
     const db = getDb(this.rootDir)
     ensureConfigWings(this.rootDir)
     reconcileSystemWings(db, rootDir)
