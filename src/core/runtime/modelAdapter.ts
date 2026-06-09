@@ -14,6 +14,7 @@ import { compactSession, fileMemory, getSession, getRawMessagesForSession, getDb
 import { wrapAuditFeedback } from "./auditFeedback.ts"
 import { incrementalFlushSession, getContextFlushThresholdChars } from "../context/incrementalFlush.ts"
 import { callProvider, type ConversationMessage, type ProviderConfig, type ProviderResponse, type ToolCall } from "./providers/index.ts"
+import { looksLikeMalformedToolCall } from "./providers/utils.ts"
 import { ensureMonolitoRoot } from "../system/root.ts"
 import { redactSensitiveText } from "../security/redact.ts"
 import type { AgentYieldEvent } from "./types.ts"
@@ -189,6 +190,7 @@ export type AgentLoopRecoverableAction =
   | "commitment_correction"
   | "incapacity_correction"
   | "operational_interruption"
+  | "malformed_tool_call"
 
 export type AgentLoopEvent =
   | { type: "setup"; sessionId: string; iteration: number; model: string; maxIterations: number; maxTurnDurationMs: number }
@@ -1202,6 +1204,36 @@ export async function* runAgentLoop(
         totalTokens: (response.usage.inputTokens ?? 0) + (response.usage.outputTokens ?? 0),
       } : undefined
       yield { type: "model_invoke_end", sessionId: session.id, iteration, usage: loopUsage, toolCallCount: response.toolCalls.length }
+
+      // --- MALFORMED TOOL-CALL GUARD ---
+      // Symptom observed 2026-06-09 23:21: the provider returned text that
+      // looked like a tool call but no parser (structured, XML directive)
+      // could extract it. The runtime previously delivered the garbage as
+      // a regular assistant message to Telegram. Now we detect the shape
+      // upstream and re-feed the model with a "re-emit using structured
+      // format" prompt instead of leaking the malformed output.
+      if (response.toolCalls.length === 0 && looksLikeMalformedToolCall(response.text)) {
+        const malformedExcerpt = response.text.slice(0, 200)
+        const feedback = wrapAuditFeedback(
+          `Tu última respuesta fue un tool call malformado que no se pudo parsear ` +
+          `(output: "${malformedExcerpt.replace(/\s+/g, " ")}"). ` +
+          `Re-emití el tool call usando el formato JSON estructurado (campo \`tool_calls\`) ` +
+          `o, si no querés llamar a ninguna tool, devolvé texto natural al usuario.`,
+        )
+        yield {
+          type: "recoverable_error",
+          sessionId: session.id,
+          iteration,
+          action: "malformed_tool_call",
+          error: `Provider returned text that looks like a malformed tool call (no parseable tool_calls). Excerpt: ${malformedExcerpt}`,
+        }
+        // Inject the feedback as a user-role message so the model sees it
+        // on the next iteration, but do NOT save it to the persistent
+        // messages table (ephemeral — same pattern as the Ralph Gate
+        // feedback fix).
+        messages.push({ role: "user", content: feedback })
+        continue
+      }
 
       if (response.toolCalls.length === 0) {
         // --- TDD FINALIZATION GUARD ---

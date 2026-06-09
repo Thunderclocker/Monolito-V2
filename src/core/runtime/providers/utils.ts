@@ -151,3 +151,82 @@ export async function callJsonApi(url: string, init: RequestInit) {
 export function normalizeAnthropicToolInput(input: unknown) {
   return normalizeToolInputPayload(input) as Record<string, unknown>
 }
+
+// -----------------------------------------------------------------------------
+// Malformed tool-call detector
+//
+// Symptom observed 2026-06-09 23:21: the model emitted text that looked
+// like a tool call but didn't match any parser pattern:
+//   "<ListMcpResourcesTool /> <old_string> [ListMcpResourcesTool] </parameter>"
+//
+// The structured parser (parseStructuredToolCalls) returned nothing, the
+// XML directive parser didn't match, and the runtime delivered the
+// garbage as a regular assistant message to Telegram. We now flag this
+// upstream and let the agent loop re-feed the model with a "re-emit
+// using the structured format" prompt instead.
+//
+// Detection rules — the text:
+//   1. Starts with `<` and contains a PascalCase XML tag (looks like a
+//      tool call with no body), or
+//   2. Contains a known orphan tag (e.g. `</parameter>`, `</invoke>`,
+//      `</old_string>`) without its opening pair, or
+//   3. Contains a `<toolName ... />` self-closing tag where toolName is
+//      one of the registered tool names (e.g. `<Read />`).
+//
+// This is intentionally conservative: false positives are cheap (we just
+// re-feed the model once) and false negatives leak garbage to the user.
+// -----------------------------------------------------------------------------
+
+const REGISTERED_TOOL_NAMES = [
+  "Bash", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "WebFetch", "WebSearch",
+  "ImageSearch", "TelegramSend", "TelegramSendVoice", "TelegramSendAudio", "TelegramSendPhoto",
+  "TelegramSendDocument", "TelegramGetRecentPhotos", "TelegramGetFile", "DownloadFile",
+  "TelegramDownloadFile", "GenerateSpeech", "VoiceClone", "VisionAnalyze", "GenerateImage",
+  "TranscribeAudio", "SttServiceStatus", "SttServiceDeploy", "SttServiceStop", "SttServiceRemove",
+  "SttServiceList", "BootRead", "BootWrite", "ListWings", "CreateWing", "WorkspaceMemoryFiling",
+  "WorkspaceMemoryRecall", "KgAdd", "KgInvalidate", "KgQuery", "SessionForensics",
+  "AgentSpawn", "AgentSendMessage", "AgentStop", "list_active_workers",
+  "delegate_background_task", "TriggerBackgroundStudy", "AgentList", "ProfileCreate",
+  "TodoWrite", "TodoList", "QuerySessionStatus", "QueryCost", "QuerySessionStats",
+  "CompactSession", "system_status", "system_reboot", "show_master_dashboard",
+  "search_tools", "QueryGuardStatus", "CreateSkill", "DeleteSkill", "ArchiveSkill",
+  "RestoreSkill", "ListSkills", "skill_view", "McpInvokeTool", "LspQuery",
+  "ListMcpResourcesTool", "ReadMcpResourceTool", "GitStatus", "GitDiff", "GitDiffCached",
+  "GitAdd", "GitCommit", "list_files", "pwd", "tool_manage_config", "schedule_task",
+]
+
+const ORPHAN_CLOSING_TAGS = [
+  "</parameter>", "</invoke>", "</old_string>", "</new_string>",
+  "</tool_call>", "</minimax:tool_call>", "</function_calls>",
+]
+
+export function looksLikeMalformedToolCall(text: string): boolean {
+  if (!text || text.length === 0) return false
+  const trimmed = text.trim()
+  // Rule 1: starts with `<` and contains a tool-shaped XML tag (PascalCase
+  // name possibly with self-closing slash or open-without-close).
+  if (trimmed.startsWith("<")) {
+    for (const tool of REGISTERED_TOOL_NAMES) {
+      if (new RegExp(`^<${tool}\\s*/>`).test(trimmed)) return true
+      if (new RegExp(`^<${tool}>\\s*$`).test(trimmed)) return true
+    }
+  }
+  // Self-closing tag where the name is a known tool but not at the
+  // very start (e.g. "garbage <Read /> more garbage"). The leading
+  // boundary is loose (whitespace or start of string) so the regex
+  // matches even when the tag is preceded by a space. This check is
+  // outside the `startsWith("<")` block above because the tag may be
+  // embedded mid-text.
+  if (/(^|\s)<\s*(Read|Edit|Write|Bash|WebFetch|Glob|Grep)\s*\/>/.test(trimmed)) return true
+  // Rule 2: orphan closing tags that suggest a previous tool call was
+  // truncated or split across the response.
+  for (const orphan of ORPHAN_CLOSING_TAGS) {
+    if (trimmed.includes(orphan)) return true
+  }
+  // Rule 3: bracket-only tool call (the JSON form like [Read] or
+  // [Bash] with no other content — strong indicator of malformed output).
+  if (/^\s*\[\s*(Read|Edit|Write|Bash|Glob|Grep|WebFetch|TelegramSend|TelegramSendPhoto)\s*\]\s*$/.test(trimmed)) {
+    return true
+  }
+  return false
+}
