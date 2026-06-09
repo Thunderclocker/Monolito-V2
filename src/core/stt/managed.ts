@@ -56,20 +56,63 @@ function buildModelFallbackChain(config: SttConfig) {
   return [...new Set(candidates)]
 }
 
+/**
+ * Translate a probe failure reason into a user-facing message that
+ * distinguishes 'no responde' (timeout, slow boot) from 'no existe'
+ * (port closed, DNS broken). The old code rendered all of these as
+ * 'no respondió dentro de 300s' which was misleading — 5 minutes of
+ * waiting for a port that's definitely closed.
+ */
+export function formatProbeFailure(model: string, reason: ProbeResult["reason"], maxProbes: number): string {
+  switch (reason) {
+    case "connection_refused":
+      return `${model}: conexión rechazada (puerto cerrado o container no escuchando)`
+    case "dns_error":
+      return `${model}: error de DNS al resolver el host`
+    case "not_listening":
+      return `${model}: container arriba pero puerto no responde /asr (modelo corrupto?)`
+    case "timeout":
+      return `${model}: no respondió dentro de ${maxProbes}s (timeout)`
+    case "other":
+    default:
+      return `${model}: error desconocido de probe`
+  }
+}
+
 export function getManagedSttBaseUrl(config: SttConfig) {
   return `http://127.0.0.1:${config.port}`
 }
 
-export async function probeManagedStt(config: SttConfig) {
+export type ProbeResult =
+  | { ok: true; reason: "ready" }
+  | { ok: false; reason: "timeout" | "not_listening" | "connection_refused" | "dns_error" | "other" }
+
+export async function probeManagedStt(config: SttConfig): Promise<ProbeResult> {
   try {
     const response = await fetch(`${getManagedSttBaseUrl(config)}/openapi.json`, {
       signal: AbortSignal.timeout(4_000),
     })
-    if (!response.ok) return false
+    if (!response.ok) return { ok: false, reason: "not_listening" }
     const payload = await response.json().catch(() => null) as { paths?: Record<string, unknown> } | null
-    return Boolean(payload?.paths?.["/asr"])
-  } catch {
-    return false
+    if (!payload?.paths?.["/asr"]) return { ok: false, reason: "not_listening" }
+    return { ok: true, reason: "ready" }
+  } catch (error: unknown) {
+    // Bug #7 (09-jun-2026): distinguish 'no existe' (ECONNREFUSED, port closed)
+    // from 'no responde' (timeout, slow boot) so the user-facing error is
+    // actionable. Previously both rendered as 'no respondió dentro de 300s'.
+    const e = error as { name?: string; cause?: { code?: string } }
+    const cause = e.cause
+    const code = cause?.code?.toUpperCase() ?? ""
+    if (e.name === "TimeoutError" || e.name === "AbortError" || code === "ETIMEDOUT") {
+      return { ok: false, reason: "timeout" }
+    }
+    if (code === "ECONNREFUSED") {
+      return { ok: false, reason: "connection_refused" }
+    }
+    if (code === "ENOTFOUND" || code === "EAI_AGAIN") {
+      return { ok: false, reason: "dns_error" }
+    }
+    return { ok: false, reason: "other" }
   }
 }
 
@@ -206,7 +249,7 @@ export async function deployManagedSttContainer(config: SttConfig): Promise<{ ok
 
   const baseUrl = getManagedSttBaseUrl(config)
   const status = await getManagedSttStatus(config)
-  if (status === "running" && await probeManagedStt(config)) {
+  if (status === "running" && (await probeManagedStt(config)).ok) {
     const repaired = await ensureRestartPolicy(config.containerName).catch(() => false)
     return {
       ok: true,
@@ -252,17 +295,27 @@ export async function deployManagedSttContainer(config: SttConfig): Promise<{ ok
     }
 
     const maxProbes = 300 // 5 minutos de margen para descargar el modelo
+    let lastReason: ProbeResult["reason"] = "timeout"
     for (let i = 0; i < maxProbes; i++) {
       await new Promise(resolve => setTimeout(resolve, 1000))
-      if (await probeManagedStt(config)) {
+      const probe = await probeManagedStt(config)
+      if (probe.ok) {
         const suffix = candidateModel === config.model
           ? ""
           : ` Fallback aplicado a modelo ${candidateModel} por restricciones del servidor.`
         return { ok: true, message: `STT desplegado en ${baseUrl}.${suffix}`, baseUrl }
       }
+      lastReason = probe.reason
+      // ECONNREFUSED and DNS errors are terminal: the container/puerto is
+      // definitively not up. Bail out of the probe loop immediately so the
+      // user gets a clear 'puerto cerrado' error in <2s instead of waiting
+      // 5 minutes.
+      if (probe.reason === "connection_refused" || probe.reason === "dns_error") {
+        break
+      }
     }
 
-    failures.push(`${candidateModel}: no respondió dentro de ${maxProbes}s`)
+    failures.push(formatProbeFailure(candidateModel, lastReason, maxProbes))
     await removeManagedSttContainer(config, config.containerName).catch(() => {})
   }
 
