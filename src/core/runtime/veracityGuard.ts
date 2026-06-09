@@ -8,6 +8,98 @@ export interface IntegrityCheckResult {
   reason?: string
 }
 
+// -----------------------------------------------------------------------------
+// Deterministic falsified-execution detection.
+//
+// Runs BEFORE the LLM auditor so the obvious cases (fabricated tool output,
+// first-person past-tense claims of action) are caught without an extra model
+// call and without the auditor's fail-open behavior.
+//
+// Two layers:
+//   - STRUCTURAL_OUTPUT: tool outputs are formatted (JSON, units, log tags,
+//     tool names) in ways the model can't fake reliably across languages.
+//   - FIRST_PERSON_CLAIM: claims of having done something, in any natural
+//     language. Verb lists are easy to extend when a new language appears.
+// -----------------------------------------------------------------------------
+
+const STRUCTURAL_OUTPUT: RegExp[] = [
+  // JSON claiming tool result (any common tool key, single-line or compact)
+  /\{[^{}]*"(ok|success|message_id|file_id|result|status|output|stdout|stderr|exit_code)"\s*:/i,
+  // Code block containing a JSON tool result
+  /```[a-z]*\s*\n?\s*\{[^`]*(ok|message_id|file_id|result)[^`]*\}\s*\n?```/i,
+  // Structured key=value or key: value with tool-specific tokens
+  /\b(message_id|file_id|duration|file_size|exit_code)\s*[:=]/i,
+  // Numeric magnitudes with units (only tools produce these)
+  /\b\d+\s*(bytes|KB|MB|GB|ms|s|m|h)\b/i,
+  // Boolean/numeric result patterns
+  /\b(ok|success|done|completed|failed)\s*[:=]\s*(true|false|null|\d+)\b/i,
+  // Log/error tags — these are jargon, not natural language
+  /\[(SideEffect|Side-effect|Coherence|Veracity|Ralph)[-_ ]?[A-Za-z]*\]/i,
+  // Guard verdict formats
+  /\b(BLOCKED|ALLOWED|REJECTED|BYPASS)\b\s+\w+\s*[:=]/i,
+  // Unix `ls -la` style listing
+  /^[ \t]*(drwx|-rw-|lrwx)[-rwx]{9}\s+\d+\s+\w+\s+\w+\s+\d+\s+\w+\s+\d+\s+[\d:]+\s+\//m,
+  // Unified diff header (only patch tools produce this)
+  /^---\s+[^\n]+\n\+\+\+\s+[^\n]+\n@@/m,
+  // Tool name + args paren (imitating a tool call log line)
+  /\b(TelegramSendVoice|GenerateSpeech|TelegramSendPhoto|TelegramSendAudio|Bash|WebFetch|WebSearch|BootWrite|BootRead|Edit|Read)\s*\(\s*\{/i,
+  // Bare "ok: true" (very common fabricated result)
+  /\bok\s*[:=]\s*true\b/i,
+]
+
+const FIRST_PERSON_CLAIM: RegExp[] = [
+  // Spanish — pretérito of common action verbs. No trailing \b because
+  // JavaScript's \b is ASCII-only and doesn't recognize accented chars as
+  // word characters, so `\bprobé\b` would never match.
+  /\b(probé|ejecuté|corrí|llamé|hice|usé|intenté|revisé|leí|busqué|generé|envié|mandé|descargué|creé|abrí|cerré|guardé|eliminé)/i,
+  // English — I + past tense
+  /\b(I\s+(tried|ran|executed|called|made|used|attempted|checked|read|searched|generated|sent|deleted|wrote|created))\b/i,
+  // Portuguese — pretérito of common action verbs
+  /\b(provei|executei|corri|chamei|fiz|usei|tentei|li|busquei|gerrei|enviei|mandei)\b/i,
+  // Passive/reflexive in any of those languages
+  /\b(se\s+(ejecutó|corrió|envió|mandó|generó)|fue\s+(ejecutado|enviado|generado))\b/i,
+  // First-person future/intent claim: "voy a", "voy con", "I'll", "vou a", "procedo a"
+  /\b(voy|procedo|vou|let'?s|I'?ll)(\s+a|\s+\w+)/i,
+]
+
+/**
+ * Deterministic pre-LLM check. Returns a falsified_execution violation if the
+ * assistant's text contains structural tool output or a first-person past
+ * claim of action while no tools were called this turn.
+ */
+function deterministicFalsifiedExecutionCheck(
+  modelText: string,
+  toolsCalledInTurn: string[],
+): IntegrityCheckResult {
+  if (toolsCalledInTurn.length > 0) {
+    return { verified: true, type: "none" }
+  }
+
+  for (const pattern of STRUCTURAL_OUTPUT) {
+    const match = modelText.match(pattern)
+    if (match) {
+      return {
+        verified: false,
+        type: "falsified_execution",
+        reason: `Deterministic structural match: "${match[0].slice(0, 80)}" looks like fabricated tool output but no tools were called this turn.`,
+      }
+    }
+  }
+
+  for (const pattern of FIRST_PERSON_CLAIM) {
+    const match = modelText.match(pattern)
+    if (match) {
+      return {
+        verified: false,
+        type: "falsified_execution",
+        reason: `Deterministic first-person claim match: "${match[0]}" asserts past action but no tools were called this turn.`,
+      }
+    }
+  }
+
+  return { verified: true, type: "none" }
+}
+
 /**
  * Semantically audits a turn to ensure the assistant does not make promises of future
  * background/deferred action without scheduling them, and does not claim to have executed
@@ -27,6 +119,14 @@ export async function checkTurnIntegrity(
   // 1. Trivial check: If the text is very short, no claims or promises could have been made.
   if (!modelText || modelText.trim().length < 10) {
     return { verified: true, type: "none" }
+  }
+
+  // 1.5. Deterministic pre-check: catch fabricated tool output and first-person
+  // past-tense claims of action before consulting the LLM auditor. The auditor
+  // is fail-open (errors → pass), so the obvious cases must be caught here.
+  const deterministic = deterministicFalsifiedExecutionCheck(modelText, toolsCalledInTurn)
+  if (!deterministic.verified) {
+    return deterministic
   }
 
   // 2. Ask a fast LLM to semantically judge if the assistant claims system execution
