@@ -476,7 +476,12 @@ export class MonolitoV2Daemon {
 
   private async startEmbeddingsWarmup() {
     this.writeDaemonLog("embeddings warmup started")
-    const timeoutMs = 30_000
+    // Bumped from 30_000 to 90_000: on cold boot the bge-m3 model load via
+    // Ollama can take 30-60s; the previous 30s budget triggered a
+    // "lazy mode" fallback on the first start of every daemon restart,
+    // which meant the first semantic recall after a restart returned 0
+    // results. 90s is comfortably above the worst observed load time.
+    const timeoutMs = 90_000
     const timeout = new Promise<{ ok: false; timeout: true }>(resolve => {
       setTimeout(() => resolve({ ok: false, timeout: true }), timeoutMs).unref()
     })

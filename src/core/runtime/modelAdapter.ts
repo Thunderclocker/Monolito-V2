@@ -81,6 +81,7 @@ export type AgentLoopRecoverableAction =
   | "stall_blocking"
   | "tdd_correction"
   | "coherence_correction"
+  | "coherence_aborted"
   | "veracity_correction"
   | "commitment_correction"
   | "operational_interruption"
@@ -1165,41 +1166,52 @@ Debes corregir el código del workspace y ejecutar con éxito las pruebas corres
 
         if (!coherence.coherent) {
           coherenceFailureCount++
+          logCoherenceBreach(rootDir, session.id, coherence.reason ?? "Incoherencia de perfil", response.text);
+
           if (coherenceFailureCount >= 2) {
-            // Bypass only ONCE per turn (was 3 previously). After this, the
-            // agent gets one more chance and the bypass is VISIBLE: the user
-            // sees a warning block, the worklog records the bypass explicitly,
-            // and the next iteration is the last — no further bypass.
-            logger.warn(`Coherence guard bypassed for session ${session.id} after 2 failed corrections. Reason: ${coherence.reason}`);
+            // Two consecutive rejections: the model is stuck in a narrate-vs-execute
+            // loop. Abort the turn with a generic fallback instead of emitting the
+            // 800-word essay we have been seeing. The user gets a short, honest
+            // message; the worklog records the abort reason.
+            logger.error(`Coherence guard aborted turn for session ${session.id} after ${coherenceFailureCount} consecutive rejections. Reason: ${coherence.reason}`);
             appendWorklog(rootDir, session.id, {
               type: "note",
-              summary: `COHERENCE_GUARD_BYPASSED:VISIBLE: Bypassed after ${coherenceFailureCount} consecutive rejections. Last reason: "${coherence.reason}". The user will see a warning in the next turn.`,
+              summary: `COHERENCE_GUARD_ABORTED: Aborted after ${coherenceFailureCount} consecutive rejections to prevent narrative drift. Last reason: "${coherence.reason}"`,
             });
-            messages.push({
-              role: "user",
-              content: `[SYSTEM - COHERENCE GUARD BYPASS WARNING] Your last response was rejected by the Coherence Guard twice in a row. The guard is being bypassed once to prevent turn timeout, but the issue is real and the user can see this warning. Reason: ${coherence.reason}. If you do not address the contradiction in your next response, the turn will be terminated.`
-            });
-            // fall through to integrity guard; do not push another correction prompt
-          } else {
-            logCoherenceBreach(rootDir, session.id, coherence.reason ?? "Incoherencia de perfil", response.text);
-
             yield {
               type: "recoverable_error",
               sessionId: session.id,
               iteration,
-              action: "coherence_correction",
-              error: `Respuesta rechazada por coherencia: ${coherence.reason}`
+              action: "coherence_aborted",
+              error: `Turn aborted: coherence guard rejected ${coherenceFailureCount} consecutive responses.`,
             };
-
-            messages.push({
-              role: "user",
-              content: `[SYSTEM ALERT - COHERENCE GUARD] Tu respuesta anterior fue RECHAZADA.
-Contradicción detectada: ${coherence.reason}
-Por favor, corregí este error de inmediato y reescribí tu respuesta respetando estrictamente tu memoria.`
-            });
-
-            continue;
+            return finalize(
+              `No pude completar este turno. El guard de coherencia detectó una inconsistencia interna entre lo que iba a reportar y las herramientas disponibles. Causa: ${coherence.reason}. Por favor reformulá tu pedido o pedime que lo intente de nuevo.`,
+              steps,
+              startedAt,
+              iteration,
+              undefined,
+              `coherence_aborted: ${coherence.reason}`,
+              "aborted",
+            );
           }
+
+          yield {
+            type: "recoverable_error",
+            sessionId: session.id,
+            iteration,
+            action: "coherence_correction",
+            error: `Respuesta rechazada por coherencia: ${coherence.reason}`
+          };
+
+          messages.push({
+            role: "user",
+            content: `[SYSTEM ALERT - COHERENCE GUARD] Tu respuesta anterior fue RECHAZADA.
+Contradicción detectada: ${coherence.reason}
+Por favor, corregí este error de inmediato y reescribí tu respuesta respetando estrictamente tu memoria. Si no podés corregirla, indicá brevemente el problema en una línea. No narres herramientas que no ejecutaste.`
+          });
+
+          continue;
         }
         // --- END OF COHERENCE GUARD ---
 
@@ -1566,7 +1578,17 @@ No intentes ejecutarla más en este turno. Por favor, detén la ejecución en es
           action: "tdd_correction",
           error: `Fallo detectado en la ejecución de la herramienta "${failedToolName}".`
         }
-        logger.warn(`[tdd-react] Execution failure detected on tool "${failedToolName}". Querying Memory Palace...`)
+        // Full structured log with the actual failure snippet, not just the
+        // tool name. The previous "logger.warn" with the tool name only was
+        // impossible to triage (e.g. tool "Edit" returned status="error"
+        // without showing the actual reason). Use logger.error so it surfaces
+        // in monitoring/alerting.
+        logger.error(
+          `[tdd-react] Execution failure detected on tool "${failedToolName}". ` +
+          `Session=${session.id} Iteration=${iteration}. ` +
+          `Snippet: ${failureSnippet.slice(0, 500)}. ` +
+          `Querying Memory Palace...`
+        )
         
         let semanticHelper = ""
         try {

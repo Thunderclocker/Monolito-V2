@@ -1608,7 +1608,7 @@ Please analyze the preceding conversation and run your memory consolidation tool
           costState: this.costState,
           abortSignal: abortController.signal,
           turnStartedAt,
-          maxTurnDurationMs: 80_000,
+          maxTurnDurationMs: 120_000,
           contextExtras: {
             activeTasks: allTasks,
             taskNotifications: recentNotifications,
@@ -1639,23 +1639,45 @@ Please analyze the preceding conversation and run your memory consolidation tool
           summary: `MemoryAgent executed silently: ${finalText}`,
         })
       } else {
-        // Empty finalText or turn error: treat as failure for backoff.
-        this._memoryConsolidationFailures += 1
-        this._lastMemoryConsolidationFailureAt = Date.now()
+        // Classify the failure to decide whether to increment the backoff counter.
+        // "empty final text" and "Turn duration exceeded" are recoverable
+        // transients (model stuck, timeout) and should NOT count toward
+        // consecutive-failure backoff — otherwise the agent gets stuck in
+        // an ever-growing backoff (we observed 30+ minute gaps) and the
+        // user never sees consolidated memory. Real errors (5xx, 429 after
+        // the provider's own backoff, parse errors) DO count.
         const reason = turn.error ? `error: ${turn.error}` : "empty final text (model stuck)"
+        const isRecoverable = reason.includes("empty final text") || reason.includes("Turn duration exceeded")
+        if (!isRecoverable) {
+          this._memoryConsolidationFailures += 1
+          this._lastMemoryConsolidationFailureAt = Date.now()
+        } else {
+          logger.warn(
+            `[MemoryAgent] Transient failure (${reason}); not incrementing consecutive-failure counter. Will retry on next heartbeat.`
+          )
+        }
         logger.error(
           `[MemoryAgent] Consolidation turn failed (${this._memoryConsolidationFailures} consecutive): ${reason}`
         )
         appendWorklog(this.rootDir, sessionId, {
           type: "note",
-          summary: `MemoryAgent failed silently: ${reason}`,
+          summary: `MemoryAgent failed silently: ${reason}${isRecoverable ? " [recoverable, no backoff]" : ""}`,
         })
       }
 
     } catch (e) {
-      this._memoryConsolidationFailures += 1
-      this._lastMemoryConsolidationFailureAt = Date.now()
-      logger.error(`[MemoryAgent] Execution error (${this._memoryConsolidationFailures} consecutive): ${e instanceof Error ? e.message : String(e)}`)
+      const errMsg = e instanceof Error ? e.message : String(e)
+      // Treat abort/timeout exceptions as recoverable (same logic as the
+      // empty/timeout branch above). Anything else (parse errors, API
+      // failures) is non-recoverable and counts toward backoff.
+      const isRecoverable = /abort|timeout|Turn duration exceeded/i.test(errMsg)
+      if (!isRecoverable) {
+        this._memoryConsolidationFailures += 1
+        this._lastMemoryConsolidationFailureAt = Date.now()
+      } else {
+        logger.warn(`[MemoryAgent] Transient execution error (${errMsg}); not incrementing consecutive-failure counter.`)
+      }
+      logger.error(`[MemoryAgent] Execution error (${this._memoryConsolidationFailures} consecutive): ${errMsg}${isRecoverable ? " [recoverable]" : ""}`)
     } finally {
       clearTimeout(turnTimeout)
       this._isSyntheticSkillsTurn = false

@@ -102,7 +102,18 @@ export function listModelTools(isSubAgent = false, lastUserText?: string | boole
   // hidden so sub-agents can't spin up daemons or reconfigure channels.
 
   const hiddenFromMainSession = new Set([
-    "TelegramDownloadFile"
+    "TelegramDownloadFile",
+    // File-editing tools (Edit/Write/MultiEdit) are hidden from the main
+    // orchestrator session to prevent the model from attempting in-place
+    // edits from the user-facing chat. The orchestrator should delegate
+    // file modifications to a sub-agent via delegate_background_task, which
+    // has the proper scope and error-recovery path. Including these in the
+    // main session caused silent Edit failures (e.g. tool "Edit" returned
+    // status="error" without a clear reason) and triggered tdd-react
+    // recovery loops that surfaced as 800-word confabulation essays.
+    "Edit",
+    "Write",
+    "MultiEdit",
   ])
 
   if (exposeTelegramDownload) {
@@ -137,9 +148,9 @@ export function listModelTools(isSubAgent = false, lastUserText?: string | boole
     "delegate_background_task",
     "search_tools",
     "Bash",
-    "Write",
-    "Edit",
-    "MultiEdit",
+    // Edit/Write/MultiEdit removed from CORE_TOOLS: now hidden from main session,
+    // available only to sub-agents via their own scope. See hiddenFromMainSession
+    // for the rationale.
     "AgentSendMessage",
     "AgentSpawn",
     "AgentStop",
