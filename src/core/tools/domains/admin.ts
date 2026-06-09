@@ -17,6 +17,11 @@ import {
   querySemanticTools,
 } from "../../session/store.ts"
 
+import {
+  getRecentGuardBlocks,
+  type GuardBlockRecord,
+} from "../../runtime/sideEffectGuard.ts"
+
 import type { ToolDefinition } from "../registry.ts"
 
 export const adminTools: ToolDefinition[] = [
@@ -195,6 +200,52 @@ export const adminTools: ToolDefinition[] = [
       }).join("\n")}`
     } catch (err) {
       return `Error buscando herramientas: ${err}`
+    }
+  }
+},
+
+{
+  name: "QueryGuardStatus",
+  aliases: ["query_guard_status"],
+  permissionTier: "read",
+  description: "Return the most recent side-effect guard events for the current session. Use this tool when a TelegramSend* / VoiceClone / GenerateSpeech / Bash-with-side-effect was just blocked and you need to know why BEFORE improvising an explanation. The output includes the guard's reason, the timestamp, and whether a Level 0 user override was honored. Pair with `grep \"[SideEffectGuard]\" ~/.monolito/logs/monolitod.log` for a full audit trail.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      sessionId: { type: "string", description: "Optional session ID. Defaults to the current session." },
+      limit: { type: "number", description: "Maximum number of recent events to return. Default 20." },
+    },
+    additionalProperties: false,
+  },
+  concurrencySafe: true,
+  async run(input, context) {
+    const sessionId = optionalString(input, "sessionId") ?? context.sessionId ?? ""
+    const limit = optionalNumber(input, "limit") ?? 20
+    if (!sessionId) return formatToolError("sessionId is required")
+    const events = getRecentGuardBlocks(context.rootDir, sessionId, limit)
+    const blocks = events.filter(e => !e.level0Override)
+    const overrides = events.filter(e => e.level0Override)
+    return {
+      session_id: sessionId,
+      total_events: events.length,
+      total_blocks: blocks.length,
+      total_overrides: overrides.length,
+      most_recent_block: blocks[0] ?? null,
+      most_recent_override: overrides[0] ?? null,
+      events,
+      hint:
+        events.length === 0
+          ? "No guard events recorded for this session. The side-effect guard is stateless and decides per-call; it only records BLOCK or OVERRIDE events in the worklog. If the user asks why a tool was blocked and the worklog is empty, check `~/.monolito/logs/monolitod.log` for the [SideEffectGuard] line emitted at the moment of the rejection."
+          : "Use the `at` timestamps to correlate with `~/.monolito/logs/monolitod.log` `[SideEffectGuard] BLOCKED` lines for the full reason + pending tool list.",
+    } as GuardBlockRecord[] & {
+      session_id: string
+      total_events: number
+      total_blocks: number
+      total_overrides: number
+      most_recent_block: GuardBlockRecord | null
+      most_recent_override: GuardBlockRecord | null
+      events: GuardBlockRecord[]
+      hint: string
     }
   }
 },

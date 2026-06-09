@@ -166,3 +166,63 @@ function stripMarkdownCodeFence(text: string): string {
   if (fenceMatch?.[1]) return fenceMatch[1].trim()
   return trimmed
 }
+
+export interface GuardBlockRecord {
+  /** ISO timestamp from the worklog. */
+  at: string
+  /** The full reason string the LLM-judge returned (or the failure message). */
+  reason: string
+  /** The Level 0 user override that bypassed the guard, if any. */
+  level0Override: boolean
+}
+
+/**
+ * Return the most recent N guard events for a given session, ordered
+ * newest-first. Pulls from the SQLite worklog (not the daemon log) so
+ * the helper survives daemon restarts and is accessible from the
+ * QueryGuardStatus tool without re-parsing text logs.
+ *
+ * Recognized prefixes (written by the runtime/modelAdapter paths):
+ * - `SIDE_EFFECT_GUARD_BLOCKED: <reason>`  →  block event
+ * - `SIDE_EFFECT_GUARD: Level 0 user override honored. Pending tools: [...]`
+ *                                    →  bypass event
+ *
+ * The `level0Override` field tells the caller which side of the
+ * guard the event came from; an LLM consuming this list can answer
+ * "why was my send blocked" with a real reason rather than
+ * hallucinating one.
+ */
+export function getRecentGuardBlocks(
+  rootDir: string,
+  sessionId: string,
+  limit = 20,
+): GuardBlockRecord[] {
+  if (!sessionId) return []
+  try {
+    const { getDb } = require("../session/store.ts") as typeof import("../session/store.ts")
+    const db = getDb(rootDir)
+    const rows = db
+      .prepare(
+        `SELECT at, summary FROM worklog
+         WHERE session_id = ? AND (
+           summary LIKE 'SIDE_EFFECT_GUARD_BLOCKED:%' OR
+           summary LIKE 'SIDE_EFFECT_GUARD:%'
+         )
+         ORDER BY id DESC LIMIT ?`,
+      )
+      .all(sessionId, limit) as Array<{ at: string; summary: string }>
+    return rows.map(r => {
+      const isBlock = r.summary.startsWith("SIDE_EFFECT_GUARD_BLOCKED:")
+      const reason = isBlock
+        ? r.summary.slice("SIDE_EFFECT_GUARD_BLOCKED:".length).trim()
+        : r.summary
+      return {
+        at: r.at,
+        reason,
+        level0Override: !isBlock,
+      }
+    })
+  } catch {
+    return []
+  }
+}
