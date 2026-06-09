@@ -3,6 +3,7 @@ import { promisify } from "node:util"
 import type Database from "better-sqlite3"
 import crypto from "node:crypto"
 import { createLogger } from "../logging/logger.ts"
+import { estimateTokens } from "../utils/chunker.ts"
 
 const logger = createLogger("embeddings")
 
@@ -237,21 +238,26 @@ function sanitizeTextForOllama(text: string): string {
     .trim()
 }
 
-// bge-m3 (and most modern embedding models served by Ollama) have a
-// context length around 8K tokens. Beyond that, /api/embeddings returns
-// HTTP 500 "input length exceeds the context length" and the runtime
-// degrades to a zero-vector, which silently poisons semantic recall.
-// Pre-truncate aggressively to keep the input well under the limit.
-// 24000 chars ≈ 6000 tokens for a typical English/Code mix — leaves
-// headroom for the model's own tokenization quirks.
-const MAX_OLLAMA_EMBED_CHARS = 24_000
+// bge-m3 has a context length of 8192 tokens. Beyond that, /api/embeddings
+// returns HTTP 500 "input length exceeds the context length" and the
+// runtime degrades to a zero-vector, which silently poisons semantic
+// recall.
+//
+// We cap by TOKENS (not chars) because Spanish and code are denser than
+// the English heuristic and the previous char-based cap (24_000 chars ≈
+// 6-10K tokens depending on language) repeatedly overflowed. The
+// 6000-token cap leaves ~2K headroom for the model's own special tokens
+// and tokenization quirks.
+export const MAX_OLLAMA_EMBED_TOKENS = 6000
 
-function truncateForEmbedding(text: string): string {
-  if (text.length <= MAX_OLLAMA_EMBED_CHARS) return text
+export function truncateForEmbedding(text: string): string {
+  if (estimateTokens(text) <= MAX_OLLAMA_EMBED_TOKENS) return text
   // Keep the head and the tail (often the actionable parts of a tool result
   // or a long conversation): the start gives the model the topic, the
   // end usually has the conclusion / error / file path.
-  const half = Math.floor(MAX_OLLAMA_EMBED_CHARS / 2) - 32
+  // ~3.5 chars per token (the heuristic used by estimateTokens).
+  const charBudget = MAX_OLLAMA_EMBED_TOKENS * 3.5
+  const half = Math.floor(charBudget / 2) - 32
   return text.slice(0, half) + "\n\n[...truncated for embedding context budget...]\n\n" + text.slice(text.length - half)
 }
 
