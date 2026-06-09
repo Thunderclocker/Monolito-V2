@@ -28,7 +28,6 @@ ASSUME_YES=0
 KEEP_LINGER=0
 
 SEARXNG_CONTAINER="monolito-searxng"
-TTS_CONTAINER="monolito-openai-edge-tts"
 STT_CONTAINER="monolito-faster-whisper"
 
 SHELL_RC_FILES=(
@@ -354,9 +353,9 @@ cleanup_docker_artifacts() {
   fi
 
   remove_docker_container_if_present "${SEARXNG_CONTAINER}"
-  remove_docker_container_if_present "${TTS_CONTAINER}"
   remove_docker_container_if_present "${STT_CONTAINER}"
   remove_docker_container_if_present "${OLLAMA_EMBED_CONTAINER}"
+  remove_legacy_docker_matches "name=monolito-openai-edge-tts" "legacy managed TTS containers"
   remove_legacy_docker_matches "name=tts-edge" "legacy TTS containers"
   remove_legacy_docker_matches "ancestor=travisvn/openai-edge-tts:latest" "legacy OpenAI Edge TTS containers"
   remove_legacy_docker_matches "name=whisper" "legacy Whisper containers"

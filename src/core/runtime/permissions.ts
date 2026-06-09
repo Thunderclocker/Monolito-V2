@@ -278,7 +278,7 @@ function evaluateMode(mode: PermissionMode, toolName: string, input: Record<stri
       return {
         behavior: "deny",
         source: "mode",
-        message: "Ad-hoc Bash speech processing is denied. Use GenerateSpeech, TranscribeAudio, TtsService*, or SttService* instead.",
+        message: "Ad-hoc Bash speech processing is denied. Use GenerateSpeech, TranscribeAudio, or SttService* instead.",
       }
     }
     if (isAdHocVisionOrLlmBash(command)) {

@@ -82,15 +82,7 @@ import { createLogger, createSessionContext, runWithContext, type Logger } from 
 
 const logger = createLogger("runtime")
 import type { DelegationTask } from "./orchestrator.ts"
-import {
-  deployManagedTtsContainer,
-  getManagedTtsBaseUrl,
-  getManagedTtsStatus,
-  listManagedTtsContainers,
-  normalizeTtsConfig,
-  removeManagedTtsContainer,
-  stopManagedTtsContainer,
-} from "../tts/managed.ts"
+import { normalizeTtsConfig } from "../channels/config.ts"
 import {
   deployManagedSttContainer,
   getManagedSttBaseUrl,
@@ -4017,10 +4009,9 @@ When you finish an item, immediately call TodoWrite again marking it completed a
     const workspace = getWorkspaceContext(this.rootDir, "default")
     const memory = await getVectorMemoryStatus()
 
-    const [searxContainer, sttContainer, ttsContainer] = await Promise.all([
+    const [searxContainer, sttContainer] = await Promise.all([
       getSearxngStatus(),
       getManagedSttStatus(stt),
-      getManagedTtsStatus(tts),
     ])
 
     const ollamaBaseUrl = effective.baseUrl && /ollama|localhost:11434|127\.0\.0\.1:11434/i.test(effective.baseUrl)
@@ -4039,12 +4030,6 @@ When you finish an item, immediately call TodoWrite again marking it completed a
         url: `${getManagedSttBaseUrl(stt)}/openapi.json`,
         jitState: mapContainerStatusToJit(sttContainer),
         containerState: sttContainer,
-      },
-      {
-        key: "tts",
-        url: `${getManagedTtsBaseUrl(tts)}/v1/models`,
-        jitState: mapContainerStatusToJit(ttsContainer),
-        containerState: ttsContainer,
       },
       {
         key: "ollama",
@@ -4143,10 +4128,11 @@ When you finish an item, immediately call TodoWrite again marking it completed a
       const container = service.containerState ? ` container=${service.containerState}` : ""
       const models = service.models && service.models.length > 0 ? ` [${service.models.join(", ")}]` : ""
       lines.push(`${marker} ${padRight(name, 10)} ${padRight(label, 9)} ${checked}${container}${models}`)
-      // Graceful-degradation hint when STT/TTS containers are not deployed.
-      if ((name === "stt" || name === "tts") && service.containerState === "not_found") {
-        const deployTool = name === "stt" ? "SttServiceDeploy" : "TtsServiceDeploy"
-        lines.push(`           ${ANSI.dim}↳ run \`${deployTool}\` to spin it up${ANSI.reset}`)
+      // Graceful-degradation hint when the STT container is not deployed.
+      // TTS no longer has a managed container (it runs against hosted
+      // providers like MiniMax or OpenAI), so no deploy hint is offered.
+      if (name === "stt" && service.containerState === "not_found") {
+        lines.push(`           ${ANSI.dim}↳ run \`SttServiceDeploy\` to spin it up${ANSI.reset}`)
       }
     }
     lines.push("")
@@ -4335,9 +4321,10 @@ When you finish an item, immediately call TodoWrite again marking it completed a
           model: typeof tts.model === "string" ? tts.model : "",
           responseFormat: typeof tts.responseFormat === "string" ? tts.responseFormat : "",
           speed: typeof tts.speed === "number" ? tts.speed : "",
-          managed: typeof tts.managed === "boolean" ? tts.managed : "",
-          autoDeploy: typeof tts.autoDeploy === "boolean" ? tts.autoDeploy : "",
-          port: typeof tts.port === "number" ? tts.port : "",
+          provider: tts.provider ?? "openai",
+          clonedVoiceCount: Object.keys(tts.clonedVoices || {}).length,
+          defaultClonedVoice: tts.defaultClonedVoice || "",
+          t2aModel: tts.t2aModel || "",
         },
         stt: {
           managed: typeof channels.stt?.managed === "boolean" ? channels.stt.managed : "",
@@ -4407,23 +4394,17 @@ When you finish an item, immediately call TodoWrite again marking it completed a
         this.scheduleNextHeartbeat(`config updated: heartbeat_min_idle_minutes = ${parsed}`)
         return `Saved heartbeat_min_idle_minutes = ${parsed}`
       }
-      else if (field === "tts_base_url" || field === "tts_api_key" || field === "tts_voice" || field === "tts_model" || field === "tts_format" || field === "tts_speed" || field === "tts_managed" || field === "tts_auto_deploy" || field === "tts_port") {
+      else if (field === "tts_base_url" || field === "tts_api_key" || field === "tts_voice" || field === "tts_model" || field === "tts_format" || field === "tts_speed" || field === "tts_provider") {
         const nextChannels = { ...channels, tts: { ...(channels.tts ?? {}) } }
         if (field === "tts_base_url") nextChannels.tts.baseUrl = value
         if (field === "tts_api_key") nextChannels.tts.apiKey = value
         if (field === "tts_voice") nextChannels.tts.voice = value
         if (field === "tts_model") nextChannels.tts.model = value
-        if (field === "tts_managed") {
-          if (!["true", "false", "on", "off", "yes", "no", "1", "0"].includes(value.toLowerCase())) {
-            return "Invalid: tts_managed must be true or false"
+        if (field === "tts_provider") {
+          if (!["minimax", "openai"].includes(value.toLowerCase())) {
+            return "Invalid: tts_provider must be 'minimax' or 'openai'"
           }
-          nextChannels.tts.managed = ["true", "on", "yes", "1"].includes(value.toLowerCase())
-        }
-        if (field === "tts_auto_deploy") {
-          if (!["true", "false", "on", "off", "yes", "no", "1", "0"].includes(value.toLowerCase())) {
-            return "Invalid: tts_auto_deploy must be true or false"
-          }
-          nextChannels.tts.autoDeploy = ["true", "on", "yes", "1"].includes(value.toLowerCase())
+          nextChannels.tts.provider = value.toLowerCase() as "minimax" | "openai"
         }
         if (field === "tts_format") {
           if (!["mp3", "opus", "aac", "flac", "wav", "pcm"].includes(value)) {
@@ -4438,15 +4419,10 @@ When you finish an item, immediately call TodoWrite again marking it completed a
           }
           nextChannels.tts.speed = parsed
         }
-        if (field === "tts_port") {
-          const parsed = Number(value)
-          if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 65535) {
-            return "Invalid: tts_port must be a number between 1 and 65535"
-          }
-          nextChannels.tts.port = Math.trunc(parsed)
-        }
         writeChannelsConfig(nextChannels)
         return `Saved ${field} = ${field === "tts_api_key" ? maskApiKey(value) : value}`
+      } else if (field === "tts_managed" || field === "tts_auto_deploy" || field === "tts_port") {
+        return `Removed: ${field} is no longer supported. The managed local TTS container was removed; use tts_provider=minimax (with tts_api_key) or tts_provider=openai (with tts_base_url pointing to a hosted OpenAI-compatible API) instead.`
       } else if (field === "stt_managed" || field === "stt_auto_deploy" || field === "stt_auto_transcribe" || field === "stt_port" || field === "stt_model" || field === "stt_language" || field === "stt_engine" || field === "stt_vad_filter") {
         const nextChannels = { ...channels, stt: { ...(channels.stt ?? {}) } }
         const isTruthy = ["true", "on", "yes", "1"].includes(value.toLowerCase())

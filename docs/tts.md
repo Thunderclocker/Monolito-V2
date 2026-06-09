@@ -1,6 +1,6 @@
 # TTS
 
-Monolito can generate speech audio, send it to Telegram, and manage its own local TTS backend.
+Monolito can generate speech audio with a hosted TTS provider and send it to Telegram.
 
 ## What it does
 
@@ -11,74 +11,65 @@ When the user asks Monolito to speak, send audio, or send a voice note, the inte
 
 The runtime prompt explicitly instructs the model to prefer these tools over ad-hoc shell synthesis.
 
-## Default voice
+## Supported providers
 
-The default Spanish Argentina voice is:
+`GenerateSpeech` accepts two TTS providers, controlled by `tts_provider`:
 
-- `es-AR-ElenaNeural`
+### MiniMax (default for voice clones)
 
-If `tts_voice` is not configured, Monolito falls back to that voice automatically.
+- Endpoint: `POST /v1/t2a_v2` on `https://api.minimax.io/v1`
+- Auth: `tts.apiKey` (or `MINIMAX_API_KEY` / `ANTHROPIC_AUTH_TOKEN` env var, or the active model profile if it is `minimax`)
+- Voice resolution: aliases in `tts.clonedVoices` are mapped to their `voice_id` automatically; if the voice is an alias, the provider is forced to `minimax` even if `tts_provider` is unset.
+- `model` defaults to `tts.t2aModel` (or `speech-2.8-hd`).
+- Speed is clamped to MiniMax's range (0.5–2.0).
 
-## Managed service
+### OpenAI-compatible (hosted)
 
-Monolito supports a managed Docker-backed TTS service using `travisvn/openai-edge-tts:latest`.
-
-When managed TTS is enabled, Monolito can:
-
-- deploy the service automatically when speech is requested
-- stop the service
-- remove the service
-- inspect current status
-- clean conflicting legacy Edge TTS containers before deployment
-
-The managed container defaults to:
-
-- container name: `monolito-openai-edge-tts`
-- bind address: `127.0.0.1:<tts_port>`
-- default port: `5050`
-
-Legacy containers such as `tts-edge` are treated as conflicts and are removed by the managed deployment flow.
+- Endpoint: `POST /v1/audio/speech` on `tts.baseUrl` (e.g. `https://api.openai.com/v1`)
+- Auth: `tts.apiKey`
+- Voice, model, speed, and `response_format` follow the OpenAI Audio API spec.
 
 ## Configuration
 
-TTS settings live in:
+TTS settings live in `CONF_CHANNELS`. Relevant config fields:
 
-- `CONF_CHANNELS`
-
-Relevant config fields:
-
-- `tts_base_url`
+- `tts_base_url` (OpenAI-compatible provider endpoint)
 - `tts_api_key`
+- `tts_provider` (`minimax` | `openai`)
 - `tts_voice`
-- `tts_model`
-- `tts_format`
-- `tts_speed`
-- `tts_managed`
-- `tts_auto_deploy`
-- `tts_port`
+- `tts_model` (OpenAI: `tts-1`, `tts-1-hd`; MiniMax: `speech-2.8-hd`, etc.)
+- `tts_format` (`mp3`, `opus`, `aac`, `flac`, `wav`, `pcm`)
+- `tts_speed` (0.25–4.0 for OpenAI; 0.5–2.0 for MiniMax)
+- `tts.clonedVoices` (alias → `voice_id` map; MiniMax only)
+- `tts.defaultClonedVoice`
+- `tts.t2aModel`
 
-Typical managed setup:
+Typical MiniMax setup:
 
 ```bash
-monolito /config set tts_voice es-AR-ElenaNeural
-monolito /config set tts_api_key monolito-tts
-monolito /config set tts_managed true
-monolito /config set tts_auto_deploy true
-monolito /tts deploy
+monolito /config set tts_provider minimax
+monolito /config set tts_api_key sk-cp-...
+monolito /config set tts_base_url https://api.minimax.io/v1
 ```
 
-## Slash commands
+Typical OpenAI-hosted setup:
 
-The managed lifecycle is exposed through:
+```bash
+monolito /config set tts_provider openai
+monolito /config set tts_base_url https://api.openai.com/v1
+monolito /config set tts_api_key sk-...
+monolito /config set tts_voice alloy
+```
 
-- `/tts show`
-- `/tts status`
-- `/tts on`
-- `/tts off`
-- `/tts deploy`
-- `/tts stop`
-- `/tts remove`
-- `/tts list`
+## Voice cloning
+
+Use `VoiceClone` to upload a 10s–5min audio sample (mp3/m4a/wav/ogg, ≤20MB) and persist it as an alias. The cloned voice can then be invoked from `GenerateSpeech` by passing the alias as `voice`.
+
+## Removed: managed local TTS container
+
+Earlier versions of Monolito shipped a managed local TTS service (`travisvn/openai-edge-tts`) and a set of `TtsService*` tools to deploy/stop/remove/list its container. That backend was removed; the runtime now expects a hosted TTS provider (MiniMax or OpenAI-compatible).
+
+If an old deployment still has the `TtsService*` tools referenced in the LLM's toolset, the user must run `/update` to deploy this build. The `/config set tts_managed`, `tts_auto_deploy`, and `tts_port` slash commands now return an error pointing to the hosted providers.
 
 ## Telegram behavior
 

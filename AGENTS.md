@@ -247,3 +247,14 @@ Monolito V2 implements a per-channel Destructive Action Guard to replace the leg
   - **Headless workers / Sub-agents**: Automatically denied immediately.
   - **Timeout**: Requests auto-deny after 30 seconds if unanswered.
 
+## TTS Architecture (hosted only)
+
+TTS in Monolito V2 is **hosted-only**: no managed local Docker container. `GenerateSpeech` supports two providers, controlled by `tts_provider`:
+
+- **MiniMax** (`/v1/t2a_v2`): the active MiniMax model profile is used as credential fallback when `tts.apiKey` is unset. Voice aliases in `tts.clonedVoices` are resolved automatically.
+- **OpenAI-compatible** (`/v1/audio/speech`): `tts.baseUrl` must point to a hosted OpenAI-compatible API (e.g. `https://api.openai.com/v1`).
+
+`VoiceClone` is MiniMax-only and persists the cloned voice as an alias in `tts.clonedVoices`.
+
+The legacy `TtsService*` tools (`TtsServiceStatus` / `Deploy` / `Stop` / `Remove` / `List`) and the `tts_managed` / `tts_auto_deploy` / `tts_port` config fields were removed. `/config set tts_managed` and friends now return an error pointing the user to the hosted providers. Old deployments that still have these fields in `CONF_CHANNELS` continue to work — the normalizer ignores the unknown fields.
+

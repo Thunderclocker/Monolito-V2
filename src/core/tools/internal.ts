@@ -62,15 +62,7 @@ import { CONFIG_WING_ORDER, type ConfigWingName } from "../config/configWings.ts
 import { coerceConfigRecord } from "../config/wingValue.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "../runtime/modelConfig.ts"
 import { getActiveProfile, activateProfile } from "../runtime/modelRegistry.ts"
-import {
-  deployManagedTtsContainer,
-  getManagedTtsBaseUrl,
-  getManagedTtsStatus,
-  listManagedTtsContainers,
-  normalizeTtsConfig,
-  removeManagedTtsContainer,
-  stopManagedTtsContainer,
-} from "../tts/managed.ts"
+import { normalizeTtsConfig } from "../channels/config.ts"
 import {
   deployManagedSttContainer,
   getManagedSttBaseUrl,

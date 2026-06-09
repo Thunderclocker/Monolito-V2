@@ -14,13 +14,13 @@ export type TtsConfig = {
   model: string
   responseFormat: "mp3" | "opus" | "aac" | "flac" | "wav" | "pcm"
   speed: number
-  managed: boolean
-  autoDeploy: boolean
-  port: number
-  image: string
-  containerName: string
-  // Nuevos campos para soporte MiniMax (voice clone + T2A v2).
+  // Provider selector. When "minimax" the tool calls /v1/t2a_v2 with the
+  // MiniMax-specific request/response shape (hex-encoded audio). When
+  // "openai" it calls the OpenAI-compatible /v1/audio/speech endpoint
+  // (works with api.openai.com and other hosted OpenAI-compatible APIs;
+  // the previous "managed local Docker container" TTS was removed).
   provider?: "openai" | "minimax"
+  // MiniMax-specific: alias -> voice_id map for cloned voices.
   clonedVoices?: Record<string, string>
   defaultClonedVoice?: string
   t2aModel?: string
@@ -61,7 +61,7 @@ type LooseChannelsConfig = ChannelsConfig & {
 
 const CHANNELS_TOP_LEVEL_KEYS = new Set(["telegram", "tts", "stt"])
 const TELEGRAM_KEYS = new Set(["token", "enabled", "allowedChats"])
-const TTS_KEYS = new Set(["baseUrl", "apiKey", "voice", "model", "responseFormat", "speed", "managed", "autoDeploy", "port", "image", "containerName", "provider", "clonedVoices", "defaultClonedVoice", "t2aModel"])
+const TTS_KEYS = new Set(["baseUrl", "apiKey", "voice", "model", "responseFormat", "speed", "provider", "clonedVoices", "defaultClonedVoice", "t2aModel"])
 const STT_KEYS = new Set(["managed", "autoDeploy", "autoTranscribe", "port", "image", "containerName", "engine", "model", "language", "vadFilter"])
 
 function hasOwn(object: Record<string, unknown>, key: string) {
@@ -195,4 +195,39 @@ export function writeChannelsConfig(config: ChannelsConfig) {
     wing: "CONF_CHANNELS",
     telegramEnabled: normalized.telegram?.enabled ?? false,
   })
+}
+
+const TTS_RESPONSE_FORMATS = new Set(["mp3", "opus", "aac", "flac", "wav", "pcm"])
+
+/**
+ * Normalize a partial TTS config to a fully-typed TtsConfig. The fields
+ * `managed`, `autoDeploy`, `port`, `image`, `containerName` were used by
+ * the now-removed managed local TTS container; they are tolerated on
+ * read (ignored silently) for backward compatibility with deployments
+ * that still have them persisted in CONF_CHANNELS, but the type no
+ * longer carries them so new writes can't set them.
+ */
+export function normalizeTtsConfig(config?: Partial<TtsConfig>): TtsConfig {
+  return {
+    baseUrl: typeof config?.baseUrl === "string" ? config.baseUrl.trim() : "",
+    apiKey: typeof config?.apiKey === "string" ? config.apiKey.trim() : "",
+    voice: typeof config?.voice === "string" && config.voice.trim() ? config.voice.trim() : "alloy",
+    model: typeof config?.model === "string" && config.model.trim() ? config.model.trim() : "tts-1",
+    responseFormat:
+      typeof config?.responseFormat === "string" && TTS_RESPONSE_FORMATS.has(config.responseFormat)
+        ? config.responseFormat
+        : "mp3",
+    speed:
+      typeof config?.speed === "number" && Number.isFinite(config.speed) && config.speed > 0
+        ? config.speed
+        : 1,
+    provider: config?.provider === "minimax" ? "minimax" : "openai",
+    clonedVoices: config?.clonedVoices && typeof config.clonedVoices === "object" && !Array.isArray(config.clonedVoices)
+      ? Object.fromEntries(
+          Object.entries(config.clonedVoices).filter(([k, v]) => typeof k === "string" && typeof v === "string"),
+        )
+      : {},
+    defaultClonedVoice: typeof config?.defaultClonedVoice === "string" ? config.defaultClonedVoice.trim() : "",
+    t2aModel: typeof config?.t2aModel === "string" && config.t2aModel.trim() ? config.t2aModel.trim() : "speech-2.8-hd",
+  }
 }

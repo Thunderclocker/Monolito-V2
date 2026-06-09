@@ -52,8 +52,11 @@ companion docs are:
 │  └─ toolResultGuard.ts,   compaction, recovery cascade.                 │
 │  └─ smartCompactor.ts                                                        │
 ├──────────────────────────────────────────────────────────────────────────┤
-│  src/core/{websearch,stt,tts,vision}/                                   │
-│  └─ managed.ts            Docker lifecycle for each managed service.    │
+│  src/core/{websearch,stt,vision}/managed.ts                               │
+│  └─ managed.ts            Docker lifecycle for each remaining managed    │
+│                            service (STT, vision, searxng). TTS no longer │
+│                            has a managed backend — it runs against      │
+│                            hosted providers (MiniMax, OpenAI).           │
 ├──────────────────────────────────────────────────────────────────────────┤
 │  src/core/db/schema.ts    Palace + vector + background_tasks + workers. │
 └──────────────────────────────────────────────────────────────────────────┘
@@ -333,15 +336,21 @@ context.
 Each backing service has the same shape: `*ServiceStatus`, `*ServiceDeploy`,
 `*ServiceStop`, `*ServiceRemove`, `*ServiceList`. The runtime probes the
 HTTP endpoint, deploys via Docker if missing, and cleans conflicting legacy
-containers (e.g. `tts-edge`, generic `whisper`) before starting its own.
+containers (e.g. generic `whisper`) before starting its own.
 
 | Service      | Image                                                | Port  | Default                                              |
 |--------------|------------------------------------------------------|-------|------------------------------------------------------|
 | STT          | `onerahmet/openai-whisper-asr-webservice`            | 9000  | `faster_whisper`, `base`, `es`, `vad=true`           |
-| TTS          | `travisvn/openai-edge-tts`                           | 5050  | `es-AR-ElenaNeural`, `mp3`                           |
+| TTS          | hosted provider (MiniMax or OpenAI-compatible)       | n/a   | `speech-2.8-hd` (MiniMax) / `tts-1` (OpenAI)         |
 | Vision       | Ollama + `moondream`                                 | 11435 | fallback CPU vision (heavy, ~60s)                    |
 | Embeddings   | Ollama + `bge-m3`                                    | 11434 | 1024d vectors                                        |
 | SearXNG      | `searxng/searxng`                                     | 8888  | `safe_search=0`, adult engines preconfigured         |
+
+The previous TTS row (managed local container `travisvn/openai-edge-tts`
+on port 5050) and its `TtsService*` tools were removed; TTS now runs
+against a hosted provider. `uninstall.sh` still cleans up any leftover
+`monolito-openai-edge-tts`, `tts-edge`, and `travisvn/openai-edge-tts`
+containers from older installs.
 
 SearXNG ships with `pornhub`, `redtube`, and `rule34` engines enabled and
 routes queries to the adult category automatically when the session has

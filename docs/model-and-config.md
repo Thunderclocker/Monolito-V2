@@ -48,33 +48,30 @@ Supported `/config set` fields for TTS are:
 
 - `tts_base_url`
 - `tts_api_key`
+- `tts_provider` (`minimax` or `openai`)
 - `tts_voice`
 - `tts_model`
 - `tts_format`
 - `tts_speed`
-- `tts_managed`
-- `tts_auto_deploy`
-- `tts_port`
 
-Recommended defaults for managed Telegram speech are:
+The legacy fields `tts_managed`, `tts_auto_deploy`, and `tts_port` are no longer accepted and return an error.
 
-- `tts_voice = es-AR-ElenaNeural`
-- `tts_managed = true`
-- `tts_auto_deploy = true`
+Recommended defaults for MiniMax TTS are:
 
-For OpenAI-compatible TTS backends such as `openai-edge-tts`, `tts_base_url` should point to the service root, for example:
+- `tts_provider = minimax`
+- `tts_base_url = https://api.minimax.io/v1`
+- `tts_voice = <cloned alias or MiniMax voice id>`
 
-- `http://localhost:5050`
+For OpenAI-compatible TTS backends, `tts_base_url` should point to the service root, for example:
+
+- `https://api.openai.com/v1`
 
 The speech-generation tool calls:
 
-- `<tts_base_url>/v1/audio/speech`
+- `<tts_base_url>/v1/t2a_v2` for MiniMax
+- `<tts_base_url>/v1/audio/speech` for OpenAI-compatible
 
-If `tts_managed` is enabled, Monolito manages a local Docker container for TTS and uses:
-
-- `http://127.0.0.1:<tts_port>`
-
-When the managed service is deployed, Monolito also removes conflicting legacy OpenAI Edge TTS containers, including older containers such as `tts-edge`.
+The previous managed local TTS container (`travisvn/openai-edge-tts`) and its `TtsService*` tools were removed; the runtime now expects a hosted TTS provider.
 
 ## Runtime STT settings
 

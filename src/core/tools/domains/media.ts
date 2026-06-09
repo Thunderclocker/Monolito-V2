@@ -32,14 +32,10 @@ import {
 } from "../internal.ts"
 
 import {
-  deployManagedTtsContainer,
-  getManagedTtsBaseUrl,
-  getManagedTtsStatus,
-  listManagedTtsContainers,
   normalizeTtsConfig,
-  removeManagedTtsContainer,
-  stopManagedTtsContainer,
-} from "../../tts/managed.ts"
+  readChannelsConfig,
+  writeChannelsConfig,
+} from "../../channels/config.ts"
 
 import {
   readModelSettings,
@@ -48,11 +44,6 @@ import {
 import {
   MONOLITO_ROOT,
 } from "../../system/root.ts"
-
-import {
-  readChannelsConfig,
-  writeChannelsConfig,
-} from "../../channels/config.ts"
 
 import {
   appendActionLog,
@@ -196,116 +187,10 @@ export const mediaTools: ToolDefinition[] = [
 },
 
 {
-  name: "TtsServiceStatus",
-  aliases: ["tts_service_status"],
-  permissionTier: "read",
-  description: "Show the status of the managed local TTS service container.",
-  inputSchema: emptyInputSchema,
-  concurrencySafe: true,
-  async run() {
-    const config = readChannelsConfig()
-    const tts = normalizeTtsConfig(config.tts)
-    const status = await getManagedTtsStatus(tts)
-    return {
-      managed: tts.managed,
-      auto_deploy: tts.autoDeploy,
-      status,
-      base_url: getManagedTtsBaseUrl(tts),
-      container_name: tts.containerName,
-      image: tts.image,
-      port: tts.port,
-      provider: tts.provider,
-      cloned_voice_count: Object.keys(tts.clonedVoices || {}).length,
-      default_cloned_voice: tts.defaultClonedVoice || null,
-      t2a_model: tts.t2aModel,
-    }
-  },
-},
-
-{
-  name: "TtsServiceDeploy",
-  aliases: ["tts_service_deploy"],
-  permissionTier: "edit",
-  description: "Deploy or restart the managed local TTS service container using Docker. Cleans conflicting legacy OpenAI Edge TTS containers first. If this succeeds, GenerateSpeech can use the managed service without a base_url override. Rejected when tts.provider='minimax' (MiniMax no usa container local).",
-  inputSchema: emptyInputSchema,
-  concurrencySafe: false,
-  async run() {
-    const config = readChannelsConfig()
-    const tts = normalizeTtsConfig(config.tts)
-    if (tts.provider === "minimax") {
-      return { ok: false, message: "TTS provider 'minimax' no usa container local. Configurá tts.baseUrl=https://api.minimax.io/v1 y tts.apiKey en su lugar." }
-    }
-    const result = await deployManagedTtsContainer(tts)
-    if (result.ok) {
-      writeChannelsConfig({
-        ...config,
-        tts: {
-          ...config.tts,
-          managed: true,
-          autoDeploy: true,
-          baseUrl: result.baseUrl,
-          apiKey: tts.apiKey,
-          voice: tts.voice,
-          model: tts.model,
-          responseFormat: tts.responseFormat,
-          speed: tts.speed,
-          port: tts.port,
-          image: tts.image,
-          containerName: tts.containerName,
-        },
-      })
-    }
-    return result
-  },
-},
-
-{
-  name: "TtsServiceStop",
-  aliases: ["tts_service_stop"],
-  permissionTier: "edit",
-  description: "Stop the managed local TTS service container without deleting it.",
-  inputSchema: emptyInputSchema,
-  concurrencySafe: false,
-  async run() {
-    const config = readChannelsConfig()
-    const tts = normalizeTtsConfig(config.tts)
-    return await stopManagedTtsContainer(tts)
-  },
-},
-
-{
-  name: "TtsServiceRemove",
-  aliases: ["tts_service_remove"],
-  permissionTier: "edit",
-  description: "Remove the managed local TTS service container. Also removes conflicting legacy OpenAI Edge TTS containers when found.",
-  inputSchema: emptyInputSchema,
-  concurrencySafe: false,
-  async run() {
-    const config = readChannelsConfig()
-    const tts = normalizeTtsConfig(config.tts)
-    return await removeManagedTtsContainer(tts)
-  },
-},
-
-{
-  name: "TtsServiceList",
-  aliases: ["tts_service_list"],
-  permissionTier: "read",
-  description: "List detected local TTS service containers related to the managed image or container name, including legacy OpenAI Edge TTS containers such as tts-edge.",
-  inputSchema: emptyInputSchema,
-  concurrencySafe: true,
-  async run() {
-    const config = readChannelsConfig()
-    const tts = normalizeTtsConfig(config.tts)
-    return { message: await listManagedTtsContainers(tts) }
-  },
-},
-
-{
   name: "GenerateSpeech",
   aliases: ["generate_speech", "tts_generate"],
   permissionTier: "edit",
-  description: "Generate a speech audio file with the configured TTS backend and save it to Monolito scratchpad storage. Supports OpenAI-compatible providers (default) and MiniMax via /v1/t2a_v2. If tts.provider is 'minimax' or the voice alias is in tts.clonedVoices, MiniMax is used automatically. For Telegram audio requests, call this first, then send the returned local_path with TelegramSendAudio or TelegramSendVoice before claiming the audio was sent.",
+  description: "Generate a speech audio file with the configured TTS backend and save it to Monolito scratchpad storage. Supports MiniMax via /v1/t2a_v2 and any OpenAI-compatible hosted provider via /v1/audio/speech (e.g. api.openai.com). If tts.provider is 'minimax' or the voice alias is in tts.clonedVoices, MiniMax is used automatically. The previous managed-local-Docker TTS backend was removed. For Telegram audio requests, call this first, then send the returned local_path with TelegramSendAudio or TelegramSendVoice before claiming the audio was sent.",
   inputSchema: {
     type: "object",
     properties: {
@@ -379,9 +264,6 @@ export const mediaTools: ToolDefinition[] = [
 
     if (provider === "minimax") {
       // Branch MiniMax: /v1/t2a_v2 con body y response custom (hex en data.audio).
-      if (tts.managed) {
-        return formatToolError("MiniMax TTS no soporta el container local managed. Desactivá tts.managed o usá provider='openai'.")
-      }
       if (!apiKey) {
         return formatToolError("MiniMax TTS requiere tts.apiKey, MINIMAX_API_KEY o ANTHROPIC_AUTH_TOKEN.")
       }
@@ -443,25 +325,15 @@ export const mediaTools: ToolDefinition[] = [
       }
     }
 
-    // Branch OpenAI-compatible (default, retrocompat).
+    // Branch OpenAI-compatible (hosted providers, default for non-MiniMax).
     let baseUrl = (optionalString(input, "base_url") ?? tts.baseUrl).replace(/\/+$/g, "")
-    if (tts.managed) {
-      baseUrl = getManagedTtsBaseUrl(tts)
-      if (tts.autoDeploy) {
-        const deploy = await deployManagedTtsContainer(tts)
-        if (!deploy.ok) return formatToolError(`TTS managed service unavailable and auto-deploy failed: ${deploy.message}`)
-      }
-    }
-    if (!baseUrl && await getManagedTtsStatus(tts) === "running") {
-      baseUrl = getManagedTtsBaseUrl(tts)
-    }
     if (!baseUrl) {
-      return formatToolError("TTS no está configurado. Usá /config set tts_base_url <url> para configurar una API TTS (como la de MiniMax) o activá managed TTS con /config set tts_managed true.")
+      return formatToolError("TTS OpenAI-compatible no está configurado. Usá /config set tts_base_url <url> (ej. https://api.openai.com/v1) o cambiá a provider='minimax' con tts.apiKey.")
     }
 
     const isTtsApiConfigured = baseUrl.length > 0 && (apiKey || optionalString(input, "api_key"))
-    if (!isTtsApiConfigured && !tts.managed) {
-      return formatToolError("TTS no está configurado. Usá /config set tts_base_url <url> para configurar una API TTS o habilitá managed TTS.")
+    if (!isTtsApiConfigured) {
+      return formatToolError("TTS OpenAI-compatible requiere apiKey. Configurá tts.apiKey con /config set tts_api_key <key> o pasá api_key en el tool call.")
     }
 
     const headers: Record<string, string> = { "Content-Type": "application/json" }
