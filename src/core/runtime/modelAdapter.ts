@@ -40,6 +40,83 @@ const MAX_OVERLOAD_RETRIES = 3
 const CHARS_PER_TOKEN = 3.5
 const TOOL_RESULT_CHARS_PER_TOKEN = 3.0
 
+/**
+ * Bug #4 (09-jun-2026): aggregated per-tool failure tracker. Replaces the
+ * raw tdd-react warn-per-failure with a per-tool rolling window. When the
+ * same tool fails >=3 times within a 10-minute window, the caller gets a
+ * single alert payload summarizing the failures.
+ *
+ * Lazy GC: every recordFailure() call prunes entries whose lastAt is
+ * older than the window. The map is bounded by the number of distinct
+ * tool names that have failed in the last 10 minutes — typically <10.
+ */
+export interface ToolFailureAlert {
+  toolName: string
+  count: number
+  windowMin: number
+  snippets: string[]
+}
+
+export interface ToolFailureTrackerOptions {
+  windowMs?: number
+  alertThreshold?: number
+  maxSnippetsPerTool?: number
+  now?: () => number
+}
+
+export class ToolFailureTracker {
+  private readonly windowMs: number
+  private readonly alertThreshold: number
+  private readonly maxSnippets: number
+  private readonly now: () => number
+  private readonly entries = new Map<string, { count: number; firstAt: number; lastAt: number; snippets: string[] }>()
+
+  constructor(options: ToolFailureTrackerOptions = {}) {
+    this.windowMs = options.windowMs ?? 10 * 60 * 1000
+    this.alertThreshold = options.alertThreshold ?? 3
+    this.maxSnippets = options.maxSnippetsPerTool ?? 5
+    this.now = options.now ?? Date.now
+  }
+
+  /**
+   * Record a tool failure and return an alert payload if the threshold is
+   * crossed on this update. Returns null otherwise.
+   */
+  recordFailure(toolName: string, snippet: string): ToolFailureAlert | null {
+    const now = this.now()
+    // Lazy GC: drop entries whose lastAt is older than the window.
+    for (const [name, entry] of this.entries) {
+      if (now - entry.lastAt > this.windowMs) {
+        this.entries.delete(name)
+      }
+    }
+    const existing = this.entries.get(toolName)
+    const entry = existing
+      ? {
+          count: existing.count + 1,
+          firstAt: existing.firstAt,
+          lastAt: now,
+          snippets: [...existing.snippets, snippet].slice(-this.maxSnippets),
+        }
+      : { count: 1, firstAt: now, lastAt: now, snippets: [snippet] }
+    this.entries.set(toolName, entry)
+    if (entry.count < this.alertThreshold) return null
+    return {
+      toolName,
+      count: entry.count,
+      windowMin: Math.max(1, Math.round((entry.lastAt - entry.firstAt) / 60_000)),
+      snippets: entry.snippets,
+    }
+  }
+
+  /** Test/diagnostic helper. Returns a snapshot of current entries. */
+  snapshot(): Array<{ toolName: string; count: number; firstAt: number; lastAt: number }> {
+    return Array.from(this.entries.entries()).map(([toolName, e]) => ({
+      toolName, count: e.count, firstAt: e.firstAt, lastAt: e.lastAt,
+    }))
+  }
+}
+
 export function estimateContextTokens(
   systemPrompt: string,
   messages: ConversationMessage[]
@@ -906,11 +983,12 @@ export async function* runAgentLoop(
   const messages = sessionToMessages(session)
   const executionStack = new TurnExecutionStack()
   const operationalFailures = new Map<string, number>()
-  // Same-error detector: track (toolName, errorSignature) for consecutive
-  // failures. Mirrors the same logic in runBackgroundTask (sub-agent loop)
-  // but applied to the orchestrator main loop. After 2 consecutive calls
-  // to the same tool with the same error signature, we inject a nudge
-  // forcing a different approach.
+  // Per-tool rolling failure window for bug #4 (09-jun-2026). The previous
+  // tdd-react log was informative but not actionable: 83 occurrences spread
+  // across 7 days, no rate limiting, no aggregated alert. This tracker
+  // counts per-tool failures within a 10-minute window and emits a single
+  // aggregated warning when the threshold is crossed.
+  const toolFailures = new ToolFailureTracker()
   let lastFailedToolSig: { toolName: string; kind: string; detail: string } | null = null
   let sameErrorRepeatCount = 0
 
@@ -1589,6 +1667,19 @@ No intentes ejecutarla más en este turno. Por favor, detén la ejecución en es
           `Snippet: ${failureSnippet.slice(0, 500)}. ` +
           `Querying Memory Palace...`
         )
+
+        // Bug #4 (09-jun-2026): aggregated alert when the same tool fails
+        // repeatedly. ToolFailureTracker does its own lazy GC.
+        if (failedToolName) {
+          const alert = toolFailures.recordFailure(failedToolName, failureSnippet.slice(0, 200))
+          if (alert) {
+            logger.warn(
+              `[tdd-react] Tool "${alert.toolName}" ha fallado ${alert.count} veces en los últimos ${alert.windowMin} min. ` +
+              `Considerá verificar la configuración, las credenciales, o la salud del entorno. ` +
+              `Últimos snippets: ${alert.snippets.join(" | ").slice(0, 800)}`
+            )
+          }
+        }
         
         let semanticHelper = ""
         try {
