@@ -10,7 +10,37 @@ export interface SideEffectCheckResult {
    * a side-effect tool through despite a profile-level directive.
    */
   level0OverrideDetected?: boolean
+  /**
+   * Set to true when the guard auto-approved media tools because the
+   * session has /adult enabled. Distinct from level0OverrideDetected so
+   * audit trails can tell the two bypass paths apart.
+   */
+  adultModeAutoApproved?: boolean
 }
+
+/**
+ * Tools that the guard considers "media side-effects" — i.e. tools that
+ * produce or deliver content (audio, image, video, text-to-telegram) and
+ * are subject to content-policy scrutiny by the LLM-judge. When the
+ * session has /adult enabled (adultMode=true), these tools are
+ * auto-approved without invoking the judge, because adult mode is the
+ * user's explicit opt-in to lift content restrictions.
+ *
+ * Destructive tools (Bash with `rm -rf`, etc.) are intentionally NOT
+ * in this list — adult mode lifts content restrictions, not safety
+ * guard-rails. The destructive-action guard is a separate layer.
+ */
+const ADULT_MODE_MEDIA_TOOLS = new Set([
+  "TelegramSend",
+  "TelegramSendPhoto",
+  "TelegramSendAudio",
+  "TelegramSendVoice",
+  "TelegramSendDocument",
+  "GenerateImage",
+  "GenerateSpeech",
+  "VoiceClone",
+  "TranscribeAudio",
+])
 
 let guardLogger: Logger | null = null
 
@@ -41,8 +71,31 @@ export async function checkSideEffects(
     userPrompt: string,
     options?: { model?: string; maxTokens?: number }
   ) => Promise<{ text: string }>,
+  options?: { adultMode?: boolean },
 ): Promise<SideEffectCheckResult> {
   if (pendingTools.length === 0) return { approved: true }
+
+  // Adult mode short-circuit: when the session has /adult enabled AND
+  // every pending tool is a media/content tool, the guard skips the
+  // LLM-judge and approves directly. /adult is the user's explicit
+  // opt-in to lift content restrictions; re-running the judge would
+  // just produce the same false-positive block the user already
+  // opted out of (e.g. the audio "mandame un audio con tu descripcion
+  // de tus tetas" was rejected with no /adult awareness).
+  if (options?.adultMode === true) {
+    const onlyMediaTools = pendingTools.every(t => ADULT_MODE_MEDIA_TOOLS.has(t.name))
+    if (onlyMediaTools) {
+      const pendingSummary = pendingTools
+        .map(t => `${t.name}(${JSON.stringify(t.input).slice(0, 80)})`)
+        .join(", ")
+      guardLogger?.warn(
+        `[SideEffectGuard] ADULT_MODE_AUTO_APPROVE profileId=${profileId} ` +
+        `pendingTools=[${pendingSummary}] ` +
+        `lastUserMessage=${JSON.stringify(lastUserMessage).slice(0, 200)}`,
+      )
+      return { approved: true, adultModeAutoApproved: true }
+    }
+  }
 
   // NOTE: The previous version of this function had a hardcoded keyword
   // regex (enviá|forzá|ignorá|skip|salteá) that bypassed the guard for any
