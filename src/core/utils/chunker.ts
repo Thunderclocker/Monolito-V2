@@ -370,3 +370,23 @@ async function* asyncFromArray<T>(items: T[]): AsyncIterable<T> {
     yield item
   }
 }
+
+/**
+ * Aggressive head+tail shrink for embedding overflow recovery. Keeps the
+ * first and last `fraction` of the text (0.4 → 80% total, 40% head + 40% tail)
+ * with a marker between. Used as a last-resort fallback when even the
+ * sanitized text overflows Ollama's embedding context window.
+ *
+ * Returns null if the text is too short to benefit from shrinking.
+ */
+export function headTailShrink(text: string, fraction: number): string | null {
+  if (!text || text.length === 0) return null
+  const f = Math.max(0.05, Math.min(0.5, fraction))
+  const half = Math.floor((text.length * f) / 2)
+  if (half <= 0 || text.length - 2 * half < 10) return null
+  return (
+    text.slice(0, half) +
+    "\n\n[...shrunk for embedding recovery...]\n\n" +
+    text.slice(text.length - half)
+  )
+}

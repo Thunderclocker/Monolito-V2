@@ -3,7 +3,7 @@ import { promisify } from "node:util"
 import type Database from "better-sqlite3"
 import crypto from "node:crypto"
 import { createLogger } from "../logging/logger.ts"
-import { estimateTokens } from "../utils/chunker.ts"
+import { estimateTokens, headTailShrink } from "../utils/chunker.ts"
 
 const logger = createLogger("embeddings")
 
@@ -245,10 +245,14 @@ function sanitizeTextForOllama(text: string): string {
 //
 // We cap by TOKENS (not chars) because Spanish and code are denser than
 // the English heuristic and the previous char-based cap (24_000 chars ≈
-// 6-10K tokens depending on language) repeatedly overflowed. The
-// 6000-token cap leaves ~2K headroom for the model's own special tokens
-// and tokenization quirks.
-export const MAX_OLLAMA_EMBED_TOKENS = 6000
+// 6-10K tokens depending on language) repeatedly overflowed.
+//
+// The 4500-token cap leaves ~3700 tokens of headroom for the model's own
+// special tokens and tokenization quirks. The previous 6000-token cap
+// still overflowed under load — observed 2026-06-09 with 8 consecutive
+// HTTP 500 "input length exceeds" errors during the Ralph-Loop episode,
+// where long feedback prompts re-fed the embedding engine.
+export const MAX_OLLAMA_EMBED_TOKENS = 4500
 
 export function truncateForEmbedding(text: string): string {
   if (estimateTokens(text) <= MAX_OLLAMA_EMBED_TOKENS) return text
@@ -347,8 +351,43 @@ export async function generateEmbedding(text: string): Promise<Float32Array> {
               }
               embeddingArray = payload.embedding
             } catch (secondError) {
-              logger.warn(`Failed to generate embedding for prompt after sanitization. Returning zero-vector. Error: ${secondError}`)
-              return new Float32Array(EMBEDDING_DIMENSIONS)
+              const secondMsg = secondError instanceof Error ? secondError.message : String(secondError)
+              // If the sanitized text STILL overflows (HTTP 500 "input
+              // length exceeds"), try one last aggressive trim: head+tail
+              // of the sanitized text at 40% of the original. This handles
+              // the case where a single tool result or Ralph feedback prompt
+              // is huge and densely packed (lots of code, log lines, etc.).
+              if (secondMsg.includes("500") || secondMsg.includes("input length exceeds")) {
+                const reduced = headTailShrink(sanitized, 0.4)
+                if (reduced && reduced !== sanitized) {
+                  try {
+                    const res = await ollamaFetch("/api/embeddings", {
+                      method: "POST",
+                      headers: { "content-type": "application/json" },
+                      body: JSON.stringify({ model: OLLAMA_MODEL, prompt: reduced }),
+                    })
+                    const payload = await res.json() as { embedding?: number[] }
+                    if (Array.isArray(payload.embedding)
+                      && payload.embedding.length === EMBEDDING_DIMENSIONS
+                      && payload.embedding.every(v => typeof v === "number" && !Number.isNaN(v))) {
+                      logger.warn(`Embedding overflow after sanitization — recovered with 40%% head+tail trim.`)
+                      embeddingArray = payload.embedding
+                    } else {
+                      logger.warn(`Failed to generate embedding for prompt after 40%% trim (validation). Returning zero-vector. Error: ${secondError}`)
+                      return new Float32Array(EMBEDDING_DIMENSIONS)
+                    }
+                  } catch (thirdError) {
+                    logger.warn(`Failed to generate embedding for prompt after 40%% trim. Returning zero-vector. Error: ${thirdError}`)
+                    return new Float32Array(EMBEDDING_DIMENSIONS)
+                  }
+                } else {
+                  logger.warn(`Failed to generate embedding for prompt after sanitization (no headroom left). Returning zero-vector. Error: ${secondError}`)
+                  return new Float32Array(EMBEDDING_DIMENSIONS)
+                }
+              } else {
+                logger.warn(`Failed to generate embedding for prompt after sanitization. Returning zero-vector. Error: ${secondError}`)
+                return new Float32Array(EMBEDDING_DIMENSIONS)
+              }
             }
           } else {
             logger.warn(`Failed to generate embedding for prompt (cannot sanitize further). Returning zero-vector. Error: ${firstError}`)

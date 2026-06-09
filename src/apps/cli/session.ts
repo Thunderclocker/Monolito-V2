@@ -699,6 +699,21 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
         composer.masterMenuEphemeral = false
       }
     }
+    // Defensive: when the session transitions back to idle or error, the
+    // turn is over regardless of whether a `message.received(assistant)`
+    // event fired (e.g. when the runtime suppressed the empty response,
+    // or when the user sent a slash command that short-circuits the model
+    // loop). Without this, the Thinking. spinner can stay forever — the
+    // 2026-06-09 incident left the user staring at a stale spinner after
+    // the Ralph Gate exhausted 20 attempts and the runtime suppressed
+    // the assistant reply.
+    if (event.type === "state.changed" && (event.state === "idle" || event.state === "error")) {
+      composer.busy = false
+      composer.thinkingVisible = false
+      composer.toolThinkingText = ""
+      composer.toolThinkingFrame = 0
+      stopThinkingAnimation()
+    }
     transcript = appendTranscriptBlocks(transcript, blocks)
     if (pinnedToBottom) transcript.scrollOffset = 0
     redraw()

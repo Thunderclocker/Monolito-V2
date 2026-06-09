@@ -6,6 +6,7 @@ import {
   chunk,
   chunkByTokens,
   estimateTokens,
+  headTailShrink,
   summarizeChunks,
   type Chunk,
 } from "./chunker.ts"
@@ -173,4 +174,41 @@ test("summarizeChunks: empty input returns zero stats", () => {
   assert.equal(stats.totalChunks, 0)
   assert.equal(stats.totalChars, 0)
   assert.equal(stats.totalTokens, 0)
+})
+
+// -----------------------------------------------------------------------------
+// headTailShrink — last-resort shrink used by the embedding overflow
+// recovery chain in session/embeddings.ts. Regression test for the
+// 2026-06-09 incident where 8 consecutive embedding calls returned HTTP
+// 500 "input length exceeds" and the runtime degraded to zero-vectors.
+// -----------------------------------------------------------------------------
+
+test("headTailShrink: returns null for empty input", () => {
+  assert.equal(headTailShrink("", 0.4), null)
+  assert.equal(headTailShrink("a", 0.4), null)
+})
+
+test("headTailShrink: keeps the requested fraction of head and tail", () => {
+  const text = "A".repeat(200) + "B".repeat(200) + "C".repeat(200) + "D".repeat(200)
+  const shrunk = headTailShrink(text, 0.4)
+  assert.ok(shrunk)
+  // 40% of 800 = 320 chars total = 160 head + 160 tail
+  assert.ok(shrunk.startsWith("A".repeat(160)))
+  assert.ok(shrunk.endsWith("D".repeat(160)))
+  // Contains the marker
+  assert.match(shrunk, /\[\.\.\.shrunk for embedding recovery\.\.\.\]/)
+  // Drops the middle
+  assert.ok(!shrunk.includes("B".repeat(100)))
+  assert.ok(!shrunk.includes("C".repeat(100)))
+})
+
+test("headTailShrink: clamps fraction to safe bounds", () => {
+  const text = "X".repeat(1000)
+  // 0 (too small) is clamped to 0.05
+  const r1 = headTailShrink(text, 0)
+  assert.ok(r1)
+  // > 0.5 is clamped to 0.5
+  const r2 = headTailShrink(text, 0.99)
+  assert.ok(r2)
+  assert.ok(r2.length < text.length)
 })
