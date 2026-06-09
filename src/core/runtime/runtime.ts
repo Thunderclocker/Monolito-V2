@@ -4015,27 +4015,37 @@ When you finish an item, immediately call TodoWrite again marking it completed a
       )
 
       // 3. Local is ahead of origin (commits made locally, never pushed).
-      //    Try to push so the next /update runs against a consistent remote.
+      //    /update is fetch + reset only — never push. The runtime has no
+      //    business pushing its own work to origin; commits belong to the
+      //    dev repo. If the runtime is ahead, report and abort so the user
+      //    can cherry-pick to the dev repo (where SSH works) and then
+      //    `git reset --hard origin/main` here. The 09-jun-2026 incident:
+      //    a previous version of this branch auto-pushed, and a runtime
+      //    repo with an HTTPS remote and no creds produced a silent auth
+      //    failure that left 2 commits stranded.
       if (safeAhead > 0 && safeBehind === 0) {
-        updateLog(`local is ${safeAhead} commit(s) ahead of origin — pushing`)
-        try {
-          await runGitCommand(this.rootDir, ["push", "origin", "main"])
-          return [
-            `Pusheé ${safeAhead} commit(s) locales a origin/main.`,
-            "HEAD y origin ahora coinciden — no hay nada más para bajar.",
-            "Si querés reiniciar el daemon con el código nuevo, ejecutá /update otra vez (esta vez va a hacer el fast-forward).",
-          ].join("\n")
-        } catch (pushError) {
-          const message = pushError instanceof Error ? pushError.message : String(pushError)
-          return [
-            `Update failed: local tiene ${safeAhead} commit(s) sin pushear y el push automático falló.`,
-            "",
-            `Error: ${message}`,
-            "",
-            "Hacé 'git push origin main' manualmente desde el repo del runtime y volvé a correr /update.",
-            "Si falla por auth, configurá el remote (HTTPS con token o SSH con key).",
-          ].join("\n")
-        }
+        const aheadLog = await runGitCommand(this.rootDir, [
+          "log",
+          "--oneline",
+          `origin/main..HEAD`,
+        ])
+        const commits = aheadLog.split("\n").filter(Boolean)
+        return [
+          `Update skipped: el runtime tiene ${safeAhead} commit(s) adelante de origin/main.`,
+          "",
+          "Commits sin pushear:",
+          ...commits.map(line => `  ${line}`),
+          "",
+          "/update es fetch + reset, no pushea. Para sincronizar:",
+          "  1. Traé los commits al dev repo (cherry-pick manual):",
+          `     git -C <dev-repo> fetch <runtime-path> main`,
+          `     git -C <dev-repo> cherry-pick <sha>...`,
+          "  2. Pusheá desde el dev repo (ahí está configurado el SSH).",
+          `  3. Reset el runtime: git -C ${this.rootDir} reset --hard origin/main`,
+          "",
+          "Si querés descartar los commits locales y alinear, corré:",
+          `  git -C ${this.rootDir} reset --hard origin/main`,
+        ].join("\n")
       }
 
       // 4. Diverged: local and origin each have commits the other does not.
