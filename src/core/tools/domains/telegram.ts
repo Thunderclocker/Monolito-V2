@@ -51,6 +51,34 @@ interface TelegramPhotoResult {
   description?: string
 }
 
+// -----------------------------------------------------------------------------
+// Browser-required host detection
+//
+// Some image CDNs (Reddit, Pinterest, certain Imgur paths) block generic
+// bot user-agents with HTTP 403 even when the file is publicly accessible.
+// They need a full browser-shaped request (Referer + Accept-Language +
+// Sec-Fetch-*) and a Referer that matches a "real" referring page on the
+// same site. We retry exactly once with a host-appropriate Referer before
+// surfacing the 403 to the model.
+//
+// The pure helpers (isBrowserRequiredHost, refererForHost, isHtmlContentType,
+// isJsonErrorBody, looksLikeTelegramFileId) and the network probe
+// (probeImageUrl) live in ./telegramGuards.ts so they can be unit-tested
+// without dragging in the full tool registry.
+// -----------------------------------------------------------------------------
+
+import {
+  isBrowserRequiredHost,
+  refererForHost,
+  isHtmlContentType,
+  isJsonErrorBody,
+  looksLikeTelegramFileId,
+  probeImageUrl,
+} from "./telegramGuards.ts"
+
+// Re-export the guards so existing call sites keep working.
+export { isBrowserRequiredHost, refererForHost, isHtmlContentType, isJsonErrorBody, looksLikeTelegramFileId, probeImageUrl }
+
 function extractTelegramPhotoFields(data: TelegramPhotoResult): { messageId: number | null; fileId: string | null } {
   if (!data?.result) return { messageId: null, fileId: null }
   const photos = Array.isArray(data.result.photo) ? data.result.photo : []
@@ -248,6 +276,26 @@ export const telegramTools: ToolDefinition[] = [
     const config = readChannelsConfig()
     if (!config.telegram?.enabled || !config.telegram.token) {
       return formatToolError("Telegram is not configured or not enabled. Use /channels to set it up.")
+    }
+
+    // Pre-check: if the user passed a URL (not a local path or Telegram
+    // file_id), do a fast HEAD/GET-range probe to confirm the resource is
+    // actually a direct image. Without this, the runtime passes the URL
+    // straight to Telegram's API, which fetches it server-side and rejects
+    // HTML/login pages with "Bad Request: wrong type of the web page
+    // content" — observed 2026-06-09 when 4 of 10 fan-art URLs were 403
+    // login walls from Reddit/Pinterest. The pre-check is fail-soft: if
+    // the probe itself errors (DNS, timeout, blocked), we let the call
+    // through and let Telegram be the authority.
+    if (!isLocalPath(photo) && /^https?:\/\//i.test(photo) && !looksLikeTelegramFileId(photo)) {
+      const probe = await probeImageUrl(photo)
+      if (probe && !probe.ok) {
+        return formatToolError(
+          `TelegramSendPhoto URL pre-check failed for ${photo}: ${probe.reason}. ` +
+          `Use \`DownloadFile\` first to retrieve the resource to a local_path, ` +
+          `then pass that local_path to \`TelegramSendPhoto\`.`,
+        )
+      }
     }
 
     if (isLocalPath(photo)) {
@@ -487,47 +535,92 @@ export const telegramTools: ToolDefinition[] = [
   async run(input, context) {
     const url = requireString(input, "url")
     const filename = optionalString(input, "filename")
-    
+
     const paths = ensureDirs(context.rootDir)
     const downloadsDir = join(paths.scratchpadDir, "downloads")
-    
+
     const startedAt = Date.now()
     try {
-      const response = await fetch(url, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-          "Accept": "*/*",
-        },
-        signal: AbortSignal.timeout(30_000),
+      // Browser-required hosts block generic bot user-agents with 403. Reddit
+      // and Pinterest in particular need a full browser-shaped request
+      // (Referer + Accept-Language + Sec-Fetch-*). Without these the host
+      // returns 403 even though the file is publicly accessible — observed
+      // 2026-06-09 when 4 of 10 fan-art downloads failed this way.
+      const parsedUrl = new URL(url)
+      const browserHeaders = (referer: string) => ({
+        "User-Agent":
+          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": referer,
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "cross-site",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
       })
-      
-      if (!response.ok) {
-        throw new Error(`HTTP Error ${response.status}: ${response.statusText}`)
+      // First attempt: minimal browser-shaped headers with the URL's own
+      // origin as Referer. Works for most CDNs (i.redd.it, imgur direct,
+      // i.pinimg.com).
+      let response = await fetch(url, {
+        headers: browserHeaders(parsedUrl.origin + "/"),
+        signal: AbortSignal.timeout(30_000),
+        redirect: "follow",
+      })
+      // Second attempt (only on 403 from a known bot-blocking host): use
+      // a domain-appropriate Referer. Many image CDNs (preview.redd.it,
+      // b.thumbs.redditmedia.com) require Referer=https://www.reddit.com/
+      // to even serve the bytes.
+      if (response.status === 403 && isBrowserRequiredHost(parsedUrl.hostname)) {
+        response = await fetch(url, {
+          headers: browserHeaders(refererForHost(parsedUrl.hostname)),
+          signal: AbortSignal.timeout(30_000),
+          redirect: "follow",
+        })
       }
-      
+
+      if (!response.ok) {
+        const statusNote = response.status === 403
+          ? ` (host likely blocks bot user-agents; even the browser-shaped retry was rejected)`
+          : ""
+        throw new Error(`HTTP Error ${response.status}: ${response.statusText}${statusNote}`)
+      }
+
       const contentType = response.headers.get("content-type") ?? "application/octet-stream"
       const buffer = Buffer.from(await response.arrayBuffer())
-      
+
+      // Some 403 pages still return 200 with an HTML login wall. If the
+      // resource is not a sensible content-type, fail with a clear message
+      // so the model doesn't pass a login page to TelegramSendPhoto and
+      // get back 'wrong type of the web page content'.
+      if (isHtmlContentType(contentType) || isJsonErrorBody(buffer, contentType)) {
+        return formatToolError(
+          `Download failed: ${url} returned a ${contentType} response, not a direct file. ` +
+          `The host is probably serving a login page or API error JSON. ` +
+          `Bytes received: ${buffer.length}. ` +
+          `Try a different source URL (e.g. an \`i.redd.it\` direct link, an \`imgur.com\` direct, or a smaller image).`,
+        )
+      }
+
       // Determinar nombre del archivo
       let finalName = filename
       if (!finalName) {
-        const parsedUrl = new URL(url)
         const urlSegment = parsedUrl.pathname.split("/").at(-1)
         finalName = urlSegment && urlSegment.includes(".")
           ? sanitizeFilenameSegment(urlSegment)
           : `download-${Date.now()}`
       }
-      
+
       // Asegurar extensión adecuada si falta en la inferencia básica
       if (!finalName.includes(".") && contentType !== "application/octet-stream") {
         const mimeExt = contentType.split(";")[0]?.split("/")[1]
         if (mimeExt) finalName = `${finalName}.${mimeExt}`
       }
-      
+
       mkdirSync(downloadsDir, { recursive: true })
       const localPath = join(downloadsDir, finalName)
       writeFileSync(localPath, buffer)
-      
+
       return {
         ok: true,
         url,
