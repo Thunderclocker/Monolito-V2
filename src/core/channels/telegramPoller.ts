@@ -14,11 +14,31 @@ function isTelegramConflictError(error: Error): boolean {
 
 function isRetriableTelegramNetworkError(error: Error): boolean {
   const message = error.message.toLowerCase()
+  // undici wraps low-level socket errors with "fetch failed" — inspect the
+  // cause chain to see the actual system code. Without this, ECONNRESET /
+  // ENETUNREACH / EAI_AGAIN (DNS hiccup, transient wifi drop) fall into the
+  // generic reconnect-counter path and the poller gives up too early.
+  const causeCode = (error as { cause?: { code?: string } }).cause?.code?.toLowerCase() ?? ""
+  const causeMessage = (error as { cause?: { message?: string } }).cause?.message?.toLowerCase() ?? ""
+  const undiciTransientCodes = [
+    "econnreset",
+    "enotfound",
+    "enetunreach",
+    "eai_again",
+    "etimedout",
+    "epipe",
+    "econnaborted",
+  ]
   return (
     error.name === "TimeoutError" ||
     error.name === "AbortError" ||
     message.includes("502") ||
-    message.includes("bad gateway")
+    message.includes("bad gateway") ||
+    // undici fetch failed with a transient socket cause
+    (message.includes("fetch failed") &&
+      (undiciTransientCodes.some(c => causeCode === c || causeMessage.includes(c)) ||
+        causeCode.length > 0)) ||
+    undiciTransientCodes.some(c => message.includes(c) || causeCode === c)
   )
 }
 
