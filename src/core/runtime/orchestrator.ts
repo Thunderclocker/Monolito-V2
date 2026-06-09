@@ -230,14 +230,39 @@ Respond ONLY with a valid JSON object in this format:
         maxTokens: 150,
       })
 
-      const parsed = JSON.parse(stripMarkdownCodeFence(text).trim())
+      // Two-stage parse. Bug #6 (09-jun-2026): 7 SyntaxError occurrences in
+      // monolitod.*.log when the LLM returned markdown inline (e.g. `\`\`\`json
+      // { ... } \`\`\`` with the closing fence swallowed) or a truncated
+      // fragment ("Unexpected end of JSON input"). The first attempt strips
+      // a top-level code fence. The second attempt extracts the first
+      // balanced {...} substring if the first failed. If both fail, dump
+      // the raw text to the worklog so the next /update can diagnose.
+      const parsed = parseRalphLoopClassification(text) as {
+        send_telegram_photo?: boolean
+        send_telegram_file?: boolean
+        send_telegram_msg?: boolean
+        modify_workspace_files?: boolean
+        search_web?: boolean
+      } | null
+      if (parsed === null) {
+        // Both parse attempts failed. Dump the raw LLM output to the worklog
+        // so the next /update or manual triage can diagnose whether the
+        // problem is truncation (maxTokens hit), alucinación de markdown,
+        // or something else. We clip aggressively because the output can
+        // be arbitrarily long.
+        appendWorklog(rootDir, sessionId, {
+          type: "note",
+          summary: `[Ralph Loop] Semantic verification LLM returned unparseable output (${text.length} chars, attempt ${attempt}). Raw: ${text.slice(0, 2000)}`,
+        })
+        logger.warn(`[Ralph Loop] Semantic verification LLM output unparseable (${text.length} chars). Falling back to regex. First 200 chars: ${text.slice(0, 200)}`)
+      }
       if (parsed && typeof parsed === "object") {
         if (typeof parsed.send_telegram_photo === "boolean") send_telegram_photo = parsed.send_telegram_photo
         if (typeof parsed.send_telegram_file === "boolean") send_telegram_file = parsed.send_telegram_file
         if (typeof parsed.send_telegram_msg === "boolean") send_telegram_msg = parsed.send_telegram_msg
         if (typeof parsed.modify_workspace_files === "boolean") modify_workspace_files = parsed.modify_workspace_files
         if (typeof parsed.search_web === "boolean") search_web = parsed.search_web
-        
+
         logger.debug(`[Ralph Loop] Semantic verification classification: ${JSON.stringify(parsed)}`)
       }
     } catch (llmErr) {
@@ -1367,6 +1392,37 @@ function stripMarkdownCodeFence(text: string): string {
   const fenceMatch = trimmed.match(/^```(?:json|JSON)?\s*\n([\s\S]*?)\n?```\s*$/)
   if (fenceMatch?.[1]) return fenceMatch[1].trim()
   return trimmed
+}
+
+/**
+ * Try to parse an LLM response as JSON, falling back to first-balanced-object
+ * extraction if the raw attempt fails. Returns null on total failure. The
+ * caller is responsible for logging the raw text when this returns null —
+ * see parseRalphLoopClassificationWithLog for the full pattern.
+ */
+export function parseRalphLoopClassification(text: string): unknown {
+  if (!text) return null
+  // Attempt 1: trim and try direct parse. Handles 95% of clean responses.
+  try {
+    return JSON.parse(stripMarkdownCodeFence(text).trim())
+  } catch {
+    // fall through
+  }
+  // Attempt 2: extract the first balanced {...} block (non-greedy). Handles
+  // cases where the LLM prepends prose or appends a trailing fence, or
+  // returns a truncated fragment that still has an open object. Non-greedy
+  // is critical — greedy `*` would consume the whole string when the LLM
+  // returns two adjacent objects, which JSON.parse then rejects.
+  const candidate = stripMarkdownCodeFence(text)
+  const objectMatch = candidate.match(/\{[\s\S]*?\}/)
+  if (objectMatch) {
+    try {
+      return JSON.parse(objectMatch[0])
+    } catch {
+      // fall through
+    }
+  }
+  return null
 }
 
 
