@@ -1419,6 +1419,7 @@ Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas c
           context.profileId || "default",
           lastUserText || "",
           runBackgroundTextTask,
+          { adultMode: context.sessionId && context.runtime && typeof context.runtime.hasAdultMode === "function" ? context.runtime.hasAdultMode(context.sessionId) : false },
         )
 
         if (evaluation.approved) {
