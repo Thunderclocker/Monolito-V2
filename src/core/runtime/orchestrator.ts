@@ -199,7 +199,7 @@ async function checkAssertionRalphRules(
     let send_telegram_msg = /(?:te (?:envié|mandé|pasé|escribí|avisé)|ahí te (?:mando|envío))\b/i.test(normalizedReply) &&
       /(?:mensaje|texto|chat|telegram)\b/i.test(normalizedReply)
     let modify_workspace_files = /(?:creé el archivo|guardé en|modifiqué el archivo|escribí en|actualicé el archivo|agregué al archivo|eliminé el archivo)\b/i.test(normalizedReply)
-    let search_web = /(?:busqué en la web|busqué en internet|busqué en searxng|busqué en google|investigué en la web)\b/i.test(normalizedReply)
+    let search_web = /(?:busqué en la web|busqué en internet|busqué en brave|busqué en serper|busqué en tavily|busqué en google|investigué en la web)\b/i.test(normalizedReply)
 
     // Language-agnostic semantic classification
     try {

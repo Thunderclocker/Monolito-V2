@@ -125,13 +125,9 @@ The runtime does not rely on workspace markdown files for identity or memory. Th
 ## Web search
 
 - `/websearch` opens an interactive menu in the local CLI and a button-based menu in Telegram.
-- The available modes are `default` and `searxng`.
-- Selecting `searxng` prepares and starts a local Docker container bound to `127.0.0.1:8888`.
-- Monolito also prepares a persisted `settings.yml` so the SearxNG JSON API is enabled, which is required by `ImageSearch`.
-- The menu can list detected SearxNG containers, stop the managed container, remove it, clean conflicting containers, and run a test query.
-- `ImageSearch` uses the same managed SearxNG backend as `/websearch`.
-- Web search mode is stored in the SQLite `CONF_WEBSEARCH` wing.
-- SearxNG settings are stored in `~/.monolito/searxng/settings.yml`.
+- The available providers are `default` (no search), `brave`, `serper`, and `tavily`. All three hosted API providers require an API key in `CONF_WEBSEARCH.apiKey`.
+- The previous local SearXNG managed-container flow was removed; `WebSearch` and `ImageSearch` now consume hosted provider APIs only. Legacy SearXNG containers from old installs are cleaned up by `uninstall.sh`.
+- The active provider and key are stored in the SQLite `CONF_WEBSEARCH` wing.
 
 ## Interactive menus
 
@@ -237,7 +233,7 @@ monolito -p '/stt status'
 ## Notes
 
 - Runtime config lives in SQLite `CONF_*` wings: `CONF_SYSTEM`, `CONF_MODELS`, `CONF_CHANNELS`, `CONF_WEBSEARCH`
-- SearxNG settings: `~/.monolito/searxng/settings.yml`
+- Web search no longer uses a managed local config file; providers are configured via `CONF_WEBSEARCH.apiKey`.
 - Session data: `~/.monolito/`
 - Local memory database: `~/.monolito/memory/memory.sqlite`
 - Daemon log: `~/.monolito/logs/monolitod.log`

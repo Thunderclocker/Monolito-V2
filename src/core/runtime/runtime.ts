@@ -167,22 +167,9 @@ function createAgentLoopEventQueue(): AgentLoopEventQueue {
 }
 
 const execFileAsync = promisify(execFile)
-const SEARXNG_CONTAINER = "monolito-searxng"
-const SEARXNG_PORT = 8888
-const SEARXNG_URL = `http://127.0.0.1:${SEARXNG_PORT}`
-const SEARXNG_SETTINGS_DIR = join(MONOLITO_ROOT, "searxng")
-const SEARXNG_SETTINGS_FILE = join(SEARXNG_SETTINGS_DIR, "settings.yml")
-const MANAGED_SEARXNG_SETTINGS = [
-  "use_default_settings: true",
-  "server:",
-  "  secret_key: monolito-v2-searxng-key-2026",
-  "search:",
-  "  safe_search: 0",
-  "  formats:",
-  "    - html",
-  "    - json",
-  "",
-].join("\n")
+// SearXNG managed container was removed: web search now uses hosted
+// provider APIs only (Brave, Serper, Tavily). The local Docker backend
+// and its associated constants/settings are gone.
 const TELEGRAM_TYPING_REFRESH_MS = 4_000
 const TURN_HARD_TIMEOUT_MS = 95_000
 const COMMAND_REPAIR_MAX_ATTEMPTS = 3
@@ -195,14 +182,6 @@ class TurnTimeoutError extends Error {
     super(message)
     this.name = "TurnTimeoutError"
   }
-}
-
-type SearxngContainerInfo = {
-  id: string
-  name: string
-  image: string
-  status: string
-  isOurs: boolean
 }
 
 type ActiveServiceStatus = "online" | "degraded" | "offline"
@@ -263,15 +242,6 @@ function truncateFailureDetail(value: string, max = 240) {
   return `${normalized.slice(0, max - 1).trimEnd()}...`
 }
 
-function webSearchProviderLabel(provider: WebSearchProvider) {
-  switch (provider) {
-    case "default":
-      return "default"
-    case "searxng":
-      return "searxng"
-  }
-}
-
 async function checkActiveService(url: string): Promise<ActiveServiceStatus> {
   try {
     const response = await fetch(url, { signal: AbortSignal.timeout(500) })
@@ -300,213 +270,6 @@ function mapContainerStatusToJit(status: "running" | "stopped" | "not_found" | "
 
 function systemStatusLabel(status: SystemServiceStatus) {
   return status.toUpperCase()
-}
-
-async function findAllSearxngContainers(): Promise<SearxngContainerInfo[]> {
-  try {
-    const { stdout: byImage } = await execFileAsync("docker", [
-      "ps", "-a",
-      "--filter", "ancestor=searxng/searxng",
-      "--format", "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}",
-    ], { timeout: 10_000 })
-    const { stdout: byName } = await execFileAsync("docker", [
-      "ps", "-a",
-      "--filter", "name=searxng",
-      "--format", "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}",
-    ], { timeout: 10_000 })
-
-    const seen = new Set<string>()
-    const containers: SearxngContainerInfo[] = []
-    for (const line of [...byImage.trim().split("\n"), ...byName.trim().split("\n")]) {
-      if (!line.trim()) continue
-      const [id, name, image, status] = line.split("\t")
-      if (!id || seen.has(id)) continue
-      seen.add(id)
-      containers.push({
-        id: id.slice(0, 12),
-        name: name ?? "",
-        image: image ?? "",
-        status: status ?? "",
-        isOurs: name === SEARXNG_CONTAINER,
-      })
-    }
-    return containers
-  } catch {
-    return []
-  }
-}
-
-async function getSearxngStatus(): Promise<"running" | "stopped" | "not_found" | "docker_error"> {
-  try {
-    const { stdout } = await execFileAsync("docker", [
-      "ps", "-a",
-      "--filter", `name=^/${SEARXNG_CONTAINER}$`,
-      "--format", "{{.Status}}",
-    ], { timeout: 10_000 })
-    const status = stdout.trim()
-    if (!status) return "not_found"
-    return status.startsWith("Up") ? "running" : "stopped"
-  } catch {
-    return "docker_error"
-  }
-}
-
-function withManagedSearxngSettings(content: string) {
-  let updated = content
-  if (!/^\s*-\s*json\s*$/m.test(updated)) {
-    updated = updated.replace(/(^\s*formats:\n(?:\s*#.*\n)*\s*-\s*html\s*$)/m, `$1\n    - json`)
-  }
-  if (/^\s*safe_search:\s*0\s*$/m.test(updated)) return updated
-  if (/^\s*safe_search:\s*\d+\s*$/m.test(updated)) {
-    return updated.replace(/^(\s*safe_search:\s*)\d+\s*$/m, (_, prefix: string) => `${prefix}0`)
-  }
-  if (/^\s*search:\s*$/m.test(updated)) {
-    return updated.replace(/^(\s*search:\s*)$/m, "$1\n  safe_search: 0")
-  }
-  return updated
-}
-
-async function ensureSearxngSettingsFile(): Promise<{ ok: boolean; message?: string }> {
-  mkdirSync(SEARXNG_SETTINGS_DIR, { recursive: true })
-  writeFileSync(SEARXNG_SETTINGS_FILE, MANAGED_SEARXNG_SETTINGS, "utf8")
-  return { ok: true }
-}
-
-async function probeSearxngJsonApi() {
-  try {
-    const response = await fetch(`${SEARXNG_URL}/search?q=mountains&categories=images&format=json`, {
-      signal: AbortSignal.timeout(5000),
-    })
-    return response.ok
-  } catch {
-    return false
-  }
-}
-
-async function listSearxngContainers(): Promise<string> {
-  const containers = await findAllSearxngContainers()
-  if (containers.length === 0) return "No SearxNG containers found."
-  return [
-    `SearxNG containers found: ${containers.length}`,
-    ...containers.map(container =>
-      `- ${container.name || "(unnamed)"} | ${container.id} | ${container.image} | ${container.status}${container.isOurs ? " | managed" : ""}`),
-  ].join("\n")
-}
-
-async function removeSearxngContainer(idOrName: string): Promise<{ ok: boolean; message: string }> {
-  if (idOrName === SEARXNG_CONTAINER) {
-    const containers = await findAllSearxngContainers()
-    const ours = containers.find(container => container.isOurs)
-    if (!ours) {
-      return { ok: true, message: "SearxNG is not deployed." }
-    }
-    idOrName = ours.id
-  }
-  try {
-    await execFileAsync("docker", ["rm", "-f", idOrName], { timeout: 15_000 })
-    return { ok: true, message: `Container ${idOrName} removed.` }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    return { ok: false, message: `Error removing ${idOrName}: ${message}` }
-  }
-}
-
-async function stopSearxngContainer(): Promise<{ ok: boolean; message: string }> {
-  const status = await getSearxngStatus()
-  if (status === "not_found" || status === "docker_error") {
-    return { ok: true, message: "SearxNG is not deployed." }
-  }
-  try {
-    await execFileAsync("docker", ["stop", SEARXNG_CONTAINER], { timeout: 15_000 })
-    return { ok: true, message: "SearxNG stopped." }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    return { ok: false, message: `Error stopping SearxNG: ${message}` }
-  }
-}
-
-async function clearAllSearxngContainers(): Promise<{ ok: boolean; message: string }> {
-  const containers = await findAllSearxngContainers()
-  if (containers.length === 0) return { ok: true, message: "No SearxNG containers found." }
-  const lines: string[] = []
-  let allOk = true
-  for (const container of containers) {
-    const result = await removeSearxngContainer(container.id)
-    lines.push(`${container.name || container.id}: ${result.ok ? "removed" : result.message}`)
-    if (!result.ok) allOk = false
-  }
-  return { ok: allOk, message: lines.join("\n") }
-}
-
-async function deploySearxngContainer(): Promise<{ ok: boolean; message: string }> {
-  try {
-    await execFileAsync("docker", ["info"], { timeout: 10_000 })
-  } catch {
-    return { ok: false, message: "Docker is unavailable or not running." }
-  }
-
-  const status = await getSearxngStatus()
-  if (status === "running") {
-    try {
-      const probe = await fetch(`${SEARXNG_URL}/healthz`, { signal: AbortSignal.timeout(3000) })
-      if (probe.ok && await probeSearxngJsonApi()) return { ok: true, message: `SearxNG is already running at ${SEARXNG_URL}.` }
-    } catch {}
-  }
-
-  const settings = await ensureSearxngSettingsFile()
-  if (!settings.ok) {
-    return { ok: false, message: settings.message ?? "Could not prepare the SearxNG configuration." }
-  }
-
-  const containers = await findAllSearxngContainers()
-  for (const container of containers.filter(item => !item.isOurs)) {
-    await removeSearxngContainer(container.id)
-  }
-
-  if (status === "running" || status === "stopped") {
-    await removeSearxngContainer(SEARXNG_CONTAINER)
-  }
-
-  try {
-    await execFileAsync("docker", [
-      "run", "-d",
-      "--name", SEARXNG_CONTAINER,
-      "-p", `127.0.0.1:${SEARXNG_PORT}:8080`,
-      "--restart", "unless-stopped",
-      "-v", `${SEARXNG_SETTINGS_FILE}:/etc/searxng/settings.yml:ro`,
-      "searxng/searxng:latest",
-    ], { timeout: 120_000 })
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    return { ok: false, message: `Error deploying SearxNG: ${message}` }
-  }
-
-  for (let i = 0; i < 25; i++) {
-    await new Promise(resolve => setTimeout(resolve, 1000))
-    try {
-      const probe = await fetch(`${SEARXNG_URL}/healthz`, { signal: AbortSignal.timeout(2000) })
-      if (probe.ok && await probeSearxngJsonApi()) return { ok: true, message: `SearxNG deployed at ${SEARXNG_URL}.` }
-    } catch {}
-  }
-
-  return { ok: false, message: "SearxNG started but its JSON API did not respond within 25s." }
-}
-
-async function testSearxngQuery(query: string): Promise<string> {
-  const encoded = encodeURIComponent(query)
-  const response = await fetch(`${SEARXNG_URL}/search?q=${encoded}&format=json`, {
-    signal: AbortSignal.timeout(10_000),
-  })
-  if (!response.ok) {
-    return `SearxNG returned HTTP ${response.status}.`
-  }
-  const data = await response.json() as { results?: Array<{ title?: string; url?: string }> }
-  const results = (data.results ?? []).slice(0, 5)
-  if (results.length === 0) return `Search "${query}": 0 results.`
-  return [
-    `Search "${query}": ${results.length} results.`,
-    ...results.map((result, index) => `${index + 1}. ${result.title ?? "(untitled)"}\n${result.url ?? ""}`),
-  ].join("\n")
 }
 
 function parseAllowedChats(input: string) {
@@ -4009,8 +3772,7 @@ When you finish an item, immediately call TodoWrite again marking it completed a
     const workspace = getWorkspaceContext(this.rootDir, "default")
     const memory = await getVectorMemoryStatus()
 
-    const [searxContainer, sttContainer] = await Promise.all([
-      getSearxngStatus(),
+    const [sttContainer] = await Promise.all([
       getManagedSttStatus(stt),
     ])
 
@@ -4019,12 +3781,6 @@ When you finish an item, immediately call TodoWrite again marking it completed a
       : "http://127.0.0.1:11434"
 
     const serviceDefs = [
-      {
-        key: "searxng",
-        url: `${SEARXNG_URL}/healthz`,
-        jitState: mapContainerStatusToJit(searxContainer),
-        containerState: searxContainer,
-      },
       {
         key: "stt",
         url: `${getManagedSttBaseUrl(stt)}/openapi.json`,

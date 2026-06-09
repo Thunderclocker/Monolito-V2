@@ -19,7 +19,7 @@ export function buildMasterDashboard(prefixMessage?: string): MenuSchemaEnvelope
   const telStatus = channelsConfig.telegram?.enabled ? "On" : "Off"
 
   const wsConfig = readWebSearchConfig()
-  const wsStatus = wsConfig.provider === "searxng" ? "SearxNG" : "Default"
+  const wsStatus = wsConfig.provider === "default" ? "Default" : wsConfig.provider
 
   const menu: MenuDefinition = {
     id: "master-dashboard",

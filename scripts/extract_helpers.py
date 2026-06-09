@@ -161,8 +161,8 @@ def find_used_identifiers_in_domain(domain_file: Path) -> set:
         "deployManagedSttContainer", "getManagedSttBaseUrl", "getManagedSttStatus",
         "listManagedSttContainers", "normalizeSttConfig", "removeManagedSttContainer",
         "stopManagedSttContainer", "transcribeManagedAudioFile",
-        # Websearch
-        "deploySearxng", "SEARXNG_URL", "readWebSearchConfig",
+        # Websearch (SearXNG backend removed — only readWebSearchConfig remains)
+        "readWebSearchConfig",
         # Boot
         "isBootWingName", "BOOT_WING_ORDER",
         # Master dashboard

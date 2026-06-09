@@ -7,7 +7,7 @@ export type DomainFilter = {
   blocked?: string[]
 }
 
-export type Provider = "searxng" | "brave" | "serper" | "tavily" | "default"
+export type Provider = "brave" | "serper" | "tavily" | "default"
 
 export type TranslatedQuery = {
   url: string
@@ -29,19 +29,6 @@ export function translateFilters(
     const url = `${baseUrl}?q=${encodeURIComponent(query)}${Object.entries(extraParams).map(([k, v]) => `&${k}=${encodeURIComponent(v)}`).join("")}`
     const warning = (filter.allowed || filter.blocked) ? "Brave does not support domain filters" : undefined
     return { url, warning }
-  }
-  if (provider === "searxng") {
-    // SearxNG: domains via engine or site: prefix
-    let processedQuery = query
-    if (filter.allowed && filter.allowed.length > 0) {
-      const siteOr = filter.allowed.map(d => `site:${d}`).join(" OR ")
-      processedQuery = `${query} (${siteOr})`
-    } else if (filter.blocked && filter.blocked.length > 0) {
-      const siteMinus = filter.blocked.map(d => `-site:${d}`).join(" ")
-      processedQuery = `${query} ${siteMinus}`
-    }
-    const url = `${baseUrl}?q=${encodeURIComponent(processedQuery)}&format=json${Object.entries(extraParams).map(([k, v]) => `&${k}=${encodeURIComponent(v)}`).join("")}`
-    return { url }
   }
   if (provider === "serper") {
     // Serper: site:filter inline + domain param

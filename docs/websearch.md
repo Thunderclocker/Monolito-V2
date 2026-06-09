@@ -9,68 +9,43 @@ The user-facing interface is menu-driven:
 
 Users should not need to remember subcommand syntax for normal operation.
 
-## Modes
+## Providers
 
-Monolito currently supports two web search modes:
+Monolito's `WebSearch` and `ImageSearch` tools consume **hosted search API providers only**. The local self-hosted meta-search backend (SearXNG) was removed.
 
-- `default`: leaves web lookup strategy to the runtime/model.
-- `searxng`: enables a local SearxNG-backed flow for web and image search.
+Supported providers:
 
-The active mode is stored in:
+- `default` — no provider configured. `WebSearch` and `ImageSearch` will return a clear error pointing the user to set up one of the providers below.
+- `brave` — Brave Search API (`https://api.search.brave.com/res/v1/web/search` and `/res/v1/images/search`). Requires `CONF_WEBSEARCH.apiKey`.
+- `serper` — Serper (Google) (`https://google.serper.dev/search` and `/images`). Requires `CONF_WEBSEARCH.apiKey`.
+- `tavily` — Tavily (`https://api.tavily.com/search`). Requires `CONF_WEBSEARCH.apiKey`.
 
-`CONF_WEBSEARCH`
+The active provider is stored in `CONF_WEBSEARCH` and is a runtime-level setting, not a per-session setting.
 
-Web search mode is a runtime-level setting, not a per-session setting.
+## Configuration
 
-## SearxNG lifecycle
+```bash
+# Pick a provider
+/config set websearch_provider brave
+/config set websearch_api_key <your-brave-key>
 
-When `searxng` is selected, Monolito:
-
-- ensures Docker is available
-- detects existing SearxNG containers by image and by name
-- removes conflicting foreign SearxNG containers when needed
-- prepares a persisted SearxNG `settings.yml`
-- enables `json` output in that config
-- launches the managed container `monolito-searxng`
-- binds it to `127.0.0.1:8888`
-- verifies not only `/healthz`, but also that the JSON API actually answers
-
-The generated settings file is stored at:
-
-`~/.monolito/searxng/settings.yml`
-
-This matters because the stock SearxNG image can come up with HTML-only formats enabled; Monolito patches the config so `format=json` works for internal tooling.
+# Or via tool_manage_config action='set'
+# CONF_WEBSEARCH.provider = "brave"
+# CONF_WEBSEARCH.apiKey = "<key>"
+```
 
 ## Menu actions
 
-The SearxNG menu can:
+The `/websearch` menu can:
 
-- switch the active mode to `searxng`
-- start or restart the managed container
-- stop the managed container
-- remove the managed container
-- list detected SearxNG containers
-- clean all detected SearxNG containers
-- run a test query against the local instance
+- switch the active provider (`default`, `brave`, `serper`, `tavily`)
+- remind the user where to set the API key
 
-The user-facing `/websearch` flow is menu-first in both supported surfaces:
-
-- local CLI
-- Telegram
+The previous `/websearch` submenu (deploy/stop/remove SearXNG container, run a test query against a local instance) is gone.
 
 ## Image search integration
 
-`ImageSearch` relies on the same local SearxNG instance at:
-
-`http://127.0.0.1:8888`
-
-That means `/websearch` and `ImageSearch` share:
-
-- the same managed container name
-- the same bind port
-- the same JSON-enabled SearxNG config
-
-If SearxNG is not already usable, `ImageSearch` can also prepare and launch it automatically.
+`ImageSearch` uses the same provider configuration as `WebSearch`. Each provider has its own image-search endpoint (Brave Images, Serper Images, Tavily's `include_images: true`).
 
 ## Telegram behavior
 
@@ -82,8 +57,7 @@ Button actions are translated internally into runtime operations, but the user-f
 
 Web search functionality uses:
 
-- `CONF_WEBSEARCH`
-- `~/.monolito/searxng/settings.yml`
+- `CONF_WEBSEARCH` (the provider enum and apiKey)
 
 Operational logs for the running daemon still go to:
 

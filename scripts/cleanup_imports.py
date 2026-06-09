@@ -94,8 +94,6 @@ SIBLING_IMPORTS = {
     "stopManagedSttContainer": "../stt/managed.ts",
     "transcribeManagedAudioFile": "../stt/managed.ts",
 
-    "deploySearxng": "../websearch/managed.ts",
-    "SEARXNG_URL": "../websearch/managed.ts",
     "readWebSearchConfig": "../websearch/config.ts",
 
     "isBootWingName": "../bootstrap/bootWings.ts",

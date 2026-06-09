@@ -1,20 +1,13 @@
 /**
  * Interactive web search configuration menu.
  *
- * /websearch opens a selector for the web search strategy used by the agent.
+ * /websearch opens a selector for the web search strategy used by the
+ * agent. The previous local SearXNG managed-container flow was removed;
+ * the menu now only lets the user pick a hosted API provider (or "default"
+ * which means "no provider configured — search will fail with a clear
+ * error"). API key entry is handled by the standard /config set flow.
  */
 import { readWebSearchConfig, writeWebSearchConfig, type WebSearchProvider } from "../../../core/websearch/config.ts"
-import {
-  deploySearxng,
-  findAllSearxngContainers,
-  getOurContainerStatus,
-  removeAllSearxngContainers,
-  removeContainer,
-  SEARXNG_CONTAINER,
-  SEARXNG_PORT,
-  SEARXNG_URL,
-  stopSearxng,
-} from "../../../core/websearch/managed.ts"
 import type { MenuState } from "./types.ts"
 
 export type WebSearchMenuResult = {
@@ -26,87 +19,38 @@ export type WebSearchMenuResult = {
 function providerLabel(provider: WebSearchProvider) {
   switch (provider) {
     case "default":
-      return "Default"
-    case "searxng":
-      return "SearxNG local"
+      return "Default (no provider)"
+    case "brave":
+      return "Brave Search API"
+    case "serper":
+      return "Serper (Google)"
+    case "tavily":
+      return "Tavily"
   }
 }
 
 async function renderProviderMenu(): Promise<string> {
   const config = readWebSearchConfig()
-  const searxStatus = await getOurContainerStatus()
-  const searxStatusLabel =
-    searxStatus === "running" ? "running" :
-    searxStatus === "stopped" ? "stopped" :
-    searxStatus === "not_found" ? "not deployed" :
-    "docker unavailable"
+  const hasKey = typeof config.apiKey === "string" && config.apiKey.length > 0
+  const keyNote = hasKey ? "apiKey: configured" : "apiKey: NOT set (search will fail)"
 
   return [
     "Web Search",
     "----------",
-    `Active mode: ${providerLabel(config.provider)}`,
+    `Active provider: ${providerLabel(config.provider)} (${keyNote})`,
     "",
-    "Choose the behavior for general web search:",
-    "1. Default",
-    `2. SearxNG local (${searxStatusLabel})`,
+    "Choose the hosted API provider for general web search:",
+    "1. Default (no provider — disables web search)",
+    "2. Brave Search API  (set CONF_WEBSEARCH.apiKey to your Brave key)",
+    "3. Serper (Google)   (set CONF_WEBSEARCH.apiKey to your Serper key)",
+    "4. Tavily            (set CONF_WEBSEARCH.apiKey to your Tavily key)",
     "0. Exit",
     "",
-    "If you choose SearxNG, it is deployed/started automatically and its submenu opens next.",
+    "Note: API keys are configured separately via /config set websearch_api_key <key>",
+    "or via the tool_manage_config action='set' for CONF_WEBSEARCH.apiKey.",
     "",
     "Enter number:",
   ].join("\n")
-}
-
-async function renderSearxngMenu(): Promise<string> {
-  const config = readWebSearchConfig()
-  const ourStatus = await getOurContainerStatus()
-  const allContainers = await findAllSearxngContainers()
-  const foreignCount = allContainers.filter(container => !container.isOurs).length
-
-  const statusLabel =
-    ourStatus === "running" ? "Running" :
-    ourStatus === "stopped" ? "Stopped" :
-    ourStatus === "not_found" ? "Not deployed" :
-    "Docker unavailable"
-
-  const lines = [
-    "Web Search / SearxNG",
-    "-------------------",
-    `Active mode: ${providerLabel(config.provider)}`,
-    `Container: ${SEARXNG_CONTAINER}`,
-    `Status: ${statusLabel}`,
-    `URL: ${SEARXNG_URL}`,
-    `Port: 127.0.0.1:${SEARXNG_PORT} (localhost only)`,
-  ]
-
-  if (foreignCount > 0) {
-    lines.push(`Other SearxNG containers: ${foreignCount} found`)
-  }
-
-  const knownContainers = allContainers.length > 0
-    ? allContainers.map(container => `- ${container.name || "(unnamed)"} | ${container.id} | ${container.status}`).join("\n")
-    : "- none"
-
-  lines.push(
-    "",
-    "Detected containers:",
-    knownContainers,
-    "",
-    "Options:",
-    `1. ${ourStatus === "running" ? "Restart" : "Start"} SearxNG`,
-    "2. Stop SearxNG",
-    `3. Remove container (${SEARXNG_CONTAINER})`,
-  )
-
-  if (foreignCount > 0) {
-    lines.push(`4. Clean ALL SearxNG containers (${allContainers.length} total)`)
-    lines.push("5. Test search")
-  } else {
-    lines.push("4. Test search")
-  }
-
-  lines.push("9. Back", "0. Exit", "", "Enter number:")
-  return lines.join("\n")
 }
 
 export async function openWebSearchMenu(prefixMessage?: string, tone: WebSearchMenuResult["tone"] = "info"): Promise<WebSearchMenuResult> {
@@ -114,15 +58,6 @@ export async function openWebSearchMenu(prefixMessage?: string, tone: WebSearchM
   return {
     output: prefixMessage ? `${prefixMessage}\n\n${menu}` : menu,
     nextState: { step: "ws-main", draft: {} },
-    tone,
-  }
-}
-
-async function openSearxngMenu(prefixMessage?: string, tone: WebSearchMenuResult["tone"] = "info"): Promise<WebSearchMenuResult> {
-  const menu = await renderSearxngMenu()
-  return {
-    output: prefixMessage ? `${prefixMessage}\n\n${menu}` : menu,
-    nextState: { step: "ws-searxng-main", draft: {} },
     tone,
   }
 }
@@ -135,17 +70,10 @@ export async function processWebSearchMenuInput(input: string, state: MenuState)
   if (state.step === "ws-main" && ["salir", "exit", "q", "0", "/websearch"].includes(normalized)) {
     return exitMenu("Menu closed.")
   }
-  if (state.step === "ws-searxng-main" && ["salir", "exit", "q", "0", "/websearch"].includes(normalized)) {
-    return exitMenu("Menu closed.")
-  }
 
   switch (state.step) {
     case "ws-main":
       return handleProviderMenu(trimmed)
-    case "ws-searxng-main":
-      return handleSearxngMenu(trimmed)
-    case "ws-test-query":
-      return handleTestQuery(trimmed)
     default:
       return exitMenu("Unknown state. Menu closed.")
   }
@@ -155,87 +83,18 @@ async function handleProviderMenu(input: string): Promise<WebSearchMenuResult> {
   switch (input) {
     case "1":
       writeWebSearchConfig({ provider: "default" })
-      return openWebSearchMenu("Mode set to Default.", "success")
+      return openWebSearchMenu("Provider set to Default (no web search).", "success")
     case "2":
-      writeWebSearchConfig({ provider: "searxng" })
-      {
-        const result = await deploySearxng()
-        return openSearxngMenu(
-          result.ok
-            ? `Mode set to local SearxNG.\n${result.message}`
-            : `Mode set to local SearxNG.\n${result.message}`,
-          result.ok ? "success" : "error",
-        )
-      }
+      writeWebSearchConfig({ provider: "brave" })
+      return openWebSearchMenu("Provider set to Brave. Remember to set the API key via /config set websearch_api_key.", "success")
+    case "3":
+      writeWebSearchConfig({ provider: "serper" })
+      return openWebSearchMenu("Provider set to Serper. Remember to set the API key via /config set websearch_api_key.", "success")
+    case "4":
+      writeWebSearchConfig({ provider: "tavily" })
+      return openWebSearchMenu("Provider set to Tavily. Remember to set the API key via /config set websearch_api_key.", "success")
     default:
       return openWebSearchMenu(`Invalid option "${input}".`, "error")
-  }
-}
-
-async function handleSearxngMenu(input: string): Promise<WebSearchMenuResult> {
-  const allContainers = await findAllSearxngContainers()
-  const foreignCount = allContainers.filter(container => !container.isOurs).length
-  const testOption = foreignCount > 0 ? "5" : "4"
-  const cleanAllOption = foreignCount > 0 ? "4" : null
-
-  switch (input) {
-    case "1": {
-      const result = await deploySearxng()
-      return openSearxngMenu(result.message, result.ok ? "success" : "error")
-    }
-    case "2": {
-      const result = await stopSearxng()
-      return openSearxngMenu(result.message, result.ok ? "success" : "error")
-    }
-    case "3": {
-      const result = await removeContainer(SEARXNG_CONTAINER)
-      return openSearxngMenu(result.message, result.ok ? "success" : "error")
-    }
-    case "9":
-      return openWebSearchMenu()
-    default: {
-      if (input === cleanAllOption) {
-        const result = await removeAllSearxngContainers()
-        return openSearxngMenu(
-          result.ok ? `${result.count} containers removed:\n${result.message}` : result.message,
-          result.ok ? "success" : "error",
-        )
-      }
-      if (input === testOption) {
-        return {
-          output: "Enter a search term to test (or 'cancel' to go back):",
-          nextState: { step: "ws-test-query", draft: { provider: "searxng" } },
-          tone: "info",
-        }
-      }
-      return openSearxngMenu(`Invalid option "${input}".`, "error")
-    }
-  }
-}
-
-async function handleTestQuery(input: string): Promise<WebSearchMenuResult> {
-  if (["cancel", "cancelar", "0"].includes(input.toLowerCase())) {
-    return openSearxngMenu()
-  }
-
-  const query = encodeURIComponent(input.trim())
-  try {
-    const response = await fetch(`${SEARXNG_URL}/search?q=${query}&format=json`, {
-      signal: AbortSignal.timeout(10_000),
-    })
-    if (!response.ok) {
-      return openSearxngMenu(`SearxNG returned HTTP ${response.status}. Is it running?`, "error")
-    }
-    const data = await response.json() as { results?: Array<{ title?: string; url?: string }> }
-    const results = (data.results ?? []).slice(0, 5)
-    if (results.length === 0) {
-      return openSearxngMenu(`Search "${input}" — 0 results.`, "info")
-    }
-    const lines = results.map((result, index) => `  ${index + 1}. ${result.title ?? "(untitled)"}\n     ${result.url ?? ""}`).join("\n")
-    return openSearxngMenu(`Search "${input}" — ${results.length} results:\n\n${lines}`, "success")
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    return openSearxngMenu(`Error: ${msg}. Is SearxNG running?`, "error")
   }
 }
 

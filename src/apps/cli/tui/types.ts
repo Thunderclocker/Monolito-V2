@@ -26,10 +26,9 @@ export type MenuStep =
   | "chan-main"      // Channel main menu
   | "chan-tel-token" // Set Telegram bot token
   | "chan-tel-chats" // Set allowed chat IDs
-  // Web search menu steps
+  // Web search menu steps (SearXNG submenu removed; only the provider
+  // picker remains)
   | "ws-main"        // Web search main menu
-  | "ws-searxng-main" // SearxNG submenu
-  | "ws-test-query"  // Test search query
 
 export type MenuState = {
   step: MenuStep

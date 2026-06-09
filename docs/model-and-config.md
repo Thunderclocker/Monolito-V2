@@ -9,11 +9,11 @@ Runtime configuration is stored in SQLite Memory Palace `CONF_*` wings:
 - `CONF_SYSTEM`: effective system/model settings
 - `CONF_MODELS`: saved model profiles for the interactive model menu
 - `CONF_CHANNELS`: channel, TTS, and STT configuration
-- `CONF_WEBSEARCH`: persisted web search mode selection
+- `CONF_WEBSEARCH`: persisted web search provider + apiKey
 
-Managed SearxNG still uses:
-
-- `~/.monolito/searxng/settings.yml`
+The previous managed-SearXNG `~/.monolito/searxng/settings.yml` is no
+longer used. Web search runs against hosted provider APIs (Brave,
+Serper, or Tavily); the API key is stored in `CONF_WEBSEARCH.apiKey`.
 
 ## Configuration scope
 

@@ -24,11 +24,6 @@ import {
 } from "../../websearch/config.ts"
 
 import {
-  SEARXNG_URL,
-  deploySearxng,
-} from "../../websearch/managed.ts"
-
-import {
   writeSessionSource,
 } from "../../session/store.ts"
 
@@ -234,43 +229,6 @@ export const webTools: ToolDefinition[] = [
       throw lastError || new Error("Failed after retries")
     }
 
-    async function runSearxngFallback() {
-      const deploy = await deploySearxng()
-      if (!deploy.ok) {
-        throw new Error(`Error auto-desplegando SearxNG: ${deploy.message}`)
-      }
-
-      let categories = "images"
-      let safesearch = "1"
-      if (isAdult) {
-        safesearch = "0"
-        categories = "images,adult"
-      }
-
-      const encoded = encodeURIComponent(query)
-      const searchUrl = `${SEARXNG_URL}/search?q=${encoded}&categories=${categories}&format=json&safesearch=${safesearch}`
-      const res = await fetch(searchUrl, { signal: AbortSignal.timeout(15_000) })
-      if (!res.ok) {
-        throw new Error(`SearxNG returned HTTP ${res.status}`)
-      }
-      const data = await res.json()
-      return objectArrayField(data, "results")
-        .filter(r => typeof r.img_src === "string" && r.img_src.length > 0)
-        .slice(0, limit)
-        .map(r => {
-          const imageUrl = r.img_src as string
-          return {
-            image_url: imageUrl,
-            recommended_download_url: imageUrl,
-            recommended_download_field: "image_url" as const,
-            fetch_strategy: "download_image_url_directly" as const,
-            title: typeof r.title === "string" ? r.title : undefined,
-            source: typeof r.source === "string" ? r.source : undefined,
-            thumbnail: typeof r.thumbnail_src === "string" ? r.thumbnail_src : undefined,
-          }
-        })
-    }
-
     let results: Array<{
       image_url: string
       recommended_download_url: string
@@ -283,107 +241,97 @@ export const webTools: ToolDefinition[] = [
 
     try {
       if (config.provider === "brave" && config.apiKey) {
-        try {
-          const safesearchParam = isAdult ? "off" : "moderate"
-          const url = `https://api.search.brave.com/res/v1/images/search?q=${encodeURIComponent(query)}&safesearch=${safesearchParam}&count=${limit}`
-          const response = await fetchWithBackoff(url, {
-            headers: { "X-Subscription-Token": config.apiKey, "Accept": "application/json" },
-            signal: AbortSignal.timeout(15_000)
-          })
-          if (!response.ok) {
-            throw new Error(`Brave Search returned HTTP ${response.status}`)
-          }
-          const data = await response.json()
-          results = objectArrayField(data, "results").map(r => {
-            const properties = typeof r.properties === "object" && r.properties !== null ? r.properties as any : {}
-            const thumbnail = typeof r.thumbnail === "object" && r.thumbnail !== null ? r.thumbnail as any : {}
-            const imageUrl = properties.url || r.url || ""
-            return {
-              image_url: imageUrl,
-              recommended_download_url: imageUrl,
-              recommended_download_field: "image_url" as const,
-              fetch_strategy: "download_image_url_directly" as const,
-              title: typeof r.title === "string" ? r.title : undefined,
-              source: typeof r.source === "string" ? r.source : undefined,
-              thumbnail: typeof thumbnail.src === "string" ? thumbnail.src : undefined,
-            }
-          })
-        } catch (err) {
-          results = await runSearxngFallback()
+        const safesearchParam = isAdult ? "off" : "moderate"
+        const url = `https://api.search.brave.com/res/v1/images/search?q=${encodeURIComponent(query)}&safesearch=${safesearchParam}&count=${limit}`
+        const response = await fetchWithBackoff(url, {
+          headers: { "X-Subscription-Token": config.apiKey, "Accept": "application/json" },
+          signal: AbortSignal.timeout(15_000)
+        })
+        if (!response.ok) {
+          throw new Error(`Brave Search returned HTTP ${response.status}`)
         }
+        const data = await response.json()
+        results = objectArrayField(data, "results").map(r => {
+          const properties = typeof r.properties === "object" && r.properties !== null ? r.properties as any : {}
+          const thumbnail = typeof r.thumbnail === "object" && r.thumbnail !== null ? r.thumbnail as any : {}
+          const imageUrl = properties.url || r.url || ""
+          return {
+            image_url: imageUrl,
+            recommended_download_url: imageUrl,
+            recommended_download_field: "image_url" as const,
+            fetch_strategy: "download_image_url_directly" as const,
+            title: typeof r.title === "string" ? r.title : undefined,
+            source: typeof r.source === "string" ? r.source : undefined,
+            thumbnail: typeof thumbnail.src === "string" ? thumbnail.src : undefined,
+          }
+        })
       } else if (config.provider === "serper" && config.apiKey) {
-        try {
-          const response = await fetchWithBackoff("https://google.serper.dev/images", {
-            method: "POST",
-            headers: { "X-API-KEY": config.apiKey, "Content-Type": "application/json" },
-            body: JSON.stringify({
-              q: query,
-              num: limit,
-              safe: isAdult ? "off" : "active"
-            }),
-            signal: AbortSignal.timeout(15_000)
-          })
-          if (!response.ok) {
-            throw new Error(`Serper API returned HTTP ${response.status}`)
-          }
-          const data = await response.json()
-          results = objectArrayField(data, "images").map(r => {
-            const imageUrl = typeof r.imageUrl === "string" ? r.imageUrl : ""
-            return {
-              image_url: imageUrl,
-              recommended_download_url: imageUrl,
-              recommended_download_field: "image_url" as const,
-              fetch_strategy: "download_image_url_directly" as const,
-              title: typeof r.title === "string" ? r.title : undefined,
-              source: typeof r.source === "string" ? r.source : (typeof r.domain === "string" ? r.domain : undefined),
-              thumbnail: typeof r.thumbnailUrl === "string" ? r.thumbnailUrl : undefined,
-            }
-          })
-        } catch (err) {
-          results = await runSearxngFallback()
+        const response = await fetchWithBackoff("https://google.serper.dev/images", {
+          method: "POST",
+          headers: { "X-API-KEY": config.apiKey, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            q: query,
+            num: limit,
+            safe: isAdult ? "off" : "active"
+          }),
+          signal: AbortSignal.timeout(15_000)
+        })
+        if (!response.ok) {
+          throw new Error(`Serper API returned HTTP ${response.status}`)
         }
+        const data = await response.json()
+        results = objectArrayField(data, "images").map(r => {
+          const imageUrl = typeof r.imageUrl === "string" ? r.imageUrl : ""
+          return {
+            image_url: imageUrl,
+            recommended_download_url: imageUrl,
+            recommended_download_field: "image_url" as const,
+            fetch_strategy: "download_image_url_directly" as const,
+            title: typeof r.title === "string" ? r.title : undefined,
+            source: typeof r.source === "string" ? r.source : (typeof r.domain === "string" ? r.domain : undefined),
+            thumbnail: typeof r.thumbnailUrl === "string" ? r.thumbnailUrl : undefined,
+          }
+        })
       } else if (config.provider === "tavily" && config.apiKey) {
-        try {
-          const response = await fetchWithBackoff("https://api.tavily.com/search", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              api_key: config.apiKey,
-              query: query,
-              include_images: true,
-              include_image_descriptions: true
-            }),
-            signal: AbortSignal.timeout(15_000)
-          })
-          if (!response.ok) {
-            throw new Error(`Tavily API returned HTTP ${response.status}`)
-          }
-          const data = await response.json()
-          results = objectArrayField(data, "images").slice(0, limit).map(r => {
-            let imageUrl = ""
-            let title = query
-            if (typeof r === "string") {
-              imageUrl = r
-            } else if (typeof r === "object" && r !== null) {
-              imageUrl = typeof (r as any).url === "string" ? (r as any).url : ""
-              title = typeof (r as any).description === "string" ? (r as any).description : query
-            }
-            return {
-              image_url: imageUrl,
-              recommended_download_url: imageUrl,
-              recommended_download_field: "image_url" as const,
-              fetch_strategy: "download_image_url_directly" as const,
-              title,
-              source: "tavily",
-              thumbnail: undefined,
-            }
-          })
-        } catch (err) {
-          results = await runSearxngFallback()
+        const response = await fetchWithBackoff("https://api.tavily.com/search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            api_key: config.apiKey,
+            query: query,
+            include_images: true,
+            include_image_descriptions: true
+          }),
+          signal: AbortSignal.timeout(15_000)
+        })
+        if (!response.ok) {
+          throw new Error(`Tavily API returned HTTP ${response.status}`)
         }
+        const data = await response.json()
+        results = objectArrayField(data, "images").slice(0, limit).map(r => {
+          let imageUrl = ""
+          let title = query
+          if (typeof r === "string") {
+            imageUrl = r
+          } else if (typeof r === "object" && r !== null) {
+            imageUrl = typeof (r as any).url === "string" ? (r as any).url : ""
+            title = typeof (r as any).description === "string" ? (r as any).description : query
+          }
+          return {
+            image_url: imageUrl,
+            recommended_download_url: imageUrl,
+            recommended_download_field: "image_url" as const,
+            fetch_strategy: "download_image_url_directly" as const,
+            title,
+            source: "tavily",
+            thumbnail: undefined,
+          }
+        })
       } else {
-        // Fallback to SearXNG
-        results = await runSearxngFallback()
+        throw new Error(
+          "No image-search provider configured. Set CONF_WEBSEARCH.provider to brave, serper, or tavily " +
+          "and supply the matching apiKey via tool_manage_config or /config set."
+        )
       }
 
       return { ok: true, query, count: results.length, results }
@@ -400,7 +348,7 @@ export const webTools: ToolDefinition[] = [
   permissionTier: "read",
   isReadOnly: true,
   isSearchOrReadCommand: true,
-  description: "Search the web for current text results via the configured provider (SearxNG, Brave, Serper, Tavily, default). Supports allowed_domains/blocked_domains (provider-dependent translation) and recency filter. PROHIBIDO: usar para buscar/analizar imágenes o fotos.",
+  description: "Search the web for current text results via the configured provider (Brave, Serper, Tavily, default). Supports allowed_domains/blocked_domains (provider-dependent translation) and recency filter. PROHIBIDO: usar para buscar/analizar imágenes o fotos.",
   inputSchema: {
     type: "object",
     properties: {
@@ -484,22 +432,12 @@ export const webTools: ToolDefinition[] = [
           snippet: compactWhitespace(typeof result.content === "string" ? result.content : ""),
         }))
       } else {
-        // Fallback to SearXNG
-        const deploy = await deploySearxng()
-        if (!deploy.ok) return formatToolError(`Error auto-desplegando SearxNG: ${deploy.message}`)
-        const searchUrl = `${SEARXNG_URL}/search?q=${encodeURIComponent(query)}&format=json`
-        const response = await fetch(searchUrl, { signal: AbortSignal.timeout(15_000) })
-        if (!response.ok) {
-          return { ok: false, error: `SearxNG returned HTTP ${response.status}` }
+        return {
+          ok: false,
+          error:
+            "No web-search provider configured. Set CONF_WEBSEARCH.provider to brave, serper, or tavily " +
+            "and supply the matching apiKey via tool_manage_config or /config set.",
         }
-        const data = await response.json()
-        results = objectArrayField(data, "results")
-          .filter(result => typeof result.url === "string" && result.url.length > 0)
-          .map(result => ({
-            title: compactWhitespace(typeof result.title === "string" ? result.title : "Untitled result"),
-            url: typeof result.url === "string" ? result.url : "",
-            snippet: compactWhitespace(typeof result.content === "string" ? result.content : ""),
-          }))
       }
 
       results = results.slice(0, 8)

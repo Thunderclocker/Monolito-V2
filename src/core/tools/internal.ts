@@ -73,7 +73,6 @@ import {
   stopManagedSttContainer,
   transcribeManagedAudioFile,
 } from "../stt/managed.ts"
-import { deploySearxng, SEARXNG_URL } from "../websearch/managed.ts"
 import { readWebSearchConfig } from "../websearch/config.ts"
 import { isBootWingName, BOOT_WING_ORDER } from "../bootstrap/bootWings.ts"
 
@@ -120,7 +119,7 @@ export const systemConfigZod = z.object({
   }).strict(),
 }).strict()
 export const webSearchConfigZod = z.object({
-  provider: z.enum(["default", "searxng", "brave", "serper", "tavily"]),
+  provider: z.enum(["default", "brave", "serper", "tavily"]),
   apiKey: z.string().optional(),
 }).strict()
 export const hookMatcherZod = z.object({

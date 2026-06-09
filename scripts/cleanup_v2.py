@@ -113,8 +113,6 @@ SIBLING = {
     "stopManagedSttContainer": ("../../stt/managed.ts", "stopManagedSttContainer"),
     "transcribeManagedAudioFile": ("../../stt/managed.ts", "transcribeManagedAudioFile"),
 
-    "deploySearxng": ("../../websearch/managed.ts", "deploySearxng"),
-    "SEARXNG_URL": ("../../websearch/managed.ts", "SEARXNG_URL"),
     "readWebSearchConfig": ("../../websearch/config.ts", "readWebSearchConfig"),
 
     "isBootWingName": ("../../bootstrap/bootWings.ts", "isBootWingName"),

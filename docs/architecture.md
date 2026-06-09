@@ -52,11 +52,12 @@ companion docs are:
 │  └─ toolResultGuard.ts,   compaction, recovery cascade.                 │
 │  └─ smartCompactor.ts                                                        │
 ├──────────────────────────────────────────────────────────────────────────┤
-│  src/core/{websearch,stt,vision}/managed.ts                               │
+│  src/core/{stt,vision}/managed.ts                                          │
 │  └─ managed.ts            Docker lifecycle for each remaining managed    │
-│                            service (STT, vision, searxng). TTS no longer │
-│                            has a managed backend — it runs against      │
-│                            hosted providers (MiniMax, OpenAI).           │
+│                            service (STT, vision). TTS and web search     │
+│                            no longer have managed backends — they run   │
+│                            against hosted providers (MiniMax, OpenAI,   │
+│                            Brave/Serper/Tavily).                         │
 ├──────────────────────────────────────────────────────────────────────────┤
 │  src/core/db/schema.ts    Palace + vector + background_tasks + workers. │
 └──────────────────────────────────────────────────────────────────────────┘
@@ -287,7 +288,6 @@ under `$MONOLITO_ROOT`.
 │   └── <profile-id>/workspace/
 ├── scratchpad/                # tool output offload (>400KB tool results)
 │                              # 24h TTL, cleaned at startup
-├── searxng/settings.yml       # managed SearXNG configuration
 ├── grok_oauth.json            # cached Grok tokens (xai-oauth profile)
 └── snapshots/                 # ContextOverflow trajectory dumps
 ```
@@ -338,23 +338,27 @@ Each backing service has the same shape: `*ServiceStatus`, `*ServiceDeploy`,
 HTTP endpoint, deploys via Docker if missing, and cleans conflicting legacy
 containers (e.g. generic `whisper`) before starting its own.
 
-| Service      | Image                                                | Port  | Default                                              |
+| Service      | Backend                                              | Port  | Default                                              |
 |--------------|------------------------------------------------------|-------|------------------------------------------------------|
-| STT          | `onerahmet/openai-whisper-asr-webservice`            | 9000  | `faster_whisper`, `base`, `es`, `vad=true`           |
+| STT          | `onerahmet/openai-whisper-asr-webservice` (Docker)   | 9000  | `faster_whisper`, `base`, `es`, `vad=true`           |
 | TTS          | hosted provider (MiniMax or OpenAI-compatible)       | n/a   | `speech-2.8-hd` (MiniMax) / `tts-1` (OpenAI)         |
-| Vision       | Ollama + `moondream`                                 | 11435 | fallback CPU vision (heavy, ~60s)                    |
-| Embeddings   | Ollama + `bge-m3`                                    | 11434 | 1024d vectors                                        |
-| SearXNG      | `searxng/searxng`                                     | 8888  | `safe_search=0`, adult engines preconfigured         |
+| Vision       | Ollama + `moondream` (Docker)                        | 11435 | fallback CPU vision (heavy, ~60s)                    |
+| Embeddings   | Ollama + `bge-m3` (Docker)                           | 11434 | 1024d vectors                                        |
+| Web search   | hosted API (Brave, Serper, or Tavily)                | n/a   | `default` (none; WebSearch/ImageSearch fail)         |
 
 The previous TTS row (managed local container `travisvn/openai-edge-tts`
 on port 5050) and its `TtsService*` tools were removed; TTS now runs
-against a hosted provider. `uninstall.sh` still cleans up any leftover
+against a hosted provider. The previous SearXNG row (`searxng/searxng`
+on port 8888) and its managed-container lifecycle were also removed;
+web search now consumes hosted APIs only. `uninstall.sh` still cleans
+up any leftover `monolito-searxng`, `searxng/searxng`,
 `monolito-openai-edge-tts`, `tts-edge`, and `travisvn/openai-edge-tts`
 containers from older installs.
 
-SearXNG ships with `pornhub`, `redtube`, and `rule34` engines enabled and
-routes queries to the adult category automatically when the session has
-`/adult` on (see `safeSearch` toggling in `websearch/managed.ts`).
+Web search no longer has a managed backend. The adult-mode
+`safeSearch` toggling is now done per-provider: Brave uses `safesearch=off`
+or `moderate`, Serper uses `safe=off|active`, Tavily filters via the
+`include_raw_content` flag and the session's adult flag.
 
 ---
 

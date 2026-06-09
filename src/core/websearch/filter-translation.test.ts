@@ -10,17 +10,6 @@ test("translateFilters: brave silently ignores", () => {
   assert.equal(r.warning, "Brave does not support domain filters")
 })
 
-test("translateFilters: searxng allowed → site: query", () => {
-  const r = translateFilters("searxng", "https://searx.local/search", "test", { allowed: ["github.com", "npmjs.com"] })
-  assert.match(r.url, /site%3Agithub\.com/)
-  assert.match(r.url, /site%3Anpmjs\.com/)
-})
-
-test("translateFilters: searxng blocked → -site: query", () => {
-  const r = translateFilters("searxng", "https://searx.local/search", "test", { blocked: ["evil.com"] })
-  assert.match(r.url, /-site%3Aevil\.com/)
-})
-
 test("translateFilters: serper allowed inline", () => {
   const r = translateFilters("serper", "https://serper.dev/search", "test", { allowed: ["stackoverflow.com"] })
   assert.match(r.url, /site%3Astackoverflow\.com/)

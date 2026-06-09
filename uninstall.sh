@@ -27,7 +27,6 @@ REMOVE_REPO=1
 ASSUME_YES=0
 KEEP_LINGER=0
 
-SEARXNG_CONTAINER="monolito-searxng"
 STT_CONTAINER="monolito-faster-whisper"
 
 SHELL_RC_FILES=(
@@ -170,8 +169,8 @@ confirm() {
   printf '  - %s\n' "${NODE_MODULES_DIR}"
   printf '  - %s\n' "${SYSTEMD_UNIT}"
   printf '  - %s (if present)\n' "${ENV_D_FILE}"
-  printf '  - managed Docker containers: %s, %s, %s, %s\n' \
-    "${SEARXNG_CONTAINER}" "${TTS_CONTAINER}" "${STT_CONTAINER}" "${OLLAMA_EMBED_CONTAINER}"
+  printf '  - managed Docker containers: %s, %s, %s\n' \
+    "${STT_CONTAINER}" "${OLLAMA_EMBED_CONTAINER}" "any legacy SearXNG (monolito-searxng, searxng/searxng)"
   printf '  - Docker volume: %s\n' "${OLLAMA_EMBED_VOLUME}"
   printf '  - shell rc lines exporting MONOLITO_ROOT or MONOLITO_MODE\n'
   printf '  - %s\n' "${SOCKET_GLOB}"
@@ -352,9 +351,13 @@ cleanup_docker_artifacts() {
     return 0
   fi
 
-  remove_docker_container_if_present "${SEARXNG_CONTAINER}"
   remove_docker_container_if_present "${STT_CONTAINER}"
   remove_docker_container_if_present "${OLLAMA_EMBED_CONTAINER}"
+  # Legacy SearXNG containers from old installs. The SearXNG backend
+  # itself was removed; we still clean up any leftover containers from
+  # users on the previous build.
+  remove_legacy_docker_matches "name=monolito-searxng" "legacy SearXNG containers"
+  remove_legacy_docker_matches "ancestor=searxng/searxng" "legacy SearXNG containers"
   remove_legacy_docker_matches "name=monolito-openai-edge-tts" "legacy managed TTS containers"
   remove_legacy_docker_matches "name=tts-edge" "legacy TTS containers"
   remove_legacy_docker_matches "ancestor=travisvn/openai-edge-tts:latest" "legacy OpenAI Edge TTS containers"

@@ -91,16 +91,13 @@ Telegram also exposes `/websearch` as an inline-button menu.
 
 That menu lets the user:
 
-- switch between `default` and `searxng`
-- list detected SearxNG containers
-- stop the managed SearxNG container
-- remove the managed SearxNG container
-- clean detected SearxNG containers
-- run a test search
+- switch the active provider between `default`, `brave`, `serper`, and `tavily`
 
-Selecting `searxng` triggers the same managed local Docker flow used by the CLI.
-
-The selected web search mode is also a runtime-level setting shared by all sessions.
+The provider selection is a runtime-level setting shared by all
+sessions. API keys are configured separately via `/config set
+websearch_api_key <key>` or `tool_manage_config` on `CONF_WEBSEARCH.apiKey`.
+The previous SearXNG managed-Docker flow was removed; the local container
+is no longer deployed or managed by Monolito.
 
 ## Telegram speech flow
 
