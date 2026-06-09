@@ -117,6 +117,31 @@ export class ToolFailureTracker {
   }
 }
 
+/**
+ * Bug #3 (09-jun-2026): classify a coherence-guard rejection reason to
+ * distinguish a 'false execution claim' (the model says it ran X but the
+ * worklog shows it did not) from other kinds of incoherence
+ * (delegation-to-user, contradiction with memories).
+ *
+ * False execution claims are terminal: the model will keep re-emitting
+ * the inflated message if we keep letting it try. The guard must abort
+ * on the FIRST hit, not after 2 attempts.
+ *
+ * The rubric is intentionally tight — a false positive here means we
+ * abort a turn that could have been corrected. A false negative means
+ * a user gets an inflated message. Given Cristian's explicit preference
+ * for "no inflar", we err on the side of aborting when in doubt.
+ */
+export function isFalseExecutionClaim(reason: string): boolean {
+  if (!reason) return false
+  const lower = reason.toLowerCase()
+  // The LLM judge at coherenceGuard.ts produces reasons in Spanish or
+  // English. Both must be matched.
+  const actionVerbs = /(envi[oóó]|mand[eéó]|mando|complet[eéó]|listo|done|ejecut[eéó]|corr[iíó]|verific|hecho|creado|generado|enviada|mandada|subido|completada|executed|ran|sent|uploaded|generated|created|completed|finished|saved)/
+  const negationHints = /(sin|sin ejecutar|no se ejecut|no se invoc|no se us|herramienta|tool|sin haber|never|none|without|never invoked|did not run|didn't run|no tools?|no se ha|not called)/
+  return actionVerbs.test(lower) && negationHints.test(lower)
+}
+
 export function estimateContextTokens(
   systemPrompt: string,
   messages: ConversationMessage[]
@@ -1246,25 +1271,47 @@ Debes corregir el código del workspace y ejecutar con éxito las pruebas corres
           coherenceFailureCount++
           logCoherenceBreach(rootDir, session.id, coherence.reason ?? "Incoherencia de perfil", response.text);
 
-          if (coherenceFailureCount >= 2) {
-            // Two consecutive rejections: the model is stuck in a narrate-vs-execute
-            // loop. Abort the turn with a generic fallback instead of emitting the
-            // 800-word essay we have been seeing. The user gets a short, honest
-            // message; the worklog records the abort reason.
-            logger.error(`Coherence guard aborted turn for session ${session.id} after ${coherenceFailureCount} consecutive rejections. Reason: ${coherence.reason}`);
+          // Bug #3 (09-jun-2026): the previous bypass was unconditional at
+          // count >= 2, which meant persistent false claims (the model
+          // reports "Mandada. 864×1152, 125KB" without ever invoking
+          // GenerateImage or TelegramSendPhoto) got BYPASSED, not aborted.
+          // 6 occurrences observed on 2026-06-08 between 19:26 and 19:52.
+          //
+          // The correct policy: a 'false execution claim' (the model says
+          // it ran an action that the worklog shows it did NOT run) is
+          // terminal — there's no self-correction path. Abort on the FIRST
+          // such rejection, no bypass. Other kinds of incoherence
+          // (delegation to user, contradiction with memories) keep the
+          // 2-strikes-then-bypass policy because the model CAN self-correct.
+          const isPersistentFalseClaim = isFalseExecutionClaim(coherence.reason ?? "")
+
+          if (isPersistentFalseClaim || coherenceFailureCount >= 2) {
+            // Abort the turn. For false execution claims we abort on the
+            // FIRST hit (count==1) so the inflated message never reaches
+            // the user. For other incoherence we wait until 2 consecutive
+            // rejections to give the model a chance to self-correct.
+            logger.error(
+              `Coherence guard aborted turn for session ${session.id} ` +
+              `after ${coherenceFailureCount} consecutive rejection(s) ` +
+              `(isPersistentFalseClaim=${isPersistentFalseClaim}). ` +
+              `Reason: ${coherence.reason}`
+            );
             appendWorklog(rootDir, session.id, {
               type: "note",
-              summary: `COHERENCE_GUARD_ABORTED: Aborted after ${coherenceFailureCount} consecutive rejections to prevent narrative drift. Last reason: "${coherence.reason}"`,
+              summary: `COHERENCE_GUARD_ABORTED: Aborted after ${coherenceFailureCount} consecutive rejections (false_execution_claim=${isPersistentFalseClaim}). Last reason: "${coherence.reason}"`,
             });
             yield {
               type: "recoverable_error",
               sessionId: session.id,
               iteration,
               action: "coherence_aborted",
-              error: `Turn aborted: coherence guard rejected ${coherenceFailureCount} consecutive responses.`,
+              error: `Turn aborted: coherence guard rejected ${coherenceFailureCount} consecutive response(s).`,
             };
+            const abortMessage = isPersistentFalseClaim
+              ? `Afirmaste haber enviado o generado algo (ejecutaste una herramienta de imagen, archivo o comando) pero no se ejecutó ninguna herramienta correspondiente en este turno. El guard de coherencia abortó el turno para evitar un reporte inflado. Por favor reformulá y verificá antes de declarar éxito. Causa: ${coherence.reason}.`
+              : `No pude completar este turno. El guard de coherencia detectó una inconsistencia interna entre lo que iba a reportar y las herramientas disponibles. Causa: ${coherence.reason}. Por favor reformulá tu pedido o pedime que lo intente de nuevo.`
             return finalize(
-              `No pude completar este turno. El guard de coherencia detectó una inconsistencia interna entre lo que iba a reportar y las herramientas disponibles. Causa: ${coherence.reason}. Por favor reformulá tu pedido o pedime que lo intente de nuevo.`,
+              abortMessage,
               steps,
               startedAt,
               iteration,
