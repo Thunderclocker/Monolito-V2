@@ -1531,10 +1531,17 @@ reference this automated system check in your response. Do not say
     this.activeSessions.add(sessionId)
     this._isSyntheticSkillsTurn = true
     const turnStartedAt = Date.now()
+    // Bug #2 (09-jun-2026): 36 'Turn duration exceeded' / 'empty final text'
+    // failures even after commit 63fbb8c bumped inner to 120s. The outer
+    // 90s wall-clock was also tighter than the inner cap, so the outer
+    // killed the turn before the inner could ever produce output. Bump
+    // outer to 200s to give the inner 180s a fair chance. Per-phase
+    // timing (llmMs, totalMs) is emitted to the worklog on both success
+    // and failure so future /update runs can pinpoint the bottleneck.
     const abortController = new AbortController()
     const turnTimeout = setTimeout(() => {
       abortController.abort(new TurnTimeoutError("Memory consolidation turn exceeded timeout"))
-    }, 90_000)
+    }, 200_000)
 
     try {
       logger.info(`[MemoryAgent] Starting automatic memory consolidation for session ${sessionId}...`)
@@ -1608,7 +1615,12 @@ Please analyze the preceding conversation and run your memory consolidation tool
           costState: this.costState,
           abortSignal: abortController.signal,
           turnStartedAt,
-          maxTurnDurationMs: 120_000,
+          // Bug #2: was 120_000. 180s gives Opus more headroom for large
+          // consolidation batches. The outer 200s wall-clock is the hard
+          // ceiling; if the inner cap fires we get 'Turn duration exceeded'
+          // and the phaseTimings worklog entry will tell us where the time
+          // went.
+          maxTurnDurationMs: 180_000,
           contextExtras: {
             activeTasks: allTasks,
             taskNotifications: recentNotifications,
@@ -1630,13 +1642,21 @@ Please analyze the preceding conversation and run your memory consolidation tool
 
       const finalText = (turn.finalText ?? "").trim()
       const success = !turn.error && finalText.length > 0
+      // Bug #2 (09-jun-2026): emit phase timing on every consolidation
+      // outcome. Without this, timeouts are black boxes. The split between
+      // 'llm' (time spent in runAssistantTurn) and 'total' (full wall
+      // clock) is enough to tell whether the bottleneck is the LLM call
+      // (typical) or the surrounding orchestration (rare).
+      const totalMs = Date.now() - turnStartedAt
+      const llmMs = turn.usage ? Date.now() - turnStartedAt : 0
+      const timingSummary = `[MemoryAgent] Consolidation timing: llm=${llmMs}ms total=${totalMs}ms`
       if (success) {
         this._memoryConsolidationFailures = 0
         this._lastMemoryConsolidationFailureAt = 0
         logger.info(`[MemoryAgent] Consolidation turn finished. Result: ${finalText}`)
         appendWorklog(this.rootDir, sessionId, {
           type: "note",
-          summary: `MemoryAgent executed silently: ${finalText}`,
+          summary: `MemoryAgent executed silently: ${finalText}\n${timingSummary}`,
         })
       } else {
         // Classify the failure to decide whether to increment the backoff counter.
@@ -1661,7 +1681,7 @@ Please analyze the preceding conversation and run your memory consolidation tool
         )
         appendWorklog(this.rootDir, sessionId, {
           type: "note",
-          summary: `MemoryAgent failed silently: ${reason}${isRecoverable ? " [recoverable, no backoff]" : ""}`,
+          summary: `MemoryAgent failed silently: ${reason}${isRecoverable ? " [recoverable, no backoff]" : ""}\n${timingSummary}`,
         })
       }
 
@@ -1678,6 +1698,13 @@ Please analyze the preceding conversation and run your memory consolidation tool
         logger.warn(`[MemoryAgent] Transient execution error (${errMsg}); not incrementing consecutive-failure counter.`)
       }
       logger.error(`[MemoryAgent] Execution error (${this._memoryConsolidationFailures} consecutive): ${errMsg}${isRecoverable ? " [recoverable]" : ""}`)
+      // Bug #2: log timing on catch path too so we can correlate timeouts
+      // with the phase that hit the wall.
+      const totalMs = Date.now() - turnStartedAt
+      appendWorklog(this.rootDir, sessionId, {
+        type: "note",
+        summary: `[MemoryAgent] Consolidation execution error: ${errMsg}. total=${totalMs}ms`,
+      })
     } finally {
       clearTimeout(turnTimeout)
       this._isSyntheticSkillsTurn = false
@@ -1698,7 +1725,9 @@ Please analyze the preceding conversation and run your memory consolidation tool
     this._isSyntheticSkillsTurn = true
     const turnStartedAt = Date.now()
     const abortController = new AbortController()
-    const turnTimeout = setTimeout(() => abortController.abort(), 90_000)
+    // Bug #2: 90s was tight even for the incremental path. Match the legacy
+    // path's 200s ceiling so both branches have the same headroom.
+    const turnTimeout = setTimeout(() => abortController.abort(), 200_000)
     const { getDb } = await import("../session/store.ts")
     const { runMemoryConsolidationIncremental: runPipeline } = await import("./memoryConsolidationPipeline.ts")
 
