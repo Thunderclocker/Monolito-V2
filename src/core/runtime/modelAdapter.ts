@@ -19,7 +19,7 @@ import type { AgentYieldEvent } from "./types.ts"
 import { checkTurnCoherence, logCoherenceBreach } from "./coherenceGuard.ts"
 import { TurnExecutionStack } from "./turnExecutionStack.ts"
 import { checkSideEffects } from "./sideEffectGuard.ts"
-import { checkTurnIntegrity, logBrokenPromise, logVeracityBreach } from "./veracityGuard.ts"
+import { checkTurnIntegrity, logBrokenPromise, logUnverifiedIncapacity, logVeracityBreach } from "./veracityGuard.ts"
 
 import { getContextBudget } from "../context/contextLimits.ts"
 import { truncateHeadTail, calculateToolResultBudget } from "../context/toolResultGuard.ts"
@@ -186,6 +186,7 @@ export type AgentLoopRecoverableAction =
   | "coherence_aborted"
   | "veracity_correction"
   | "commitment_correction"
+  | "incapacity_correction"
   | "operational_interruption"
 
 export type AgentLoopEvent =
@@ -1394,6 +1395,29 @@ No inventes ni alucines resultados. Por favor, ejecuta las herramientas reales (
                 content: `[SYSTEM ALERT - COMMITMENT GUARD] Tu respuesta anterior fue RECHAZADA.
 Promesa rota/falsa detectada: Prometiste realizar una acción, buscar información, enviar archivos o realizar una tarea (ej. "Buscando ahora mismo...", "Dame un toque", "En un momento te las mando", "revisando...", etc.) pero finalizaste el turno sin ejecutar ninguna herramienta ni delegar la tarea.
 Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas correspondientes (ej. ImageSearch, TelegramSendPhoto, Bash, etc.) en este mismo turno ANTES de dar tu respuesta final. Si es una acción diferida, debés usar delegate_background_task o schedule_task. No hagas promesas vacías en tu texto final.`
+              });
+            } else if (integrity.type === "unverified_incapacity") {
+              logUnverifiedIncapacity(rootDir, session.id, integrity.reason ?? "Incapacidad no verificada", response.text);
+
+              yield {
+                type: "recoverable_error",
+                sessionId: session.id,
+                iteration,
+                action: "incapacity_correction",
+                error: `Respuesta rechazada por incapacidad no verificada: ${integrity.reason}`
+              };
+
+              messages.push({
+                role: "user",
+                content: `[SYSTEM ALERT - VERACITY GUARD] Tu respuesta anterior fue RECHAZADA.
+Declaraste no poder hacer algo (o que algo es imposible / no accesible / no disponible) sin haber intentado verificar la limitación en este turno.
+El patrón es: "no puedo / I can't / no tengo acceso / impossible / no es posible" SIN una tool call previa que confirme la limitación.
+EXCEPCIONES VÁLIDAS (no rechaces si la respuesta entra en alguna):
+- Llamaste una tool y la tool devolvió evidencia concreta de la limitación (403, 404, ENOENT, permission denied, connection refused, etc.).
+- El usuario preguntó hipotéticamente sobre una capacidad, y tu respuesta es explicativa, no un claim sobre el turno actual.
+- Es una explicación general sobre escenarios futuros, no sobre el turno presente.
+
+ACCION REQUERIDA: ejecutá al menos una tool en este turno ANTES de declarar que no podés. Si la tool confirma la limitación, incluí la evidencia concreta (código de error, mensaje, output) en tu respuesta. Si la tool desmiente tu afirmación, corregila.`
               });
             }
 

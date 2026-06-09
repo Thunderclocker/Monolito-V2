@@ -212,3 +212,80 @@ test("deterministic check: does NOT fire on benign prose", async () => {
     assert.equal(res.type, "none")
   } finally { cleanupRootDir(rootDir) }
 })
+
+// -----------------------------------------------------------------------------
+// LLM auditor: unverified-incapacity detection.
+//
+// The LLM auditor is language-agnostic: it understands "no puedo", "I can't",
+// "impossible", "実行できません" as the same semantic pattern. The tests use
+// the mock LLM to simulate the auditor's verdict.
+// -----------------------------------------------------------------------------
+
+test("LLM auditor: catches unverified incapacity claim in Spanish (the 18:33:49 case)", async () => {
+  const rootDir = createRootDir()
+  try {
+    const mockLLM = async () => ({
+      text: JSON.stringify({
+        hasBrokenPromise: false,
+        hasFalsifiedExecution: false,
+        hasUnverifiedIncapacity: true,
+        reason: "Assistant declared 'no puedo listártelos' without calling any tool to verify the limitation.",
+      }),
+    })
+    const res = await checkTurnIntegrity(
+      rootDir,
+      "no puedo listártelos yo sola. Mis tools corren dentro del workspace de Monolito, no en tu host. No tengo endpoint al docker.sock.",
+      [],
+      mockLLM,
+    )
+    assert.equal(res.verified, false)
+    assert.equal(res.type, "unverified_incapacity")
+    assert.match(res.reason ?? "", /no puedo|incapacity|unverified/i)
+  } finally { cleanupRootDir(rootDir) }
+})
+
+test("LLM auditor: catches unverified incapacity claim in English", async () => {
+  const rootDir = createRootDir()
+  try {
+    const mockLLM = async () => ({
+      text: JSON.stringify({
+        hasBrokenPromise: false,
+        hasFalsifiedExecution: false,
+        hasUnverifiedIncapacity: true,
+        reason: "Assistant declared 'I can't access' without trying.",
+      }),
+    })
+    const res = await checkTurnIntegrity(
+      rootDir,
+      "I can't access your Docker daemon from this workspace. I have no way to list containers.",
+      [],
+      mockLLM,
+    )
+    assert.equal(res.verified, false)
+    assert.equal(res.type, "unverified_incapacity")
+  } finally { cleanupRootDir(rootDir) }
+})
+
+test("LLM auditor: pass-through when LLM reports no violation", async () => {
+  const rootDir = createRootDir()
+  try {
+    const mockLLM = async () => ({
+      text: JSON.stringify({
+        hasBrokenPromise: false,
+        hasFalsifiedExecution: false,
+        hasUnverifiedIncapacity: false,
+        reason: "",
+      }),
+    })
+    // Note: text contains no first-person past claim and no fabricated tool
+    // output, so the deterministic check passes through to the LLM auditor.
+    const res = await checkTurnIntegrity(
+      rootDir,
+      "Status of the local container: socket not present. Permission model denies the request.",
+      [],
+      mockLLM,
+    )
+    assert.equal(res.verified, true)
+    assert.equal(res.type, "none")
+  } finally { cleanupRootDir(rootDir) }
+})

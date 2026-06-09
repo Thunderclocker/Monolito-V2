@@ -1,6 +1,6 @@
 import { appendWorklog } from "../session/store.ts"
 
-export type IntegrityViolationType = "none" | "broken_promise" | "falsified_execution"
+export type IntegrityViolationType = "none" | "broken_promise" | "falsified_execution" | "unverified_incapacity"
 
 export interface IntegrityCheckResult {
   verified: boolean
@@ -131,6 +131,7 @@ export async function checkTurnIntegrity(
 
   // 2. Ask a fast LLM to semantically judge if the assistant claims system execution
   // or makes future/deferred promises, comparing them with actual tools called.
+  // The auditor is language-agnostic: it understands semantics, not keywords.
   const systemPrompt = `You are a silent runtime auditor. Your task is to analyze if the assistant's proposed response has any of the following tool-use mismatches:
 
 1. "hasBrokenPromise": Did the assistant make a verbal promise to the user for a FUTURE/DEFERRED action (e.g., "te aviso en 5 min", "lo reviso luego", "I will run this in the background", "I'll let you know") that would require a deferred/background tool (e.g. schedule_task, delegate_background_task, background_task) to be called now?
@@ -139,12 +140,20 @@ export async function checkTurnIntegrity(
 2. "hasFalsifiedExecution": Did the assistant claim or strongly imply that it has executed system commands, run scripts, performed file/directory creation/modification, or transferred/downloaded data in the current turn?
    - Mismatch check: Does it claim this execution but did not call any corresponding tool (or no tools at all)?
 
+3. "hasUnverifiedIncapacity": Did the assistant declare itself UNABLE to perform a task (in any natural language: "I can't", "no puedo", "impossible", "no tengo acceso", "I have no way", "is not available", "no es posible", "I cannot access", etc.) WITHOUT having attempted to verify the limitation in this turn?
+   - This applies across all natural languages. The semantic pattern is universal: declaring inability without trying.
+   - Mismatch check: Does the assistant assert inability but did not call any tool (or only called a tool that would not surface the relevant limitation, e.g. a memory read when an external action was needed)?
+   - EXCEPTION 1: If the assistant called a tool that returned concrete evidence of the limitation (403, 404, ENOENT, permission denied, connection refused, etc.), this is VERIFIED incapacity, not unverified. Only flag cases where the claim is made WITHOUT any verification attempt.
+   - EXCEPTION 2: If the user asked a hypothetical or rhetorical question about a tool or capability, an incapacity answer is an explanation, not a claim.
+   - EXCEPTION 3: General disclaimers about future scenarios ("I can't predict the future", "I can't know what's in your head") are not claims about a current turn's capability.
+
 Compare the assistant's claims with the list of tools actually executed in this turn.
 
 Respond strictly in JSON format:
 {
   "hasBrokenPromise": boolean,
   "hasFalsifiedExecution": boolean,
+  "hasUnverifiedIncapacity": boolean,
   "reason": "brief explanation in English of the mismatch, or empty if none"
 }`;
 
@@ -153,12 +162,13 @@ Tools executed in this turn: [${toolsCalledInTurn.join(", ")}]`;
 
   try {
     const { text } = await runBackgroundTextTask(rootDir, systemPrompt, userPrompt, {
-      maxTokens: 120,
+      maxTokens: 160,
     })
 
     const parsed = JSON.parse(text.trim()) as {
       hasBrokenPromise: boolean
       hasFalsifiedExecution: boolean
+      hasUnverifiedIncapacity: boolean
       reason?: string
     }
 
@@ -177,8 +187,25 @@ Tools executed in this turn: [${toolsCalledInTurn.join(", ")}]`;
         reason: parsed.reason || "Assistant made a future promise but did not schedule or delegate a background task",
       }
     }
+
+    if (parsed.hasUnverifiedIncapacity === true) {
+      return {
+        verified: false,
+        type: "unverified_incapacity",
+        reason: parsed.reason || "Assistant declared inability without attempting to verify the limitation",
+      }
+    }
   } catch (error) {
-    // Fail-safe: if the validation model fails or errors out, let it pass to ensure execution continuity.
+    // Fail-graceful: log the verification gap so it's visible in the daemon stdout
+    // (search for VERACITY_GUARD_UNVERIFIED). Better to surface a gap than silently
+    // let potentially-bad content through. Still return verified=true for continuity
+    // — the user can review the log and decide manually.
+    // Use console.error because the worklog is FK-bound to a real session, and this
+    // system-level event doesn't have a session context.
+    console.error(
+      `[VERACITY_GUARD_UNVERIFIED] auditor failed (${error instanceof Error ? error.message : String(error)}). ` +
+      `Assistant text was NOT validated this turn.`,
+    )
     return { verified: true, type: "none" }
   }
 
@@ -192,6 +219,17 @@ export function logVeracityBreach(rootDir: string, sessionId: string, reason: st
   appendWorklog(rootDir, sessionId, {
     type: "note",
     summary: `VERACITY_GUARD_REJECTED: "${reason}" | Original: "${text.slice(0, 80)}..."`,
+  })
+}
+
+/**
+ * Logs an unverified-incapacity guard breach.
+ */
+export function logUnverifiedIncapacity(rootDir: string, sessionId: string, reason: string, text: string) {
+  const preview = text.length > 100 ? text.slice(0, 100) + "..." : text
+  appendWorklog(rootDir, sessionId, {
+    type: "note",
+    summary: `UNVERIFIED_INCAPACITY reason="${reason}" text="${preview}"`,
   })
 }
 
