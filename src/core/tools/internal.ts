@@ -776,6 +776,16 @@ export async function telegramApiCall(token: string, method: string, params: Rec
 
 export const TELEGRAM_SENT_PHOTOS_KEY = "telegram_sent_photos"
 
+// Re-export the audio dedupe helpers from their isolated module so the
+// public surface of internal.ts stays stable. The implementation lives
+// in audioDedupState.ts to avoid pulling in the file.ts / registry.ts
+// circular-reference during isolated unit tests.
+export {
+  getAlreadySentAudios,
+  markAudioAsSent,
+  isAudioAlreadySent,
+} from "./audioDedupState.ts"
+
 export function getAlreadySentPhotos(rootDir: string): Set<string> {
   try {
     const stateFile = join(rootDir, "run", `${TELEGRAM_SENT_PHOTOS_KEY}.json`)

@@ -14,8 +14,10 @@ import {
   TELEGRAM_AUDIO_FORMATS,
   TELEGRAM_VOICE_FORMATS,
   formatToolError,
+  isAudioAlreadySent,
   isLocalPath,
   isPhotoAlreadySent,
+  markAudioAsSent,
   markPhotoAsSent,
   optionalNumber,
   optionalString,
@@ -178,7 +180,7 @@ export const telegramTools: ToolDefinition[] = [
     }
     return null
   },
-  async run(input) {
+  async run(input, context) {
     const chatId = input.chat_id as number
     const audio = requireString(input, "audio")
     const caption = optionalString(input, "caption")
@@ -188,6 +190,14 @@ export const telegramTools: ToolDefinition[] = [
     if (!config.telegram?.enabled || !config.telegram.token) {
       return formatToolError("Telegram is not configured or not enabled. Use /channels to set it up.")
     }
+    // Fast-path dedupe: skip the API call when the same local audio file
+    // was already sent in this workspace. Prevents the model from
+    // regenerating an identical audio clip after a guard re-feed and
+    // delivering it twice (observed 2026-06-09 with message_ids 21213
+    // and 21215 in the same turn).
+    if (context && isLocalPath(audio) && isAudioAlreadySent(context.rootDir, audio)) {
+      return { ok: true, chat_id: chatId, message: "Audio already sent previously (deduplicated)", deduplicated: true }
+    }
     const params: Record<string, unknown> = { chat_id: chatId, audio }
     if (caption) params.caption = caption
     if (title) params.title = title
@@ -196,6 +206,7 @@ export const telegramTools: ToolDefinition[] = [
       ? await telegramApiCallWithFile(config.telegram.token, "sendAudio", "audio", audio, params)
       : await telegramApiCall(config.telegram.token, "sendAudio", params)
     if (!data.ok) return formatToolError(`Telegram API error: ${data.description ?? "sendAudio failed"}`)
+    if (context && isLocalPath(audio)) markAudioAsSent(context.rootDir, audio)
     return { ok: true, chat_id: chatId, message: data.result }
   },
 },
@@ -225,7 +236,7 @@ export const telegramTools: ToolDefinition[] = [
     }
     return null
   },
-  async run(input) {
+  async run(input, context) {
     const chatId = input.chat_id as number
     const voice = requireString(input, "voice")
     const caption = optionalString(input, "caption")
@@ -233,12 +244,21 @@ export const telegramTools: ToolDefinition[] = [
     if (!config.telegram?.enabled || !config.telegram.token) {
       return formatToolError("Telegram is not configured or not enabled. Use /channels to set it up.")
     }
+    // Fast-path dedupe: skip the API call when the same local voice file
+    // was already sent in this workspace. Prevents the model from
+    // regenerating an identical voice note after a guard re-feed and
+    // delivering it twice (observed 2026-06-09 with message_ids 21213
+    // and 21215 in the same turn).
+    if (context && isLocalPath(voice) && isAudioAlreadySent(context.rootDir, voice)) {
+      return { ok: true, chat_id: chatId, message: "Voice already sent previously (deduplicated)", deduplicated: true }
+    }
     const params: Record<string, unknown> = { chat_id: chatId, voice }
     if (caption) params.caption = caption
     const data = isLocalPath(voice)
       ? await telegramApiCallWithFile(config.telegram.token, "sendVoice", "voice", voice, params)
       : await telegramApiCall(config.telegram.token, "sendVoice", params)
     if (!data.ok) return formatToolError(`Telegram API error: ${data.description ?? "sendVoice failed"}`)
+    if (context && isLocalPath(voice)) markAudioAsSent(context.rootDir, voice)
     return { ok: true, chat_id: chatId, message: data.result }
   },
 },

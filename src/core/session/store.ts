@@ -640,6 +640,27 @@ export function getDb(rootDir: string): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_telegram_sent_photos_chat_time
       ON telegram_sent_photos(chat_id, sent_at DESC);
 
+    -- telegram_sent_audios: durable log of every voice/audio Monolito
+    -- sent. Mirrors telegram_sent_photos. The fast dedupe path uses a
+    -- JSON file maintained by markAudioAsSent/isAudioAlreadySent in
+    -- tools/internal.ts; this table is the audit log so the model can
+    -- query recent sends with a future TelegramGetRecentAudios tool.
+    -- See db/migrations/20260610_telegram_sent_audios.sql.
+    CREATE TABLE IF NOT EXISTS telegram_sent_audios (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id INTEGER NOT NULL,
+      message_id INTEGER NOT NULL,
+      file_id TEXT,
+      kind TEXT NOT NULL DEFAULT 'voice',
+      local_path TEXT NOT NULL,
+      duration_seconds INTEGER,
+      file_size_bytes INTEGER,
+      caption TEXT,
+      sent_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_telegram_sent_audios_chat_time
+      ON telegram_sent_audios(chat_id, sent_at DESC);
+
     CREATE TABLE IF NOT EXISTS knowledge_graph (
       id TEXT PRIMARY KEY,
       profile_id TEXT,
