@@ -453,7 +453,18 @@ export const mediaTools: ToolDefinition[] = [
     if (!apiKey) {
       return formatToolError("Voice clone requiere tts.apiKey, profile activo minimax con apiKey, MINIMAX_API_KEY o ANTHROPIC_AUTH_TOKEN.")
     }
-    const baseUrl = (tts.baseUrl || activeProfile?.baseUrl || "https://api.minimax.io/v1").replace(/\/+$/g, "")
+    // Resolve the MiniMax API base URL. The TTS/voice-clone endpoints
+    // live at https://api.minimax.io/v1/... — NOT at the LLM provider's
+    // baseUrl, which for the MiniMax Anthropic-compatible profile is
+    // https://api.minimax.io/anthropic (no TTS endpoints there).
+    //
+    // We must not fall back to `activeProfile.baseUrl`: that field is for
+    // the LLM API, not the TTS API, and reusing it was producing 404s
+    // when the user had MiniMax as the LLM provider but no explicit
+    // `tts.baseUrl`. Match the GenerateSpeech pattern (line ~270):
+    // `tts.baseUrl` (TTS-specific config) → hardcoded default.
+    let baseUrl = (tts.baseUrl || "https://api.minimax.io/v1").replace(/\/+$/g, "")
+    if (!/\/v\d+$/.test(baseUrl)) baseUrl = `${baseUrl}/v1`
     const headers = { Authorization: `Bearer ${apiKey}` }
 
     if (action === "list") {
