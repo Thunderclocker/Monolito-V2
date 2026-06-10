@@ -6,6 +6,12 @@ export interface CoherenceCheckResult {
   reason?: string
 }
 
+export interface RecentToolCall {
+  tool: string
+  ok: boolean
+  at?: string
+}
+
 /**
  * Bug #8 (09-jun-2026): capability snapshot passed to the LLM judge so it
  * can validate 'claims of limitation' against ground truth. Without this,
@@ -70,7 +76,8 @@ export async function checkTurnCoherence(
     options?: { model?: string; maxTokens?: number }
   ) => Promise<{ text: string }>,
   recentMessages?: Array<{ role: string; text: string }>,
-  availableCapabilities?: AvailableCapabilities
+  availableCapabilities?: AvailableCapabilities,
+  recentToolCalls?: RecentToolCall[]
 ): Promise<CoherenceCheckResult> {
   if (!modelText || modelText.trim().length < 15) {
     return { coherent: true }
@@ -103,6 +110,15 @@ export async function checkTurnCoherence(
       ].join("\n")
     }
 
+    let recentToolsContext = ""
+    if (recentToolCalls && recentToolCalls.length > 0) {
+      recentToolsContext = [
+        "=== HERRAMIENTAS EJECUTADAS RECIENTEMENTE ===",
+        recentToolCalls.map(t => `- ${t.tool} (ok=${t.ok})${t.at ? ` @ ${t.at}` : ""}`).join("\n"),
+        ""
+      ].join("\n")
+    }
+
     // 3. Build the capabilities block. If no snapshot was passed (legacy
     //    callers, tests), still emit a generic block so the judge has
     //    SOMETHING to compare against instead of going blind.
@@ -113,10 +129,11 @@ export async function checkTurnCoherence(
     //    varios idiomas para que el patrón (no las palabras) sea lo que detecta.
     const systemPrompt = `You are the universal logical-consistency validator for the assistant's proposed response. Your only function is to determine whether there is any logical conflict, contradiction, or incompatibility (direct or indirect) between the assertions in the proposed response and the supplied reference information (recent conversation, user profile, and memory facts).
 
-FOUNDATIONAL RULE:
+  FOUNDATIONAL RULE:
 - If the proposed response assumes conditions, procedures, facts, or environments that conflict with the constraints, realities, or explicit information detailed in the reference, the response MUST be considered INCOHERENT.
 - CONTEXT RULE: Conditional directives in the user profile (e.g. "respond only with literal description to photos", "no meta-answers", etc.) MUST only be enforced if the recent conversation in this turn actively meets that condition (e.g. the user actually sent an image). Do not reject responses that discuss memories, rules, or pets in a general memory conversation if the user is asking for it in their chat prompt.
 - AUTONOMY AND EXECUTION RULE: The Monolito assistant has access to very powerful local tools (Bash terminal, file read/write tools, background task delegation, web search, vision, etc.). Therefore, it is a direct INCOHERENCE and lack of autonomy if the proposed response delegates, transfers, or asks the user to run commands on their own console, execute test scripts on their personal terminal, or perform technical/manual diagnostic tasks on their local operating system that the assistant itself should be able to orchestrate via its own tools. If the response contains requests of this type, you MUST mark it as INCOHERENT.
+- TOOL EXECUTION GROUND TRUTH: If the proposed response claims that the assistant "envió", "mandó", "generó", "descargó", "buscó" or otherwise performed an action (e.g. "envié las imágenes de Bulma", "mandé la foto", "generé la imagen"), you MUST check the HERRAMIENTAS EJECUTADAS RECIENTEMENTE list. If the corresponding tool (TelegramSendPhoto, GenerateImage, DownloadFile, ImageSearch, WebSearch, etc.) appears with ok=true in that list, the claim is VALID. If the tool does NOT appear, the claim is INCOHERENT (false execution claim).
 
 INCOHERENT PATTERNS (any language — judge by MEANING, not keywords):
 - Resolution of "how to do X" deferred to the user
@@ -147,16 +164,16 @@ Respond strictly in JSON format:
   "reason": "Brief, objective explanation of the contradiction detected (in the same language as the response). Empty if coherent is true."
 }`;
 
-    const userPrompt = `${recentChatContext}=== PERFIL DEL USUARIO (BOOT_USER) ===
-${bootUser}
+    const userPrompt = `${recentChatContext}${recentToolsContext}=== PERFIL DEL USUARIO (BOOT_USER) ===
+ ${bootUser}
 
-=== MEMORIAS SEMÁNTICAS RELACIONADAS ===
-${semanticMemories || "(No hay memorias semánticas relacionadas)"}
+ === MEMORIAS SEMÁNTICAS RELACIONADAS ===
+ ${semanticMemories || "(No hay memorias semánticas relacionadas)"}
 
-${capabilitiesBlock}
+ ${capabilitiesBlock}
 
-=== RESPUESTA A EVALUAR ===
-"${modelText}"`;
+ === RESPUESTA A EVALUAR ===
+ "${modelText}"`;
 
     const { text } = await runBackgroundTextTask(rootDir, systemPrompt, userPrompt, {
       maxTokens: 120,

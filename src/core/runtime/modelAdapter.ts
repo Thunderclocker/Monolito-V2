@@ -11,6 +11,7 @@ import { createLogger, type Logger } from "../logging/logger.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider } from "./modelRegistry.ts"
 import { compactSession, fileMemory, getSession, getRawMessagesForSession, getDb, readSessionSources, tailEvents, listSessionTasks, listDynamicSkills, appendWorklog, saveResolvedError, querySimilarErrors, deleteMessages, rewriteMessageInPlace } from "../session/store.ts"
+import type { RecentToolCall } from "./coherenceGuard.ts"
 import { wrapAuditFeedback } from "./auditFeedback.ts"
 import { incrementalFlushSession, getContextFlushThresholdChars } from "../context/incrementalFlush.ts"
 import { callProvider, type ConversationMessage, type ProviderConfig, type ProviderResponse, type ToolCall } from "./providers/index.ts"
@@ -1196,15 +1197,31 @@ Considera esta estrategia de solución.`
         // ground truth. Without this, the agent can claim 'Bash no sale
         // al host' or 'no tengo docker' and the judge has no way to know
         // the claim is false.
-        const liveTools = listModelTools(false, undefined, undefined, rootDir, false)
-        const coherence = await checkTurnCoherence(
-          rootDir,
-          response.text,
-          profileId,
-          runBackgroundTextTask,
-          session.messages.slice(-3),
-          { tools: liveTools.map(t => ({ name: t.name, description: t.description })), bins: [] }
-        );
+         const liveTools = listModelTools(false, undefined, undefined, rootDir, false)
+
+         // Extract recent tool calls from events (ground truth for coherence guard)
+         let recentToolCalls: RecentToolCall[] | undefined
+         try {
+           const events = tailEvents(rootDir, session.id, 30)
+           recentToolCalls = events
+             .filter(e => e.type === "tool.finish" && typeof (e as { tool?: unknown }).tool === "string")
+             .map(e => ({
+               tool: String((e as { tool: string }).tool),
+               ok: (e as { ok?: boolean }).ok ?? false,
+               at: (e as { at?: string }).at,
+             }))
+             .slice(-15) // Last 15 tool calls
+         } catch {}
+
+         const coherence = await checkTurnCoherence(
+           rootDir,
+           response.text,
+           profileId,
+           runBackgroundTextTask,
+           session.messages.slice(-3),
+           { tools: liveTools.map(t => ({ name: t.name, description: t.description })), bins: [] },
+           recentToolCalls
+         );
 
         if (!coherence.coherent) {
           coherenceFailureCount++
