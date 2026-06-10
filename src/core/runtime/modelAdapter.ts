@@ -937,6 +937,7 @@ export async function* runAgentLoop(
   let compacted = false
   let compactionCount = 0
   let coherenceFailureCount = 0
+  const MAX_COHERENCE_RETRIES = 3
   const MAX_COMPACTIONS_PER_TURN = 3
   let usage: TurnUsage | undefined
   const steps: AssistantTurnStep[] = []
@@ -1221,43 +1222,25 @@ Considera esta estrategia de solución.`
           // such rejection, no bypass. Other kinds of incoherence
           // (delegation to user, contradiction with memories) keep the
           // 2-strikes-then-bypass policy because the model CAN self-correct.
-          const isPersistentFalseClaim = isFalseExecutionClaim(coherence.reason ?? "")
-
-          if (isPersistentFalseClaim || coherenceFailureCount >= 2) {
-            // Abort the turn. For false execution claims we abort on the
-            // FIRST hit (count==1) so the inflated message never reaches
-            // the user. For other incoherence we wait until 2 consecutive
-            // rejections to give the model a chance to self-correct.
-            logger.error(
-              `Coherence guard aborted turn for session ${session.id} ` +
-              `after ${coherenceFailureCount} consecutive rejection(s) ` +
-              `(isPersistentFalseClaim=${isPersistentFalseClaim}). ` +
-              `Reason: ${coherence.reason}`
-            );
-            appendWorklog(rootDir, session.id, {
-              type: "note",
-              summary: `COHERENCE_GUARD_ABORTED: Aborted after ${coherenceFailureCount} consecutive rejections (false_execution_claim=${isPersistentFalseClaim}). Last reason: "${coherence.reason}"`,
-            });
-            yield {
-              type: "recoverable_error",
-              sessionId: session.id,
-              iteration,
-              action: "coherence_aborted",
-              error: `Turn aborted: coherence guard rejected ${coherenceFailureCount} consecutive response(s).`,
-            };
-            const abortMessage = isPersistentFalseClaim
-              ? `Afirmaste haber enviado o generado algo (ejecutaste una herramienta de imagen, archivo o comando) pero no se ejecutó ninguna herramienta correspondiente en este turno. El guard de coherencia abortó el turno para evitar un reporte inflado. Por favor reformulá y verificá antes de declarar éxito. Causa: ${coherence.reason}.`
-              : `No pude completar este turno. El guard de coherencia detectó una inconsistencia interna entre lo que iba a reportar y las herramientas disponibles. Causa: ${coherence.reason}. Por favor reformulá tu pedido o pedime que lo intente de nuevo.`
-            return finalize(
-              abortMessage,
-              steps,
-              startedAt,
-              iteration,
-              undefined,
-              `coherence_aborted: ${coherence.reason}`,
-              "aborted",
-            );
-          }
+           if (coherenceFailureCount >= MAX_COHERENCE_RETRIES) {
+             // Agotó reintentos internos. Mensaje genérico al usuario, sin exponer detalles del guard.
+             logger.warn(
+               `Coherence guard exhausted retries for session ${session.id} after ${coherenceFailureCount} attempts. Last reason: ${coherence.reason}`
+             );
+             appendWorklog(rootDir, session.id, {
+               type: "note",
+               summary: `COHERENCE_GUARD_EXHAUSTED: ${coherenceFailureCount} consecutive rejections. Last reason: "${coherence.reason}"`,
+             });
+             return finalize(
+               "No pude completar esta acción. ¿Querés que lo intente de nuevo?",
+               steps,
+               startedAt,
+               iteration,
+               undefined,
+               `coherence_exhausted: ${coherence.reason}`,
+               "aborted",
+             );
+           }
 
           yield {
             type: "recoverable_error",
