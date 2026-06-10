@@ -15,6 +15,7 @@ import { wrapAuditFeedback } from "./auditFeedback.ts"
 import { incrementalFlushSession, getContextFlushThresholdChars } from "../context/incrementalFlush.ts"
 import { callProvider, type ConversationMessage, type ProviderConfig, type ProviderResponse, type ToolCall } from "./providers/index.ts"
 import { looksLikeMalformedToolCall } from "./providers/utils.ts"
+import { findUndeliveredToolOutputs } from "./autoDelivery.ts"
 import { ensureMonolitoRoot } from "../system/root.ts"
 import { redactSensitiveText } from "../security/redact.ts"
 import type { AgentYieldEvent } from "./types.ts"
@@ -1821,6 +1822,69 @@ Considera esta estrategia de solución.`
             semanticHelper,
           ),
         })
+      }
+
+      // --- AUTO-DELIVERY ---
+      // Symptom observed 2026-06-09 23:47: the model called GenerateSpeech
+      // (419949 bytes) and emitted the `<gen_audio>` metadata tag, but
+      // never called TelegramSendVoice — the audio never reached the
+      // user. The runtime now injects the matching Telegram delivery
+      // tool call as a "best-effort" side-effect, treating the
+      // generation tool as the model's intent and the delivery as the
+      // runtime's responsibility.
+      //
+      // Gated on:
+      //   1. The agent loop is in the main session (not a sub-agent,
+      //      which has its own delivery semantics).
+      //   2. The session has a Telegram chatId in its id (the
+      //      `telegram-<chatId>` convention used by channelManager).
+      //   3. findUndeliveredToolOutputs returns at least one artifact.
+      //
+      // Each auto-delivery is logged to the worklog so the user can
+      // audit which artifacts were delivered by the runtime vs the
+      // model. The side-effect guard still runs as defence in depth
+      // (a rejection is a hard stop, but normal flow is approve).
+      if (!isSubAgent) {
+        const telegramChatId = session.id.startsWith("telegram-")
+          ? Number(session.id.slice("telegram-".length))
+          : null
+        if (telegramChatId !== null && Number.isFinite(telegramChatId)) {
+          const undelivered = findUndeliveredToolOutputs(messages)
+          for (const u of undelivered) {
+            const autoToolCall: ToolCall = {
+              id: `auto-delivery-${randomUUID()}`,
+              name: u.deliveryTool,
+              input: { ...u.deliveryInput, chat_id: telegramChatId },
+            }
+            logger.info(
+              `[auto-delivery] Injecting ${u.deliveryTool} for ${u.localPath} (chat=${telegramChatId}). ` +
+              `Reason: ${u.reason}`,
+            )
+            appendWorklog(rootDir, session.id, {
+              type: "note",
+              summary: `[auto-delivery] ${u.deliveryTool} for ${u.localPath} (chat=${telegramChatId}). Source: ${u.sourceTool}.`,
+            })
+            try {
+              const output = await executeTool(autoToolCall.name, autoToolCall.input, context, autoToolCall.id)
+              const content = JSON.stringify(output ?? { ok: true })
+              messages.push({
+                role: "tool",
+                toolCallId: autoToolCall.id,
+                toolName: autoToolCall.name,
+                content,
+              })
+            } catch (err) {
+              const errMsg = err instanceof Error ? err.message : String(err)
+              logger.warn(`[auto-delivery] ${u.deliveryTool} failed: ${errMsg}`)
+              messages.push({
+                role: "tool",
+                toolCallId: autoToolCall.id,
+                toolName: autoToolCall.name,
+                content: JSON.stringify({ ok: false, error: errMsg }),
+              })
+            }
+          }
+        }
       }
       // NOTE: Turn integrity (veracity + commitment) is already checked
       // synchronously in the toolCalls.length === 0 branch above. The previous
