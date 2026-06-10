@@ -62,6 +62,7 @@ export type SessionSummary = {
   createdAt: string
   updatedAt: string
   state: "idle" | "running" | "error"
+  voiceMode: boolean
 }
 
 export type SessionWorklogEntry = {

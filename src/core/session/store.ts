@@ -589,6 +589,7 @@ export function getDb(rootDir: string): Database.Database {
       state TEXT,
       created_at TEXT,
       updated_at TEXT,
+      voice_mode INTEGER DEFAULT 0,
       FOREIGN KEY(profile_id) REFERENCES profiles(id)
     );
     
@@ -728,6 +729,16 @@ export function getDb(rootDir: string): Database.Database {
     if (!sessionInfo.find(c => c.name === "profile_id")) {
       try {
         db.exec(`ALTER TABLE sessions ADD COLUMN profile_id TEXT DEFAULT 'default'`)
+      } catch (e) {
+        if (!String(e).includes("duplicate column")) throw e
+      }
+    }
+
+    // Migration: Add voice_mode to sessions if missing (2026-06-10).
+    // Stores whether voice mode (strict audio-only responses) is active.
+    if (!sessionInfo.find(c => c.name === "voice_mode")) {
+      try {
+        db.exec(`ALTER TABLE sessions ADD COLUMN voice_mode INTEGER DEFAULT 0`)
       } catch (e) {
         if (!String(e).includes("duplicate column")) throw e
       }
@@ -1149,15 +1160,15 @@ export function saveSession(rootDir: string, session: SessionRecord) {
   // we update the metadata.
   const db = getDb(rootDir)
   session.updatedAt = new Date().toISOString()
-  const stmt = db.prepare(`UPDATE sessions SET title = ?, state = ?, updated_at = ? WHERE id = ?`)
-  stmt.run(session.title, session.state, session.updatedAt, session.id)
+  const stmt = db.prepare(`UPDATE sessions SET title = ?, state = ?, voice_mode = ?, updated_at = ? WHERE id = ?`)
+  stmt.run(session.title, session.state, session.voiceMode ? 1 : 0, session.updatedAt, session.id)
 }
 
 export function getSession(rootDir: string, sessionId: string): SessionRecord | null {
   const db = getDb(rootDir)
 
-  const stmtSession = db.prepare(`SELECT id, profile_id, title, state, created_at, updated_at FROM sessions WHERE id = ?`)
-  const row = stmtSession.get(sessionId) as { id: string; profile_id: string | null; title: string | null; state: string | null; created_at: string; updated_at: string } | undefined
+  const stmtSession = db.prepare(`SELECT id, profile_id, title, state, created_at, updated_at, voice_mode FROM sessions WHERE id = ?`)
+  const row = stmtSession.get(sessionId) as { id: string; profile_id: string | null; title: string | null; state: string | null; created_at: string; updated_at: string; voice_mode: number | null } | undefined
   if (!row) return null
 
   const stmtMsgs = db.prepare(
@@ -1177,6 +1188,7 @@ export function getSession(rootDir: string, sessionId: string): SessionRecord | 
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     state: (row.state ?? "idle") as "idle" | "running" | "error",
+    voiceMode: row.voice_mode === 1,
     messages: messages.map(m => ({ at: m.at, role: m.role as "user" | "assistant" | "system", text: m.text })),
     worklog: worklogs.map(w => ({ at: w.at, type: w.type as "session" | "message" | "tool" | "note", summary: w.summary })),
   }
@@ -1192,7 +1204,7 @@ export function ensureSession(rootDir: string, sessionId?: string, title?: strin
 
 export function listSessions(rootDir: string, profileId?: string): SessionSummary[] {
   const db = getDb(rootDir)
-  let sql = `SELECT id, profile_id, title, state, created_at, updated_at FROM sessions`
+  let sql = `SELECT id, profile_id, title, state, created_at, updated_at, voice_mode FROM sessions`
   const params: any[] = []
   if (profileId) {
     sql += ` WHERE profile_id = ?`
@@ -1200,12 +1212,13 @@ export function listSessions(rootDir: string, profileId?: string): SessionSummar
   }
   sql += ` ORDER BY updated_at DESC`
   const stmt = db.prepare(sql)
-  const rows = stmt.all(...params) as Array<{ id: string; profile_id: string | null; title: string | null; state: string | null; created_at: string; updated_at: string }>
+  const rows = stmt.all(...params) as Array<{ id: string; profile_id: string | null; title: string | null; state: string | null; created_at: string; updated_at: string; voice_mode: number | null }>
   return rows.map(r => ({
     id: r.id,
     profileId: r.profile_id ?? "default",
     title: r.title ?? "",
     state: (r.state ?? "idle") as "idle" | "running" | "error",
+    voiceMode: r.voice_mode === 1,
     createdAt: r.created_at,
     updatedAt: r.updated_at
   }))

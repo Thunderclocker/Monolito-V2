@@ -2219,6 +2219,32 @@ Review the existing skill library and apply the curation heuristics in your inst
       } else {
         const session = getSession(this.rootDir, sessionId)
         if (!session) throw new Error(`Session ${sessionId} not found`)
+
+        // --- Voice Mode: detect intent to toggle on/off (language-agnostic) ---
+        // Voice mode intent detection (language-agnostic via LLM)
+        if (session.voiceMode === false || session.voiceMode === null) {
+          // Check if user wants to turn ON voice mode
+          const intent = await this.detectVoiceModeIntent(this.rootDir, lastUserText, runBackgroundTextTask)
+          if (intent === "on") {
+            await this.setVoiceMode(sessionId, true)
+            const msg = "Modo voz activado. A partir de ahora respondo solo con audio."
+            appendMessage(this.rootDir, sessionId, "assistant", msg)
+            this.emit({ type: "message.received", sessionId, role: "assistant", text: msg })
+            await this.deliverText(sessionId, msg, options?.delivery, "Failed to deliver voice mode activation")
+            return { finalText: msg, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } }
+          }
+        } else if (session.voiceMode === true) {
+          // Check if user wants to turn OFF voice mode
+          const intent = await this.detectVoiceModeIntent(this.rootDir, lastUserText, runBackgroundTextTask)
+          if (intent === "off") {
+            await this.setVoiceMode(sessionId, false)
+            const msg = "Modo voz desactivado. Volvemos a texto."
+            appendMessage(this.rootDir, sessionId, "assistant", msg)
+            this.emit({ type: "message.received", sessionId, role: "assistant", text: msg })
+            await this.deliverText(sessionId, msg, options?.delivery, "Failed to deliver voice mode deactivation")
+            return { finalText: msg, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } }
+          }
+        }
         let preparedUserText = lastUserText
         const incomingTelegramChatId = getTelegramChatId(sessionId)
         if (incomingTelegramChatId && !hasTelegramTranscriptText(preparedUserText) && !hasTelegramTranscriptUnavailable(preparedUserText)) {
@@ -2262,6 +2288,20 @@ Review the existing skill library and apply the curation heuristics in your inst
               }
             : session
         const ragSession = await prepareSemanticRagSession(this.rootDir, preparedSession, profileId)
+
+        // Inyectar system prompt de modo voz si está activo
+        let effectiveRagSession = ragSession
+        if (session.voiceMode) {
+          const voiceModePrompt = "\n\n=== MODO VOZ ACTIVO ===\n- Estás en modo voz estricto. Tu respuesta será convertida a audio y entregada al usuario.\n- El usuario NO verá tu respuesta en texto.\n- Responde de forma natural y conversacional, como si hablaras.\n- Evita: formato markdown, listas con bullets, código, URLs largas, referencias visuales.\n- Usa: oraciones completas, pausas naturales, tono conversacional.\n- Máximo ~120 palabras por respuesta (≈ 1 min de audio)."
+          effectiveRagSession = {
+            ...ragSession,
+            messages: [
+              ...ragSession.messages,
+              { role: "system", text: voiceModePrompt, at: new Date().toISOString() },
+            ],
+          }
+        }
+
         const apiStartedAt = Date.now()
         const isMainSession = !session.id.startsWith("agent-") && !session.id.startsWith("telegram-")
         const [gitContext, dateContext, workspaceContext] = await Promise.all([
@@ -2284,7 +2324,6 @@ Review the existing skill library and apply the curation heuristics in your inst
         let turn: AssistantTurnResult | null = null
         let lastAssistantReplyForRalph = ""
         let lastUserTextForRalph = preparedUserText
-        let effectiveRagSession = ragSession
         // Ralph feedback is in-memory only: it MUST be visible to the agent
         // loop on the next iteration (so the model re-attempts the work) but
         // MUST NOT be persisted as a user-rol message. Persisting it would
@@ -2466,7 +2505,18 @@ Review the existing skill library and apply the curation heuristics in your inst
             turn.meta?.stopReason === "max_duration" ||
             turn.meta?.stopReason === "aborted"
 
-          if (hasSideEffects && !wasAborted) {
+          // Voice mode: intercept response and deliver as audio
+          const voiceProcessed = await this.processVoiceModeAndDeliver(
+            sessionId,
+            turn,
+            userFacingText,
+            preparedUserText,
+            profileId,
+            { logger: instanceLogger, cwd: effectiveCwd, traceId, delivery: options?.delivery, onAgentLoopEvent: options?.onAgentLoopEvent },
+          )
+          if (voiceProcessed) {
+            // Voice mode handled delivery, skip text delivery
+          } else if (hasSideEffects && !wasAborted) {
             userFacingText = "✅ ¡Acción completada con éxito! He procesado y enviado los archivos por Telegram."
             appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
             appendWorklog(this.rootDir, sessionId, {
@@ -4081,6 +4131,167 @@ Review the existing skill library and apply the curation heuristics in your inst
         }
       },
     })
+  }
+
+  // --- Voice Mode helpers (language-agnostic) ---
+
+  /**
+   * Detecta si el usuario quiere activar o desactivar el modo voz usando un LLM.
+   * Es agnóstico de idioma: el LLM clasifica la intención semánticamente.
+   */
+  private async detectVoiceModeIntent(
+    rootDir: string,
+    text: string,
+    runBackgroundTextTask: (rootDir: string, system: string, user: string, opts?: { maxTokens?: number }) => Promise<{ text: string }>,
+  ): Promise<"on" | "off" | "none"> {
+    if (!text || text.trim().length < 3) return "none"
+
+    const system = `Clasifica la intención del usuario respecto al "modo voz" (responder solo con audio en vez de texto).
+Responde SOLO con JSON válido:
+{ "intent": "voice_on" | "voice_off" | "none" }
+
+Reglas:
+- voice_on: usuario quiere activar modo voz, hablar por audio, "hablame", "modo voz", "responde con audio", etc.
+- voice_off: usuario quiere desactivar modo voz, volver a texto, "silencio", "modo texto", "dejá de hablar", etc.
+- none: cualquier otra cosa (pregunta normal, saludo, etc.)
+
+Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado, no por palabras clave.`
+
+    const user = `Mensaje del usuario: "${text}"`
+
+    try {
+      const { text: out } = await runBackgroundTextTask(rootDir, system, user, { maxTokens: 50 })
+      const jsonMatch = out.match(/\{[\s\S]*\}/)
+      if (!jsonMatch) return "none"
+      const parsed = JSON.parse(jsonMatch[0])
+      if (parsed.intent === "voice_on") return "on"
+      if (parsed.intent === "voice_off") return "off"
+      return "none"
+    } catch {
+      return "none"
+    }
+  }
+
+  /**
+   * Activa o desactiva el modo voz para la sesión.
+   * Persiste en la base de datos.
+   */
+  private async setVoiceMode(sessionId: string, enabled: boolean): Promise<void> {
+    const db = getDb(this.rootDir)
+    const now = new Date().toISOString()
+    db.prepare(`UPDATE sessions SET voice_mode = ?, updated_at = ? WHERE id = ?`).run(enabled ? 1 : 0, now, sessionId)
+  }
+
+  /**
+   * Procesa el modo voz: si está activo, genera audio y lo entrega.
+   * Returns true si se procesó voz (no entregar texto), false si continuar con entrega de texto normal.
+   */
+  private async processVoiceModeAndDeliver(
+    sessionId: string,
+    turn: AssistantTurnResult,
+    userFacingText: string,
+    preparedUserText: string,
+    profileId: string,
+    options?: { logger?: Logger; cwd?: string; traceId?: string; maxTokens?: number; delivery?: DeliveryContext; onAgentLoopEvent?: (event: AgentLoopEvent) => void },
+  ): Promise<boolean> {
+    const session = getSession(this.rootDir, sessionId)
+    if (!session?.voiceMode) return false
+
+    // Solo procesar si hay texto para convertir
+    const textToSpeak = turn.finalText?.trim()
+    if (!textToSpeak) return false
+
+    // No procesar si es solo una confirmación de activación/desactivación
+    if (textToSpeak.includes("Modo voz activado") || textToSpeak.includes("Modo voz desactivado") ||
+        textToSpeak.includes("Voice mode activated") || textToSpeak.includes("Voice mode deactivated")) {
+      return false
+    }
+
+    try {
+      const delivery = options?.delivery
+      const isTelegram = delivery?.channel === "telegram"
+      const ttsConfig = readChannelsConfig().tts || {}
+      const voice = ttsConfig.defaultClonedVoice || ttsConfig.voice || "female-shaonv"
+
+      // Generar audio
+      const speechResult = await this.executeTool(sessionId, "GenerateSpeech", {
+        text: textToSpeak,
+        voice,
+        response_format: isTelegram ? "opus" : "mp3",
+      }, {
+        rootDir: this.rootDir,
+        cwd: options?.cwd ?? this.rootDir,
+        abortSignal: new AbortController().signal,
+        sessionId,
+        runtime: this,
+      }, undefined, profileId) as { local_path?: string; ok?: boolean }
+
+      if (!speechResult.ok || !speechResult.local_path) {
+        logger.warn(`Voice mode: GenerateSpeech failed, falling back to text`)
+        return false
+      }
+
+      // Entregar audio según el canal
+      if (isTelegram) {
+        await this.executeTool(sessionId, "TelegramSendVoice", {
+          audio: speechResult.local_path,
+        }, {
+          rootDir: this.rootDir,
+          cwd: options?.cwd ?? this.rootDir,
+          abortSignal: new AbortController().signal,
+          sessionId,
+          runtime: this,
+        }, undefined, profileId)
+      } else {
+        // CLI: reproducir localmente
+        const { spawn } = await import("node:child_process")
+        const player = await this.findAudioPlayer()
+        if (player) {
+          spawn(player, [speechResult.local_path], { detached: true, stdio: "ignore" })
+        } else {
+          logger.warn("Voice mode: no audio player found for CLI playback")
+        }
+      }
+
+      // Loguear pero NO entregar texto al usuario
+      appendMessage(this.rootDir, sessionId, "assistant", `[voice] ${turn.finalText}`)
+      appendWorklog(this.rootDir, sessionId, {
+        type: "session",
+        summary: `Voice mode: delivered audio (${speechResult.local_path})`,
+      })
+      this.emit({ type: "message.received", sessionId, role: "assistant", text: `[voice] ${turn.finalText}` })
+      this.emit({
+        type: "turn.completed",
+        sessionId,
+        role: "assistant",
+        durationMs: 0, // Will be updated by caller
+        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+      })
+
+      return true // Voice processed, don't deliver text
+    } catch (error) {
+      logger.warn(`Voice mode pipeline failed: ${error instanceof Error ? error.message : String(error)}`)
+      return false
+    }
+  }
+
+  /**
+   * Encuentra un reproductor de audio disponible en el sistema.
+   */
+  private async findAudioPlayer(): Promise<string | null> {
+    const players = ["mpv", "ffplay", "aplay", "paplay", "afplay"]
+    for (const player of players) {
+      try {
+        const { execFile } = await import("node:child_process")
+        const { promisify } = await import("node:util")
+        const execFileAsync = promisify(execFile)
+        await execFileAsync("which", [player])
+        return player
+      } catch {
+        continue
+      }
+    }
+    return null
   }
 }
 
