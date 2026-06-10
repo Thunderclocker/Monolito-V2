@@ -38,7 +38,7 @@ export const configTools: ToolDefinition[] = [
 {
   name: "tool_manage_config",
   permissionTier: "edit",
-  description: "Read or update technical configuration stored in SQLite CONF_* wings. Use this instead of reading or writing JSON config files manually. ALWAYS wrap channel settings inside their provider key (e.g., { 'telegram': { 'enabled': true } }).\n\nSchemas for wings:\n- CONF_WEBSEARCH: { provider: 'default' | 'brave' | 'serper' | 'tavily', apiKey?: string } (Brave, Serper and Tavily are cloud search provider APIs)\n- CONF_CHANNELS: { telegram: { enabled: boolean, token?: string, ... }, ... }\n- CONF_SYSTEM: System environment variables\n- CONF_MODELS: Models and provider configuration",
+  description: "Read or update technical configuration stored in SQLite CONF_* wings. Use this instead of reading or writing JSON config files manually. ALWAYS wrap channel settings inside their provider key (e.g., { 'telegram': { 'enabled': true } }).\n\nSchemas for wings:\n- CONF_WEBSEARCH: { provider: 'default' | 'brave' | 'serper' | 'tavily', apiKey?: string } (Brave, Serper and Tavily are cloud search provider APIs)\n- CONF_CHANNELS: { telegram: { enabled: boolean, token?: string, ... }, ... }\n- CONF_SYSTEM: System environment variables\n- CONF_MODELS: Models and provider configuration\n\nEXAMPLES (correct calls):\n- Set websearch provider: { action: 'set', wing: 'CONF_WEBSEARCH', path: 'provider', value: 'brave' }\n- Set websearch apiKey: { action: 'set', wing: 'CONF_WEBSEARCH', path: 'apiKey', value: 'BSAYcJPX...' }\n- Read full websearch config: { action: 'read', wing: 'CONF_WEBSEARCH' }\n- Enable telegram: { action: 'set', wing: 'CONF_CHANNELS', path: 'telegram.enabled', value: true }\n\nWRONG (will fail): passing only 'provider' or 'apiKey' as a string — always include action, wing, path, value.",
   inputSchema: {
     type: "object",
     properties: {
@@ -69,6 +69,14 @@ export const configTools: ToolDefinition[] = [
     const parsed = parseZod(manageConfigInputZod, input, "tool_manage_config input")
     const action = parsed.action
     const wing = parsed.wing
+
+    // Friendly guard for common model mistake: passing loose strings instead of proper {action,wing,path,value}
+    if (typeof input === "object" && input !== null && !("action" in input) && Object.keys(input).length === 1) {
+      const loneKey = Object.keys(input)[0]
+      if (["provider", "apiKey", "token", "enabled"].includes(loneKey)) {
+        return { ok: false, error: `Wrong invocation. Use: { action: 'set', wing: 'CONF_WEBSEARCH' (or CONF_CHANNELS), path: '${loneKey}', value: '...' }` }
+      }
+    }
 
     function getPathValue(obj: any, path: string): any {
       if (!path) return obj
