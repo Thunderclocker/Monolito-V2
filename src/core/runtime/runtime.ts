@@ -451,8 +451,108 @@ export function clearUpdateRestartState(rootDir: string) {
 // contract (stale lock detection, retry, logging) is documented there.
 import { acquireUpdateLock } from "./updateLock.ts"
 
+/**
+ * Inspect the live runtime config for known-broken values that survived an
+ * /update. Returns a multi-line warning string if anything is suspect, or
+ * null if everything looks healthy. Designed to be cheap (one config wing
+ * read, no network) so it can run on every /update.
+ *
+ * Currently checks:
+ *  - CONF_CHANNELS.telegram.token shape (must match \d+:[A-Za-z0-9_-]{30,})
+ *  - CONF_CHANNELS.telegram.token against a small list of known test
+ *    placeholders that have ended up persisted in past incidents.
+ */
+function checkCriticalConfigAfterUpdate(rootDir: string): string | null {
+  let channels: ReturnType<typeof readChannelsConfig> = {}
+  try {
+    channels = readChannelsConfig()
+  } catch {
+    // If we can't even read CONF_CHANNELS, something is very wrong but the
+    // update succeeded — surface a generic warning.
+    return [
+      "⚠️  ADVERTENCIA: no pude leer CONF_CHANNELS después del update.",
+      "    Verificá manualmente con /channels show.",
+    ].join("\n")
+  }
+  const telegram = channels.telegram
+  if (!telegram) return null
+  if (telegram.enabled === false) return null
+  if (!telegram.token) {
+    return [
+      "⚠️  Telegram está habilitado pero sin token en CONF_CHANNELS.",
+      "    El bot no responderá. Configurá con /channels token <token-real>.",
+    ].join("\n")
+  }
+  const token = telegram.token
+  // Known placeholder tokens from past incidents. Keep this list short and
+  // obvious — these are values a human or test would never use in prod.
+  const placeholders = new Set(["abc", "test", "placeholder", "your-token-here", "changeme", "xxx", "123"])
+  if (placeholders.has(token.toLowerCase())) {
+    return [
+      `⚠️  CONF_CHANNELS.telegram.token es "${token}" (placeholder conocido).`,
+      "    El bot de Telegram no responderá. Esto es exactamente el bug del 09-jun-2026.",
+      "    Restaurá el token real con /channels token <token-real>.",
+    ].join("\n")
+  }
+  if (!/^\d{6,12}:[A-Za-z0-9_-]{30,}$/.test(token)) {
+    return [
+      `⚠️  CONF_CHANNELS.telegram.token no tiene el formato esperado (recibido: "${token.length > 20 ? token.slice(0, 20) + "..." : token}").`,
+      "    El bot no responderá hasta que pongas un token real con /channels token.",
+    ].join("\n")
+  }
+  return null
+}
+
 function getTelegramChatId(sessionId: string) {
   return sessionId.startsWith("telegram-") ? sessionId.slice("telegram-".length) : null
+}
+
+/**
+ * Validate a Telegram bot token by calling getMe. Returns the bot's username
+ * and numeric id on success. The token format is `<digits>:<base64-ish>` and
+ * we do a cheap shape check first to fail fast on obvious placeholders like
+ * "abc" before hitting the API.
+ */
+type TelegramTokenValidation =
+  | { ok: true; username: string | null; botId: number | null }
+  | { ok: false; reason: string }
+
+async function validateTelegramToken(token: string): Promise<TelegramTokenValidation> {
+  // Cheap shape check: real Telegram bot tokens are `<digits>:<A-Za-z0-9_-]{35}`.
+  // Reject obvious placeholders (empty, "abc", "test", etc.) without a network
+  // roundtrip so the user gets a fast clear error.
+  if (!/^\d{6,12}:[A-Za-z0-9_-]{30,}$/.test(token)) {
+    return {
+      ok: false,
+      reason: `el token no tiene el formato esperado (esperado: 123456789:ABCdef..., recibido: "${token.length > 20 ? token.slice(0, 20) + "..." : token}")`,
+    }
+  }
+
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${token}/getMe`, {
+      method: "GET",
+      signal: AbortSignal.timeout(8000),
+    })
+    const data = (await response.json()) as {
+      ok: boolean
+      result?: { id?: number; username?: string; first_name?: string }
+      description?: string
+      error_code?: number
+    }
+    if (!data.ok) {
+      const code = data.error_code ?? response.status
+      const desc = data.description ?? response.statusText
+      return { ok: false, reason: `Telegram respondió error ${code} (${desc}). El token no corresponde a un bot existente o fue revocado.` }
+    }
+    return {
+      ok: true,
+      username: data.result?.username ?? null,
+      botId: data.result?.id ?? null,
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return { ok: false, reason: `no pude contactar a Telegram (${message}). Reintentá cuando tengas red.` }
+  }
 }
 
 function isRagEligibleMessage(message: SessionRecord["messages"][number]) {
@@ -3317,10 +3417,23 @@ Review the existing skill library and apply the curation heuristics in your inst
     if (action === "token") {
       const token = rest.slice(1).join(" ").trim()
       if (!token) return "Usage: /channels token <token>"
+      // Validate the token with Telegram before persisting. The 09-jun-2026
+      // incident: a previous version of this branch accepted any non-empty
+      // string, and a placeholder like "abc" ended up persisted. The daemon
+      // then kept polling forever and Telegram returned 404 on every request
+      // (no bot exists for that token). getMe is the cheapest way to confirm
+      // the token corresponds to a real bot.
+      const validation = await validateTelegramToken(token)
+      if (!validation.ok) {
+        return [
+          `Token inválido: ${validation.reason}`,
+          "No se guardó el cambio. Verificá que copiaste el token completo de BotFather (formato: 123456789:ABC...).",
+        ].join("\n")
+      }
       config.telegram = { ...telegram, token, enabled: true }
       writeChannelsConfig(config)
       this.restartRequested = true
-      return "Telegram token saved. Daemon restart scheduled automatically."
+      return `Telegram token saved. Daemon restart scheduled automatically. Bot: @${validation.username ?? "?"} (id=${validation.botId ?? "?"})`
     }
 
     if (action === "chats") {
@@ -3646,7 +3759,25 @@ Review the existing skill library and apply the curation heuristics in your inst
         },
       })
       this.restartRequested = true
-      return `Monolito sincronizado 1:1 desde origin/main (${safeBehind} commit(s) nuevo(s)). Entorno local purgado. Reiniciando daemon...`
+      const summary = `Monolito sincronizado 1:1 desde origin/main (${safeBehind} commit(s) nuevo(s)). Entorno local purgado. Reiniciando daemon...`
+      // Post-flight: surface critical config corruption that survived the
+      // update. The 09-jun-2026 incident was caused by an /update restart
+      // reloading a CONF_CHANNELS.telegram.token that had been overwritten
+      // with the placeholder "abc" by a stray test run. The update itself
+      // succeeded; the bot just stopped responding. We don't abort the
+      // update (the user may not use Telegram), but we append a loud
+      // warning to the response and to the action log so the next /update
+      // cannot silently mask a broken channel config.
+      const warning = checkCriticalConfigAfterUpdate(this.rootDir)
+      if (warning) {
+        try {
+          appendActionLog(this.rootDir, "Configuracion critica posiblemente rota despues de /update", { warning })
+        } catch {
+          // best-effort: the action log is for forensics, not user-facing
+        }
+        return [summary, "", warning].join("\n")
+      }
+      return summary
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       return `Update failed: ${message}`

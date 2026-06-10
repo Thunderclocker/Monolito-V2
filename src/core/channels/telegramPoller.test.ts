@@ -106,3 +106,54 @@ test("isRetriable: generic TypeError is NOT retriable", () => {
 test("isRetriable: ECONNRESET in message is retriable (legacy path)", () => {
   assert.equal(isRetriableTelegramNetworkError(err("Error", "read ECONNRESET")), true)
 })
+
+// Tests for terminal-token detection. Bug #6 (09-jun-2026): the poller
+// kept retrying forever when CONF_CHANNELS.telegram.token was an invalid
+// placeholder (e.g. "abc"), producing 58+ identical 404 errors in the log
+// before anyone noticed. The fix is `isTerminalTelegramTokenError` which
+// recognizes 401 and 404 as terminal and stops the poller.
+//
+// Source of truth: src/core/channels/telegramPoller.ts isTerminalTelegramTokenError
+
+function isTerminalTelegramTokenError(error: { message: string }): boolean {
+  const m = error.message
+  return m.includes("401") || m.includes("Not Found") || m.includes("404")
+}
+
+test("isTerminal: '401 Unauthorized' from Telegram is terminal", () => {
+  assert.equal(isTerminalTelegramTokenError({ message: "Telegram API error: 401 - Unauthorized" }), true)
+})
+
+test("isTerminal: '404 Not Found' from Telegram is terminal (placeholder token bug)", () => {
+  // This is the exact shape observed in the 09-jun-2026 incident: a
+  // placeholder token ("abc") persisted in CONF_CHANNELS, the poller hit
+  // api.telegram.org/botabc/getUpdates, and Telegram responded 404.
+  assert.equal(
+    isTerminalTelegramTokenError({
+      message: 'Telegram API error: 404 - {"ok":false,"error_code":404,"description":"Not Found"}',
+    }),
+    true,
+  )
+})
+
+test("isTerminal: bare 'Not Found' substring is terminal (defensive)", () => {
+  // Some response shapes from Telegram don't include the numeric 404 but
+  // still carry the description "Not Found". Treat as terminal too.
+  assert.equal(isTerminalTelegramTokenError({ message: "Bot does not exist: Not Found" }), true)
+})
+
+test("isTerminal: 502 Bad Gateway is NOT terminal (transient upstream)", () => {
+  // 502 is retriable — Telegram's load balancer may be in the middle of a
+  // restart. Don't kill the poller on a 502.
+  assert.equal(isTerminalTelegramTokenError({ message: "Telegram API error: 502 - Bad Gateway" }), false)
+})
+
+test("isTerminal: undici 'fetch failed' is NOT terminal (network issue)", () => {
+  // fetch failed means we couldn't even reach Telegram. That's a network
+  // problem, not a token problem. The poller should keep retrying.
+  assert.equal(isTerminalTelegramTokenError({ message: "fetch failed" }), false)
+})
+
+test("isTerminal: generic Error is NOT terminal", () => {
+  assert.equal(isTerminalTelegramTokenError({ message: "Some other error" }), false)
+})

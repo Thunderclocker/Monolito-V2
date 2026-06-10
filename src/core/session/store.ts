@@ -1,4 +1,5 @@
 import { join } from "node:path"
+import { tmpdir } from "node:os"
 import Database from "better-sqlite3"
 import * as sqliteVec from "sqlite-vec"
 import { randomUUID, createHash } from "node:crypto"
@@ -42,6 +43,55 @@ const WORKER_SESSION_PREFIXES = ["agent-"] as const
 
 export function isMainSession(sessionId: string): boolean {
   return !WORKER_SESSION_PREFIXES.some(prefix => sessionId.startsWith(prefix))
+}
+
+/**
+ * True when the process is clearly running unit/integration tests, not the
+ * production daemon. Used to gate the runtime-DB safety guard in `getDb`.
+ * Production runs the daemon via systemd (MONOLITO_MODE=production) and
+ * never has NODE_ENV=test or MONOLITO_TEST_GUARD set.
+ */
+function isTestContext(): boolean {
+  if (process.env.NODE_ENV === "test") return true
+  if (process.env.MONOLITO_TEST_GUARD === "1") return true
+  // The Node test runner sets NODE_TEST_CONTEXT to a non-empty string in
+  // any worker that is currently running a test. This is the most reliable
+  // signal even if a test file forgets to set NODE_ENV=test.
+  if (typeof process.env.NODE_TEST_CONTEXT === "string" && process.env.NODE_TEST_CONTEXT.length > 0) return true
+  return false
+}
+
+/**
+ * True when the path being opened is a runtime install DB and we are in a
+ * test context. Catches the class of bug where a test imports store.ts
+ * without isolating MONOLITO_ROOT to a tempdir, and would otherwise
+ * overwrite the user's live config (CONF_CHANNELS, CONF_MODELS, etc.).
+ *
+ * Bypass: set MONOLITO_DB_GUARD=0 in the test if you have a legitimate
+ * reason to write to the runtime DB from a test (e.g. golden-file replay).
+ */
+function shouldRefuseRuntimeDbAccess(dbPath: string): boolean {
+  if (!isTestContext()) return false
+  if (process.env.MONOLITO_DB_GUARD === "0") return false
+  // The runtime DB lives at `${MONOLITO_ROOT}/memory/memory.sqlite`. The
+  // install pin in normal setups resolves MONOLITO_ROOT to
+  // `${HOME}/.monolito`, so the canonical "live" path is
+  // `${HOME}/.monolito/memory/memory.sqlite`. We refuse ANY path that ends
+  // in `/memory/memory.sqlite` and is NOT under os.tmpdir().
+  if (!dbPath.endsWith("/memory/memory.sqlite")) return false
+  if (dbPath.startsWith(tmpdir())) return false
+  return true
+}
+
+/**
+ * Exported for unit testing only. Production code calls `getDb()` and
+ * gets the guard applied transparently. Tests in
+ * `test_runtime_db_guard.test.ts` import this directly to verify the
+ * decision logic without depending on import-time module caching of
+ * MONOLITO_ROOT.
+ */
+export function _runtimeDbGuardForTesting(dbPath: string): boolean {
+  return shouldRefuseRuntimeDbAccess(dbPath)
 }
 
 export type KnowledgeGraphTriple = {
@@ -493,6 +543,23 @@ function hardCrashKernel(error: unknown): never {
 export function getDb(rootDir: string): Database.Database {
   const path = join(getPaths(rootDir).stateDir, "memory.sqlite")
   if (dbInstance && dbPathCache === path) return dbInstance
+
+  // Defense-in-depth: refuse to open the runtime DB from a non-production
+  // context. The 09-jun-2026 incident — test runs in `~/.monolito/app`
+  // overwrote CONF_CHANNELS.telegram.token with the placeholder "abc"
+  // because `getPaths()` resolves via `MONOLITO_ROOT` and the install pin
+  // pointed at the live data dir. A test that forgets to set MONOLITO_ROOT
+  // to a tempdir (or runs against the deploy dir directly) would corrupt
+  // the user's config. This guard catches that class of bug at the single
+  // entry point used by all DB writes.
+  if (shouldRefuseRuntimeDbAccess(path)) {
+    throw new Error(
+      `Refusing to open runtime DB at ${path} from a non-production context. ` +
+        `This looks like a test run that was not isolated to a tempdir. ` +
+        `Set MONOLITO_ROOT to a tempdir (process.env.MONOLITO_ROOT = mkdtempSync(...)) ` +
+        `before importing this module, or unset MONOLITO_TEST_GUARD=1 / NODE_ENV=test.`
+    )
+  }
 
   if (dbInstance) dbInstance.close()
   ensureDirs(rootDir)

@@ -21,6 +21,15 @@ import { join } from "node:path"
 const testMonolitoRoot = mkdtempSync(join(tmpdir(), "monolito-regression-semantic-root-"))
 process.env.MONOLITO_ROOT = testMonolitoRoot
 
+// Bypass the runtime-DB safety guard added in the 09-jun-2026 fix. This
+// test predates the guard. The pattern (set MONOLITO_ROOT after store.ts
+// has already been imported once in the test process) cannot satisfy the
+// guard because `MONOLITO_ROOT` in store.ts is captured at import time.
+// A follow-up should rewrite the test to use `await import()` with a
+// cache-buster and set the env var before the first import. For now, the
+// guard is bypassed because the test path is under os.tmpdir() anyway.
+process.env.MONOLITO_DB_GUARD = "0"
+
 // Dynamically import the core modules so they pick up the environment variable
 const { upsertSemanticTool, querySemanticTools } = await import("./store.ts")
 const { ensureDirs } = await import("../ipc/protocol.ts")

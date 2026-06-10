@@ -42,6 +42,22 @@ function isRetriableTelegramNetworkError(error: Error): boolean {
   )
 }
 
+/**
+ * True when Telegram returned a terminal error that no amount of retrying
+ * will fix. The bot must be reconfigured (`/channels token <real-token>`)
+ * before the poller can recover. Both 401 (token revoked) and 404 (bot
+ * does not exist) are terminal. Exported for unit testing in
+ * telegramPoller.test.ts.
+ */
+export function isTerminalTelegramTokenError(error: Error): boolean {
+  const message = error.message
+  return (
+    message.includes("401") ||
+    message.includes("Not Found") ||
+    message.includes("404")
+  )
+}
+
 export interface TelegramUpdate {
   update_id: number
   message?: TelegramMessage
@@ -262,10 +278,20 @@ export function createTelegramPoller(
 
       const err = error as Error
 
-      // Handle specific errors
-      if (err.message.includes('401')) {
-        logger.debug(`[Telegram] Invalid bot token - stopping`)
-        callbacks.onError(new Error('Invalid Telegram bot token'))
+      // Handle specific errors.
+      // The 09-jun-2026 incident: a "abc" placeholder token was persisted in
+      // CONF_CHANNELS and the poller spammed 404 errors for hours. Both 401
+      // (token revoked / invalid) and 404 (bot does not exist for that token)
+      // are TERMINAL — Telegram will never accept that token again. We stop
+      // the poller and surface one clear error so the user knows to fix
+      // CONF_CHANNELS via /channels token, instead of dumping 58 identical
+      // errors into the log every 30s.
+      if (isTerminalTelegramTokenError(err)) {
+        const reason = err.message.includes('401')
+          ? 'Invalid Telegram bot token (401 Unauthorized)'
+          : 'Telegram bot does not exist for the configured token (404 Not Found)'
+        logger.error(`[Telegram] ${reason} - stopping poller. Restore with /channels token <real-token> and restart the daemon.`)
+        callbacks.onError(new Error(reason))
         stopped = true
         return MAX_BACKOFF_MS
       }

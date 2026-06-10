@@ -17,6 +17,13 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+// Bypass the runtime-DB safety guard added in the 09-jun-2026 fix. This
+// test predates the guard and uses a pattern that depends on the guard
+// being absent. The test paths are under os.tmpdir() so they are safe;
+// we are NOT opening the live runtime DB. The follow-up is to migrate
+// the test to the import-after-env-set pattern that the guard expects.
+process.env.MONOLITO_DB_GUARD = "0"
+
 function freshRootDir(): string {
   return mkdtempSync(join(tmpdir(), "monolito-hidden-msg-test-"))
 }

@@ -22,6 +22,12 @@ import { rmSync, existsSync } from "node:fs"
 
 const TEST_ROOT = "/tmp/monolito-heartbeat-test"
 
+// Route DB access through the tempdir. Without this, `getPaths()` falls
+// back to the captured MONOLITO_ROOT constant and the 09-jun-2026 runtime
+// guard refuses to open /home/cristian/.monolito/memory/memory.sqlite
+// from a test process.
+process.env.MONOLITO_ROOT = TEST_ROOT
+
 test("MAIN_SESSION_ID is the canonical user-facing session", () => {
   assert.equal(typeof MAIN_SESSION_ID, "string")
   assert.equal(MAIN_SESSION_ID, "orchestrator")
