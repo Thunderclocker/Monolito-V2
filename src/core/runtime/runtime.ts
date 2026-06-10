@@ -2435,7 +2435,11 @@ Review the existing skill library and apply the curation heuristics in your inst
         if (!turn) throw new Error("No turn produced by agent loop")
 
         let userFacingText = sanitizeExternalAssistantText(sessionId, turn.finalText, preparedUserText)
-        const hasSideEffects = turn.steps?.some(step => step.type === "tool" && getTool(step.tool)?.sideEffect === true)
+        const hasSideEffects = turn.steps?.some(step =>
+          step.type === "tool" &&
+          !step.blockedByGuard &&
+          getTool(step.tool)?.sideEffect === true
+        )
 
         // Ralph Gate escape hatch: when the top-level Ralph loop hit
         // TOP_LEVEL_RALPH_MAX_ATTEMPTS, override the user-facing text with
@@ -2465,7 +2469,11 @@ Review the existing skill library and apply the curation heuristics in your inst
         }
 
         if (shouldSuppressEmit(userFacingText)) {
-          if (hasSideEffects) {
+          const wasAborted = !!turn.error ||
+            turn.meta?.stopReason === "max_duration" ||
+            turn.meta?.stopReason === "aborted"
+
+          if (hasSideEffects && !wasAborted) {
             userFacingText = "✅ ¡Acción completada con éxito! He procesado y enviado los archivos por Telegram."
             appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
             appendWorklog(this.rootDir, sessionId, {
@@ -2482,6 +2490,39 @@ Review the existing skill library and apply the curation heuristics in your inst
             })
 
             await this.deliverText(sessionId, userFacingText, options?.delivery, "Failed to deliver assistant reply")
+          } else if (wasAborted) {
+            // Fix 2 (2026-06-10): no fabricar éxito cuando el turno terminó
+            // con error/timeout. Caso típico: el side-effect guard bloqueó
+            // todas las tools del turno, el modelo entró en loop de
+            // veracity/coherence corrections, saltó el hard timeout, y el
+            // `turn.steps` tenía tools marcadas como side-effect → antes
+            // el runtime inyectaba la frase hardcodeada mintiendo que se
+            // habían enviado archivos a Telegram. Ahora devuelve un error
+            // honesto y registra FABRICATED_SUCCESS_PREVENTED en el worklog
+            // para que quede audit trail de los steps bloqueados.
+            const reason = turn.error ?? `turn ${turn.meta?.stopReason ?? "aborted"}`
+            userFacingText = `No pude completar la acción: ${reason}. ¿Querés que lo intente de nuevo?`
+            const blockedSummary = turn.steps
+              ?.filter(s => s.type === "tool" && (s as { blockedByGuard?: boolean }).blockedByGuard)
+              .map(s => {
+                const toolStep = s as { tool: string; guardReason?: string }
+                return `${toolStep.tool}: ${toolStep.guardReason ?? "sin razón"}`
+              })
+              .join("; ") ?? "no tools executed"
+            appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
+            appendWorklog(this.rootDir, sessionId, {
+              type: "note",
+              summary: `FABRICATED_SUCCESS_PREVENTED: ${blockedSummary} | reason=${reason}`,
+            })
+            this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
+            this.emit({
+              type: "turn.completed",
+              sessionId,
+              role: "assistant",
+              durationMs: Date.now() - turnStartedAt,
+              usage: turn.usage,
+            })
+            await this.deliverText(sessionId, userFacingText, options?.delivery, "Failed to deliver honest error reply")
           } else {
             appendWorklog(this.rootDir, sessionId, {
               type: "note",

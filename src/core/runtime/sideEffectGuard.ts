@@ -45,6 +45,32 @@ const ADULT_MODE_MEDIA_TOOLS = new Set([
 let guardLogger: Logger | null = null
 
 /**
+ * Fix 4 (2026-06-10): patterns for the destructive-imperative pre-check.
+ * Only destructive side-effect tools (VoiceClone purge, Bash) get the
+ * short-circuit. Media/content tools (TelegramSend, GenerateImage, etc.)
+ * always go through the full LLM-judge for content verification.
+ */
+const DESTRUCTIVE_IMPERATIVE_PATTERN = /^\s*(elimina|borra|delete|remove|purge|drop|borrar|quitar|eliminar|remover|borrame|quitame|elimina\s+esa|elimina\s+esas|borra\s+esa|borra\s+esas)\b/i
+const DESTRUCTIVE_SIDE_EFFECT_TOOLS = new Set(["VoiceClone", "Bash"])
+
+/**
+ * Fix 4 (2026-06-10): deterministic pre-check that approves a side-effect
+ * call when the user's message starts with a clear destructive verb and
+ * every pending tool is in the destructive whitelist. Avoids the LLM-judge
+ * over-blocking pipe-table formats like
+ *   `elimina | amanda_voz | 2026-06-09 | | cristian | 2026-06-09 |`
+ * which were getting rejected as "no imperativo claro".
+ */
+function isClearDestructiveImperative(
+  lastUserMessage: string,
+  pendingTools: Array<{ name: string }>,
+): boolean {
+  if (!lastUserMessage) return false
+  if (!DESTRUCTIVE_IMPERATIVE_PATTERN.test(lastUserMessage.trim())) return false
+  return pendingTools.length > 0 && pendingTools.every(t => DESTRUCTIVE_SIDE_EFFECT_TOOLS.has(t.name))
+}
+
+/**
  * Inject a logger so the guard can emit structured `logger.warn` events
  * when it rejects a side-effect tool. The events land in
  * `~/.monolito/logs/monolitod.log` (and the daemon's stdout) so users
@@ -105,6 +131,28 @@ export async function checkSideEffects(
   // exclusive responsibility of the LLM-judge below — it reasons
   // semantically over the user's full message and the pending tools, so
   // only a clear, contextual Level 0 override is honored.
+
+  // Fix 4 (2026-06-10): deterministic pre-check for clear destructive
+  // imperatives. The LLM-judge was rejecting pipe-table formats like
+  // `elimina | amanda_voz | 2026-06-09 | | cristian | 2026-06-09 |` as
+  // "not a clear imperative" even though the first cell of the table is
+  // itself a destructive verb. We short-circuit before the judge ONLY
+  // when the message starts with a destructive verb AND every pending
+  // tool is in the explicit destructive whitelist (VoiceClone purge,
+  // Bash). This keeps the bypass narrow: media tools (TelegramSend,
+  // GenerateImage, etc.) still go through the full judge for content
+  // verification.
+  if (isClearDestructiveImperative(lastUserMessage, pendingTools)) {
+    const pendingSummary = pendingTools
+      .map(t => `${t.name}(${JSON.stringify(t.input).slice(0, 80)})`)
+      .join(", ")
+    guardLogger?.warn(
+      `[SideEffectGuard] IMPERATIVE_BYPASS profileId=${profileId} ` +
+      `pendingTools=[${pendingSummary}] ` +
+      `lastUserMessage=${JSON.stringify(lastUserMessage).slice(0, 200)}`,
+    )
+    return { approved: true }
+  }
 
   // 1. Cargar perfil del usuario (contiene preferencias dictadas en lenguaje natural)
   const bootUser = readBootWing(rootDir, "BOOT_USER", profileId) ?? ""

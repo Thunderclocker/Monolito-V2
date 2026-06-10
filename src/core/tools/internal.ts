@@ -629,8 +629,26 @@ export function inferForensicsIntent(question: string | undefined): ForensicsInt
 
 export function pickForensicsSession(rootDir: string, profileId: string | undefined, preferredSessionId: string | undefined) {
   if (preferredSessionId) {
+    // Fix 3 (2026-06-10): detectar chat_id de Telegram (9-10 dígitos
+    // numéricos) pasado por error como sessionId. Monolito V2 opera con
+    // una única sesión persistente ("orchestrator") que recibe mensajes
+    // de Telegram; el chat_id de cada chat NO es un sessionId.
+    if (/^\d{9,10}$/.test(preferredSessionId)) {
+      throw new Error(
+        `El sessionId "${preferredSessionId}" parece un chat_id de Telegram ` +
+        `(9-10 dígitos numéricos), no un sessionId válido. ` +
+        `Monolito V2 opera con una única sesión persistente. ` +
+        `Dejá el parámetro sessionId vacío para inspeccionar la sesión activa.`
+      )
+    }
     const exact = getSession(rootDir, preferredSessionId)
-    if (!exact) throw new Error(`Session ${preferredSessionId} not found`)
+    if (!exact) {
+      const available = listSessions(rootDir, profileId).slice(0, 5).map(s => s.id).join(", ") || "(ninguna)"
+      throw new Error(
+        `Session "${preferredSessionId}" not found. Sesiones disponibles: ${available}. ` +
+        `Recordá: Monolito V2 usa una única sesión persistente — si querés inspeccionarla, omití sessionId.`
+      )
+    }
     return exact
   }
   const sessions = listSessions(rootDir, profileId)

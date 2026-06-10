@@ -162,7 +162,7 @@ export function estimateContextTokens(
 
 
 export type AssistantTurnStep =
-  | { type: "tool"; id?: string; tool: string; input: Record<string, unknown> }
+  | { type: "tool"; id?: string; tool: string; input: Record<string, unknown>; blockedByGuard?: boolean; guardReason?: string }
   | { type: "final"; message: string }
 
 export type AssistantTurnResult = {
@@ -1565,6 +1565,19 @@ ACCION REQUERIDA: ejecutá al menos una tool en este turno ANTES de declarar que
                   `Side-Effect Guard rechazó la ejecución: ${evaluation.reason}`,
                 ),
               }),
+            }
+            // Fix 1 (2026-06-10): marcar el step como bloqueado para que
+            // `hasSideEffects` en runtime.ts no lo cuente como side-effect
+            // real. Sin esto, un timeout tras un guard block producía la
+            // frase hardcodeada "✅ procesé y envié los archivos por
+            // Telegram" aunque ninguna tool se hubiera ejecutado.
+            const stepIdx = steps.findIndex(s => s.type === "tool" && s.id === buffered.toolCall.id)
+            if (stepIdx >= 0) {
+              const step = steps[stepIdx]
+              if (step.type === "tool") {
+                step.blockedByGuard = true
+                step.guardReason = evaluation.reason
+              }
             }
           }
           appendWorklog(rootDir, session.id, {

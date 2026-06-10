@@ -305,6 +305,59 @@ test("SessionForensics performs keyword-based search across full history when qu
   }
 })
 
+// Fix 3 (2026-06-10): SessionForensics rechaza sessionIds numéricos
+// que parecen chat_id de Telegram (9-10 dígitos), no un sessionId real.
+test("SessionForensics rejects numeric sessionId that looks like a Telegram chat_id (Fix 3)", async () => {
+  const rootDir = createRootDir()
+  try {
+    const tool = getTool("SessionForensics")
+    assert.ok(tool)
+
+    const rawResult = await tool.run({ sessionId: "1515784684" }, { rootDir, cwd: rootDir })
+    const result = JSON.parse(String(rawResult)) as { success: boolean; error?: string }
+    assert.equal(result.success, false)
+    assert.match(result.error ?? "", /chat_id de Telegram/)
+    assert.match(result.error ?? "", /9-10 dígitos numéricos/)
+    assert.match(result.error ?? "", /única sesión persistente/)
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("SessionForensics lists available sessions when a non-existent sessionId is given (Fix 3)", async () => {
+  const rootDir = createRootDir()
+  try {
+    ensureSession(rootDir, "orchestrator", "Main session")
+    const tool = getTool("SessionForensics")
+    assert.ok(tool)
+
+    const rawResult = await tool.run({ sessionId: "no-existe-esta-sesion" }, { rootDir, cwd: rootDir })
+    const result = JSON.parse(String(rawResult)) as { success: boolean; error?: string }
+    assert.equal(result.success, false)
+    assert.match(result.error ?? "", /Session "no-existe-esta-sesion" not found/)
+    assert.match(result.error ?? "", /Sesiones disponibles/)
+    assert.match(result.error ?? "", /orchestrator/)
+    assert.match(result.error ?? "", /única sesión persistente/)
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("SessionForensics falls back to the current session when sessionId is empty (Fix 3 regression)", async () => {
+  const rootDir = createRootDir()
+  try {
+    ensureSession(rootDir, "session-empty", "Empty session id test")
+    const tool = getTool("SessionForensics")
+    assert.ok(tool)
+
+    const rawResult = await tool.run({ sessionId: "" }, { rootDir, cwd: rootDir })
+    const result = typeof rawResult === "string" ? JSON.parse(rawResult) : (rawResult as { session: { id: string } })
+    assert.equal(result.session.id, "session-empty")
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
 test("clearMemoryPalace removes profile memory while preserving configuration", async () => {
   const rootDir = createRootDir()
   try {
