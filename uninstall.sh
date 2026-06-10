@@ -323,6 +323,43 @@ remove_docker_container_if_present() {
   docker rm -f ${ids} >/dev/null 2>&1 || warn "Failed to remove Docker container ${name}"
 }
 
+# Force-remove the cache subtrees the managed containers leave behind as
+# root-owned host files. We pass through sudo when available so the
+# later plain-`rm` step in cleanup_filesystem_artifacts does not have to
+# stop at "Permiso denegado" on the same paths. Best-effort: if sudo
+# is not available or fails, we log a warning and let the next step
+# pick up whatever it can. The 09-jun-2026 incident: an uninstall
+# left ~/.monolito/stt-cache/{huggingface,whisper} populated with
+# root:root faster-whisper blobs because the STT container had been
+# `docker rm`'d before the user-rm step ran.
+remove_root_owned_container_artifacts() {
+  # `STATE_DIR` is set by init_paths() which is called in main() before
+  # cleanup_docker_artifacts(), so it is safe to reference here. Guard
+  # anyway in case init_paths was skipped.
+  if [[ -z "${STATE_DIR:-}" ]]; then
+    return 0
+  fi
+
+  local -a CACHE_SUBDIRS=(
+    "${STATE_DIR}/stt-cache"
+  )
+  local -a SUDO_PREFIX=()
+  if command -v sudo >/dev/null 2>&1 && [[ "${EUID}" -ne 0 ]]; then
+    SUDO_PREFIX=(sudo)
+  fi
+
+  local subdir
+  for subdir in "${CACHE_SUBDIRS[@]}"; do
+    [[ -e "${subdir}" ]] || continue
+    if find "${subdir}" -xdev -not -user "$(id -u)" -print -quit 2>/dev/null | grep -q .; then
+      log "Force-removing root-owned container cache at ${subdir}"
+      if ! "${SUDO_PREFIX[@]}" rm -rf "${subdir}"; then
+        warn "Could not remove ${subdir} (root-owned, sudo unavailable or failed). Run 'sudo rm -rf ${subdir}' manually before reinstalling."
+      fi
+    fi
+  done
+}
+
 remove_legacy_docker_matches() {
   local filter="$1"
   local label="$2"
@@ -360,6 +397,15 @@ cleanup_docker_artifacts() {
   remove_legacy_docker_matches "ancestor=searxng/searxng" "legacy SearXNG containers"
   remove_legacy_docker_matches "name=monolito-openai-edge-tts" "legacy managed TTS containers"
   remove_legacy_docker_matches "name=tts-edge" "legacy TTS containers"
+  # Container volumes and bind-mounts frequently leave behind host files
+  # owned by the container's runtime uid (root in our case). The
+  # later `remove_if_exists "${STATE_DIR}"` runs as the invoking user and
+  # silently leaves these root-owned files behind — a real-world
+  # reinstall loop leaves the same ~/.monolito/stt-cache populated with
+  # the previous install's faster-whisper blobs. Force the cleanup
+  # here while we still have sudo context. Falls back to plain rm with
+  # a warning if sudo is unavailable.
+  remove_root_owned_container_artifacts
   remove_legacy_docker_matches "ancestor=travisvn/openai-edge-tts:latest" "legacy OpenAI Edge TTS containers"
   remove_legacy_docker_matches "name=whisper" "legacy Whisper containers"
   remove_legacy_docker_matches "ancestor=onerahmet/openai-whisper-asr-webservice:latest" "legacy Whisper ASR containers"
