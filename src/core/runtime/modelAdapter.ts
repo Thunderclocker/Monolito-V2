@@ -1231,8 +1231,16 @@ Considera esta estrategia de solución.`
                type: "note",
                summary: `COHERENCE_GUARD_EXHAUSTED: ${coherenceFailureCount} consecutive rejections. Last reason: "${coherence.reason}"`,
              });
+             // Sanitize internal terms so the user sees a natural explanation, not guard jargon.
+             const sanitized = (coherence.reason ?? "")
+               .replace(/coherence guard|tool_manage_config|reporte inflado|guard de coherencia/gi, "")
+               .replace(/\s+/g, " ")
+               .trim();
+             const userMessage = sanitized
+               ? `No pude completar la acción: ${sanitized}. ¿Querés que lo intente de nuevo?`
+               : "No pude completar esta acción. ¿Querés que lo intente de nuevo?";
              return finalize(
-               "No pude completar esta acción. ¿Querés que lo intente de nuevo?",
+               userMessage,
                steps,
                startedAt,
                iteration,
