@@ -67,3 +67,73 @@ test("checkTurnCoherence - autonomous execution validation", async () => {
     rmSync(testMonolitoRoot, { recursive: true, force: true })
   }
 })
+
+// -----------------------------------------------------------------------------
+// Fix C (2026-06-10): detectRemoteClaimWithoutRemoteTool — the coherence
+// guard's deterministic pre-check that catches tool-scope mismatches
+// (e.g. model claims MiniMax result but only called local-list). Incident
+// 2026-06-10T20:52:47 had 2 coherence rejections for this exact pattern.
+// -----------------------------------------------------------------------------
+
+import { detectRemoteClaimWithoutRemoteTool } from "./coherenceGuard.ts"
+
+test("Fix C: detectRemoteClaimWithoutRemoteTool - rejects MiniMax claim with only local list", () => {
+  const reason = detectRemoteClaimWithoutRemoteTool(
+    "En MiniMax hay 0 voces remotas.",
+    [{ tool: "VoiceClone", ok: true, input: { action: "list" } }],
+  )
+  assert.ok(reason, "must produce a reason when remote claim + only local list")
+  assert.match(reason, /list_remote/)
+})
+
+test("Fix C: detectRemoteClaimWithoutRemoteTool - passes when list_remote was called", () => {
+  const reason = detectRemoteClaimWithoutRemoteTool(
+    "En MiniMax hay 0 voces remotas.",
+    [{ tool: "VoiceClone", ok: true, input: { action: "list_remote" } }],
+  )
+  assert.equal(reason, null, "must NOT reject when list_remote was called")
+})
+
+test("Fix C: detectRemoteClaimWithoutRemoteTool - passes when no remote claim", () => {
+  const reason = detectRemoteClaimWithoutRemoteTool(
+    "Las voces locales son mapa_stargate.",
+    [{ tool: "VoiceClone", ok: true, input: { action: "list" } }],
+  )
+  assert.equal(reason, null, "must NOT reject when the claim is about local config")
+})
+
+test("Fix C: detectRemoteClaimWithoutRemoteTool - passes when no VoiceClone was called", () => {
+  const reason = detectRemoteClaimWithoutRemoteTool(
+    "En MiniMax hay 0 voces remotas.",
+    [{ tool: "Bash", ok: true }],
+  )
+  assert.equal(reason, null, "must NOT reject when the claim isn't backed by VoiceClone")
+})
+
+test("Fix C: detectRemoteClaimWithoutRemoteTool - handles English 'remote voices' claim", () => {
+  const reason = detectRemoteClaimWithoutRemoteTool(
+    "There are 0 remote voices in MiniMax right now.",
+    [{ tool: "VoiceClone", ok: true, input: { action: "list" } }],
+  )
+  assert.ok(reason)
+  assert.match(reason, /list_remote/)
+})
+
+test("Fix C: detectRemoteClaimWithoutRemoteTool - handles 'en el provider' (Spanish)", () => {
+  const reason = detectRemoteClaimWithoutRemoteTool(
+    "El provider no tiene ninguna voz clonada registrada.",
+    [{ tool: "VoiceClone", ok: true, input: { action: "list" } }],
+  )
+  assert.ok(reason)
+})
+
+test("Fix C: detectRemoteClaimWithoutRemoteTool - mixed local+remote calls: passes", () => {
+  const reason = detectRemoteClaimWithoutRemoteTool(
+    "En MiniMax hay 3 voces remotas.",
+    [
+      { tool: "VoiceClone", ok: true, input: { action: "list" } },
+      { tool: "VoiceClone", ok: true, input: { action: "list_remote" } },
+    ],
+  )
+  assert.equal(reason, null, "when list_remote was called alongside list, the remote claim is legitimate")
+})

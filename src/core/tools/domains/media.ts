@@ -380,7 +380,7 @@ export const mediaTools: ToolDefinition[] = [
   inputSchema: {
     type: "object",
     properties: {
-      action: { type: "string", enum: ["clone", "list", "list_remote", "delete", "purge", "rename"], description: "Accion a realizar: 'clone' (nueva voz), 'list' (local), 'list_remote' (MiniMax GET /v1/get_voice), 'delete' (solo local), 'purge' (MiniMax DELETE /v1/delete_voice + local), 'rename' (purge+clone con nuevo alias)." },
+      action: { type: "string", enum: ["clone", "list", "list_remote", "delete", "purge", "rename"], description: "Accion a realizar. IMPORTANTE: cuando el usuario pregunte por voces en MiniMax, en el provider, remotas, en la nube, o similares, usá SIEMPRE 'list_remote' (que llama a MiniMax GET /v1/get_voice). 'list' solo lee la config local (CONF_CHANNELS.tts.clonedVoices) y NO muestra lo que está en MiniMax. Las demás acciones: 'clone' (nueva voz), 'delete' (solo local), 'purge' (MiniMax DELETE /v1/delete_voice + local), 'rename' (purge+clone con nuevo alias)." },
       alias: { type: "string", description: "Nombre amigable para la voz clonada (ej: 'cristian', 'mia'). Requerido para clone/delete. Solo chars [a-z0-9_-], 1-32 chars." },
       source: {
         type: "object",

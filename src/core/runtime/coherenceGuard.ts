@@ -10,6 +10,13 @@ export interface RecentToolCall {
   tool: string
   ok: boolean
   at?: string
+  /**
+   * Fix C (2026-06-10): the input object for the tool call. Used to
+   * distinguish tool actions (e.g. VoiceClone `list` vs `list_remote`)
+   * when validating scope-claims. Optional because legacy callers
+   * (tests) do not always supply it.
+   */
+  input?: Record<string, unknown>
 }
 
 /**
@@ -81,6 +88,19 @@ export async function checkTurnCoherence(
 ): Promise<CoherenceCheckResult> {
   if (!modelText || modelText.trim().length < 15) {
     return { coherent: true }
+  }
+
+  // Fix C (2026-06-10): deterministic pre-check that catches tool-scope
+  // mismatches BEFORE the LLM-judge. Specifically: when the model claims
+  // it queried MiniMax/remote but only called `VoiceClone list` (local
+  // config), the LLM-judge was the only line of defense and was being
+  // over-bypassed. With this check we catch the most common false-execution
+  // pattern (incident 2026-06-10T20:52:47) deterministically.
+  if (recentToolCalls && recentToolCalls.length > 0) {
+    const scopeMismatch = detectRemoteClaimWithoutRemoteTool(modelText, recentToolCalls)
+    if (scopeMismatch) {
+      return { coherent: false, reason: scopeMismatch }
+    }
   }
 
   try {
@@ -217,4 +237,60 @@ export function logCoherenceBreach(rootDir: string, sessionId: string, reason: s
     type: "note",
     summary: `COHERENCE_GUARD_REJECTED: "${reason}" | Original: "${text.slice(0, 80)}..."`,
   })
+}
+
+// -----------------------------------------------------------------------------
+// Fix C (2026-06-10): deterministic tool-scope mismatch detection.
+//
+// Catches a class of hallucinations the LLM-judge was letting through:
+// the model claims it queried a REMOTE source (MiniMax, the provider,
+// the cloud) but only called the LOCAL tool. For VoiceClone specifically,
+// `list` reads the local config (CONF_CHANNELS.tts.clonedVoices) and
+// `list_remote` queries MiniMax. If the user asked about "voces en
+// MiniMax" and the model only called `list`, the response is incoherent
+// regardless of what the model claims about MiniMax.
+//
+// This is exported for testing.
+// -----------------------------------------------------------------------------
+
+const REMOTE_SCOPE_CLAIM_PATTERNS: RegExp[] = [
+  // Spanish
+  /\b(en\s+minimax|en\s+el\s+provider|minimax\s+tiene|minimax\s+me\s+muestra|minimax\s+devuelve|minimax\s+devolvi(ó|o)|en\s+la\s+nube|en\s+el\s+servidor|remot(amente|o)s?|en\s+el\s+proveedor|el\s+provider)/i,
+  /\b(list(é|e|o)\s+.*\s+(en\s+minimax|en\s+el\s+provider|remot(amente|o)|en\s+la\s+nube))/i,
+  /\b(0|ninguna|ninguno|cero)\s+voces\s+(en\s+minimax|en\s+el\s+provider|en\s+la\s+nube|remot(amente|o)s?)/i,
+  // English
+  /\b(in\s+minimax|in\s+the\s+provider|on\s+minimax|minimax\s+(has|shows|returns)|remote\s+voices?|in\s+the\s+cloud)/i,
+  /\b(listed\s+.*\s+voices\s+on\s+minimax|remote\s+voice\s+list|minimax\s+voice\s+list)/i,
+]
+
+/**
+ * Returns a human-readable reason if the model claims a remote/MiniMax
+ * result but only called the local-list variant of VoiceClone. Returns
+ * null when no scope mismatch is detected (or when there is no claim).
+ */
+export function detectRemoteClaimWithoutRemoteTool(
+  modelText: string,
+  recentToolCalls: RecentToolCall[],
+): string | null {
+  if (!modelText) return null
+
+  const claim = REMOTE_SCOPE_CLAIM_PATTERNS.some(p => p.test(modelText))
+  if (!claim) return null
+
+  // Focus on VoiceClone specifically because it has the list/list_remote
+  // distinction that gets confused. Other tools with similar scope
+  // ambiguity can be added here.
+  const voiceCloneCalls = recentToolCalls.filter(t => t.tool === "VoiceClone")
+  if (voiceCloneCalls.length === 0) return null
+
+  const listRemoteCalled = voiceCloneCalls.some(t => t.input?.action === "list_remote")
+  if (listRemoteCalled) return null  // remote was called, no mismatch
+
+  // Determine if every VoiceClone call is the local-list variant. If
+  // some are other actions (purge, clone, etc.) without list_remote, we
+  // don't flag — those have their own scope semantics.
+  const onlyLocalList = voiceCloneCalls.every(t => t.input?.action === "list")
+  if (!onlyLocalList) return null
+
+  return `Response claims a remote/MiniMax result, but only VoiceClone with action='list' (local config) was called this turn. To answer about voices in MiniMax, call VoiceClone with action='list_remote' (GET /v1/get_voice), or qualify the answer as "local config only".`
 }

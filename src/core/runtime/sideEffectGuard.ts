@@ -71,6 +71,24 @@ function isClearDestructiveImperative(
 }
 
 /**
+ * Fix D (2026-06-10): read-only side-effect calls are auto-approved
+ * without invoking the LLM-judge. Some tools have `sideEffect: true`
+ * because they can perform destructive actions (purge, clone), but their
+ * `list`/`list_remote` actions are pure GETs that have no external
+ * effect. Sending these through the judge produced false-positive
+ * blocks (incident 2026-06-10T20:46:40 where list_remote was blocked
+ * with "the user asked to delete all voices..."), and the model then
+ * hallucinated the result instead of calling the tool.
+ */
+function isReadOnlySideEffectCall(toolName: string, input: Record<string, unknown>): boolean {
+  if (toolName === "VoiceClone") {
+    const action = input.action
+    return action === "list" || action === "list_remote"
+  }
+  return false
+}
+
+/**
  * Inject a logger so the guard can emit structured `logger.warn` events
  * when it rejects a side-effect tool. The events land in
  * `~/.monolito/logs/monolitod.log` (and the daemon's stdout) so users
@@ -121,6 +139,26 @@ export async function checkSideEffects(
       )
       return { approved: true, adultModeAutoApproved: true }
     }
+  }
+
+  // Fix D (2026-06-10): if every pending tool is a read-only side-effect
+  // call (e.g. VoiceClone list/list_remote), approve without invoking
+  // the LLM-judge. These are pure GETs against external providers; they
+  // have no external effect and the user explicitly asked for the
+  // information. The LLM-judge was over-blocking these with stale
+  // context ("the user asked to delete all voices..."), which caused
+  // the model to hallucinate the result instead of calling the tool.
+  const allReadOnly = pendingTools.every(t => isReadOnlySideEffectCall(t.name, t.input))
+  if (allReadOnly) {
+    const pendingSummary = pendingTools
+      .map(t => `${t.name}(${JSON.stringify(t.input).slice(0, 80)})`)
+      .join(", ")
+    guardLogger?.warn(
+      `[SideEffectGuard] READ_ONLY_BYPASS profileId=${profileId} ` +
+      `pendingTools=[${pendingSummary}] ` +
+      `lastUserMessage=${JSON.stringify(lastUserMessage).slice(0, 200)}`,
+    )
+    return { approved: true }
   }
 
   // NOTE: The previous version of this function had a hardcoded keyword

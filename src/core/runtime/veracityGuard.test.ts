@@ -349,6 +349,62 @@ test("parseAuditorJson: returns null when no boolean field is present", () => {
   assert.equal(parseAuditorJson('{"unrelated":"object","foo":42}'), null)
 })
 
+// -----------------------------------------------------------------------------
+// Fix B (2026-06-10): execution-negation patterns. The model must not
+// claim "I did not execute any tool" when the worklog shows tools ran.
+// Incident: 2026-06-10T20:53:01 model said "no ejecuté ninguna tool"
+// while 2 VoiceClone calls were in the worklog.
+// -----------------------------------------------------------------------------
+
+test("Fix B: rejects Spanish 'no ejecuté ninguna tool' when tools were called", async () => {
+  const rootDir = createRootDir()
+  try {
+    const res = await checkTurnIntegrity(
+      rootDir,
+      "Tenés razón, me mandé una mentira. En este turno no ejecuté ninguna tool — solo te copié el formato.",
+      ["VoiceClone", "VoiceClone"],
+      async () => ({ text: JSON.stringify({ hasBrokenPromise: false, hasFalsifiedExecution: false, reason: "" }) }),
+    )
+    assert.equal(res.verified, false, "must reject execution-negation when tools ran")
+    assert.equal(res.type, "falsified_execution")
+    assert.match(res.reason ?? "", /denies execution but 2 tool/)
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("Fix B: rejects English 'I did not call any tool' when tools were called", async () => {
+  const rootDir = createRootDir()
+  try {
+    const res = await checkTurnIntegrity(
+      rootDir,
+      "I should be honest: I did not execute any tool in this turn.",
+      ["Bash"],
+      async () => ({ text: JSON.stringify({ hasBrokenPromise: false, hasFalsifiedExecution: false, reason: "" }) }),
+    )
+    assert.equal(res.verified, false)
+    assert.equal(res.type, "falsified_execution")
+    assert.match(res.reason ?? "", /denies execution but 1 tool/)
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("Fix B: passes execution-negation claim when NO tools were called (legitimate)", async () => {
+  const rootDir = createRootDir()
+  try {
+    const res = await checkTurnIntegrity(
+      rootDir,
+      "I did not execute any tool in this turn; I just explained the situation.",
+      [],
+      async () => ({ text: JSON.stringify({ hasBrokenPromise: false, hasFalsifiedExecution: false, reason: "" }) }),
+    )
+    assert.equal(res.verified, true, "when no tools ran, denying execution is legitimate")
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
 test("checkTurnIntegrity: survives LLM auditor returning markdown-fenced JSON", async () => {
   const rootDir = createRootDir()
   try {

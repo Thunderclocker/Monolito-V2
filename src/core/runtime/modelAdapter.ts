@@ -1199,19 +1199,40 @@ Considera esta estrategia de solución.`
         // the claim is false.
          const liveTools = listModelTools(false, undefined, undefined, rootDir, false)
 
-         // Extract recent tool calls from events (ground truth for coherence guard)
-         let recentToolCalls: RecentToolCall[] | undefined
-         try {
-           const events = tailEvents(rootDir, session.id, 30)
-           recentToolCalls = events
-             .filter(e => e.type === "tool.finish" && typeof (e as { tool?: unknown }).tool === "string")
-             .map(e => ({
-               tool: String((e as { tool: string }).tool),
-               ok: (e as { ok?: boolean }).ok ?? false,
-               at: (e as { at?: string }).at,
-             }))
-             .slice(-15) // Last 15 tool calls
-         } catch {}
+          // Extract recent tool calls from events (ground truth for coherence guard)
+          let recentToolCalls: RecentToolCall[] | undefined
+          try {
+            const events = tailEvents(rootDir, session.id, 30)
+            // Fix C (2026-06-10): also pull the tool input from the
+            // preceding `tool.start` event so the coherence guard can
+            // distinguish actions (e.g. VoiceClone `list` vs
+            // `list_remote`). Events come in chronological order, so we
+            // // pair each `tool.finish` with the most recent
+            // `tool.start` for the same toolCallId if available.
+            const startsById = new Map<string, Record<string, unknown>>()
+            for (const e of events) {
+              if (e.type === "tool.start" && typeof (e as { toolUseId?: unknown }).toolUseId === "string") {
+                const id = String((e as { toolUseId: string }).toolUseId)
+                const input = (e as { input?: unknown }).input
+                if (input && typeof input === "object") {
+                  startsById.set(id, input as Record<string, unknown>)
+                }
+              }
+            }
+            recentToolCalls = events
+              .filter(e => e.type === "tool.finish" && typeof (e as { tool?: unknown }).tool === "string")
+              .map(e => {
+                const finishEvent = e as { tool: string; ok?: boolean; at?: string; toolUseId?: string }
+                const input = finishEvent.toolUseId ? startsById.get(finishEvent.toolUseId) : undefined
+                return {
+                  tool: String(finishEvent.tool),
+                  ok: finishEvent.ok ?? false,
+                  at: finishEvent.at,
+                  input,
+                }
+              })
+              .slice(-15) // Last 15 tool calls
+          } catch {}
 
          const coherence = await checkTurnCoherence(
            rootDir,

@@ -72,7 +72,7 @@ test("checkSideEffects - imperative 'delete this voice' (English) bypasses the j
   }
 })
 
-test("checkSideEffects - 'lista las voces' (non-imperative) does NOT bypass — judge is called", async () => {
+test("checkSideEffects - 'lista las voces' (read-only VoiceClone list) is auto-approved (Fix D regression)", async () => {
   const rootDir = createRootDir()
   try {
     let judgeCalled = false
@@ -90,8 +90,12 @@ test("checkSideEffects - 'lista las voces' (non-imperative) does NOT bypass — 
       mockJudge,
     )
 
-    assert.equal(judgeCalled, true, "Non-imperative messages must still go through the judge")
+    // Fix D (2026-06-10): read-only VoiceClone list is auto-approved
+    // without the LLM-judge (it was previously going through the judge
+    // and being over-blocked). The test previously asserted the judge
+    // was called; that behavior was the bug we are fixing.
     assert.equal(result.approved, true)
+    assert.equal(judgeCalled, false, "Read-only VoiceClone list must NOT invoke the LLM judge")
   } finally {
     cleanupRootDir(rootDir)
   }
@@ -169,6 +173,91 @@ test("checkSideEffects - mixed pendingTools (VoiceClone + TelegramSend) does NOT
     )
 
     assert.equal(judgeCalled, true, "Mixed pending tools must go through the judge (whitelist requires ALL to be destructive)")
+    assert.equal(result.approved, true)
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+// -----------------------------------------------------------------------------
+// Fix D (2026-06-10): read-only side-effect calls (VoiceClone list,
+// list_remote) are auto-approved without invoking the LLM-judge. These
+// are pure GETs with no external effect, and the judge was over-blocking
+// them with stale context.
+// -----------------------------------------------------------------------------
+
+test("Fix D: VoiceClone list_remote is auto-approved (read-only) without LLM judge", async () => {
+  const rootDir = createRootDir()
+  try {
+    let judgeCalled = false
+    const mockJudge = async () => {
+      judgeCalled = true
+      return { text: JSON.stringify({ approved: false, reason: "should not be reached" }) }
+    }
+
+    const result = await checkSideEffects(
+      rootDir,
+      [{ name: "VoiceClone", input: { action: "list_remote" } }],
+      [],
+      "default",
+      "listame todas las voces que tenes en minimax",
+      mockJudge,
+    )
+
+    assert.equal(result.approved, true, "read-only list_remote must be auto-approved")
+    assert.equal(judgeCalled, false, "LLM judge must NOT be invoked for read-only calls")
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("Fix D: VoiceClone list (local) is auto-approved (read-only) without LLM judge", async () => {
+  const rootDir = createRootDir()
+  try {
+    let judgeCalled = false
+    const mockJudge = async () => {
+      judgeCalled = true
+      return { text: JSON.stringify({ approved: false }) }
+    }
+
+    const result = await checkSideEffects(
+      rootDir,
+      [{ name: "VoiceClone", input: { action: "list" } }],
+      [],
+      "default",
+      "que voces tenes configuradas localmente?",
+      mockJudge,
+    )
+
+    assert.equal(result.approved, true)
+    assert.equal(judgeCalled, false)
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("Fix D: VoiceClone purge (destructive) still goes through the LLM judge", async () => {
+  const rootDir = createRootDir()
+  try {
+    let judgeCalled = false
+    const mockJudge = async () => {
+      judgeCalled = true
+      return { text: JSON.stringify({ approved: true, reason: "" }) }
+    }
+
+    // No destructive verb at start → imperative pre-check won't trigger.
+    // list/list_remote → read-only pre-check won't trigger.
+    // purge → must reach the LLM judge.
+    const result = await checkSideEffects(
+      rootDir,
+      [{ name: "VoiceClone", input: { action: "purge", alias: "amanda_voz" } }],
+      [],
+      "default",
+      "por favor limpiá las voces que ya no usamos",
+      mockJudge,
+    )
+
+    assert.equal(judgeCalled, true, "destructive VoiceClone actions must still go through the judge")
     assert.equal(result.approved, true)
   } finally {
     cleanupRootDir(rootDir)

@@ -63,6 +63,29 @@ const FIRST_PERSON_CLAIM: RegExp[] = [
 ]
 
 /**
+ * Fix B (2026-06-10): negation-of-execution patterns. Catches the
+ * model claiming it did NOT execute any tool when in fact the worklog
+ * shows tools ran. Example from incident 2026-06-10T20:53:01:
+ *   "En este turno no ejecuté ninguna tool — solo te copié el formato"
+ * while the worklog had 2 VoiceClone calls in that turn. The TUI showed
+ * the user the real tool outputs, but the model contradicted the TUI.
+ *
+ * These are matched only when `toolsCalledInTurn.length === 0` is FALSE
+ * (i.e. there are actual tools in the worklog for this turn). When
+ * matched AND tools were called, it's a falsified execution claim.
+ */
+const FIRST_PERSON_EXECUTION_NEGATION: RegExp[] = [
+  // Spanish
+  /\bno\s+(ejecut(é|é)|corr(í|i)|llam(é|e)|us(é|e)|hice|invoc(é|ué))(\s+(ninguna|ninguno|ningún|ni\s+una|nada|tool|herramienta))/i,
+  /\bno\s+eje?cut(é|é|é)\s+ninguna\b/i,
+  /\b(ninguna|ninguno|ningún)\s+(tool|herramienta|funci(ó|o)n)\s+(se\s+)?(ejecut(ó|ó)|llam(ó|o)|corr(ió|io))/i,
+  // English
+  /\bI\s+did\s+not\s+(execute|run|call|invoke|use)\s+(any\s+)?(tool|function|command)/i,
+  /\bno\s+tools?\s+(were|was)\s+(executed|run|called|invoked)/i,
+  /\bI\s+(didn'?t|did\s+not)\s+(execute|run|call|invoke|use)\s+(any\s+)?(tool|function|command)/i,
+]
+
+/**
  * Deterministic pre-LLM check. Returns a falsified_execution violation if the
  * assistant's text contains structural tool output or a first-person past
  * claim of action while no tools were called this turn.
@@ -72,6 +95,19 @@ function deterministicFalsifiedExecutionCheck(
   toolsCalledInTurn: string[],
 ): IntegrityCheckResult {
   if (toolsCalledInTurn.length > 0) {
+    // Fix B (2026-06-10): when tools WERE called this turn, the model
+    // must not claim the opposite. Catches "I didn't execute any tool"
+    // when the TUI / worklog shows N tools ran.
+    for (const pattern of FIRST_PERSON_EXECUTION_NEGATION) {
+      const match = modelText.match(pattern)
+      if (match) {
+        return {
+          verified: false,
+          type: "falsified_execution",
+          reason: `Deterministic execution-negation match: "${match[0]}" denies execution but ${toolsCalledInTurn.length} tool(s) ran this turn: [${toolsCalledInTurn.join(", ")}].`,
+        }
+      }
+    }
     return { verified: true, type: "none" }
   }
 
