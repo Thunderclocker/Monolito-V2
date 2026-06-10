@@ -73,7 +73,6 @@ import { createLogger, createSessionContext, runWithContext, type Logger } from 
 
 const logger = createLogger("runtime")
 import { normalizeTtsConfig } from "../channels/config.ts"
-import { setSideEffectGuardLogger } from "./sideEffectGuard.ts"
 import {
   deployManagedSttContainer,
   getManagedSttBaseUrl,
@@ -1185,11 +1184,6 @@ reference this automated system check in your response. Do not say
 
   constructor(rootDir: string) {
     this.rootDir = rootDir
-    // Wire the side-effect guard to the runtime logger so that when the
-    // guard rejects a tool the event lands in ~/.monolito/logs/monolitod.log
-    // (and stdout) as a structured `[SideEffectGuard] BLOCKED ...` line.
-    // Users and agents can then `grep` for the reason instead of guessing.
-    setSideEffectGuardLogger(logger)
     const db = getDb(this.rootDir)
     ensureConfigWings(this.rootDir)
     reconcileSystemWings(db, rootDir)
@@ -2437,7 +2431,6 @@ Review the existing skill library and apply the curation heuristics in your inst
         let userFacingText = sanitizeExternalAssistantText(sessionId, turn.finalText, preparedUserText)
         const hasSideEffects = turn.steps?.some(step =>
           step.type === "tool" &&
-          !step.blockedByGuard &&
           getTool(step.tool)?.sideEffect === true
         )
 
@@ -2492,27 +2485,22 @@ Review the existing skill library and apply the curation heuristics in your inst
             await this.deliverText(sessionId, userFacingText, options?.delivery, "Failed to deliver assistant reply")
           } else if (wasAborted) {
             // Fix 2 (2026-06-10): no fabricar éxito cuando el turno terminó
-            // con error/timeout. Caso típico: el side-effect guard bloqueó
-            // todas las tools del turno, el modelo entró en loop de
+            // con error/timeout. Caso típico: el modelo entró en loop de
             // veracity/coherence corrections, saltó el hard timeout, y el
-            // `turn.steps` tenía tools marcadas como side-effect → antes
-            // el runtime inyectaba la frase hardcodeada mintiendo que se
+            // runtime iba a inyectar la frase hardcodeada mintiendo que se
             // habían enviado archivos a Telegram. Ahora devuelve un error
             // honesto y registra FABRICATED_SUCCESS_PREVENTED en el worklog
-            // para que quede audit trail de los steps bloqueados.
+            // para que quede audit trail.
             const reason = turn.error ?? `turn ${turn.meta?.stopReason ?? "aborted"}`
             userFacingText = `No pude completar la acción: ${reason}. ¿Querés que lo intente de nuevo?`
-            const blockedSummary = turn.steps
-              ?.filter(s => s.type === "tool" && (s as { blockedByGuard?: boolean }).blockedByGuard)
-              .map(s => {
-                const toolStep = s as { tool: string; guardReason?: string }
-                return `${toolStep.tool}: ${toolStep.guardReason ?? "sin razón"}`
-              })
-              .join("; ") ?? "no tools executed"
+            const stepsSummary = turn.steps
+              ?.filter(s => s.type === "tool")
+              .map(s => (s as { tool: string }).tool)
+              .join(", ") ?? "(none)"
             appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
             appendWorklog(this.rootDir, sessionId, {
               type: "note",
-              summary: `FABRICATED_SUCCESS_PREVENTED: ${blockedSummary} | reason=${reason}`,
+              summary: `FABRICATED_SUCCESS_PREVENTED: tools=[${stepsSummary}] | reason=${reason}`,
             })
             this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
             this.emit({

@@ -17,11 +17,6 @@ import {
   querySemanticTools,
 } from "../../session/store.ts"
 
-import {
-  getRecentGuardBlocks,
-  type GuardBlockRecord,
-} from "../../runtime/sideEffectGuard.ts"
-
 import type { ToolDefinition } from "../registry.ts"
 
 export const adminTools: ToolDefinition[] = [
@@ -200,59 +195,6 @@ export const adminTools: ToolDefinition[] = [
       }).join("\n")}`
     } catch (err) {
       return `Error buscando herramientas: ${err}`
-    }
-  }
-},
-
-{
-  name: "QueryGuardStatus",
-  aliases: ["query_guard_status"],
-  permissionTier: "read",
-  description: "Return the most recent side-effect guard events for the current session. Use this tool when a TelegramSend* / VoiceClone / GenerateSpeech / Bash-with-side-effect was just blocked and you need to know why BEFORE improvising an explanation. The output includes the guard's reason, the timestamp, whether a Level 0 user override was honored, and whether the current session has /adult enabled (the guard auto-approves media tools in /adult mode). Pair with `grep \"[SideEffectGuard]\" ~/.monolito/logs/monolitod.log` for a full audit trail.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      sessionId: { type: "string", description: "Optional session ID. Defaults to the current session." },
-      limit: { type: "number", description: "Maximum number of recent events to return. Default 20." },
-    },
-    additionalProperties: false,
-  },
-  concurrencySafe: true,
-  async run(input, context) {
-    const sessionId = optionalString(input, "sessionId") ?? context.sessionId ?? ""
-    const limit = optionalNumber(input, "limit") ?? 20
-    if (!sessionId) return formatToolError("sessionId is required")
-    const events = getRecentGuardBlocks(context.rootDir, sessionId, limit)
-    const blocks = events.filter(e => !e.level0Override)
-    const overrides = events.filter(e => e.level0Override)
-    const adultModeActive = context.sessionId && context.runtime && typeof context.runtime.hasAdultMode === "function"
-      ? context.runtime.hasAdultMode(context.sessionId)
-      : false
-    return {
-      session_id: sessionId,
-      adult_mode: adultModeActive,
-      total_events: events.length,
-      total_blocks: blocks.length,
-      total_overrides: overrides.length,
-      most_recent_block: blocks[0] ?? null,
-      most_recent_override: overrides[0] ?? null,
-      events,
-      hint:
-        events.length === 0
-          ? (adultModeActive
-              ? "Adult mode is active for this session: media tools (TelegramSend*, GenerateImage, GenerateSpeech, VoiceClone, TranscribeAudio) are auto-approved by the guard and do not produce BLOCK entries. If a non-media tool was blocked, the worklog will have it; otherwise check `~/.monolito/logs/monolitod.log` for `[SideEffectGuard] BLOCKED` lines."
-              : "No guard events recorded for this session AND /adult is OFF. The side-effect guard is stateless and decides per-call; it only records BLOCK or OVERRIDE events in the worklog. If the user asks why a tool was blocked and the worklog is empty, check `~/.monolito/logs/monolitod.log` for the [SideEffectGuard] line emitted at the moment of the rejection. If the user is asking about adult content, suggest they run /adult to enable the auto-approve path.")
-          : "Use the `at` timestamps to correlate with `~/.monolito/logs/monolitod.log` `[SideEffectGuard] BLOCKED` lines for the full reason + pending tool list. The `adult_mode` field above tells you whether /adult was active when the block happened — if it was off and the content is adult, suggest /adult.",
-    } as GuardBlockRecord[] & {
-      session_id: string
-      adult_mode: boolean
-      total_events: number
-      total_blocks: number
-      total_overrides: number
-      most_recent_block: GuardBlockRecord | null
-      most_recent_override: GuardBlockRecord | null
-      events: GuardBlockRecord[]
-      hint: string
     }
   }
 },
