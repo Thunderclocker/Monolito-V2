@@ -15,7 +15,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { listSessionTasks, writeSessionTask, getDb } from "../session/store.ts"
 import type { SessionTask } from "../session/store.ts"
-import { evaluateTopLevelRalphGate } from "./orchestrator.ts"
+import { evaluateTopLevelRalphGate } from "./topLevelRalphGate.ts"
 
 // All tests share a single rootDir because `getPaths` is anchored to
 // MONOLITO_ROOT (a module-level constant) — every test would otherwise

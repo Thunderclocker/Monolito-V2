@@ -4,20 +4,20 @@ This document provides technical guidance, architecture rules, and operational p
 
 ## Architecture
 
-Monolito is a local AI orchestration runtime with SQLite-backed persistence and multi-agent delegation.
+Monolito is a local AI orchestration runtime with SQLite-backed persistence. It runs a single main session per turn; user-facing sub-agent delegation is **not** a feature (the orchestrator was removed in migration `20260611_drop_worker_tables.sql`). Internal maintenance work (memory consolidation, skill curation) runs as silent in-process turns, not as workers.
 
 ### Core Layers
 - **daemon** (`src/apps/daemon.ts`): Owns the runtime server, session management, and channel integration. Receives requests via Unix socket IPC.
-- **runtime** (`src/core/runtime/runtime.ts`): The orchestration engine. Manages active sessions, turn execution, tool dispatch, and background delegation.
-- **orchestrator** (`src/core/runtime/orchestrator.ts`): Spawns/stops worker sub-agents, tracks tasks, and enforces token budgets.
+- **runtime** (`src/core/runtime/runtime.ts`): The orchestration engine. Manages active sessions, turn execution, tool dispatch, and silent background maintenance.
+- **top-level Ralph gate** (`src/core/runtime/topLevelRalphGate.ts`): Stop-hook analog for the main session — re-feeds the model if `active_tasks` wing has unfinished TodoWrite items.
 - **model adapter** (`src/core/runtime/modelAdapterLite.ts`): Builds prompts with prompt caching, handles provider recovery (429 backoff, 401/403 reauth, 503/529 retry, context overflow).
 - **tool registry** (`src/core/tools/registry.ts`): Tool definitions with permission tiers and execution harnesses.
-- **session store** (`src/core/session/store.ts`): SQLite persistence (messages, worklog, events, tasks, BOOT wings, Memory Palace, graph).
+- **session store** (`src/core/session/store.ts`): SQLite persistence (messages, worklog, events, BOOT wings, Memory Palace, graph).
 
 ## Memory System (3 layers)
 
 1. **`BOOT_*` wings**: Deterministic bootstrap state (identity, user profile, workspace rules, long-term memory).
-   - **Single-User Architecture**: Boot wings are seeded exclusively under the `default` profile scope. Other profiles (Amanda, coder, coordinator) transparently inherit these wings via global fallback, preventing redundant, duplicate rows in SQLite.
+   - **Single-User Architecture**: Boot wings are seeded exclusively under the `default` profile scope. Other profiles transparently inherit these wings via global fallback, preventing redundant, duplicate rows in SQLite.
    - **Standard Boot Wings**: The allowed boot wings are `BOOT_AGENTS`, `BOOT_SOUL`, `BOOT_TOOLS`, `BOOT_IDENTITY`, `BOOT_USER`, `BOOT_BOOTSTRAP`, and `BOOT_MEMORY`. Creating or writing to custom wings (like `BOOT_PERSONALITY`) is strictly blocked at the tool registry layer.
 
 ### Automatic Memory Consolidation & Skill Synthesis
@@ -35,21 +35,20 @@ Monolito is a local AI orchestration runtime with SQLite-backed persistence and 
   - **Scope Boundary**: SkillsAgent must only synthesize procedural skills (SOPs consisting of executable system tools/actions). It is strictly forbidden from creating skills for cognitive directives, behavioral warnings, rules of engagement, or user preferences, which are the exclusive domain of MemoryAgent and must be filed in the Memory Palace.
   - **Silent Operation**: Fully silent, recording its outcomes only to the session worklog (`SkillsAgent executed silently: SKILLS_OK`).
 
-### Cognitive Task Persistence & Relentless Execution (Ralph Loop)
-- **Cognitive Task Tracking**: Sub-agents use the SQLite Memory Palace (`palace_nodes` table, `active_tasks` wing) instead of files (like `tasks.json`) to register, track, and update their intermediate objectives. This maintains cross-turn cognitive state, visible and manageable via `TodoWrite`, `TodoList`, and `TodoUpdate` tools.
-- **Relentless Loop Checks**: The orchestrator prevents sub-agents from completing a turn if there are:
-  1. Missing verification tags (`<verified>SUCCESS</verified>`).
-  2. Unfinished or pending tasks in their database room.
-  3. Last executed terminal command (`Bash` tool run) returning a non-zero exit code.
-- **Self-Correction loops**: If any of these checks fail, the sub-agent is automatically locked inside a correction loop with systemic feedback until it resolves all errors and marks its tasks as completed.
+### Cognitive Task Persistence & Top-Level Ralph Loop
+- **Cognitive Task Tracking**: The main session uses the SQLite Memory Palace (`palace_nodes` table, `active_tasks` wing) instead of files (like `tasks.json`) to register, track, and update its intermediate objectives. This maintains cross-turn cognitive state, visible and manageable via `TodoWrite`, `TodoList`, and `TodoUpdate` tools.
+- **Top-level Ralph Loop**: The runtime refuses to deliver the assistant reply if there are:
+  1. Unfinished or pending tasks (`pending` or `in_progress`) in the `active_tasks` wing.
+  2. Last executed terminal command (`Bash` tool run) returning a non-zero exit code.
+- **Self-Correction loops**: If any of these checks fail, the main session is automatically locked inside a correction loop with structured feedback (`buildRalphLoopUnfinishedTasksPrompt`) until it resolves the open items or returns `TASK_FAILED:<reason>`. After `TOP_LEVEL_RALPH_MAX_ATTEMPTS = 20` attempts, the loop delivers a honest `TASK_FAILED` message to the user instead of silently dropping the empty assistant reply.
 
 ## Full Tool Access Model
 
-Monolito V2 implements a full tool access model. Instead of dynamically pre-filtering and limiting tool availability at the start of each turn using semantic search (RAG), the orchestrator exposes the complete catalog of active system tools to the LLM on every call.
+Monolito V2 implements a full tool access model. Instead of dynamically pre-filtering and limiting tool availability at the start of each turn using semantic search (RAG), the runtime exposes the complete catalog of active system tools to the LLM on every call.
 
 ### Core Mechanics
 1. **Full Tool Exposure**: The agent has immediate and direct access to all system tools (such as `Bash`, `system_status`, `tool_manage_config`, `TelegramSend`, etc.) at all times, preventing tool-blindness and eliminating intermediate workaround scripts.
-2. **Static Scope Filtering**: Tools are still filtered statically based on security context (e.g. hiding management or daemon controls from worker sub-agents or specific channel environments).
+2. **Static Scope Filtering**: Tools are still filtered statically based on security context (e.g. hiding service-management tools or daemon controls from specific channel environments like Telegram).
 3. **Dynamic Tool Indexing**: System tool definitions and active dynamic skills are still synchronized and indexed semantically at daemon startup in the Memory Palace (`CONF_TOOLS` memory wing). This supports meta-queries and interactive CLI tools.
 
 ## Runtime vs Local (Operational)
@@ -115,16 +114,15 @@ npm run db:migrate
 - TypeScript runs directly via `node --experimental-strip-types`. No compilation step.
 
 ### Multi-Agent
-- Sub-agents run in isolated Git Worktrees with temporary branches.
-- Parent session controls lifecycle (spawn, stop, continue).
-- Workers report via task notifications. Completion is signaled via `<task-notification>` in the message stream.
+- The user-facing sub-agent delegation feature was **removed** in migration `20260611_drop_worker_tables.sql`. There are no `AgentSpawn` / `delegate_background_task` / `AgentSendMessage` / `AgentStop` tools. The orchestrator class and `worker_jobs` / `background_tasks` / `background_task_groups` tables no longer exist.
+- For background maintenance, see [`docs/background-agents.md`](./docs/background-agents.md) — MemoryAgent and SkillsAgent run as silent in-process turns, not as workers.
 
 ### IPC & Events
 - **IPC**: Daemon ↔ CLI communicate over Unix socket (`/tmp/monolitod-v2-*.sock`).
-- **Events**: `src/core/events/bus.ts` — internal pub/sub. Key events: `worker:completed` (fires Telegram push), `message.received`, `turn.completed`.
+- **Events**: `message.received`, `turn.completed` are the canonical runtime events. The legacy `worker:completed` event was removed with the orchestrator.
 
 ### Adult Mode
-- Adult mode (`/adult`) is session-scoped. Workers inherit this flag in their context extras.
+- Adult mode (`/adult`) is session-scoped. The active session's adult flag is read by tools that need it.
 - **Dynamic SafeSearch adjustment:** Core search tools (like `ImageSearch`) check the session's adult mode status and automatically disable search filters (e.g. sending `safesearch=0` to SearXNG) when adult mode is active, while defaulting to safe/moderate filtering (`safesearch=1`) otherwise.
 
 ## EVIDENCE-FIRST Rule (Dynamic System State)
@@ -140,13 +138,13 @@ state, etc.):
    (*"tomátelo con pinzas"*, *"no verifiqué"*, *"si querés el 100%
    decime y lo corro"*).
 
-This rule is enforced by the orchestrator system prompt in
+This rule is enforced by the system prompt in
 `src/core/runtime/modelAdapter.ts` under `## Visual & Media Processing
-Protocol` (non-sub-agent branch). A backstop `enumerate_dynamic_state`
-Ralph rule is registered with an empty `requiredTools` array (the
-orchestrator's `checkDynamicRalphRules` skips empty-list rules, so the
-system-prompt rule is the actual enforcement layer). Full architecture
-and rationale: [`docs/guards.md`](./docs/guards.md#7-evidence-first-rule-system-prompt-level-semantic).
+Protocol` (the main-session branch). A backstop `enumerate_dynamic_state`
+Ralph rule is registered with an empty `requiredTools` array as
+documentation; the system-prompt rule is the actual enforcement layer.
+Full architecture and rationale:
+[`docs/guards.md`](./docs/guards.md#7-evidence-first-rule-system-prompt-level-semantic).
 
 The rule is overrideable by Level 0 user intent: an explicit *"no
 verifiques"*, *"sin chequear"*, *"decime de memoria"* wins.
@@ -156,7 +154,6 @@ verifiques"*, *"sin chequear"*, *"decime de memoria"* wins.
 - **Local runtime state**: `~/.monolito/`
 - **Local memory DB**: `~/.monolito/memory/memory.sqlite`
 - **Local daemon log**: `~/.monolito/logs/monolitod.log`
-- **Local worker logs**: `~/.monolito/logs/instances/worker-*.log`
 - **On VPS**: legacy production runtime lives under `~/.monolito-v2/`; do not edit VPS files directly.
 - **Local PC Workspace**: `/home/cristian/.claude/workspace/proyectos/Monolito V2`
 - **Local PC Production/Service App**: `/home/cristian/.monolito/app`
@@ -208,12 +205,12 @@ Monolito V2 uses a advanced 3-layer Context Engine to prevent "amnesia" and ensu
 Monolito V2 implements a dual-tier visual processing pipeline to handle visual verification and analysis efficiently:
 
 ### 1. Cloud Model Vision (`VisionAnalyze`)
-- **Primary Execution**: When a sub-agent needs to analyze or verify an image (e.g. for Telegram delivery verification), it prioritizes `VisionAnalyze`.
+- **Primary Execution**: When the model needs to analyze or verify an image (e.g. for Telegram delivery verification), it prioritizes `VisionAnalyze`.
 - **Mechanism**: Invokes the cloud model's native multimodal capabilities (Anthropic or OpenAI-compatible) via API. This is extremely fast (takes ~2 seconds) and does not consume server resource overhead.
 - **Local Cache**: If the image was requested from a URL, `VisionAnalyze` automatically downloads and buffers the file, writes it to `scratchpad/`, and returns its absolute `local_path` so it is ready for Telegram delivery.
 
 ### 2. Local Fallback Vision (`AnalyzeImage`)
-- **Fallback Execution**: If `VisionAnalyze` is not supported by the active cloud provider, fails (timeouts, credentials, rate limits), or if offline mode is enforced, the sub-agent falls back automatically to `AnalyzeImage`.
+- **Fallback Execution**: If `VisionAnalyze` is not supported by the active cloud provider, fails (timeouts, credentials, rate limits), or if offline mode is enforced, the runtime falls back automatically to `AnalyzeImage`.
 - **Mechanism**: Deploys a local docker container running Ollama with the `moondream` model (`monolito-vision-moondream`).
 - **Performance Notice**: Since VPS nodes are usually CPU-only (lacking hardware acceleration), local vision inference can be highly intensive and take up to several minutes per image. Thus, cloud-based `VisionAnalyze` must always be prioritized.
 

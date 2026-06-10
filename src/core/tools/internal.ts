@@ -55,7 +55,6 @@ import {
   restoreArchivedSkill,
 } from "../session/store.ts"
 import { isEmbeddingsUnavailableError } from "../session/embeddings.ts"
-import { type AgentOrchestrator } from "../runtime/orchestrator.ts"
 import { redactSensitiveValue } from "../security/redact.ts"
 import { type Logger } from "../logging/logger.ts"
 import { CONFIG_WING_ORDER, type ConfigWingName } from "../config/configWings.ts"
@@ -337,7 +336,6 @@ export type ToolContext = {
   traceId?: string
   profileId?: string
   getMcpClient?: (serverName: string) => Promise<McpClient>
-  orchestrator?: AgentOrchestrator
   logger?: Logger
   sessionId?: string
   // Optional whitelist of tool names the LLM is allowed to call in this turn.
@@ -347,7 +345,6 @@ export type ToolContext = {
   // can mark provenance as "agent" instead of "user".
   isSkillsSynthetic?: boolean
   runtime?: {
-    acquireJobGroupForBatch: (sessionId: string) => string
     getSystemStatus?: () => Promise<unknown>
     gracefulRestart?: (reason?: string) => void
     registerPendingPermission?: (permissionId: string, resolve: (decision: "allow" | "deny" | "ask") => void) => void

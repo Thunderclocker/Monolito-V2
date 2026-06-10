@@ -1,10 +1,10 @@
 /**
  * Tests for store.ts session helpers.
  *
- * store.ts is the second-largest file in the codebase (2678 lines) and
- * owns all SQLite access. The pure helpers (no DB) are tested here.
- * The DB-backed functions would need an in-memory SQLite and are
- * already covered by the orchestrator's integration tests.
+ * store.ts is the second-largest file in the codebase (~2400 lines after
+ * the worker/delegation removal) and owns all SQLite access. The pure
+ * helpers (no DB) are tested here. The DB-backed functions would need
+ * an in-memory SQLite and are covered by integration tests.
  */
 
 import test from "node:test"
@@ -12,7 +12,10 @@ import assert from "node:assert/strict"
 import { isMainSession } from "./store.ts"
 
 // Mirror of the internal const. Kept in sync by test_pairing_with_store.
-const WORKER_SESSION_PREFIXES = ["agent-", "worker-"] as const
+// After the worker/delegation removal, "worker-" is no longer a session
+// prefix — the only reserved worker prefix is "agent-", kept as a
+// defense-in-depth check (no caller creates agent-* sessions anymore).
+const WORKER_SESSION_PREFIXES = ["agent-"] as const
 
 test("isMainSession: returns true for plain session IDs", () => {
   assert.equal(isMainSession("main"), true)

@@ -36,8 +36,9 @@ the operational map.
 
 - [`bootstrap-and-core-files.md`](./bootstrap-and-core-files.md) —
   startup BOOT wings, onboarding, and the current memory-layer split.
-- [`multi-agent.md`](./multi-agent.md) — delegated worker /
-  researcher / verifier agents and profile-scoped sub-sessions.
+- [`background-agents.md`](./background-agents.md) — silent
+  background agents (MemoryAgent, SkillsAgent) that run during
+  heartbeat for memory consolidation and skill curation.
 - [`tool-harness.md`](./tool-harness.md) — tool execution model,
   permission gating, BOOT tools, and Memory Palace behavior.
 - [`channels-and-telegram.md`](./channels-and-telegram.md) — Telegram

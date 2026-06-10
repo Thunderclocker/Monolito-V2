@@ -6,10 +6,6 @@
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { existsSync } from "node:fs"
-import { mkdir, rm } from "node:fs/promises"
-import { join } from "node:path"
-import { randomUUID } from "node:crypto"
-import { ensureMonolitoRoot } from "../system/root.ts"
 
 const execFileAsync = promisify(execFile)
 const MAX_STATUS_CHARS = 2000
@@ -29,28 +25,8 @@ async function runGit(args: string[], cwd: string, options?: { throwOnError?: bo
   }
 }
 
-export async function createAgentWorktree(rootDir: string, branchName: string): Promise<string> {
-  const worktreeRoot = join(ensureMonolitoRoot(), "run", "worktrees")
-  const worktreePath = join(worktreeRoot, branchName)
-  await mkdir(worktreeRoot, { recursive: true })
-  try {
-    await runGit(["worktree", "add", "-b", branchName, worktreePath], rootDir, { throwOnError: true })
-    if (!existsSync(worktreePath)) {
-      throw new Error(`Git worktree path was not created: ${worktreePath}`)
-    }
-    return worktreePath
-  } catch (error) {
-    await rm(worktreePath, { recursive: true, force: true }).catch(() => {})
-    throw error
-  }
-}
-
-export async function removeAgentWorktree(rootDir: string, worktreePath: string): Promise<void> {
-  await runGit(["worktree", "remove", "-f", worktreePath], rootDir, { throwOnError: true })
-}
-
 export async function isGitRepository(rootDir: string): Promise<boolean> {
-  if (existsSync(join(rootDir, ".git"))) return true
+  if (existsSync(rootDir + "/.git")) return true
   const result = await runGit(["rev-parse", "--is-inside-work-tree"], rootDir)
   return result === "true"
 }
@@ -96,43 +72,4 @@ export function getLocalISODate(): string {
 
 export function getDateContext(): string {
   return `Today's date is ${getLocalISODate()}.`
-}
-
-export async function createCheckpointCommit(rootDir: string): Promise<string> {
-  const status = await runGit(["status", "--porcelain"], rootDir)
-  if (!status.trim()) {
-    // Repository is clean, no checkpoint commit needed
-    return await runGit(["rev-parse", "HEAD"], rootDir, { throwOnError: true })
-  }
-
-  const checkpointId = randomUUID().slice(0, 8)
-  await runGit(["add", "-A"], rootDir, { throwOnError: true })
-  await runGit([
-    "-c", "user.name=Monolito Agent",
-    "-c", "user.email=agent@monolito.local",
-    "commit",
-    "-m", `temp: checkpoint commit for multiverse ${checkpointId}`
-  ], rootDir, { throwOnError: true })
-
-  return await runGit(["rev-parse", "HEAD"], rootDir, { throwOnError: true })
-}
-
-export async function commitWorktreeChanges(worktreePath: string, message: string): Promise<void> {
-  await runGit(["add", "-A"], worktreePath, { throwOnError: true })
-  await runGit([
-    "-c", "user.name=Monolito Agent",
-    "-c", "user.email=agent@monolito.local",
-    "commit",
-    "-m", message
-  ], worktreePath, { throwOnError: true })
-}
-
-export async function mergeBranchIntoRoot(rootDir: string, branchName: string): Promise<void> {
-  await runGit([
-    "-c", "user.name=Monolito Agent",
-    "-c", "user.email=agent@monolito.local",
-    "merge",
-    branchName,
-    "--no-edit"
-  ], rootDir, { throwOnError: true })
 }

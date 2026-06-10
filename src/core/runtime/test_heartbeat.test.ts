@@ -65,11 +65,13 @@ test("heartbeat prompt: asks the model to decide, not pre-filter", async () => {
   // the model to be defensive ("no urgent attention" first).
   const { readFileSync } = await import("node:fs")
   const src = readFileSync("src/core/runtime/runtime.ts", "utf8")
-  // The new prompt should mention the user's previous intents and
-  // background completions — sign that the model is the decision-maker.
+  // The new prompt should mention scheduled-task wake-ups — sign that
+  // the model is the decision-maker for proactive notifications. With
+  // the worker/delegation feature removed, the prompt no longer talks
+  // about background workers.
   assert.ok(
-    src.includes("background workers that completed since the last user message"),
-    "heartbeat prompt should explicitly tell the model to consider background workers",
+    !src.includes("background workers that completed since the last user message"),
+    "heartbeat prompt should no longer reference background workers (delegation removed)",
   )
   assert.ok(
     src.includes("I'll let you know when X"),

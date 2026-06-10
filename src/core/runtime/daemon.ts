@@ -54,10 +54,6 @@ export class MonolitoV2Daemon {
     if (recoveredOnStart.length > 0) {
       this.writeDaemonLog(`recovered ${recoveredOnStart.length} running session(s) after daemon restart`)
     }
-    const recoveredWorkerJobs = this.runtime.recoverWorkerJobs()
-    if (recoveredWorkerJobs > 0) {
-      this.writeDaemonLog(`re-injected ${recoveredWorkerJobs} worker job(s) after daemon restart`)
-    }
 
     try {
       this.server = await this.listenUnix(paths.socketPath)

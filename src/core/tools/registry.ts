@@ -25,7 +25,6 @@ import { telegramTools } from "./domains/telegram.ts"
 import { mediaTools } from "./domains/media.ts"
 import { memoryTools } from "./domains/memory.ts"
 import { forensicsTools } from "./domains/forensics.ts"
-import { delegationTools } from "./domains/delegation.ts"
 import { configTools } from "./domains/config.ts"
 import { todoTools } from "./domains/todo.ts"
 import { adminTools } from "./domains/admin.ts"
@@ -47,7 +46,6 @@ const rawTools: ToolDefinition[] = [
   ...mediaTools,
   ...memoryTools,
   ...forensicsTools,
-  ...delegationTools,
   ...configTools,
   ...todoTools,
   ...adminTools,
@@ -63,14 +61,13 @@ export function listTools() {
 }
 
 export function listModelTools(isSubAgent = false, lastUserText?: string | boolean | string[], allowedToolNames?: string[], rootDir?: string, exposeTelegramDownload = false) {
-  // Service-management and infra tools: ALWAYS hidden from sub-agents
-  // (these deploy/manage daemons, change config, spawn new agents, etc.).
+  // Service-management and infra tools: ALWAYS hidden from sub-agents.
+  // Sub-agents no longer exist in the runtime (delegation feature was
+  // removed); this set is kept as defense-in-depth in case any future
+  // synthetic sub-session needs to be locked down. Infra tools stay
+  // hidden so synthetic sub-agents can't spin up daemons or reconfigure
+  // channels even if one is ever introduced.
   const hiddenFromSubAgents = new Set([
-    "AgentSpawn",
-    "AgentSendMessage",
-    "AgentStop",
-    "delegate_background_task",
-    "list_active_workers",
     "TelegramSend",
     "TelegramSendAudio",
     "TelegramSendVoice",
@@ -88,8 +85,6 @@ export function listModelTools(isSubAgent = false, lastUserText?: string | boole
     "SttServiceRemove",
     "SttServiceList",
     "tool_manage_config",
-    "ProfileCreate",
-    "AgentList",
     "TelegramDownloadFile"
   ])
 
@@ -110,39 +105,18 @@ export function listModelTools(isSubAgent = false, lastUserText?: string | boole
     hiddenFromMainSession.delete("TelegramDownloadFile")
   }
 
-  // Narrow the main-session tool lockdown: previously any user message
-  // that contained an image word (imagen/foto/vision/visual) caused
-  // Bash/Write/Edit/MultiEdit/TodoWrite to be dropped, which forced
-  // every image task through delegate_background_task even for trivial
-  // "mandame una foto de X". Now we only apply that lockdown when the
-  // user text also carries an edit-verb (modifica/cambia/edita/escribe/
-  // crea), which is the actual dangerous case.
-  const isImageWithEditIntent = (text: string) =>
-    /(imagen(?:es)?|foto(?:s)?|picture(?:s)?|photo(?:s)?|image(?:s)?)\b/i.test(text) &&
-    /(modific|cambi|edit|escrib|crea|reescrib|reemplaz|borra|elimin)/i.test(text)
-
-  const blockedTools = Array.isArray(lastUserText)
-    ? lastUserText
-    : typeof lastUserText === "boolean"
-      ? (lastUserText ? ["AgentList", "ProfileCreate", "Write", "Edit", "MultiEdit", "Bash", "TodoWrite"] : [])
-      : (typeof lastUserText === "string" && lastUserText === "true")
-        ? ["AgentList", "ProfileCreate", "Write", "Edit", "MultiEdit", "Bash", "TodoWrite"]
-        : (typeof lastUserText === "string" && isImageWithEditIntent(lastUserText))
-          ? ["AgentList", "ProfileCreate", "Write", "Edit", "MultiEdit", "Bash", "TodoWrite"]
-          : []
-
+  // Core tool set: tools the model can always reach, regardless of
+  // any per-session allowlist or lastUserText-mode filtering. After
+  // the delegation removal, this no longer includes any worker
+  // orchestration tools.
   const CORE_TOOLS = new Set([
     "TodoWrite",
     "TodoList",
-    "delegate_background_task",
     "search_tools",
     "Bash",
     "Write",
     "Edit",
     "MultiEdit",
-    "AgentSendMessage",
-    "AgentSpawn",
-    "AgentStop",
     "TelegramSend",
     "TelegramSendPhoto",
     "ImageSearch",
@@ -157,7 +131,6 @@ export function listModelTools(isSubAgent = false, lastUserText?: string | boole
       // 1. Core Tools are ALWAYS included
       if (CORE_TOOLS.has(tool.name)) {
         if (isSubAgent && hiddenFromSubAgents.has(tool.name)) return false;
-        if (isSubAgent && blockedTools.includes(tool.name)) return false;
         if (!isSubAgent && hiddenFromMainSession.has(tool.name)) return false;
         return true;
       }
@@ -169,19 +142,7 @@ export function listModelTools(isSubAgent = false, lastUserText?: string | boole
       if (Array.isArray(allowedToolNames) && allowedToolNames.length > 0) {
         return allowedToolNames.includes(tool.name)
       }
-      // 5. If a lastUserText was passed, decide via "delegation" vs "execution" mode
-      if (lastUserText !== undefined) {
-        // For sub-agents: if lastUserText matches delegation cues, only return delegation tools
-        if (isSubAgent) {
-          if (blockedTools.includes(tool.name)) return false
-          // Otherwise: when isSubAgent, return all non-hidden tools
-          return true
-        }
-        // For main session: use lastUserText to decide if we should filter to a core subset
-        if (blockedTools.includes(tool.name)) return false
-        return true
-      }
-      // 6. Default: include all non-hidden tools
+      // 5. Default: include all non-hidden tools
       return true
     })
     .filter(tool => !isSubAgent || allowedToolNames === undefined || allowedToolNames.length === 0 || allowedToolNames.includes(tool.name))

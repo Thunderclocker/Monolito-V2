@@ -10,7 +10,7 @@ import { AbortError, ApiError, ContextOverflowError, HttpError, ProviderOverload
 import { createLogger, type Logger } from "../logging/logger.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider } from "./modelRegistry.ts"
-import { compactSession, fileMemory, getSession, getRawMessagesForSession, getDb, readSessionSources, updateWorkerJobStatus, upsertWorkerJob, tailEvents, listSessionTasks, listDynamicSkills, appendWorklog, saveResolvedError, querySimilarErrors, deleteMessages, rewriteMessageInPlace } from "../session/store.ts"
+import { compactSession, fileMemory, getSession, getRawMessagesForSession, getDb, readSessionSources, tailEvents, listSessionTasks, listDynamicSkills, appendWorklog, saveResolvedError, querySimilarErrors, deleteMessages, rewriteMessageInPlace } from "../session/store.ts"
 import { wrapAuditFeedback } from "./auditFeedback.ts"
 import { incrementalFlushSession, getContextFlushThresholdChars } from "../context/incrementalFlush.ts"
 import { callProvider, type ConversationMessage, type ProviderConfig, type ProviderResponse, type ToolCall } from "./providers/index.ts"
@@ -30,7 +30,8 @@ import { saveEmergencySnapshot } from "../context/contextSnapshot.ts"
 import { smartCompactSession, compactInMemoryTier1 } from "../context/smartCompactor.ts"
 
 const defaultLogger = createLogger("modelAdapter")
-// Orchestrator turn iteration cap. Bumped from 16 to 20 to match sub-agents
+// Top-level turn iteration cap. Bumped from 16 to 20 to give the
+// top-level Ralph Loop enough headroom to retry unfinished work.
 // (runBackgroundTask uses maxAttempts=20). The empty-response fallback
 // (see finalize fallback) is the hard ceiling — this is the soft cap that
 // signals the loop is escalating.
@@ -209,9 +210,7 @@ type ContextExtras = {
   workspaceContext?: WorkspaceBootstrapContext
   adultMode?: boolean
   webSearchProvider?: string
-  taskNotifications?: string[]
   stallAlert?: string
-  activeTasks?: { agentId: string; description: string; status: string; progress?: string[] }[]
   systemDirective?: string
   blockedTools?: string[]
 }
@@ -226,8 +225,7 @@ function compactWhitespace(value: string) {
 
 function shouldSkipMessage(text: string) {
   const normalized = text.trim()
-  return normalized.startsWith("/") || 
-         normalized.startsWith("<task-notification>") ||
+  return normalized.startsWith("/") ||
          normalized.startsWith("<slash-reply>")
 }
 
@@ -365,32 +363,19 @@ async function executeToolCall(
   executeTool: (tool: string, input: Record<string, unknown>, context: ToolContext, toolUseId?: string) => Promise<unknown>,
   context: ToolContext,
 ) {
-  if (context.sessionId) {
-    upsertWorkerJob(context.rootDir, {
-      id: toolCall.id,
-      sessionId: context.sessionId,
-      profileId: context.profileId,
-      toolName: toolCall.name,
-      toolArgs: JSON.stringify(toolCall.input),
-      status: "pending",
-    })
-  }
+  // Note: this function previously wrote a per-tool audit trail to the
+  // `worker_jobs` table. With the worker/delegation feature removed, the
+  // table is dropped (migration 20260611). The audit trail is still
+  // emitted via the `tool.finish` event downstream.
   try {
-    if (context.sessionId) updateWorkerJobStatus(context.rootDir, toolCall.id, "running")
     const output = await executeTool(toolCall.name, toolCall.input, context, toolCall.id)
     const content = formatToolEvidenceResult(toolCall, "success", output)
-    if (context.sessionId) {
-      updateWorkerJobStatus(context.rootDir, toolCall.id, "completed", { resultText: content })
-    }
     return {
       toolCall,
       content,
     }
   } catch (error) {
     const content = formatToolEvidenceResult(toolCall, "error", { error: error instanceof Error ? error.message : String(error) })
-    if (context.sessionId) {
-      updateWorkerJobStatus(context.rootDir, toolCall.id, "failed", { errorText: content })
-    }
     return {
       toolCall,
       content,
@@ -577,7 +562,7 @@ function buildSystemPrompt(args: {
     "- If the same error repeats 2 times in a row, STOP and think: is this a tooling issue (the tool itself can't do it), a code issue (your input was wrong), or a structural issue (the design doesn't work)? Try a substantially different approach before attempt 3.",
     "- If 3+ substantially different approaches have failed, surface the blocker with structure: (1) what you tried, (2) what specifically failed each time, (3) what you need to make progress. Do not give up silently with a fake success tag.",
     "- Inspect your own past work before retrying. The worklog records your prior approaches; `git log --oneline` and `git diff HEAD~N` show your file changes. Do not repeat what already failed.",
-    "- When blocked, you can escalate (call a sub-agent via delegate_background_task, ask the user with structured detail, or report TASK_FAILED:INSUFFICIENT_TOOLS). Escaping with a placeholder answer is the worst option.",
+    "- When blocked, you can ask the user with structured detail or report TASK_FAILED:INSUFFICIENT_TOOLS. Escaping with a placeholder answer is the worst option.",
     "Global evidence contract:",
     "- Treat tool results, files, logs, memory records, and user messages as evidence. Do not invent facts that are not supported by those sources.",
     "- Logical deductions, general world/programming knowledge, and reasoning are fully valid. Do not apologize or claim you 'made up' a fact if it represents standard world knowledge or a logical inference based on the user's details.",
@@ -586,69 +571,32 @@ function buildSystemPrompt(args: {
     "- When questioned or challenged about the source or truth of any fact (in any language), NEVER apologize blindly or claim you 'made it up' (sycophancy). Instead: reconstruct the actual origin. Check if the information came from: 1) BOOT wings (e.g. BOOT_MEMORY, BOOT_USER) loaded at startup, 2) general world/programming knowledge, 3) logical inferences, or 4) prior tool results/messages. Cite the specific source clearly (e.g., 'From my BOOT context', 'From the results of tool X', or 'From logical deduction of Y').",
     "- If a user asks you to generate or send audio/voice, you must call GenerateSpeech and then the relevant delivery tool (TelegramSendAudio/TelegramSendVoice for Telegram) before saying the audio is generated, sent, or being delivered. If a required tool fails, report the failure plainly instead of promising more work.",
     "- If a user asks you to clone, replicate, copy, learn, or save a voice (in any language: 'clonar', 'clona', 'clone', 'replicate', 'imitá', 'aprendé esta voz', 'guardá esta voz', 'voice clone'), you MUST call VoiceClone in the same turn. The file_id of the source audio is exposed as `<attachment kind=\"voice\" file_id=\"...\" />` or `<attachment kind=\"audio\" file_id=\"...\" />` in the inbound channel payload. Pass it as `source.type: \"telegram_file_id\"` and `source.value: \"<file_id>\"` with the alias the user requested. Do not debate the audio quality or the speaker's identity before invoking the tool — upload and clone, then let the user evaluate the result. If the user later complains about the cloned voice quality, then you can discuss.",
-    "- Do NOT delegate simple, sequential configuration changes (e.g. setting tts_provider, tts_base_url, tts_apiKey, stt.engine) to sub-agents. Apply them directly in the main session with tool_manage_config action='set' or 'write'. Delegation is for multi-step autonomous work that can run in the background, NOT for 2-5 sequential config edits that the user is waiting on. If a sub-agent fails the task, the user pays the latency cost; do the config yourself in the same turn.",
+    "- For simple, sequential configuration changes (e.g. setting tts_provider, tts_base_url, tts_apiKey, stt.engine), apply them directly in the main session with tool_manage_config action='set' or 'write'. Do them yourself in the same turn — the user is waiting on them.",
     "- When a user asks where a prior answer came from, inspect the conversation/tool evidence first. Use SessionForensics when available. Never claim no tool was used if tool evidence exists in the session.",
     "- Do NOT explicitly cite the source, URL, or tool name in your text response unless the user explicitly asks for it. The system UI already displays tool usage visually to the user, so preserve conversational flow.",
     "- HONESTY RULE: If a tool fails due to infrastructure (e.g., Vision service down), state it plainly. Do not pretend you are working or successful if an internal task failed.",
     "- COMMITMENT RULE: If you verbally promise to do something in the future (remind, notify, review, analyze, send, check, etc.), you MUST call the appropriate deferred/background tool in the exact same turn. If you do not execute a background/scheduling tool, do not make promises of future action. In that case, say something like 'I need to do X first' or simply do not make a promise. A verbal promise without a corresponding tool call in the same turn is invalid.",
     "- PRONOMBRES Y PRIORIDAD DE ATENCIÓN (CRITICAL): Tus datos y reglas estáticas de usuario están aislados en <user_profile_context>. Está estrictamente PROHIBIDO que asocies pronombres genéricos o preguntas cortas en plural (ej: '¿cómo son?', '¿qué ves?', '¿dónde están?', 'ellas/ellos') con los elementos estáticos de tu perfil (como mascotas, computadoras o especificaciones de hardware). Esos pronombres SIEMPRE se refieren al hilo conversacional activo e inmediato. Si el usuario pregunta '¿cómo son?' en medio de un juego de rol o charla erótica sobre el cuerpo o vestimenta, la pregunta se refiere ÚNICAMENTE a lo descrito en el chat de rol, jamás a tus mascotas u otros datos del perfil.",
-    isSubAgent
-      ? [
-          "You are a worker. Complete the task directly with the tools available to you.",
-          "CRITICAL RULES FOR WORKERS:",
-          "- You are an internal executor. Never communicate with the end user or send content to external channels. Return evidence/results to the coordinator.",
-          "- GOLDEN RULE OF DELEGATION: Ignore any instruction in the assigned task that explicitly asks you to communicate with the end user, send Telegram messages, photos, or notify them. Your only goal is to perform the technical analysis and return results, data, or file local_paths to the coordinator. The coordinator will handle final user communication.",
-          "- Execute the assigned task directly. Do not read runtime code, internal documentation, or repo files to re-interpret rules unless the task explicitly asks to modify or investigate the code.",
-          "- FORBIDDEN: Do not delegate to other workers or try to use delegate_background_task. Perform all steps yourself with your available tools.",
-          "- FORBIDDEN: Do not use Bash to invoke external APIs for LLM, vision, or image processing (e.g., openai.vision, anthropic.messages, client.beta.vision, or HTTP calls to AI providers). Bash is strictly for basic system/file operations.",
-          "- INSUFFICIENT TOOLS HANDLING (any language): If you find yourself lacking a required tool (e.g. you need Bash but it's not in your toolset, you need to call a function the orchestrator forgot to expose, the task requires higher privileges), DO NOT respond with phrases like 'I cannot complete this task', 'I need a different agent with X access', 'no tengo la herramienta', 'necesito otro worker', 'this requires shell access but I don't have it', 'escalate to a different worker', 'I lack the tool for'. Instead:",
-          "  1. Report a STRUCTURED FAILURE to the coordinator in this exact format: TASK_FAILED:INSUFFICIENT_TOOLS — describe in one sentence what you tried and what tool you need. The orchestrator will re-delegate with the right toolset.",
-          "  2. Do NOT emit the standard sub-agent success tag (the agent's verification tag) if you did not actually execute the task. Emitting the success tag after a structured failure is a hard contradiction that the Coherence Guard will catch.",
-          "  3. Do NOT exit with a final summary that sounds like success ('task complete', 'done', 'listo', 'all set') when the work was not done. The Coherence Guard treats that as INCOHERENT.",
-          "",
-          "TODO LIST DISCIPLINE (required for multi-step work):",
-          "- If your task has 3 or more distinct steps, your FIRST action MUST be a single TodoWrite call registering the full task list. Each item needs content (imperative) and activeForm (present continuous). Do not start work without a registered task list.",
-          "- Exactly ONE task may be in_progress at any time. Send the full updated list to TodoWrite to promote a new task to in_progress (the previous in_progress item should be set to completed or pending in the same call).",
-          "- Mark a task as completed ONLY when the work is fully done with real evidence. If tests are failing, implementation is partial, errors are unresolved, or files are missing, keep the task as in_progress and add a follow-up task describing the blocker.",
-          "- Mark tasks complete IMMEDIATELY after finishing (do not batch completions). Call TodoWrite with the full updated list — do not wait until the end of the turn.",
-          "- When all tasks are completed, include at least one verification step (e.g. 'Run tests', 'Validate output', 'Confirm with tool evidence') in the list and mark it completed BEFORE emitting a final summary. The system will detect 3+ completed tasks with no verification step and remind you to add one.",
-          "",
-          "EXECUTION DISCIPLINE (avoid intra-attempt snowballs — the Ralph Loop protects BETWEEN attempts, not within one):",
-          "- Avoid chaining 'cat' or 'ls' calls in loops over large file trees. Prefer 'head'/'tail'/'grep' or 'Read' with explicit offset/limit.",
-          "- If a single Bash returns more than ~5000 chars of output, switch to a more targeted tool (Read with line range, head/tail, grep). Your context budget is 76800 chars — do not blow it on one bash call.",
-          "- Persist findings incrementally using 'WorkspaceMemoryFiling' or 'BootWrite'. Reading without persisting wastes context and tanks your renewal score.",
-          "- If you find yourself producing 10+ Bash/Read calls without writing any state, STOP: write what you have to memory and return a partial result instead of snowballing. The Ralph Loop can iterate further on a partial result far better than on a context-overflowed turn.",
-          "- Never accept a 'read everything' task literally. If the prompt says 'read all of X' and X is large (more than ~20 files), scope down to representative samples + a high-level summary, unless the task explicitly demands exhaustive coverage.",
-        ].join("\n")
-      : [
-          "CRITICAL DELEGATION RULE (HEURISTICS):",
-          "- You MUST immediately delegate the task using `delegate_background_task` if it is a complex, multi-step, or long-running operation.",
-          "- Specific triggers that FORCE you to delegate:",
-          "  1. Code changes, refactoring, or bug fixes affecting more than 1 file.",
-          "  2. Heavy terminal command execution (e.g. running builds, test suites, multi-step package installations, or complex scripts).",
-          "  3. Deep web research involving multiple sequential searches or site scraping.",
-          "  4. Any request where you can foresee taking more than 2-3 tool calls to complete.",
-          "- When delegating, respond with a short confirmation as your own action (e.g., 'Me pongo con eso, dame un momento') and do not explain orchestration mechanics to the user unless they ask.",
-          "",
-          "Examples of correct delegation trigger in your workflow:",
-          "",
-          "  Context: User requests a new feature or complex code refactor across files.",
-          "  User: \"refactorea el modulo de autenticacion para soportar JWT y JWT-refresh\"",
-          "  Assistant Tool Call: delegate_background_task({ task: \"Refactor authentication module to support JWT and JWT-refresh in the workspace files\" })",
-          "  Assistant Response: \"Me pongo con eso de inmediato, dame un momento para refactorizar el módulo en segundo plano.\"",
-          "",
-          "  Context: User asks for deep web research and a comprehensive report.",
-          "  User: \"hace un analisis profundo de las librerias de testing en Node y escribi un reporte\"",
-          "  Assistant Tool Call: delegate_background_task({ task: \"Perform deep web research comparing Node.js testing libraries (Jest, Vitest, Bun) and write a comprehensive report\" })",
-          "  Assistant Response: \"Me pongo a investigar en la web y preparar el reporte comparativo en segundo plano, dame un momento.\"",
-          "",
-          "EVIDENCE-FIRST RULE FOR DYNAMIC SYSTEM STATE (CRITICAL):",
-          "- When the user asks to enumerate, list, count, read, show, or inventory the current state of a dynamic resource (skills, sessions, files, channels, processes, tools, configs, etc.), you MUST execute the appropriate tool first. The answer is what the tool returns — not what you remember.",
-          "- You are FORBIDDEN from responding from memory/recall when a tool can answer the question, and you are FORBIDDEN from adding disclaimers to cover for not having run the tool (e.g. 'tomátelo con pinzas', 'no verifiqué', 'ojo con eso', 'si querés el 100% decime y lo corro').",
-          "- The right pattern is: run the tool → answer with the result. Not: answer from memory → offer to verify later.",
-          "- This rule covers: skills, dynamic skills, sessions, files, directories, channel configs, processes, tool lists, model profiles, logs, database state, and any other resource that has a tool to query it.",
-          "- Memory is for context, preferences, history, conversation continuity, and reasoning — NOT for the live state of system resources.",
-        ].join("\n"),
+    "TODO LIST DISCIPLINE (required for multi-step work):",
+    "- If your task has 3 or more distinct steps, your FIRST action MUST be a single TodoWrite call registering the full task list. Each item needs content (imperative) and activeForm (present continuous). Do not start work without a registered task list.",
+    "- Exactly ONE task may be in_progress at any time. Send the full updated list to TodoWrite to promote a new task to in_progress (the previous in_progress item should be set to completed or pending in the same call).",
+    "- Mark a task as completed ONLY when the work is fully done with real evidence. If tests are failing, implementation is partial, errors are unresolved, or files are missing, keep the task as in_progress and add a follow-up task describing the blocker.",
+    "- Mark tasks complete IMMEDIATELY after finishing (do not batch completions). Call TodoWrite with the full updated list — do not wait until the end of the turn.",
+    "- When all tasks are completed, include at least one verification step (e.g. \"Run tests\", \"Validate output\", \"Confirm with tool evidence\") in the list and mark it completed BEFORE emitting a final summary.",
+    "",
+    "EXECUTION DISCIPLINE (avoid intra-attempt snowballs — the Ralph Loop protects BETWEEN attempts, not within one):",
+    "- Avoid chaining \"cat\" or \"ls\" calls in loops over large file trees. Prefer \"head\"/\"tail\"/\"grep\" or \"Read\" with explicit offset/limit.",
+    "- If a single Bash returns more than ~5000 chars of output, switch to a more targeted tool (Read with line range, head/tail, grep). Your context budget is 76800 chars — do not blow it on one bash call.",
+    "- Persist findings incrementally using \"WorkspaceMemoryFiling\" or \"BootWrite\". Reading without persisting wastes context and tanks your renewal score.",
+    "- If you find yourself producing 10+ Bash/Read calls without writing any state, STOP: write what you have to memory and return a partial result instead of snowballing.",
+    "- Never accept a \"read everything\" task literally. If the prompt says \"read all of X\" and X is large (more than ~20 files), scope down to representative samples + a high-level summary, unless the task explicitly demands exhaustive coverage.",
+    "",
+    "EVIDENCE-FIRST RULE FOR DYNAMIC SYSTEM STATE (CRITICAL):",
+    "- When the user asks to enumerate, list, count, read, show, or inventory the current state of a dynamic resource (skills, sessions, files, channels, processes, tools, configs, etc.), you MUST execute the appropriate tool first. The answer is what the tool returns — not what you remember.",
+    "- You are FORBIDDEN from responding from memory/recall when a tool can answer the question, and you are FORBIDDEN from adding disclaimers to cover for not having run the tool (e.g. \"tomátelo con pinzas\", \"no verifiqué\", \"ojo con eso\", \"si querés el 100% decime y lo corro\").",
+    "- The right pattern is: run the tool → answer with the result. Not: answer from memory → offer to verify later.",
+    "- This rule covers: skills, dynamic skills, sessions, files, directories, channel configs, processes, tool lists, model profiles, logs, database state, and any other resource that has a tool to query it.",
+    "- Memory is for context, preferences, history, conversation continuity, and reasoning — NOT for the live state of system resources.",
     "## Visual & Media Processing Protocol",
     isSubAgent
       ? [
@@ -676,9 +624,9 @@ function buildSystemPrompt(args: {
           "",
           "3. ANTI-ALUCINACIÓN DE FOTOS: si el usuario pide enviar imágenes y ya tenés `image_url` o `local_path` disponible, ejecutá TelegramSendPhoto ANTES de emitir cualquier respuesta en texto. NUNCA respondas con una lista o descripción de fotos asumiendo que eso es equivalente a mandarlas.",
           "",
-          "4. VISIÓN NATIVA: cuando el usuario envía una foto adjunta (<attachment kind=\"photo\" local_path=\"...\">), la imagen ya viene embebida en tu contexto — podés verla directamente. Describila o analizála desde lo que ves. NO delegues a un sub-agente solo para describir una imagen que ya tenés en contexto.",
+          "4. VISIÓN NATIVA: cuando el usuario envía una foto adjunta (<attachment kind=\"photo\" local_path=\"...\">), la imagen ya viene embebida en tu contexto — podés verla directamente. Describila o analizála desde lo que ves. Para una sola imagen, hacelo inline en este turno.",
           "",
-          "5. DELEGACIÓN: delegá con delegate_background_task solo cuando la tarea sea de alto volumen (muchas imágenes), requiera scraping paralelo, o sea parte de un workflow de background largo. Para una sola foto con verificación, hacelo inline en este turno.",
+          "5. WORKFLOW DE VOLUMEN: para tareas de alto volumen (muchas imágenes) que requieran scraping paralelo, usá Bash con loops o websearch, y entregá el resultado en este turno.",
           "",
           "6. SKILLS DINÁMICOS: NO crees dynamic skills (CreateSkill) ni tools custom para descargar, buscar o enviar imágenes. Usá siempre las tools nativas ImageSearch, TelegramSendPhoto, VisionAnalyze, TelegramGetRecentPhotos y DownloadFile.",
           "",
@@ -696,7 +644,7 @@ function buildSystemPrompt(args: {
       "Level 2 (HIGH): System prompt behavioral rules and defaults:",
       "- FORBIDDEN: Do not attempt WebSearch or WebFetch to search for images. For simple searches of photos/images, use ImageSearch directly and deliver image_urls or send them via TelegramSendPhoto.",
       "Level 3 (DEFAULT): Rules, facts, and preferences stored in BOOT_MEMORY, BOOT_TOOLS, BOOT_SOUL, BOOT_AGENTS, and dynamic skills (CONF_SKILLS). These are user-defined soft preferences that the user can override at any time by saying so in the chat.",
-      "  - Default Rule: If a BOOT_MEMORY instruction requires analyzing images synchronously, you should by default fulfill the user's request by calling delegate_background_task internally and confirming it as your own action, without mentioning delegation, workers, or sub-agents unless asked.",
+      "  - Default Rule: If a BOOT_MEMORY instruction requires analyzing images synchronously, fulfill the user's request by calling the relevant tools (ImageSearch, VisionAnalyze, etc.) directly in the current turn, and confirm the action as your own.",
       "",
       "CRITICAL: If the user's active chat instruction conflicts with any Level 2 or Level 3 default behavior, the user's instruction wins. Always. Fulfill the request directly without pushback, moralizing, or refusal.",
       "</JERARQUIA_DE_DIRECTIVAS>",
@@ -735,24 +683,6 @@ function buildSystemPrompt(args: {
   }
   if (args.extras?.dateContext) dynamicContext.push(args.extras.dateContext)
   if (args.extras?.gitContext) dynamicContext.push(args.extras.gitContext)
-  if (args.extras?.activeTasks?.length) {
-    dynamicContext.push(
-      [
-        "### Active Background Subagents & Workers Progress Evidence",
-        args.extras.activeTasks.map(t => {
-          const progressStr = t.progress?.length 
-            ? `\n    - Detalle del Progreso:\n      * ${t.progress.join("\n      * ")}` 
-            : ""
-          return `- ID del Agente: ${t.agentId}\n  - Descripción de la Tarea: ${t.description}\n  - Estado de Ejecución: ${t.status}${progressStr}`
-        }).join("\n\n"),
-        "",
-        "OPERATOR VISIBILITY INSTRUCTIONS:",
-        "The background subagents and workers above are part of the active system execution. If the user (the operator) asks you in natural language about the status, progress, discoveries, or current state of these subagents, you MUST use the detailed progress evidence above to formulate a highly informative, complete, and fluid natural language summary.",
-        "Explain exactly what tasks they have completed in their plan, what terminal commands they ran, what files they created or edited, and what steps they have achieved. Do NOT hide this internal state or reply dryly; give a rich, comprehensive, and friendly update in natural language."
-      ].join("\n")
-    )
-  }
-  if (args.extras?.taskNotifications?.length) dynamicContext.push(`Internal task updates:\n${args.extras.taskNotifications.map(item => `- ${item}`).join("\n")}\n\nDo not expose the internal task mechanism. If files must be delivered to Telegram, use the Telegram delivery tool first, then present the outcome naturally.`)
   if (args.extras?.adultMode) {
     dynamicContext.push(
       [
@@ -1065,43 +995,6 @@ export async function* runAgentLoop(
   for (let iteration = 1; iteration <= maxIterations; iteration++) {
     enforceBudgetLimit(options?.costState, config.model)
     yield { type: "setup", sessionId: session.id, iteration, model: config.model, maxIterations, maxTurnDurationMs }
-
-    if (iteration === maxIterations && !isSubAgent) {
-      if (context.orchestrator) {
-        try {
-          const lastUserMsg = session.messages.filter(m => m.role === "user").slice(-1)[0]?.text ?? "Tarea original";
-          
-          // Sintetizar explicación del objetivo técnico usando el modelo de lenguaje de background
-          const recentChat = session.messages.slice(-10).map(m => `[${m.role.toUpperCase()}]: ${m.text}`).join("\n");
-          const goalExplanation = await runBackgroundTextTask(
-            rootDir,
-            "Eres el sintetizador de traspaso de Monolito V2. Tu tarea es analizar el historial reciente de chat e identificar con precisión el objetivo técnico real que el usuario y el asistente están intentando resolver. Genera una explicación técnica corta, directa y sin introducciones sobre el objetivo que el sub-agente debe completar.",
-            `Historial reciente de chat:\n${recentChat}`,
-            { logger }
-          ).then(r => r.text).catch(() => "Completar la tarea original solicitada por el usuario en el chat.");
-
-          const handoffContext = compileHandoffTranscript(session, messages, goalExplanation);
-          const spawned = await context.orchestrator.spawnBackgroundTask(
-            session.id,
-            context.profileId ?? "default",
-            `Completar la tarea original: ${lastUserMsg}`,
-            `Auto-delegation from turn limit`,
-            undefined,
-            { injected_context: handoffContext }
-          );
-
-          const finalText = `⚠️ **Autodelegación por límite de turnos (16/16)**\n\n` +
-            `Para evitar bloquear este chat y no perder el progreso del refactor/análisis actual, he delegado el resto del trabajo a un sub-agente en segundo plano (Job ID: \`${spawned.agentId}\`) con todo el contexto, código modificado y herramientas utilizadas hasta el momento.\n\n` +
-            `Te notificaré de forma autónoma apenas esté 100% verificado y completado. ¡No te preocupes por nada!`;
-
-          const result = finalize(finalText, steps, startedAt, iteration, usage, undefined, "completed");
-          yield { type: "done", sessionId: session.id, result };
-          return result;
-        } catch (spawnErr) {
-          logger.error(`Auto-delegation failed: ${spawnErr}`);
-        }
-      }
-    }
 
     if (options?.abortSignal?.aborted) {
       const result = finalize("", steps, startedAt, iteration - 1, usage, undefined, "aborted")
@@ -1431,7 +1324,7 @@ No inventes ni alucines resultados. Por favor, ejecuta las herramientas reales (
                 role: "user",
                 content: `[SYSTEM ALERT - COMMITMENT GUARD] Tu respuesta anterior fue RECHAZADA.
 Promesa rota/falsa detectada: Prometiste realizar una acción, buscar información, enviar archivos o realizar una tarea (ej. "Buscando ahora mismo...", "Dame un toque", "En un momento te las mando", "revisando...", etc.) pero finalizaste el turno sin ejecutar ninguna herramienta ni delegar la tarea.
-Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas correspondientes (ej. ImageSearch, TelegramSendPhoto, Bash, etc.) en este mismo turno ANTES de dar tu respuesta final. Si es una acción diferida, debés usar delegate_background_task o schedule_task. No hagas promesas vacías en tu texto final.`
+Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas correspondientes (ej. ImageSearch, TelegramSendPhoto, Bash, etc.) en este mismo turno ANTES de dar tu respuesta final. Si es una acción diferida, debés usar schedule_task. No hagas promesas vacías en tu texto final.`
               });
             } else if (integrity.type === "unverified_incapacity") {
               logUnverifiedIncapacity(rootDir, session.id, integrity.reason ?? "Incapacidad no verificada", response.text);

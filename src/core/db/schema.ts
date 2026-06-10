@@ -1,5 +1,3 @@
-export type WorkerJobStatus = "pending" | "running" | "completed" | "failed"
-
 export const PALACE_NAMESPACE = {
   boot: "BOOT_WING",
   config: "CONFIG_WING",
@@ -98,53 +96,3 @@ export const PALACE_SCHEMA_SQL = `
     ON palace_nodes(namespace, wing, room, node_key, profile_scope)
     WHERE mutable = 1 AND superseded_at IS NULL AND node_key IS NOT NULL;
 `
-
-export type BackgroundTaskStatus = "PENDING" | "IN_PROGRESS" | "HANDOFF" | "DONE" | "FAILED"
-
-export interface BackgroundTask {
-  id: string
-  session_id: string
-  agent_id: string | null
-  status: BackgroundTaskStatus
-  task_payload: string
-  result_diff: string | null
-  error_text: string | null
-  created_at: string
-  updated_at: string
-  handoff_at: string | null
-}
-
-export const BACKGROUND_TASKS_SCHEMA_SQL = `
-  CREATE TABLE IF NOT EXISTS background_tasks (
-    id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    agent_id TEXT,
-    status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'IN_PROGRESS', 'HANDOFF', 'DONE', 'FAILED')),
-    task_payload TEXT NOT NULL,
-    result_diff TEXT,
-    error_text TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    handoff_at TEXT
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_bg_tasks_session
-    ON background_tasks(session_id);
-  CREATE INDEX IF NOT EXISTS idx_bg_tasks_status
-    ON background_tasks(status);
-  CREATE INDEX IF NOT EXISTS idx_bg_tasks_agent
-    ON background_tasks(agent_id);
-`
-
-export interface WorkerJob {
-  id: string
-  session_id: string
-  profile_id: string | null
-  tool_name: string
-  tool_args: string
-  status: WorkerJobStatus
-  result_text: string | null
-  error_text: string | null
-  created_at: string
-  updated_at: string
-}

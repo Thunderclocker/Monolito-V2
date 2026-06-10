@@ -28,17 +28,8 @@ import {
   createProfile,
   getDb,
   getSemanticMessageContext,
-  createBackgroundTaskGroup,
-  incrementBackgroundTaskGroup,
-  decrementBackgroundTaskGroup,
-  sealBackgroundTaskGroup,
-  deleteBackgroundTaskGroup,
   readConfigWing,
   writeConfigWing,
-  listRecoverableWorkerJobs,
-  updateWorkerJobStatus,
-  hasActiveWorkersForSession,
-  isSessionResearchSilent,
   reconcileSystemWings,
   getVectorMemoryStatus,
   closeMemoryDb,
@@ -74,14 +65,13 @@ import { readWebSearchConfig, writeWebSearchConfig, type WebSearchProvider } fro
 import { getDateContext, getGitContext } from "../context/gitContext.ts"
 import { getWorkspaceContext } from "../context/workspaceContext.ts"
 import { normalizeToolInputPayload } from "./toolInput.ts"
-import { AgentOrchestrator, evaluateTopLevelRalphGate, TOP_LEVEL_RALPH_MAX_ATTEMPTS, checkDelegateThreshold } from "./orchestrator.ts"
+import { evaluateTopLevelRalphGate, TOP_LEVEL_RALPH_MAX_ATTEMPTS } from "./topLevelRalphGate.ts"
 import { renderToolFinish, renderToolStart, renderToolStartText } from "../renderer/toolRenderer.ts"
 import { checkToolPermission, runLifecycleHooks, runPostToolHooks } from "./permissions.ts"
 
 import { createLogger, createSessionContext, runWithContext, type Logger } from "../logging/logger.ts"
 
 const logger = createLogger("runtime")
-import type { DelegationTask } from "./orchestrator.ts"
 import { normalizeTtsConfig } from "../channels/config.ts"
 import { setSideEffectGuardLogger } from "./sideEffectGuard.ts"
 import {
@@ -465,69 +455,9 @@ function getTelegramChatId(sessionId: string) {
   return sessionId.startsWith("telegram-") ? sessionId.slice("telegram-".length) : null
 }
 
-function isTaskNotificationText(text: string) {
-  const normalized = text.trim()
-  return normalized.startsWith("<task-notification>") && normalized.includes("</task-notification>")
-}
-
-function extractXmlTagValue(text: string, tag: string) {
-  const match = text.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "i"))
-  return match ? match[1]!.trim() : ""
-}
-
-function summarizeTaskNotification(text: string) {
-  const normalized = text.trim()
-  const status = extractXmlTagValue(normalized, "status") || (/Status:\s*([^\n]+)/i.exec(normalized)?.[1]?.trim() ?? "")
-  const summary = extractXmlTagValue(normalized, "summary")
-  const result = extractXmlTagValue(normalized, "result") || (/Result:\s*([\s\S]*?)<\/task-notification>/i.exec(normalized)?.[1]?.trim() ?? "")
-  const compactResult = result.replace(/\s+/g, " ").trim()
-  return [
-    status ? `status=${status}` : "",
-    summary || "",
-    compactResult ? `result=${compactResult.slice(0, 2000)}` : "",
-  ].filter(Boolean).join(" | ")
-}
-
-function collectRecentTaskNotifications(session: SessionRecord, limit = 3) {
-  const notifications: string[] = []
-  const messages = session.messages ?? []
-  const lastAssistantIndex = messages.findLastIndex(m => m.role === "assistant")
-  const startIndex = lastAssistantIndex + 1
-  const scanLimit = Math.min(messages.length - startIndex, 25)
-  for (let index = messages.length - 1; index >= messages.length - scanLimit; index -= 1) {
-    const message = messages[index]
-    if (!message || message.role !== "user") continue
-    const text = message.text.trim()
-    if (/^\[(Completed|Failed|killed|running|pending|in_progress)\]/i.test(text)) {
-      continue
-    }
-    if (isTaskNotificationText(message.text)) {
-      notifications.push(summarizeTaskNotification(message.text))
-      if (notifications.length >= limit) break
-    } else {
-      break
-    }
-  }
-  return notifications.reverse()
-}
-
-function collectAllRecentTaskNotifications(session: SessionRecord, limit = 5) {
-  const notifications: string[] = []
-  const messages = session.messages ?? []
-  const scanLimit = Math.min(messages.length, 30)
-  for (let index = messages.length - 1; index >= messages.length - scanLimit; index -= 1) {
-    const message = messages[index]
-    if (message && isTaskNotificationText(message.text)) {
-      notifications.push(summarizeTaskNotification(message.text))
-      if (notifications.length >= limit) break
-    }
-  }
-  return notifications.reverse()
-}
-
 function isRagEligibleMessage(message: SessionRecord["messages"][number]) {
   const text = message.text.trim()
-  return text.length > 0 && !text.startsWith("/") && !isTaskNotificationText(text)
+  return text.length > 0 && !text.startsWith("/")
 }
 
 function formatSemanticContext(rows: ReturnType<typeof getSemanticMessageContext>, currentSessionId: string, currentUserText: string) {
@@ -607,14 +537,6 @@ async function prepareSemanticRagSession(rootDir: string, session: SessionRecord
       ],
     }
   }
-}
-
-function buildBackgroundWakeupPrompt(notifications: string[]) {
-  return [
-    "[SYSTEM EVENT: BACKGROUND_WAKEUP]",
-    "The following internal background tasks completed or updated:",
-    ...notifications.map(item => `- ${item}`),
-  ].join("\n")
 }
 
 function getCleanStartupMessageAndDirective(prompt: string): { messageText: string; systemDirective?: string } {
@@ -739,8 +661,8 @@ export function collectRecentChannelAttachments(
 function renderAttachmentBlock(attachments: ChannelAttachment[]): string {
   if (attachments.length === 0) return ""
   const lines: string[] = [
-    "<delegation-attachments>",
-    "The parent session's most recent inbound channel payload(s) included these attachments.",
+    "<channel-attachments>",
+    "The session's most recent inbound channel payload(s) included these attachments.",
     "When the user's request refers to a media file (e.g. 'ese audio', 'esa imagen', 'este video'),",
     "use the corresponding file_id directly with the right tool (e.g. VoiceClone source.type='telegram_file_id').",
     "Do not ask the user to re-send the file — the attachment is here.",
@@ -759,7 +681,7 @@ function renderAttachmentBlock(attachments: ChannelAttachment[]): string {
     if (a.caption) parts.push(`caption=${JSON.stringify(a.caption).slice(0, 200)}`)
     lines.push(`- [${a.source}${a.chatId ? ` chat_id=${a.chatId}` : ""}] ${parts.join(" ")}`)
   }
-  lines.push("</delegation-attachments>")
+  lines.push("</channel-attachments>")
   return lines.join("\n")
 }
 
@@ -920,12 +842,6 @@ export class MonolitoV2Runtime {
   // stuck on the same error every interval.
   private _memoryConsolidationFailures = 0
   private _lastMemoryConsolidationFailureAt = 0
-  // Auto-delegate gate state. Per-session, reset at the start of each
-  // top-level turn. When the gate fires, _delegationTriggered is set
-  // with the reason + the user message that should be passed to the
-  // sub-agent.
-  private _turnExecutedTools: Map<string, string[]> = new Map()
-  private _delegationTriggered: { sessionId: string; reason: string; lastUserText: string; profileId: string; recentAttachments?: ChannelAttachment[] } | null = null
   private costState = createCostState()
   private adultModeDisabledSessions = new Set<string>()
   private pendingPermissions = new Map<string, { resolve: (decision: "allow" | "deny" | "ask") => void }>()
@@ -1119,13 +1035,11 @@ Read the current state:
 - Recent conversation history (last 10-20 messages)
 - Memory palace recalls relevant to active tasks
 - Knowledge graph facts added or invalidated recently
-- Any background workers that completed since the last user message
 - Any error or stall alerts in the worklog
 - The current date and time
 
 Decide if the user would want a proactive notification. Examples of
 "yes, notify":
-- A background worker completed with a result the user is waiting for
 - A scheduled task fired and the user should know
 - Something in the conversation went wrong (tool failure, rate limit, etc.)
 - A pattern suggests the user might be stuck (repeating same tool)
@@ -1150,13 +1064,9 @@ reference this automated system check in your response. Do not say
   private stopRequested = false
   private toolStallState = new Map<string, { key: string; count: number }>()
   private stallAlerts = new Map<string, string>()
-  private currentBatchGroups = new Map<string, string>()
-  private pendingBackgroundWakeups = new Map<string, { profileId: string }>()
   private pendingUserMessages = new Map<string, PendingSessionInput[]>()
   private sessionDeliveryContexts = new Map<string, DeliveryContext>()
   private deliveryHandlers = new Map<string, DeliveryHandler>()
-
-  readonly orchestrator: AgentOrchestrator
 
   private describeResumeReason(session: SessionRecord) {
     const lastEntry = session.worklog.at(-1)
@@ -1175,7 +1085,6 @@ reference this automated system check in your response. Do not say
 
   constructor(rootDir: string) {
     this.rootDir = rootDir
-    this.orchestrator = new AgentOrchestrator(this)
     // Wire the side-effect guard to the runtime logger so that when the
     // guard rejects a tool the event lands in ~/.monolito/logs/monolitod.log
     // (and stdout) as a structured `[SideEffectGuard] BLOCKED ...` line.
@@ -1248,72 +1157,6 @@ reference this automated system check in your response. Do not say
     return syncMissingEmbeddings(this.rootDir)
   }
 
-  recoverWorkerJobs() {
-    let recovered = this.orchestrator.recoverPersistedTasks()
-    for (const job of listRecoverableWorkerJobs(this.rootDir)) {
-      if (job.tool_name === "background_worker") continue
-      const session = getSession(this.rootDir, job.session_id)
-      if (!session) {
-        updateWorkerJobStatus(this.rootDir, job.id, "failed", { errorText: "Session not found during daemon recovery." })
-        continue
-      }
-      let input: Record<string, unknown>
-      try {
-        input = normalizeToolInputPayload(JSON.parse(job.tool_args)) as Record<string, unknown>
-      } catch (error) {
-        updateWorkerJobStatus(this.rootDir, job.id, "failed", {
-          errorText: `Could not parse persisted tool args: ${error instanceof Error ? error.message : String(error)}`,
-        })
-        continue
-      }
-      const profileId = job.profile_id ?? session.profileId ?? "default"
-      const abortController = new AbortController()
-      const context: ToolContext = {
-        rootDir: this.rootDir,
-        cwd: this.rootDir,
-        abortSignal: abortController.signal,
-        sessionId: job.session_id,
-        profileId,
-        orchestrator: this.orchestrator,
-        runtime: this,
-        getMcpClient: async serverName => this.ensureMcpClient(serverName, job.session_id),
-      }
-      recovered++
-      void (async () => {
-        updateWorkerJobStatus(this.rootDir, job.id, "running")
-        try {
-          const output = await this.executeTool(job.session_id, job.tool_name, input, context, job.id, profileId)
-          const resultText = typeof output === "string" ? output : JSON.stringify(output, null, 2)
-          updateWorkerJobStatus(this.rootDir, job.id, "completed", { resultText })
-          appendMessage(this.rootDir, job.session_id, "user", [
-            "<tool-recovery-result>",
-            `tool_use_id: ${job.id}`,
-            `tool_name: ${job.tool_name}`,
-            "status: completed",
-            resultText,
-            "</tool-recovery-result>",
-          ].join("\n"))
-          this.enqueueBackgroundWakeup(job.session_id, profileId)
-          this.flushPendingBackgroundWakeup(job.session_id)
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          updateWorkerJobStatus(this.rootDir, job.id, "failed", { errorText: message })
-          appendMessage(this.rootDir, job.session_id, "user", [
-            "<tool-recovery-result>",
-            `tool_use_id: ${job.id}`,
-            `tool_name: ${job.tool_name}`,
-            "status: failed",
-            message,
-            "</tool-recovery-result>",
-          ].join("\n"))
-          this.enqueueBackgroundWakeup(job.session_id, profileId)
-          this.flushPendingBackgroundWakeup(job.session_id)
-        }
-      })()
-    }
-    return recovered
-  }
-
   registerDeliveryChannel(channel: string, handler: DeliveryHandler) {
     const key = channel.trim().toLowerCase()
     if (!key) throw new Error("Delivery channel name is required")
@@ -1333,37 +1176,6 @@ reference this automated system check in your response. Do not say
     if (nextCount >= 2) {
       this.stallAlerts.set(sessionId, STALL_ALERT_MESSAGE)
     }
-  }
-
-  acquireJobGroupForBatch(sessionId: string): string {
-    const existing = this.currentBatchGroups.get(sessionId)
-    if (existing) {
-      incrementBackgroundTaskGroup(this.rootDir, existing)
-      return existing
-    }
-    const jobGroupId = createBackgroundTaskGroup(this.rootDir, sessionId)
-    this.currentBatchGroups.set(sessionId, jobGroupId)
-    return jobGroupId
-  }
-
-  private enqueueBackgroundWakeup(sessionId: string, profileId: string) {
-    if (!this.pendingBackgroundWakeups.has(sessionId)) {
-      this.pendingBackgroundWakeups.set(sessionId, { profileId })
-    }
-  }
-
-  private consumeBackgroundWakeup(sessionId: string) {
-    const pending = this.pendingBackgroundWakeups.get(sessionId)
-    if (!pending) return null
-    this.pendingBackgroundWakeups.delete(sessionId)
-    return pending
-  }
-
-  private flushPendingBackgroundWakeup(sessionId: string) {
-    if (this.activeSessions.has(sessionId)) return
-    const pending = this.consumeBackgroundWakeup(sessionId)
-    if (!pending) return
-    void this.runProactiveBackgroundTurn(sessionId, pending.profileId, 0)
   }
 
   private flushPendingUserMessage(sessionId: string) {
@@ -1387,7 +1199,6 @@ reference this automated system check in your response. Do not say
   private releaseSessionLock(sessionId: string) {
     this.activeSessions.delete(sessionId)
     this.flushPendingUserMessage(sessionId)
-    this.flushPendingBackgroundWakeup(sessionId)
   }
 
   private rememberDeliveryContext(sessionId: string, delivery?: DeliveryContext) {
@@ -1412,88 +1223,6 @@ reference this automated system check in your response. Do not say
     } catch (error) {
       logger.error(logMessage, error)
     }
-  }
-
-  async handleBackgroundDelegationResult(task: DelegationTask, error?: string) {
-    const sessionId = task.parentSessionId
-    const session = getSession(this.rootDir, sessionId)
-    if (!session) return
-    const profileId = task.profileId || "default"
-    const rawResult = task.result?.trim()
-      ? task.result.trim()
-      : error?.trim()
-        ? `Error: ${error.trim()}`
-        : `Background task ${task.status}`
-    const ERROR_PATTERNS = [
-      /sub-agents? cannot/i,
-      /cannot delegate/i,
-      /model\/provider failed/i,
-      /recovery interceptor exhausted/i,
-      /could not extract useful findings/i,
-    ]
-    const looksLikeError = ERROR_PATTERNS.some(re => re.test(rawResult))
-    const effectiveStatus = looksLikeError ? "failed" : task.status
-    const looksLikeAck = !looksLikeError && rawResult.length < 80 && ACK_PATTERNS.some(re => re.test(rawResult))
-    const failureNote = effectiveStatus === "failed" || effectiveStatus === "killed"
-      ? sanitizeWorkerFailureNote(rawResult, effectiveStatus)
-      : ""
-    const directive = isMainSession(sessionId)
-      ? `\n\n[SYSTEM DIRECTIVE]\nA background worker task has completed. Retrieve the Result above, translate it to your normal assistant voice, and deliver a direct update/response to the user now answering their immediate query. Do not mention XML tags, agent-ids, or background workers. Keep the execution details private.`
-      : `\n\n[SYSTEM DIRECTIVE]\nA sub-agent task has completed. Convert this completion into a concise internal orchestration update for your parent agent in your own words. Do not mention XML tags or system/log details.`
-
-    const xmlPayload = [
-      "<task-notification>",
-      `Internal task ID: ${task.id}`,
-      `Status: ${effectiveStatus}`,
-      effectiveStatus === "completed" && looksLikeAck ? "Note: Internal task returned only an ACK. Do not present this as a final answer." : "",
-      failureNote,
-      effectiveStatus === "completed" && !looksLikeAck ? `Result: ${rawResult}` : "",
-      `</task-notification>${directive}`
-    ].filter(Boolean).join("\n")
-
-    appendMessage(this.rootDir, sessionId, "user", xmlPayload)
-
-    // Phase 4: Add a visible, human-readable completion message that survives
-    // message filtering. This ensures the task resolution is explicit in session
-    // history and visible to MemoryAgent and future context windows.
-    const completionNote = effectiveStatus === "completed"
-      ? `[Completed] ${task.description}. Result: ${rawResult.slice(0, 300)}${rawResult.length > 300 ? "..." : ""}`
-      : effectiveStatus === "failed" || effectiveStatus === "killed"
-        ? `[Failed] ${task.description}. Error: ${rawResult.slice(0, 200)}`
-        : `[${effectiveStatus}] ${task.description}`
-    appendMessage(this.rootDir, sessionId, "user", completionNote)
-
-    appendWorklog(this.rootDir, sessionId, {
-      type: "note",
-      summary: `Internal task ${task.status}: ${task.description}`,
-    })
-
-    // Fan-in barrier: only the last worker of a sealed group wakes the coordinator.
-    if (task.jobGroupId) {
-      const state = decrementBackgroundTaskGroup(this.rootDir, task.jobGroupId)
-      if (!state) {
-        // Group row missing — fall through to wake-up as safe fallback.
-      } else if (state.pending > 0) {
-        return // other workers still pending
-      } else if (state.sealed === 0) {
-        return // batch not sealed yet — the sealer will fire the wake-up
-      } else {
-        deleteBackgroundTaskGroup(this.rootDir, task.jobGroupId)
-      }
-    }
-
-    const isSilent = isSessionResearchSilent(this.rootDir, sessionId, profileId)
-    if (isSilent) {
-      appendWorklog(this.rootDir, sessionId, {
-        type: "note",
-        summary: `Background task completed silently: session is configured for silent research.`,
-      })
-      logger.info(`[runtime] Background task completed silently for session ${sessionId} due to pref_silent_research.`)
-      return
-    }
-
-    this.enqueueBackgroundWakeup(sessionId, profileId)
-    this.flushPendingBackgroundWakeup(sessionId)
   }
 
   private async runMemoryConsolidation(sessionId: string, profileId: string) {
@@ -1550,8 +1279,6 @@ reference this automated system check in your response. Do not say
       const session = getSession(this.rootDir, sessionId)
       if (!session) return
 
-      const allTasks = this.orchestrator.getTaskSnapshot(sessionId)
-      const recentNotifications = collectAllRecentTaskNotifications(session)
       const promptOverride = `You are MemoryAgent, a silent and automatic memory consolidation agent of Monolito V2.
 
 Your only mission is to read the recent conversation and correctly save all important information into the Memory Palace.
@@ -1571,11 +1298,7 @@ Mandatory rules:
 7. Task state rules:
    - Tasks with status "completed" or "done" are RESOLVED. File them in Memory Palace under "tasks" room with status "resolved".
    - Never mark a task as pending if it already has a completion result available in context.
-   - If a task notification shows the task succeeded, treat it as resolved, not pending.
-8. Current task state:
-   - Active tasks (pending/running): ${allTasks.filter(t => t.status === "pending" || t.status === "running").length}
-   - Recent task notifications: ${recentNotifications.length > 0 ? recentNotifications.join("; ") : "none"}
-9. NEVER record or save rules or preferences stating that a rule or preference is "absolute", "cannot be overridden", "mandatory", "non-overridable", "cannot be bypassed", or similar. The user's active, direct commands always override any stored preference or system memory, and the memories you synthesize must reflect this hierarchy (e.g., "User prefers X, but can override at any time").`;
+8. NEVER record or save rules or preferences stating that a rule or preference is "absolute", "cannot be overridden", "mandatory", "non-overridable", "cannot be bypassed", or similar. The user's active, direct commands always override any stored preference or system memory, and the memories you synthesize must reflect this hierarchy (e.g., "User prefers X, but can override at any time").`;
 
       const syntheticSession: SessionRecord = {
         ...session,
@@ -1598,7 +1321,7 @@ Please analyze the preceding conversation and run your memory consolidation tool
             sessionId,
             tool,
             input,
-            { ...context, abortSignal: abortController.signal, sessionId, orchestrator: this.orchestrator, runtime: this },
+            { ...context, abortSignal: abortController.signal, sessionId, runtime: this },
             toolUseId,
             profileId,
           ),
@@ -1608,7 +1331,6 @@ Please analyze the preceding conversation and run your memory consolidation tool
           abortSignal: abortController.signal,
           getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
           profileId,
-          orchestrator: this.orchestrator,
         },
         {
           systemPromptOverride: promptOverride,
@@ -1621,10 +1343,6 @@ Please analyze the preceding conversation and run your memory consolidation tool
           // and the phaseTimings worklog entry will tell us where the time
           // went.
           maxTurnDurationMs: 180_000,
-          contextExtras: {
-            activeTasks: allTasks,
-            taskNotifications: recentNotifications,
-          },
         },
       )
 
@@ -1972,7 +1690,7 @@ Review the existing skill library and apply the curation heuristics in your inst
           sessionId,
           tool,
           input,
-          { ...context, abortSignal: abortController.signal, sessionId, orchestrator: this.orchestrator, runtime: this },
+          { ...context, abortSignal: abortController.signal, sessionId, runtime: this },
           toolUseId,
           profileId,
         ),
@@ -1982,7 +1700,6 @@ Review the existing skill library and apply the curation heuristics in your inst
         abortSignal: abortController.signal,
         getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
         profileId,
-        orchestrator: this.orchestrator,
         allowedToolNames,
         isSkillsSynthetic: true,
       },
@@ -2025,7 +1742,6 @@ Review the existing skill library and apply the curation heuristics in your inst
   ) {
     if (!turn || turn.error) return
     if (this._isSyntheticSkillsTurn) return
-    if (sessionId?.startsWith("agent-")) return
 
     let skillsConfig: import("../config/configWings.ts").SkillsConfig | null = null
     try {
@@ -2059,7 +1775,7 @@ Review the existing skill library and apply the curation heuristics in your inst
 
   private async runProactiveBackgroundTurn(sessionId: string, profileId: string, attempt: number, heartbeatPrompt?: string) {
     if (this.activeSessions.has(sessionId)) {
-      this.enqueueBackgroundWakeup(sessionId, profileId)
+      // Re-queue: the session is busy; the heartbeat will retry on the next tick.
       return
     }
 
@@ -2075,44 +1791,26 @@ Review the existing skill library and apply the curation heuristics in your inst
 
       const session = getSession(this.rootDir, sessionId)
       if (!session) return
-      const taskNotifications = collectRecentTaskNotifications(session)
       const sessionMessages = session.messages ?? []
 
-      // The previous code short-circuited here if there were no pending
-      // tasks and no task notifications, but that defeated the entire
-      // point of the proactive heartbeat: the model never got a chance
-      // to decide if there was something urgent the user should know.
-      // We removed that short-circuit in the checkAndTriggerHeartbeat
-      // refactor — the model now always gets the HEARTBEAT_CHECK prompt
-      // and decides for itself whether to emit HEARTBEAT_OK or a real
-      // notification. If it says HEARTBEAT_OK, the runProactive
-      // BackgroundTurn handler at the end of this function discards
-      // the response silently (worklog entry included).
-      const backgroundSession = taskNotifications.length > 0
+      // Build a synthetic user message that prompts the model to check
+      // for heartbeat-relevant work. The model decides whether to emit
+      // HEARTBEAT_OK (silently discarded) or a real notification. If
+      // no heartbeat prompt is supplied, the model is asked to do its
+      // normal work.
+      const backgroundSession: SessionRecord = heartbeatPrompt
         ? {
             ...session,
             messages: [
-              ...sessionMessages.filter(message => !isTaskNotificationText(message.text)),
+              ...sessionMessages,
               {
                 role: "user" as const,
-                text: buildBackgroundWakeupPrompt(taskNotifications),
+                text: heartbeatPrompt,
                 at: new Date().toISOString(),
               },
             ],
           }
-        : heartbeatPrompt
-          ? {
-              ...session,
-              messages: [
-                ...sessionMessages,
-                {
-                  role: "user" as const,
-                  text: heartbeatPrompt,
-                  at: new Date().toISOString(),
-                },
-              ],
-            }
-          : session
+        : session
       const ragSession = await prepareSemanticRagSession(this.rootDir, backgroundSession, profileId)
 
       const isMainSession = !session.id.startsWith("agent-") && !session.id.startsWith("telegram-")
@@ -2123,29 +1821,16 @@ Review the existing skill library and apply the curation heuristics in your inst
       ])
       const webSearchConfig = readWebSearchConfig()
 
-      const systemDirective = taskNotifications.length > 0
-        ? [
-            "You are the coordinator in a background wake-up turn. Use the latest internal task updates to answer the user now.",
-            "Rules for this turn:",
-            "- Do not spawn new agents, do not delegate more work, and do not retry automatically.",
-            "- If a worker failed, state that plainly and stop unless the user explicitly asked you to continue researching.",
-            "- If the updates contain usable findings, present them directly as your completed work.",
-            "- If the updates contain local_path values that should be delivered to Telegram, call TelegramSendPhoto/TelegramSendDocument yourself before saying they were sent.",
-            "- Do not mention workers, agents, background tasks, task notifications, or internal orchestration unless the user explicitly asks how it was done.",
-          ].join("\n")
-        : undefined
-
       const turn = await runAssistantTurn(
         ragSession,
         this.rootDir,
-        async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, abortSignal: abortController.signal, sessionId, orchestrator: this.orchestrator, runtime: this }, toolUseId, profileId),
+        async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, abortSignal: abortController.signal, sessionId, runtime: this }, toolUseId, profileId),
         {
           rootDir: this.rootDir,
           cwd: this.rootDir,
           abortSignal: abortController.signal,
           getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
           profileId,
-          orchestrator: this.orchestrator,
         },
         {
           contextExtras: {
@@ -2154,9 +1839,6 @@ Review the existing skill library and apply the curation heuristics in your inst
             workspaceContext,
             adultMode: this.hasAdultMode(sessionId),
             webSearchProvider: webSearchConfig.provider,
-            taskNotifications,
-            activeTasks: this.orchestrator.getTaskSnapshot(sessionId).filter(t => t.status === "pending" || t.status === "running"),
-            systemDirective,
           },
           costState: this.costState,
           abortSignal: abortController.signal,
@@ -2283,7 +1965,7 @@ Review the existing skill library and apply the curation heuristics in your inst
   }
 
   clearSession(sessionId: string) {
-    resetSession(this.rootDir, sessionId, { summary: "Session reset via orchestrator clear" })
+    resetSession(this.rootDir, sessionId, { summary: "Session reset" })
     this.emit({ type: "session.resumed", sessionId })
   }
 
@@ -2326,9 +2008,6 @@ Review the existing skill library and apply the curation heuristics in your inst
       const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
 
       let userText = text
-      if (hasActiveWorkersForSession(this.rootDir, sessionId)) {
-        userText += "\n\n<system_note>Note: There is active internal work for this session. Use list_active_workers for factual progress if asked. Do not expose workers/agents/delegation unless the user explicitly asks about internal mechanics.</system_note>"
-      }
 
       appendMessage(this.rootDir, sessionId, "user", userText)
       appendWorklog(this.rootDir, sessionId, {
@@ -2460,7 +2139,6 @@ Review the existing skill library and apply the curation heuristics in your inst
                 getMcpClient: async (serverName: string) => this.ensureMcpClient(serverName, sessionId),
                 profileId,
                 sessionId,
-                orchestrator: this.orchestrator,
                 logger: instanceLogger,
               }
               const downloaded = await this.executeTool(sessionId, "TelegramDownloadFile", { file_id: fileId }, toolContext, undefined, profileId) as { local_path?: string }
@@ -2504,10 +2182,9 @@ Review the existing skill library and apply the curation heuristics in your inst
         // Top-level Ralph loop (Stop-hook analog). If the session has
         // unfinished TodoWrite items (pending or in_progress) after the
         // model turn, the runtime refuses to deliver the assistant reply
-        // and re-feeds a structured retry prompt. This mirrors the
-        // sub-agent Ralph Loop in AgentOrchestrator.executeTurn and the
-        // Ralph Wiggum Stop hook in upstream reference: the runtime has the
-        // last word, not the LLM.
+        // and re-feeds a structured retry prompt. Mirrors the Ralph Wiggum
+        // Stop hook in upstream reference: the runtime has the last word,
+        // not the LLM.
         let ralphAttempt = 1
         const ralphAttemptHistory: Array<{ attempt: number; kind: string; summary: string }> = []
         let turn: AssistantTurnResult | null = null
@@ -2529,8 +2206,7 @@ Review the existing skill library and apply the curation heuristics in your inst
         while (true) {
           const apiStartedAt = Date.now()
           // Re-read the session on subsequent iterations so any persisted
-          // state (e.g. user message the orchestrator already appended via
-          // a sub-agent's <task-notification>) is visible to the agent loop.
+          // state is visible to the agent loop.
           if (ralphAttempt > 1) {
             const refreshed = getSession(this.rootDir, sessionId)
             if (refreshed) {
@@ -2552,17 +2228,13 @@ Review the existing skill library and apply the curation heuristics in your inst
               ],
             }
           }
-          // Reset the auto-delegate gate at the start of each turn /
-          // each Ralph iteration. The callback below records tool
-          // names and checks the threshold.
-          this._turnExecutedTools.set(sessionId, [])
-          this._delegationTriggered = null
+          // Reset ephemeral Ralph state at the start of each iteration.
           turn = await this.consumeAgentLoop(
             runAgentLoop(
               effectiveRagSession,
               this.rootDir,
               async (tool, input, context, toolUseId) =>
-                this.executeToolGated(sessionId, tool, input, { ...context, abortSignal: abortController.signal, sessionId, orchestrator: this.orchestrator, runtime: this }, toolUseId, profileId),
+                this.executeTool(sessionId, tool, input, { ...context, abortSignal: abortController.signal, sessionId, runtime: this }, toolUseId, profileId),
               {
                 rootDir: this.rootDir,
                 cwd: effectiveCwd,
@@ -2570,7 +2242,6 @@ Review the existing skill library and apply the curation heuristics in your inst
                 traceId,
                 getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
                 profileId,
-                orchestrator: this.orchestrator,
                 logger: instanceLogger,
               },
               {
@@ -2581,8 +2252,6 @@ Review the existing skill library and apply the curation heuristics in your inst
                   adultMode: this.hasAdultMode(sessionId),
                   webSearchProvider: webSearchConfig.provider,
                   stallAlert: this.consumeStallAlert(sessionId),
-                  activeTasks: this.orchestrator.getTaskSnapshot(sessionId).filter(t => t.status === "pending" || t.status === "running"),
-                  taskNotifications: collectAllRecentTaskNotifications(effectiveRagSession),
                 },
                 costState: this.costState,
                 abortSignal: abortController.signal,
@@ -2664,28 +2333,6 @@ Review the existing skill library and apply the curation heuristics in your inst
         }
 
         if (!turn) throw new Error("No turn produced by agent loop")
-
-        // Auto-delegate gate check: if the agent loop was aborted because
-        // the model started running multi-step Bash work without first
-        // planning or delegating, take over and spawn a sub-agent.
-        if (this._delegationTriggered) {
-          const deleg = this._delegationTriggered
-          this._delegationTriggered = null
-          turn = await this.autoDelegateToSubAgent(deleg, turn)
-        }
-
-        // Seal the batch group (if any delegate_background_task calls happened this turn).
-        const batchJobGroupId = this.currentBatchGroups.get(sessionId)
-        if (batchJobGroupId) {
-          this.currentBatchGroups.delete(sessionId)
-          const sealResult = sealBackgroundTaskGroup(this.rootDir, batchJobGroupId)
-          if (sealResult && sealResult.pending === 0) {
-            // All workers already finished before the seal — fire wake-up from here.
-            deleteBackgroundTaskGroup(this.rootDir, batchJobGroupId)
-            this.enqueueBackgroundWakeup(sessionId, profileId)
-            this.flushPendingBackgroundWakeup(sessionId)
-          }
-        }
 
         let userFacingText = sanitizeExternalAssistantText(sessionId, turn.finalText, preparedUserText)
         const hasSideEffects = turn.steps?.some(step => step.type === "tool" && getTool(step.tool)?.sideEffect === true)
@@ -2867,14 +2514,13 @@ Review the existing skill library and apply the curation heuristics in your inst
       const turn = await runAssistantTurn(
         ragSession,
         this.rootDir,
-        async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, abortSignal: abortController.signal, sessionId, orchestrator: this.orchestrator, runtime: this }, toolUseId, profileId),
+        async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, abortSignal: abortController.signal, sessionId, runtime: this }, toolUseId, profileId),
         {
           rootDir: this.rootDir,
           cwd: this.rootDir,
           abortSignal: abortController.signal,
           getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
           profileId,
-          orchestrator: this.orchestrator,
           logger: options?.logger,
         },
         {
@@ -2885,13 +2531,11 @@ Review the existing skill library and apply the curation heuristics in your inst
             adultMode: this.hasAdultMode(sessionId),
             webSearchProvider: webSearchConfig.provider,
             stallAlert: this.consumeStallAlert(sessionId),
-            activeTasks: this.orchestrator.getTaskSnapshot(sessionId).filter(t => t.status === "pending" || t.status === "running"),
-            taskNotifications: collectAllRecentTaskNotifications(ragSession),
             systemDirective,
           },
           costState: this.costState,
           abortSignal: abortController.signal,
-          maxTokens: sessionId.startsWith("agent-") ? options?.maxTokens : undefined,
+          maxTokens: options?.maxTokens,
           turnStartedAt,
           maxTurnDurationMs: timeoutMs - 5_000,
         },
@@ -3126,164 +2770,9 @@ Review the existing skill library and apply the curation heuristics in your inst
       getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
       profileId: session?.profileId,
       sessionId,
-      orchestrator: this.orchestrator,
       runtime: this,
     })
     return JSON.stringify(output, null, 2)
-  }
-
-  /**
-   * Wraps executeTool with the auto-delegate gate. Sub-agents
-   * (sessionId starts with "agent-") and synthetic SkillsAgent turns
-   * are exempt — the gate is only for the user-facing main session.
-   *
-   * Records the tool name in _turnExecutedTools so the threshold
-   * check works on subsequent calls. When the gate fires, sets
-   * _delegationTriggered and throws a sentinel error so the model
-   * sees a tool failure (and stops) while the runtime prepares the
-   * sub-agent spawn.
-   */
-  private async executeToolGated(
-    sessionId: string,
-    toolName: string,
-    input: Record<string, unknown>,
-    context: ToolContext,
-    toolUseId?: string,
-    profileId?: string,
-  ) {
-    const exempt = sessionId?.startsWith("agent-") || this._isSyntheticSkillsTurn
-    if (!exempt) {
-      const executed = this._turnExecutedTools.get(sessionId) ?? []
-      const gate = checkDelegateThreshold(executed, toolName)
-      // Always record, even when not Bash, so the executed list is
-      // truthful and the planning-tool check works.
-      this._turnExecutedTools.set(sessionId, [...executed, toolName])
-      if (gate.shouldDelegate) {
-        const lastUserText = (() => {
-          try {
-            const s = getSession(this.rootDir, sessionId)
-            const recent = s?.messages ?? []
-            for (let i = recent.length - 1; i >= 0; i--) {
-              if (recent[i].role === "user") return recent[i].text || ""
-            }
-          } catch {}
-          return ""
-        })()
-        const recentAttachments = collectRecentChannelAttachments(this.rootDir, sessionId, 5)
-        this._delegationTriggered = {
-          sessionId,
-          reason: gate.reason,
-          lastUserText,
-          profileId: profileId ?? context.profileId ?? "default",
-          recentAttachments,
-        }
-        // Throwing makes the agent loop see a tool error and stop
-        // trying more tools in this turn. The post-loop handler in
-        // runTurnWithContext then runs the auto-delegate flow.
-        throw new Error(`[DELEGATION_TRIGGERED] ${gate.reason}`)
-      }
-    }
-    return this.executeTool(sessionId, toolName, input, context, toolUseId, profileId)
-  }
-
-  /**
-   * Called by runTurnWithContext after the agent loop produced a turn
-   * (or aborted because of the delegate gate). Spawns a background
-   * sub-agent with the user's last message as the task, sets a
-   * wake-up so the main session gets a proactive turn when the
-   * sub-agent finishes, and returns a synthetic AssistantTurnResult
-   * whose finalText tells the user what happened.
-   */
-  private async autoDelegateToSubAgent(
-    deleg: { sessionId: string; reason: string; lastUserText: string; profileId: string; recentAttachments?: ChannelAttachment[] },
-    previousTurn: AssistantTurnResult,
-  ): Promise<AssistantTurnResult> {
-    const { sessionId, reason, lastUserText, profileId, recentAttachments } = deleg
-    const taskText = lastUserText || "(the user did not provide a message; check the worklog)"
-    const attachmentBlock = renderAttachmentBlock(recentAttachments ?? [])
-    const injectedContext = `## AUTO-DELEGATION (runtime decision)
-
-The runtime intercepted this turn because the model started running multi-step Bash work in the main user-facing session without first planning (TodoWrite) or delegating (AgentSpawn / delegate_background_task). This is the rule: the main session is for the user; heavy work goes to sub-agents.
-
-Reason from gate: ${reason}
-
-${attachmentBlock ? attachmentBlock + "\n\n" : ""}## MANDATORY: Your first action MUST be TodoWrite
-
-Before doing any other tool call, call TodoWrite with your full plan. The runtime's renewal-review verifier reads this list to decide whether to give you more turns when you hit the limit. Without it, the verifier will cancel you.
-
-Each item in TodoWrite must:
-- Have non-empty "content" (imperative, e.g. "List memory_drawers tables")
-- Have non-empty "activeForm" (present continuous, e.g. "Listing memory_drawers tables")
-- Be marked with status: "pending" | "in_progress" | "completed"
-- Exactly ONE may be in_progress at a time
-
-Example first call:
-  TodoWrite(todos=[
-    {content: "Locate the target file", activeForm: "Locating target file", status: "in_progress"},
-    {content: "Read the file in chunks", activeForm: "Reading file in chunks", status: "pending"},
-    {content: "Persist findings to Memory Palace", activeForm: "Persisting findings", status: "pending"},
-  ])
-
-When you finish an item, immediately call TodoWrite again marking it completed and promoting the next one to in_progress. The runtime uses the in_progress item to track your actual progress.
-
-## Your job
-1. Plan with TodoWrite (mandatory, before any other tool).
-2. Complete the user's original request (re-read it from the parent session's recent messages if you need to).
-3. Persist anything important to the Memory Palace.
-4. Mark every TodoWrite item completed when done.
-5. Emit <verified>SUCCESS</verified> when done, or TASK_FAILED:<reason> if impossible.
-6. The runtime will wake the main session up with your result. Do NOT try to send a message to the user — just return your final result and the runtime will relay it.`
-
-    appendWorklog(this.rootDir, sessionId, {
-      type: "note",
-      summary: `[Auto-delegate] Gate fired: ${reason}. Spawning sub-agent with the user's request.`,
-    })
-
-    let spawnResult: { agentId?: string; sessionId?: string } | null = null
-    let spawnError: string | null = null
-    try {
-      spawnResult = await this.orchestrator.spawnBackgroundTask(
-        sessionId,
-        profileId,
-        taskText,
-        "Auto-delegated from main session by runtime gate",
-        undefined,
-        { isolation: "none", injected_context: injectedContext },
-      )
-    } catch (e) {
-      spawnError = e instanceof Error ? e.message : String(e)
-    }
-
-    let userMessage: string
-    if (spawnError) {
-      userMessage = `⚠️ El runtime intentó delegar este trabajo a un sub-agente pero falló: ${spawnError}. Por favor intentá vos con un plan más chico o pedí más ayuda.`
-      appendWorklog(this.rootDir, sessionId, {
-        type: "note",
-        summary: `[Auto-delegate] Sub-agent spawn failed: ${spawnError}`,
-      })
-    } else {
-      userMessage = `🔁 Delegué este trabajo a un sub-agente en segundo plano. Te aviso por acá cuando termine con el resultado.`
-      appendWorklog(this.rootDir, sessionId, {
-        type: "note",
-        summary: `[Auto-delegate] Sub-agent spawned (id=${spawnResult?.agentId ?? "?"}, session=${spawnResult?.sessionId ?? "?"}).`,
-      })
-      // Do NOT enqueue a background wake-up here. Enqueueing immediately
-      // makes the main session run a "background turn completed"
-      // proactive turn RIGHT AWAY — before the sub-agent has anything to
-      // report. The main session then has no real content to react to
-      // and falls back to the generic "turn ended with no response"
-      // error, which confuses the user. Instead, the orchestrator's
-      // notifyParent will append the <task-notification> as a user
-      // message to the main session when the sub-agent actually
-      // finishes, and the existing message-received path will produce
-      // a real, content-bearing reply.
-    }
-
-    return {
-      ...previousTurn,
-      finalText: userMessage,
-      error: undefined,
-    }
   }
 
   private async executeTool(
@@ -3294,9 +2783,9 @@ When you finish an item, immediately call TodoWrite again marking it completed a
     toolUseId?: string,
     profileId?: string,
   ) {
-    // SkillsAgent cadence counter. Skip sub-agents and the synthetic SkillsAgent
-    // turn itself to avoid recursive triggering.
-    if (!this._isSyntheticSkillsTurn && !sessionId?.startsWith("agent-")) {
+    // SkillsAgent cadence counter. Skip the synthetic SkillsAgent turn
+    // itself to avoid recursive triggering.
+    if (!this._isSyntheticSkillsTurn) {
       this._itersSinceLastSkillSynthesis += 1
     }
 
@@ -3327,18 +2816,6 @@ When you finish an item, immediately call TodoWrite again marking it completed a
     })
     if (permission.behavior !== "allow") {
       if (permission.behavior === "ask" && permission.source === "destructive_guard") {
-        const isSubAgent = sessionId.startsWith("agent-")
-        if (isSubAgent) {
-          const message = `[Destructive Action Guard] Denied: Headless agent session cannot perform destructive action "${permission.message}".`
-          appendWorklog(this.rootDir, sessionId, {
-            type: "tool",
-            summary: `Tool ${tool.name} blocked by Destructive Action Guard (headless session): ${message}`,
-          })
-          this.emit({ type: "error", sessionId, error: message })
-          this.recordToolFailureStall(sessionId, tool.name, message)
-          throw new Error(message)
-        }
-
         const confirmId = randomUUID()
         let resolveDecision: (decision: "allow" | "deny" | "ask") => void = () => {}
         let timeoutHandle: NodeJS.Timeout | null = null

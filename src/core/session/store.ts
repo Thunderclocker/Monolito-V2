@@ -29,7 +29,7 @@ import {
   type ConfigWingValueMap,
 } from "../config/configWings.ts"
 import { createLogger } from "../logging/logger.ts"
-import { PALACE_NAMESPACE, PALACE_SCHEMA_SQL, BACKGROUND_TASKS_SCHEMA_SQL, VECTOR_SCHEMA_SQL, type PalaceContentType, type PalaceNamespace, type WorkerJob, type WorkerJobStatus, type BackgroundTask, type BackgroundTaskStatus } from "../db/schema.ts"
+import { PALACE_NAMESPACE, PALACE_SCHEMA_SQL, VECTOR_SCHEMA_SQL, type PalaceContentType, type PalaceNamespace } from "../db/schema.ts"
 
 let dbInstance: Database.Database | null = null
 let dbPathCache: string | null = null
@@ -38,7 +38,7 @@ const BOOTSTRAP_SOURCE_ROOM = "__bootstrap__"
 const CONFIG_SOURCE_ROOM = "__config__"
 const ACTION_LOG_ROOM = "agent-actions"
 const GLOBAL_PROFILE_SCOPE = "__global__"
-const WORKER_SESSION_PREFIXES = ["agent-", "worker-"] as const
+const WORKER_SESSION_PREFIXES = ["agent-"] as const
 
 export function isMainSession(sessionId: string): boolean {
   return !WORKER_SESSION_PREFIXES.some(prefix => sessionId.startsWith(prefix))
@@ -68,7 +68,6 @@ function palaceProfileScope(profileId: string | null | undefined) {
 
 function ensurePalaceSchema(db: Database.Database) {
   db.exec(PALACE_SCHEMA_SQL)
-  db.exec(BACKGROUND_TASKS_SCHEMA_SQL)
 }
 
 function ensureVectorSchema(db: Database.Database) {
@@ -569,36 +568,6 @@ export function getDb(rootDir: string): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_memory_drawers_room ON memory_drawers(room);
     CREATE INDEX IF NOT EXISTS idx_memory_drawers_profile ON memory_drawers(profile_id);
     
-    CREATE TABLE IF NOT EXISTS background_task_groups (
-      job_group_id TEXT PRIMARY KEY,
-      parent_session_id TEXT NOT NULL,
-      pending_tasks INTEGER NOT NULL DEFAULT 0,
-      sealed INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_bg_groups_session
-      ON background_task_groups(parent_session_id);
-
-    CREATE TABLE IF NOT EXISTS worker_jobs (
-      id TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL,
-      profile_id TEXT,
-      tool_name TEXT NOT NULL,
-      tool_args TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending',
-      result_text TEXT,
-      error_text TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_worker_jobs_status
-      ON worker_jobs(status);
-
-    CREATE INDEX IF NOT EXISTS idx_worker_jobs_session
-      ON worker_jobs(session_id);
 
     -- telegram_raw_updates: durable queue for incoming Telegram updates.
     -- Every update the daemon receives is persisted here BEFORE the
@@ -724,22 +693,6 @@ export function getDb(rootDir: string): Database.Database {
 
     db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_drawers_key ON memory_drawers(memory_key)`)
 
-    const workerInfo = db.prepare(`PRAGMA table_info(worker_jobs)`).all() as Array<{ name: string; type: string; dflt_value: unknown; pk: number }>
-    for (const column of [
-      { name: "profile_id", sql: `ALTER TABLE worker_jobs ADD COLUMN profile_id TEXT` },
-      { name: "result_text", sql: `ALTER TABLE worker_jobs ADD COLUMN result_text TEXT` },
-      { name: "error_text", sql: `ALTER TABLE worker_jobs ADD COLUMN error_text TEXT` },
-    ]) {
-      if (!workerInfo.find(c => c.name === column.name)) {
-        try {
-          db.exec(column.sql)
-        } catch (e) {
-          if (!String(e).includes("duplicate column")) throw e
-        }
-      }
-    }
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_worker_jobs_status ON worker_jobs(status)`)
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_worker_jobs_session ON worker_jobs(session_id)`)
 
     // Shared memories are represented by a NULL profile_id.
     db.exec(`UPDATE memory_drawers SET profile_id = NULL WHERE wing = 'SHARED'`)
@@ -1116,59 +1069,6 @@ export function createSession(rootDir: string, title = "Monolito v2 Session", se
   }
 
   return getSession(rootDir, id)!
-}
-
-export function createWorkerSessionAndJob(
-  rootDir: string,
-  options: {
-    sessionTitle: string
-    sessionId: string
-    profileId: string
-    job: {
-      id: string
-      sessionId: string
-      profileId?: string | null
-      toolName: string
-      toolArgs: string
-      status?: WorkerJobStatus
-    }
-  },
-): SessionRecord {
-  const db = getDb(rootDir)
-  const now = new Date().toISOString()
-  const sessionSummary = `Session created: ${truncateSummary(options.sessionTitle, 120)}`
-
-  db.exec("BEGIN TRANSACTION")
-  try {
-    db.prepare(`INSERT INTO sessions (id, profile_id, title, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(options.sessionId, options.profileId, options.sessionTitle, "idle", now, now)
-    db.prepare(`INSERT INTO worklog (session_id, type, summary, at) VALUES (?, ?, ?, ?)`)
-      .run(options.sessionId, "session", sessionSummary, now)
-    db.prepare(`
-      INSERT INTO worker_jobs (id, session_id, profile_id, tool_name, tool_args, status, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(id) DO UPDATE SET
-        session_id = excluded.session_id,
-        profile_id = excluded.profile_id,
-        tool_name = excluded.tool_name,
-        tool_args = excluded.tool_args,
-        status = excluded.status,
-        updated_at = CURRENT_TIMESTAMP
-    `).run(
-      options.job.id,
-      options.job.sessionId,
-      options.job.profileId ?? null,
-      options.job.toolName,
-      options.job.toolArgs,
-      options.job.status ?? "pending",
-    )
-    db.exec("COMMIT")
-  } catch (error) {
-    db.exec("ROLLBACK")
-    throw error
-  }
-
-  return getSession(rootDir, options.sessionId)!
 }
 
 export function updateSessionProfile(rootDir: string, sessionId: string, profileId: string) {
@@ -1853,229 +1753,16 @@ export function listRooms(rootDir: string, wing: string, profileId?: string): st
 // Background Task Groups — Fan-out / Fan-in barrier helpers
 // ---------------------------------------------------------------------------
 
-export function createBackgroundTaskGroup(rootDir: string, parentSessionId: string): string {
-  const db = getDb(rootDir)
-  const jobGroupId = randomUUID()
-  db.prepare(`
-    INSERT INTO background_task_groups (job_group_id, parent_session_id, pending_tasks, sealed, created_at)
-    VALUES (?, ?, 1, 0, ?)
-  `).run(jobGroupId, parentSessionId, new Date().toISOString())
-  return jobGroupId
-}
 
-export function incrementBackgroundTaskGroup(rootDir: string, jobGroupId: string): void {
-  getDb(rootDir).prepare(`
-    UPDATE background_task_groups
-    SET pending_tasks = pending_tasks + 1
-    WHERE job_group_id = ? AND sealed = 0
-  `).run(jobGroupId)
-}
 
-export function decrementBackgroundTaskGroup(
-  rootDir: string,
-  jobGroupId: string,
-): { pending: number; sealed: number } | null {
-  const row = getDb(rootDir)
-    .prepare(`
-      UPDATE background_task_groups
-      SET pending_tasks = pending_tasks - 1
-      WHERE job_group_id = ?
-      RETURNING pending_tasks, sealed
-    `)
-    .get(jobGroupId) as { pending_tasks: number; sealed: number } | undefined
-  if (!row) return null
-  return { pending: row.pending_tasks, sealed: row.sealed }
-}
 
-export function sealBackgroundTaskGroup(
-  rootDir: string,
-  jobGroupId: string,
-): { pending: number } | null {
-  const row = getDb(rootDir)
-    .prepare(`
-      UPDATE background_task_groups
-      SET sealed = 1
-      WHERE job_group_id = ?
-      RETURNING pending_tasks
-    `)
-    .get(jobGroupId) as { pending_tasks: number } | undefined
-  if (!row) return null
-  return { pending: row.pending_tasks }
-}
 
-export function deleteBackgroundTaskGroup(rootDir: string, jobGroupId: string): void {
-  getDb(rootDir)
-    .prepare(`DELETE FROM background_task_groups WHERE job_group_id = ?`)
-    .run(jobGroupId)
-}
 
-export function upsertWorkerJob(
-  rootDir: string,
-  job: {
-    id: string
-    sessionId: string
-    profileId?: string | null
-    toolName: string
-    toolArgs: string
-    status?: WorkerJobStatus
-  },
-): void {
-  const db = getDb(rootDir)
-  db.exec("BEGIN TRANSACTION")
-  try {
-    db.prepare(`
-      INSERT INTO worker_jobs (id, session_id, profile_id, tool_name, tool_args, status, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(id) DO UPDATE SET
-        session_id = excluded.session_id,
-        profile_id = excluded.profile_id,
-        tool_name = excluded.tool_name,
-        tool_args = excluded.tool_args,
-        status = excluded.status,
-        updated_at = CURRENT_TIMESTAMP
-    `).run(job.id, job.sessionId, job.profileId ?? null, job.toolName, job.toolArgs, job.status ?? "pending")
-    db.exec("COMMIT")
-  } catch (error) {
-    db.exec("ROLLBACK")
-    throw error
-  }
-}
 
-export function updateWorkerJobStatus(
-  rootDir: string,
-  id: string,
-  status: WorkerJobStatus,
-  details?: { resultText?: string | null; errorText?: string | null },
-): void {
-  const db = getDb(rootDir)
-  db.exec("BEGIN TRANSACTION")
-  try {
-    db.prepare(`
-      UPDATE worker_jobs
-      SET status = ?,
-        result_text = COALESCE(?, result_text),
-        error_text = COALESCE(?, error_text),
-        updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `).run(status, details?.resultText ?? null, details?.errorText ?? null, id)
-    db.exec("COMMIT")
-  } catch (error) {
-    db.exec("ROLLBACK")
-    throw error
-  }
-}
 
-export function listRecoverableWorkerJobs(rootDir: string): WorkerJob[] {
-  return getDb(rootDir).prepare(`
-    SELECT id, session_id, profile_id, tool_name, tool_args, status, result_text, error_text, created_at, updated_at
-    FROM worker_jobs
-    WHERE status IN ('pending', 'running')
-    ORDER BY created_at ASC
-  `).all() as WorkerJob[]
-}
 
-export function hasActiveWorkersForSession(rootDir: string, sessionId: string): boolean {
-  const row = getDb(rootDir).prepare(`
-    SELECT 1 FROM worker_jobs
-    WHERE session_id = ? AND status IN ('pending', 'running')
-    LIMIT 1
-  `).get(sessionId)
-  return !!row
-}
 
-export function createBackgroundTask(
-  rootDir: string,
-  options: {
-    id: string
-    sessionId: string
-    taskPayload: string
-    agentId?: string | null
-  },
-): BackgroundTask {
-  const db = getDb(rootDir)
-  const now = new Date().toISOString()
-  db.prepare(`
-    INSERT INTO background_tasks (id, session_id, agent_id, status, task_payload, created_at, updated_at)
-    VALUES (?, ?, ?, 'PENDING', ?, ?, ?)
-  `).run(options.id, options.sessionId, options.agentId ?? null, options.taskPayload, now, now)
-  return getBackgroundTask(rootDir, options.id)!
-}
 
-export function getBackgroundTask(rootDir: string, id: string): BackgroundTask | null {
-  const row = getDb(rootDir).prepare(`
-    SELECT id, session_id, agent_id, status, task_payload, result_diff, error_text, created_at, updated_at, handoff_at
-    FROM background_tasks WHERE id = ?
-  `).get(id) as BackgroundTask | null
-  return row ?? null
-}
-
-export function updateBackgroundTaskStatus(
-  rootDir: string,
-  id: string,
-  status: BackgroundTaskStatus,
-  details?: { resultDiff?: string | null; errorText?: string | null; agentId?: string | null },
-): void {
-  const db = getDb(rootDir)
-  const now = new Date().toISOString()
-  const isHandoff = status === "HANDOFF"
-  db.prepare(`
-    UPDATE background_tasks
-    SET status = ?,
-      agent_id = COALESCE(?, agent_id),
-      result_diff = COALESCE(?, result_diff),
-      error_text = COALESCE(?, error_text),
-      updated_at = ?,
-      handoff_at = CASE WHEN ? THEN ? ELSE handoff_at END
-    WHERE id = ?
-  `).run(
-    status,
-    details?.agentId ?? null,
-    details?.resultDiff ?? null,
-    details?.errorText ?? null,
-    now,
-    isHandoff ? 1 : 0,
-    isHandoff ? now : null,
-    id,
-  )
-}
-
-export function listBackgroundTasks(
-  rootDir: string,
-  sessionId: string,
-  filter?: { status?: BackgroundTaskStatus | BackgroundTaskStatus[] },
-): BackgroundTask[] {
-  const db = getDb(rootDir)
-  if (filter?.status) {
-    const statuses = Array.isArray(filter.status) ? filter.status : [filter.status]
-    const placeholders = statuses.map(() => "?").join(", ")
-    return db.prepare(`
-      SELECT id, session_id, agent_id, status, task_payload, result_diff, error_text, created_at, updated_at, handoff_at
-      FROM background_tasks
-      WHERE session_id = ? AND status IN (${placeholders})
-      ORDER BY created_at ASC
-    `).all(sessionId, ...statuses) as BackgroundTask[]
-  }
-  return db.prepare(`
-    SELECT id, session_id, agent_id, status, task_payload, result_diff, error_text, created_at, updated_at, handoff_at
-    FROM background_tasks
-    WHERE session_id = ?
-    ORDER BY created_at ASC
-  `).all(sessionId) as BackgroundTask[]
-}
-
-export function claimBackgroundTask(
-  rootDir: string,
-  taskId: string,
-  agentId: string,
-): boolean {
-  const db = getDb(rootDir)
-  const result = db.prepare(`
-    UPDATE background_tasks
-    SET agent_id = ?, status = 'IN_PROGRESS', updated_at = ?
-    WHERE id = ? AND status = 'PENDING'
-  `).run(agentId, new Date().toISOString(), taskId)
-  return result.changes > 0
-}
 
 export function addGraphTriple(
   rootDir: string,
