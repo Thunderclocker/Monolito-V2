@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { readChannelsConfig, writeChannelsConfig } from "./config.ts"
 import { readWebSearchConfig, writeWebSearchConfig } from "../websearch/config.ts"
-import { createTelegramPoller, type TelegramCallbackQuery, type TelegramMessage, type TelegramPoller } from "./telegramPoller.ts"
+import { createTelegramPoller, isTerminalTelegramTokenError, type TelegramCallbackQuery, type TelegramMessage, type TelegramPoller } from "./telegramPoller.ts"
 import type { MonolitoV2Runtime } from "../runtime/runtime.ts"
 import { ensureDirs, MAIN_SESSION_ID } from "../ipc/protocol.ts"
 import { deployManagedSttContainer, getManagedSttStatus, normalizeSttConfig, probeManagedStt, transcribeManagedAudioFile } from "../stt/managed.ts"
@@ -678,6 +678,11 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
 
       onError: (error) => {
         logger.error("Telegram poller error", error)
+        if (isTerminalTelegramTokenError(error)) {
+          logger.error("[Telegram] Token inválido (401/404) — canal deshabilitado. Usa /channels token <real-token> y reinicia el daemon.")
+          stopChannels("telegram-terminal-error")
+          return
+        }
       }
     },
     {
@@ -765,11 +770,15 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
   }
 }
 
-export function stopChannels() {
+export function stopChannels(reason?: string) {
   activeDeliveryUnregister?.()
   activeDeliveryUnregister = null
   if (activePoller) {
-    logger.info("Stopping Telegram integration...")
+    if (reason === "telegram-terminal-error") {
+      logger.info("Stopping Telegram integration (invalid token, no restart)")
+    } else {
+      logger.info("Stopping Telegram integration...")
+    }
     activePoller.stop()
     activePoller = null
   }
