@@ -49,6 +49,16 @@ const PATTERNS: SecretPattern[] = [
     regex: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g,
     description: "JSON Web Token (3-segment)",
   },
+  {
+    id: "openai-anthropic-key",
+    regex: /\bsk-[A-Za-z0-9]{20,}\b/g,
+    description: "OpenAI / Anthropic / compatible API key",
+  },
+  {
+    id: "xai-grok-key",
+    regex: /\bxai-[A-Za-z0-9]{20,}\b/g,
+    description: "xAI / Grok API key",
+  },
 ]
 
 export type SecretFinding = {
