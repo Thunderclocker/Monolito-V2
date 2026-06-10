@@ -62,6 +62,9 @@ jobs:
           MONOLITO_ACTIVE_PROVIDER: minimax
         run: |
           mkdir -p /tmp/monolito-smoke
-          timeout 90 node --experimental-strip-types scripts/test-minimax-m3.ts 2>&1 | \
-            (grep -q "PASS" && echo "smoke-test: PASS") || \
+          # The script exits 0 on both "real smoke pass" and "no credentials
+          # configured" (SKIP). Any non-zero exit is a real failure. The
+          # previous version used `grep -q "PASS"` which broke once the
+          # script started skipping on missing secrets.
+          timeout 90 node --experimental-strip-types scripts/test-minimax-m3.ts 2>&1 || \
             (echo "smoke-test: FAIL" && exit 1)
