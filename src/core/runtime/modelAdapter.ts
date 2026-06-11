@@ -234,15 +234,19 @@ function isConversationRole(role: SessionRecord["messages"][number]["role"]): ro
   return role === "user" || role === "assistant"
 }
 
-function sessionToMessages(session: SessionRecord): ConversationMessage[] {
+export function sessionToMessages(session: SessionRecord): ConversationMessage[] {
   const filtered = session.messages
     .filter((message): message is SessionRecord["messages"][number] & { role: "user" | "assistant" } =>
       isConversationRole(message.role) && !shouldSkipMessage(message.text),
     )
     .map(message => {
+      let content = message.text
+      if (message.role === "assistant") {
+        content = content.replace(/^(\s*\[?voice\]?:?\s*)+/gi, "")
+      }
       const msg = {
         role: message.role,
-        content: message.text,
+        content,
       } as any
       if (message.thinking) {
         msg.thinking = message.thinking
@@ -408,7 +412,7 @@ function sumUsage(total: TurnUsage | undefined, next: TurnUsage | undefined): Tu
   }
 }
 
-function finalize(finalText: string, steps: AssistantTurnStep[], startedAt: number, iterationCount: number, usage?: TurnUsage, error?: string, stopReason: NonNullable<AssistantTurnResult["meta"]>["stopReason"] = "completed", thinking?: string): AssistantTurnResult {
+export function finalize(finalText: string, steps: AssistantTurnStep[], startedAt: number, iterationCount: number, usage?: TurnUsage, error?: string, stopReason: NonNullable<AssistantTurnResult["meta"]>["stopReason"] = "completed", thinking?: string): AssistantTurnResult {
   // No hardcoded fallback. If the turn terminated without producing a
   // finalText, we return finalText="" with `error` populated and let
   // the caller (the model on the NEXT turn) see the real reason and
@@ -416,7 +420,9 @@ function finalize(finalText: string, steps: AssistantTurnStep[], startedAt: numb
   // what happened — e.g. they said "turn ended with no response" even
   // when the verifier had explicitly cancelled the work, or when the
   // turn was actually a renewal-grant continuation.
-  const safeFinalText = redactSensitiveText(finalText ?? "")
+  let cleanFinalText = finalText ?? ""
+  cleanFinalText = cleanFinalText.replace(/^(\s*\[?voice\]?:?\s*)+/gi, "")
+  const safeFinalText = redactSensitiveText(cleanFinalText)
   return {
     finalText: safeFinalText,
     steps: [...steps, ...(safeFinalText ? [{ type: "final" as const, message: safeFinalText }] : [])],
