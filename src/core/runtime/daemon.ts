@@ -16,6 +16,7 @@ import { startChannels, stopChannels } from "../channels/channelManager.ts"
 import { addLogSink, createDailyRotatingFileSink, createLogger, log } from "../logging/logger.ts"
 import { initEmbeddingEngine } from "../session/embeddings.ts"
 import { cleanupScratchpad } from "../system/root.ts"
+import { createGlobalHotkeyService, type GlobalHotkeyService } from "./globalHotkey.ts"
 
 function isIgnorableSocketError(error: unknown) {
   if (!(error instanceof Error)) return false
@@ -35,6 +36,7 @@ export class MonolitoV2Daemon {
   private stopInFlight = false
   private ownerFd: number | null = null
   private ownershipMonitor: NodeJS.Timeout | null = null
+  private hotkeyService: GlobalHotkeyService | null = null
 
   constructor(rootDir: string) {
     this.rootDir = rootDir
@@ -81,11 +83,16 @@ export class MonolitoV2Daemon {
       onRestartRequested: () => this.scheduleSelfRestart(),
       onStopRequested: () => this.scheduleSelfStop(),
     })
+    void this.startGlobalHotkey()
     return this.server
   }
 
   stop() {
     this.writeDaemonLog("daemon stop requested")
+    if (this.hotkeyService) {
+      this.hotkeyService.stop()
+      this.hotkeyService = null
+    }
     stopChannels()
     this.runtime.close()
     this.server?.close()
@@ -468,6 +475,18 @@ export class MonolitoV2Daemon {
 
   private writeDaemonLog(line: string) {
     daemonLogger.info(line)
+  }
+
+  private async startGlobalHotkey() {
+    try {
+      const service = await createGlobalHotkeyService(this.runtime)
+      if (!service) return
+      this.hotkeyService = service
+      service.start()
+      this.writeDaemonLog("Global hotkey listener started")
+    } catch (err) {
+      this.writeDaemonLog(`Global hotkey listener failed to start (non-fatal): ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   private async startEmbeddingsWarmup() {

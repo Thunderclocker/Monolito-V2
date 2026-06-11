@@ -39,10 +39,18 @@ export type SttConfig = {
   vadFilter: boolean
 }
 
+export type HotkeyConfig = {
+  /** Enable the global push-to-talk listener (requires X11 / `xinput`). */
+  enabled: boolean
+  /** X11 raw keycode to watch. Defaults to 49 (º / ordmasculine on ES-layout). */
+  keycode: number
+}
+
 export type ChannelsConfig = {
   telegram?: TelegramConfig
   tts?: Partial<TtsConfig>
   stt?: Partial<SttConfig>
+  hotkey?: Partial<HotkeyConfig>
 }
 
 type LooseTelegramConfig = {
@@ -59,10 +67,11 @@ type LooseChannelsConfig = ChannelsConfig & {
   telegram?: LooseTelegramConfig
 }
 
-const CHANNELS_TOP_LEVEL_KEYS = new Set(["telegram", "tts", "stt"])
+const CHANNELS_TOP_LEVEL_KEYS = new Set(["telegram", "tts", "stt", "hotkey"])
 const TELEGRAM_KEYS = new Set(["token", "enabled", "allowedChats"])
 const TTS_KEYS = new Set(["baseUrl", "apiKey", "voice", "model", "responseFormat", "speed", "provider", "clonedVoices", "defaultClonedVoice", "t2aModel"])
 const STT_KEYS = new Set(["managed", "autoDeploy", "autoTranscribe", "port", "image", "containerName", "engine", "model", "language", "vadFilter"])
+const HOTKEY_KEYS = new Set(["enabled", "keycode"])
 
 function hasOwn(object: Record<string, unknown>, key: string) {
   return Object.prototype.hasOwnProperty.call(object, key)
@@ -128,14 +137,14 @@ function assertValidChannelsConfigForWrite(config: unknown) {
     }
   }
 
-  if (record.stt !== undefined) {
-    if (!record.stt || typeof record.stt !== "object" || Array.isArray(record.stt)) {
-      throw new Error("CONF_CHANNELS.stt must be an object.")
+  if (record.hotkey !== undefined) {
+    if (!record.hotkey || typeof record.hotkey !== "object" || Array.isArray(record.hotkey)) {
+      throw new Error("CONF_CHANNELS.hotkey must be an object.")
     }
-    const stt = record.stt as Record<string, unknown>
-    const unknownSttKeys = Object.keys(stt).filter(key => !STT_KEYS.has(key))
-    if (unknownSttKeys.length > 0) {
-      throw new Error(`CONF_CHANNELS.stt contains unsupported keys: ${unknownSttKeys.join(", ")}`)
+    const hotkey = record.hotkey as Record<string, unknown>
+    const unknownHotkeyKeys = Object.keys(hotkey).filter(key => !HOTKEY_KEYS.has(key))
+    if (unknownHotkeyKeys.length > 0) {
+      throw new Error(`CONF_CHANNELS.hotkey contains unsupported keys: ${unknownHotkeyKeys.join(", ")}`)
     }
   }
 }
@@ -166,7 +175,7 @@ function normalizeTelegramConfig(value: unknown): TelegramConfig | undefined {
 
 export function normalizeChannelsConfig(config: unknown): ChannelsConfig {
   if (!config || typeof config !== "object" || Array.isArray(config)) return {}
-  const loose = config as LooseChannelsConfig
+  const loose = config as LooseChannelsConfig & { hotkey?: unknown }
   const normalized: ChannelsConfig = {}
   const telegram = normalizeTelegramConfig(loose.telegram)
   if (telegram) normalized.telegram = telegram
@@ -175,6 +184,9 @@ export function normalizeChannelsConfig(config: unknown): ChannelsConfig {
   }
   if (loose.stt && typeof loose.stt === "object" && !Array.isArray(loose.stt)) {
     normalized.stt = { ...loose.stt }
+  }
+  if (loose.hotkey && typeof loose.hotkey === "object" && !Array.isArray(loose.hotkey)) {
+    normalized.hotkey = { ...(loose.hotkey as Partial<HotkeyConfig>) }
   }
   return normalized
 }
