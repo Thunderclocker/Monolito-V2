@@ -214,6 +214,7 @@ type ContextExtras = {
   stallAlert?: string
   systemDirective?: string
   blockedTools?: string[]
+  instantAcknowledgment?: string | null
 }
 
 function normalizeBaseUrl(value: string) {
@@ -737,6 +738,11 @@ function buildSystemPrompt(args: {
   if (args.extras?.webSearchProvider) dynamicContext.push(`Web search provider: ${args.extras.webSearchProvider}`)
   if (args.extras?.systemDirective) {
     dynamicContext.push(`=== SYSTEM DIRECTIVE ===\n${args.extras.systemDirective}`)
+  }
+  if (args.extras?.instantAcknowledgment) {
+    dynamicContext.push(
+      `The fast acknowledgment model already sent this short response to the user for this turn: "${args.extras.instantAcknowledgment}". Do NOT repeat or duplicate this greeting, phrase, or confirmation in your response. Instead, continue the conversation naturally without duplicating that message or greeting.`
+    )
   }
 
   // Inject session cognitive tasks (Memory Palace) to drive proactivity.

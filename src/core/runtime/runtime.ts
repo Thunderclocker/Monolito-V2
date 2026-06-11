@@ -2023,9 +2023,11 @@ Review the existing skill library and apply the curation heuristics in your inst
       }
 
       // 2. Start instant acknowledgment concurrently (in background)
+      let ackPromise: Promise<string | null> | null = null
       if (!isSlash && !isSubAgent && autoAckEnabled) {
-        void this.sendInstantAcknowledgment(sessionId, text, options?.delivery).catch(err => {
+        ackPromise = this.sendInstantAcknowledgment(sessionId, text, options?.delivery).catch(err => {
           logger.warn(`Failed to generate/deliver instant acknowledgment: ${err instanceof Error ? err.message : String(err)}`)
+          return null
         })
       }
 
@@ -2038,6 +2040,15 @@ Review the existing skill library and apply the curation heuristics in your inst
         }
       }
 
+      // Await acknowledgment promise before starting the turn, with a short timeout
+      let instantAcknowledgment: string | null = null
+      if (ackPromise) {
+        instantAcknowledgment = await Promise.race([
+          ackPromise,
+          new Promise<null>(resolve => setTimeout(() => resolve(null), 1500))
+        ])
+      }
+
       appendMessage(this.rootDir, sessionId, "user", userText)
       appendWorklog(this.rootDir, sessionId, {
         type: "session",
@@ -2046,7 +2057,11 @@ Review the existing skill library and apply the curation heuristics in your inst
       this.emit({ type: "message.received", sessionId, role: "user", text: userText })
       await this.transitionState(sessionId, "running")
 
-      await this.runTurn(sessionId, userText, profileId, { delivery: options?.delivery, onAgentLoopEvent: options?.onAgentLoopEvent })
+      await this.runTurn(sessionId, userText, profileId, {
+        delivery: options?.delivery,
+        onAgentLoopEvent: options?.onAgentLoopEvent,
+        instantAcknowledgment,
+      })
     } finally {
       this.releaseSessionLock(sessionId)
     }
@@ -2099,12 +2114,12 @@ Review the existing skill library and apply the curation heuristics in your inst
     return finalResult
   }
 
-  async runTurn(sessionId: string, lastUserText: string, profileId = "default", options?: { logger?: Logger; cwd?: string; traceId?: string; maxTokens?: number; delivery?: DeliveryContext; onAgentLoopEvent?: (event: AgentLoopEvent) => void }) {
+  async runTurn(sessionId: string, lastUserText: string, profileId = "default", options?: { logger?: Logger; cwd?: string; traceId?: string; maxTokens?: number; delivery?: DeliveryContext; onAgentLoopEvent?: (event: AgentLoopEvent) => void; instantAcknowledgment?: string | null }) {
     this.rememberDeliveryContext(sessionId, options?.delivery)
     return runWithContext(createSessionContext(sessionId), () => this.runTurnWithContext(sessionId, lastUserText, profileId, options))
   }
 
-  private async runTurnWithContext(sessionId: string, lastUserText: string, profileId = "default", options?: { logger?: Logger; cwd?: string; traceId?: string; maxTokens?: number; delivery?: DeliveryContext; onAgentLoopEvent?: (event: AgentLoopEvent) => void }) {
+  private async runTurnWithContext(sessionId: string, lastUserText: string, profileId = "default", options?: { logger?: Logger; cwd?: string; traceId?: string; maxTokens?: number; delivery?: DeliveryContext; onAgentLoopEvent?: (event: AgentLoopEvent) => void; instantAcknowledgment?: string | null }) {
     const turnStartedAt = Date.now()
     const instanceLogger = options?.logger
     const effectiveCwd = options?.cwd ?? this.rootDir
@@ -2336,6 +2351,7 @@ Review the existing skill library and apply the curation heuristics in your inst
                   adultMode: this.hasAdultMode(sessionId),
                   webSearchProvider: webSearchConfig.provider,
                   stallAlert: this.consumeStallAlert(sessionId),
+                  instantAcknowledgment: options?.instantAcknowledgment,
                 },
                 costState: this.costState,
                 abortSignal: abortController.signal,
@@ -4334,7 +4350,7 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
     return null
   }
 
-  private async sendInstantAcknowledgment(sessionId: string, userText: string, delivery?: DeliveryContext) {
+  private async sendInstantAcknowledgment(sessionId: string, userText: string, delivery?: DeliveryContext): Promise<string | null> {
     const session = this.getSession(sessionId)
     const voiceMode = session?.voiceMode === true
 
@@ -4360,71 +4376,82 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
     try {
       const { text: ack } = await runBackgroundTextTask(this.rootDir, systemPrompt, userText, { maxTokens: 25 })
       const ackText = ack.trim().replace(/^["']|["']$/g, "")
-      if (!ackText) return
+      if (!ackText) return null
 
       // Emit event so the client gets the text
       this.emit({ type: "message.received", sessionId, role: "assistant", text: ackText })
 
-      const profileId = session?.profileId ?? "default"
+      // Deliver in background
+      void this.deliverAcknowledgment(sessionId, ackText, userText, voiceMode, delivery).catch(err => {
+        logger.warn(`Failed to deliver instant acknowledgment: ${err instanceof Error ? err.message : String(err)}`)
+      })
 
-      if (voiceMode) {
-        // Voice mode active: generate speech and deliver as audio
-        const isTelegramMessage = userText.includes('<channel source="telegram"')
-        const ttsConfig = readChannelsConfig().tts || {}
-        const voice = ttsConfig.defaultClonedVoice || ttsConfig.voice || "female-shaonv"
-
-        const speechResult = await this.executeTool(sessionId, "GenerateSpeech", {
-          text: ackText,
-          voice,
-          response_format: isTelegramMessage ? "opus" : "mp3",
-        }, {
-          rootDir: this.rootDir,
-          cwd: this.rootDir,
-          abortSignal: new AbortController().signal,
-          sessionId,
-          runtime: this,
-        }, undefined, profileId) as { local_path?: string; ok?: boolean }
-
-        if (speechResult.ok && speechResult.local_path) {
-          if (isTelegramMessage) {
-            const rawChatId = getTelegramChatId(sessionId)
-            let telegramChatId: number | null = rawChatId ? Number(rawChatId) : null
-            if (telegramChatId === null) {
-              const channelMatch = userText.match(/<channel\b([^>]*)>/i)
-              const parsedChatId = channelMatch?.[1].match(/chat_id="([^"]+)"/i)?.[1]
-              if (parsedChatId) {
-                telegramChatId = Number(parsedChatId)
-              }
-            }
-            if (telegramChatId !== null && !Number.isNaN(telegramChatId)) {
-              await this.executeTool(sessionId, "TelegramSendVoice", {
-                chat_id: telegramChatId,
-                voice: speechResult.local_path,
-              }, {
-                rootDir: this.rootDir,
-                cwd: this.rootDir,
-                abortSignal: new AbortController().signal,
-                sessionId,
-                runtime: this,
-              }, undefined, profileId)
-            }
-          } else {
-            // CLI: play audio
-            const { spawn } = await import("node:child_process")
-            const player = await this.findAudioPlayer()
-            if (player) {
-              const child = spawn(player, [speechResult.local_path], { stdio: "ignore" })
-              child.on("error", (err) => logger.warn(`Voice playback failed: ${err.message}`))
-              child.unref()
-            }
-          }
-        }
-      } else {
-        // Text mode: deliver text normally
-        await this.deliverText(sessionId, ackText, delivery, "Failed to deliver instant acknowledgment")
-      }
+      return ackText
     } catch (e) {
       logger.debug(`[acknowledgement] Instant acknowledgment delivery failed or skipped: ${e instanceof Error ? e.message : String(e)}`)
+      return null
+    }
+  }
+
+  private async deliverAcknowledgment(sessionId: string, ackText: string, userText: string, voiceMode: boolean, delivery?: DeliveryContext) {
+    const session = this.getSession(sessionId)
+    const profileId = session?.profileId ?? "default"
+
+    if (voiceMode) {
+      // Voice mode active: generate speech and deliver as audio
+      const isTelegramMessage = userText.includes('<channel source="telegram"')
+      const ttsConfig = readChannelsConfig().tts || {}
+      const voice = ttsConfig.defaultClonedVoice || ttsConfig.voice || "female-shaonv"
+
+      const speechResult = await this.executeTool(sessionId, "GenerateSpeech", {
+        text: ackText,
+        voice,
+        response_format: isTelegramMessage ? "opus" : "mp3",
+      }, {
+        rootDir: this.rootDir,
+        cwd: this.rootDir,
+        abortSignal: new AbortController().signal,
+        sessionId,
+        runtime: this,
+      }, undefined, profileId) as { local_path?: string; ok?: boolean }
+
+      if (speechResult.ok && speechResult.local_path) {
+        if (isTelegramMessage) {
+          const rawChatId = getTelegramChatId(sessionId)
+          let telegramChatId: number | null = rawChatId ? Number(rawChatId) : null
+          if (telegramChatId === null) {
+            const channelMatch = userText.match(/<channel\b([^>]*)>/i)
+            const parsedChatId = channelMatch?.[1].match(/chat_id="([^"]+)"/i)?.[1]
+            if (parsedChatId) {
+              telegramChatId = Number(parsedChatId)
+            }
+          }
+          if (telegramChatId !== null && !Number.isNaN(telegramChatId)) {
+            await this.executeTool(sessionId, "TelegramSendVoice", {
+              chat_id: telegramChatId,
+              voice: speechResult.local_path,
+            }, {
+              rootDir: this.rootDir,
+              cwd: this.rootDir,
+              abortSignal: new AbortController().signal,
+              sessionId,
+              runtime: this,
+            }, undefined, profileId)
+          }
+        } else {
+          // CLI: play audio
+          const { spawn } = await import("node:child_process")
+          const player = await this.findAudioPlayer()
+          if (player) {
+            const child = spawn(player, [speechResult.local_path], { stdio: "ignore" })
+            child.on("error", (err) => logger.warn(`Voice playback failed: ${err.message}`))
+            child.unref()
+          }
+        }
+      }
+    } else {
+      // Text mode: deliver text normally
+      await this.deliverText(sessionId, ackText, delivery, "Failed to deliver instant acknowledgment")
     }
   }
 }
