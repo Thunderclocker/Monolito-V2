@@ -38,6 +38,10 @@ import {
 } from "../../channels/config.ts"
 
 import {
+  readConfigWing,
+} from "../../session/store.ts"
+
+import {
   readModelSettings,
 } from "../../runtime/modelConfig.ts"
 
@@ -257,6 +261,12 @@ export const mediaTools: ToolDefinition[] = [
       if (minimaxEnv) apiKey = minimaxEnv
     }
     if (!apiKey) apiKey = (tts.apiKey ?? "").trim()
+    if (!apiKey) {
+      // Buscar credenciales MiniMax en CONF_MODELS (cualquier profile con provider=minimax)
+      const modelsWing = readConfigWing(context.rootDir, "CONF_MODELS") as { profiles?: Array<{ provider?: string; apiKey?: string }> } | null
+      const minimaxProfile = (modelsWing?.profiles || []).find(p => p.provider === "minimax" && p.apiKey)
+      if (minimaxProfile?.apiKey) apiKey = minimaxProfile.apiKey.trim()
+    }
 
     const paths = ensureDirs(context.rootDir, context.profileId)
     const speechDir = join(paths.scratchpadDir, "tts")
@@ -472,6 +482,12 @@ export const mediaTools: ToolDefinition[] = [
     if (!apiKey) {
       const minimaxEnv = (process.env.MINIMAX_API_KEY || "").trim()
       if (minimaxEnv) apiKey = minimaxEnv
+    }
+    if (!apiKey) {
+      // Buscar credenciales MiniMax en CONF_MODELS (cualquier profile con provider=minimax)
+      const modelsWing = readConfigWing(context.rootDir, "CONF_MODELS") as { profiles?: Array<{ provider?: string; apiKey?: string }> } | null
+      const minimaxProfile = (modelsWing?.profiles || []).find(p => p.provider === "minimax" && p.apiKey)
+      if (minimaxProfile?.apiKey) apiKey = minimaxProfile.apiKey.trim()
     }
     if (!apiKey) {
       return formatToolError("Voice clone requiere MINIMAX_API_KEY o tts.apiKey (credenciales independientes del LLM principal).")
