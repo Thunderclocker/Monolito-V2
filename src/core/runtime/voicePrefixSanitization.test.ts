@@ -6,32 +6,30 @@ import type { SessionRecord } from "../ipc/protocol.ts"
 test("sessionToMessages: strips [voice] prefixes from assistant messages in history", () => {
   const session: SessionRecord = {
     id: "test-session",
+    profileId: "default",
     title: "Test Session",
     state: "idle",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     voiceMode: true,
+    worklog: [],
     messages: [
       {
-        id: 1,
         role: "user",
         text: "Hola",
         at: new Date().toISOString()
       },
       {
-        id: 2,
         role: "assistant",
         text: "[voice] [voice] [voice] Hola, ¿cómo estás?",
         at: new Date().toISOString()
       },
       {
-        id: 3,
         role: "user",
         text: "Qué tal",
         at: new Date().toISOString()
       },
       {
-        id: 4,
         role: "assistant",
         text: "voice: Todo bien, contando tips.",
         at: new Date().toISOString()

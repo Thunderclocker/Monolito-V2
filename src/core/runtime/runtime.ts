@@ -65,7 +65,7 @@ import { readWebSearchConfig, writeWebSearchConfig, type WebSearchProvider } fro
 import { getDateContext, getGitContext } from "../context/gitContext.ts"
 import { getWorkspaceContext } from "../context/workspaceContext.ts"
 import { normalizeToolInputPayload } from "./toolInput.ts"
-import { evaluateTopLevelRalphGate, TOP_LEVEL_RALPH_MAX_ATTEMPTS } from "./topLevelRalphGate.ts"
+import { evaluateTopLevelRalphGate, TOP_LEVEL_RALPH_MAX_ATTEMPTS, isScreenViewingRequest } from "./topLevelRalphGate.ts"
 import { renderToolFinish, renderToolStart, renderToolStartText } from "../renderer/toolRenderer.ts"
 import { checkToolPermission, runLifecycleHooks, runPostToolHooks } from "./permissions.ts"
 
@@ -2007,6 +2007,18 @@ Review the existing skill library and apply the curation heuristics in your inst
 
       let userText = text
 
+      if (isScreenViewingRequest(userText)) {
+        logger.info(`[screenshot] Screen viewing request detected. Capturing screenshot immediately...`)
+        const screenshotPath = await this.captureScreenshotSilent(profileId).catch(err => {
+          logger.warn(`Failed to capture automatic screenshot: ${err}`)
+          return null
+        })
+        if (screenshotPath) {
+          logger.info(`[screenshot] Screenshot captured at ${screenshotPath}. Appending to user message as attachment.`)
+          userText = `${userText}\n\n<attachment kind="photo" local_path="${screenshotPath}" />`
+        }
+      }
+
       appendMessage(this.rootDir, sessionId, "user", userText)
       appendWorklog(this.rootDir, sessionId, {
         type: "session",
@@ -2014,6 +2026,16 @@ Review the existing skill library and apply the curation heuristics in your inst
       })
       this.emit({ type: "message.received", sessionId, role: "user", text: userText })
       await this.transitionState(sessionId, "running")
+
+      const isSlash = text.trim().startsWith("/")
+      const isSubAgent = sessionId.startsWith("agent-")
+      const autoAckEnabled = process.env.MONOLITO_AUTO_ACK !== "false"
+      
+      if (!isSlash && !isSubAgent && autoAckEnabled) {
+        void this.sendInstantAcknowledgment(sessionId, text, options?.delivery).catch(err => {
+          logger.warn(`Failed to generate/deliver instant acknowledgment: ${err instanceof Error ? err.message : String(err)}`)
+        })
+      }
 
       await this.runTurn(sessionId, userText, profileId, { delivery: options?.delivery, onAgentLoopEvent: options?.onAgentLoopEvent })
     } finally {
@@ -4260,6 +4282,132 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
       }
     }
     return null
+  }
+
+  private async captureScreenshotSilent(profileId: string): Promise<string | null> {
+    const { ensureDirs } = await import("../ipc/protocol.ts")
+    const paths = ensureDirs(this.rootDir, profileId)
+    const screenshotDir = join(paths.scratchpadDir, "screenshots")
+    mkdirSync(screenshotDir, { recursive: true })
+    const filename = `screenshot-${Date.now()}.png`
+    const localPath = join(screenshotDir, filename)
+
+    const { execFile } = await import("node:child_process")
+    const { promisify } = await import("node:util")
+    const { existsSync } = await import("node:fs")
+    const execFileAsync = promisify(execFile)
+
+    for (const cmd of [
+      { name: "gnome-screenshot", args: ["-f", localPath] },
+      { name: "import", args: ["-window", "root", localPath] },
+      { name: "scrot", args: [localPath] },
+      { name: "maim", args: [localPath] },
+      { name: "grim", args: [localPath] }
+    ]) {
+      try {
+        await execFileAsync(cmd.name, cmd.args)
+        if (existsSync(localPath)) {
+          return localPath
+        }
+      } catch {
+        // ignore and try next
+      }
+    }
+    return null
+  }
+
+  private async sendInstantAcknowledgment(sessionId: string, userText: string, delivery?: DeliveryContext) {
+    const session = this.getSession(sessionId)
+    const voiceMode = session?.voiceMode === true
+
+    const systemPrompt = [
+      "You are a helpful AI assistant. The user just sent a message.",
+      "Your job is to generate a very short, natural acknowledgment (1 to 6 words) in the same language as the user's message (e.g. if the user writes in Spanish, respond in Spanish; if in English, respond in English, etc.) indicating that you received the message and are working on it.",
+      "Provide a dynamic, context-aware acknowledgment based on the message content.",
+      "Examples in Spanish:",
+      '- If the user asks to write/fix/check code: "Revisando el código...", "A ver, dejame ver el código.", "Ahí me fijo qué pasa."',
+      '- If the user asks for information/search: "Buscando eso...", "A ver, investigo un momento.", "Dejame buscar."',
+      '- If it is a general request: "Estoy en eso.", "Ahí me pongo a ver.", "A ver..."',
+      '- Other natural variations: "Dejame ver.", "Ahora lo reviso.", "Dale, me pongo con eso."',
+      "",
+      "Examples in English:",
+      '- If the user asks to write/fix/check code: "Checking the code...", "Let me look at the code.", "Let me see what is wrong."',
+      '- If the user asks for information/search: "Searching for that...", "Let me search.", "Let me look it up."',
+      '- If it is a general request: "On it.", "I am on it.", "Let me see..."',
+      '- Other natural variations: "Checking now.", "Let me check.", "Got it, looking into it."',
+      "",
+      "Do NOT use markdown, emojis, quotes, or any introductory phrases. Output ONLY the raw acknowledgment text."
+    ].join("\n")
+
+    try {
+      const { text: ack } = await runBackgroundTextTask(this.rootDir, systemPrompt, userText, { maxTokens: 25 })
+      const ackText = ack.trim().replace(/^["']|["']$/g, "")
+      if (!ackText) return
+
+      // Emit event so the client gets the text
+      this.emit({ type: "message.received", sessionId, role: "assistant", text: ackText })
+
+      const profileId = session?.profileId ?? "default"
+
+      if (voiceMode) {
+        // Voice mode active: generate speech and deliver as audio
+        const isTelegramMessage = userText.includes('<channel source="telegram"')
+        const ttsConfig = readChannelsConfig().tts || {}
+        const voice = ttsConfig.defaultClonedVoice || ttsConfig.voice || "female-shaonv"
+
+        const speechResult = await this.executeTool(sessionId, "GenerateSpeech", {
+          text: ackText,
+          voice,
+          response_format: isTelegramMessage ? "opus" : "mp3",
+        }, {
+          rootDir: this.rootDir,
+          cwd: this.rootDir,
+          abortSignal: new AbortController().signal,
+          sessionId,
+          runtime: this,
+        }, undefined, profileId) as { local_path?: string; ok?: boolean }
+
+        if (speechResult.ok && speechResult.local_path) {
+          if (isTelegramMessage) {
+            const rawChatId = getTelegramChatId(sessionId)
+            let telegramChatId: number | null = rawChatId ? Number(rawChatId) : null
+            if (telegramChatId === null) {
+              const channelMatch = userText.match(/<channel\b([^>]*)>/i)
+              const parsedChatId = channelMatch?.[1].match(/chat_id="([^"]+)"/i)?.[1]
+              if (parsedChatId) {
+                telegramChatId = Number(parsedChatId)
+              }
+            }
+            if (telegramChatId !== null && !Number.isNaN(telegramChatId)) {
+              await this.executeTool(sessionId, "TelegramSendVoice", {
+                chat_id: telegramChatId,
+                voice: speechResult.local_path,
+              }, {
+                rootDir: this.rootDir,
+                cwd: this.rootDir,
+                abortSignal: new AbortController().signal,
+                sessionId,
+                runtime: this,
+              }, undefined, profileId)
+            }
+          } else {
+            // CLI: play audio
+            const { spawn } = await import("node:child_process")
+            const player = await this.findAudioPlayer()
+            if (player) {
+              const child = spawn(player, [speechResult.local_path], { stdio: "ignore" })
+              child.on("error", (err) => logger.warn(`Voice playback failed: ${err.message}`))
+              child.unref()
+            }
+          }
+        }
+      } else {
+        // Text mode: deliver text normally
+        await this.deliverText(sessionId, ackText, delivery, "Failed to deliver instant acknowledgment")
+      }
+    } catch (e) {
+      logger.debug(`[acknowledgement] Instant acknowledgment delivery failed or skipped: ${e instanceof Error ? e.message : String(e)}`)
+    }
   }
 }
 

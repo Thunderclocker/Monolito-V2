@@ -177,6 +177,10 @@ test("isScreenViewingRequest: matches various screen viewing questions and comma
   assert.equal(isScreenViewingRequest("what do you see on my screen?"), true)
   assert.equal(isScreenViewingRequest("look at my screen"), true)
   assert.equal(isScreenViewingRequest("describe what's on my screen"), true)
+  assert.equal(isScreenViewingRequest("saca un screenshot"), true)
+  assert.equal(isScreenViewingRequest("toma una captura"), true)
+  assert.equal(isScreenViewingRequest("haz un pantallazo por fa"), true)
+  assert.equal(isScreenViewingRequest("take a screenshot"), true)
   assert.equal(isScreenViewingRequest("hola cómo estás?"), false)
   assert.equal(isScreenViewingRequest("verificá la imagen"), false)
 })
@@ -237,5 +241,24 @@ test("evaluateTopLevelRalphGate: passes when CaptureScreenshot and VisionAnalyze
   )
 
   assert.equal(result.blocked, false, "Gate must not block when both tools are called")
+})
+
+test("evaluateTopLevelRalphGate: passes when screenshot is pre-attached to user message and VisionAnalyze is called", () => {
+  const sessionId = "ralph-pre-attached"
+  const profileId = "default"
+  clearActiveTasks(sessionId)
+
+  const result = evaluateTopLevelRalphGate(
+    sharedRoot, sessionId, profileId,
+    "qué ves en mi pantalla?\n\n<attachment kind=\"photo\" local_path=\"/some/screenshot.png\" />",
+    1,
+    "veo la terminal",
+    [],
+    [
+      { type: "tool", tool: "VisionAnalyze", input: { path: "/some/screenshot.png" } }
+    ]
+  )
+
+  assert.equal(result.blocked, false, "Gate must pass without CaptureScreenshot if already attached and analyzed")
 })
 

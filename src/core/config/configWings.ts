@@ -119,6 +119,7 @@ export function createDefaultSystemConfig(): ModelSettings {
       ANTHROPIC_MODEL: "",
       API_TIMEOUT_MS: "3000000",
       MAX_BUDGET_USD: "0",
+      MONOLITO_AUTO_ACK: "true",
     },
   }
 }

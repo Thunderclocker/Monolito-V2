@@ -19,6 +19,7 @@ export type ModelSettings = {
     ANTHROPIC_MODEL: string
     API_TIMEOUT_MS: string
     MAX_BUDGET_USD: string
+    MONOLITO_AUTO_ACK?: string
   }
 }
 
@@ -50,6 +51,7 @@ export function createDefaultSettings(): ModelSettings {
       ANTHROPIC_MODEL: defaults.env.ANTHROPIC_MODEL,
       API_TIMEOUT_MS: defaults.env.API_TIMEOUT_MS,
       MAX_BUDGET_USD: defaults.env.MAX_BUDGET_USD,
+      MONOLITO_AUTO_ACK: defaults.env.MONOLITO_AUTO_ACK,
     },
   }
 }
@@ -67,6 +69,7 @@ export function readModelSettings(): ModelSettings {
       ANTHROPIC_MODEL: normalizeString(raw?.env?.ANTHROPIC_MODEL) || defaults.env.ANTHROPIC_MODEL,
       API_TIMEOUT_MS: normalizeString(raw?.env?.API_TIMEOUT_MS) || defaults.env.API_TIMEOUT_MS,
       MAX_BUDGET_USD: normalizeString(raw?.env?.MAX_BUDGET_USD) || defaults.env.MAX_BUDGET_USD,
+      MONOLITO_AUTO_ACK: raw?.env?.MONOLITO_AUTO_ACK !== undefined ? normalizeString(raw.env.MONOLITO_AUTO_ACK) : defaults.env.MONOLITO_AUTO_ACK,
     },
   }
 }
@@ -219,6 +222,11 @@ export function applyModelSettingsToEnv(env: NodeJS.ProcessEnv, settings: ModelS
   env.ANTHROPIC_MODEL = settings.env.ANTHROPIC_MODEL.trim()
   env.API_TIMEOUT_MS = settings.env.API_TIMEOUT_MS
   env.MAX_BUDGET_USD = settings.env.MAX_BUDGET_USD
+  if (settings.env.MONOLITO_AUTO_ACK !== undefined) {
+    env.MONOLITO_AUTO_ACK = settings.env.MONOLITO_AUTO_ACK.trim()
+  } else {
+    env.MONOLITO_AUTO_ACK = "true"
+  }
   delete env.MONOLITO_ACTIVE_PROVIDER
   return env
 }

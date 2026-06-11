@@ -34,10 +34,6 @@ export type TopLevelRalphGateResult = {
 export const TOP_LEVEL_RALPH_MAX_ATTEMPTS = 20
 export const TOP_LEVEL_RALPH_ESCAPE_AT = 15
 
-/**
- * Detects if the user text asks "what do you see?" or requests looking at the screen/PC
- * in a language-agnostic way (supporting Spanish and English).
- */
 export function isScreenViewingRequest(text: string): boolean {
   if (!text) return false
   const normalized = text
@@ -45,15 +41,17 @@ export function isScreenViewingRequest(text: string): boolean {
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
   
-  // 1. "what do you see" / "que ves" / "que se ve" / "que estas viendo"
-  const whatDoYouSee = /\b(que ves|que se ve|que estas viendo|what (?:do you|can you|doyou|canyou) see)\b/.test(normalized)
+  // 1. "what do you see" / "que ves" / "que se ve" / "que estas viendo" / "que hay"
+  const whatDoYouSee = /\b(que ves|que se ve|que estas viendo|what (?:do you|can you|doyou|canyou) see|what(?:'s| is) on|que hay)\b/.test(normalized)
   
-  // 2. "mira mi pantalla" / "look at my screen" / "pantalla" / "screen" combined with look/see/show/describe/analyze
-  // e.g. "mira mi pantalla", "analiza mi pantalla", "look at my screen", "describe my screen", "whats on my screen"
-  const lookAtScreen = /\b(pantalla|screen)\b/.test(normalized) && 
-                       /\b(mira|ver|analiz|describ|mostr|verific|look|see|show|describ|analyz|watch|view|what|que|whats|check)\b/.test(normalized)
+  // 2. Look/see/show/describe/analyze/take/capture combined with screen/screenshot/display/desktop/escritorio/tela/ecran/schermo/captura/pantallazo/imagen/bureau
+  const lookAtScreen = /\b(pantalla|screen|display|desktop|escritorio|screenshot|captura|pantallazo|imagen|tela|ecran|schermo|cattura|bildschirm)\b/.test(normalized) && 
+                       /\b(mira|ver|analiz|describ|mostr|verific|look|see|show|describ|analyz|watch|view|what|que|whats|check|saca|toma|hace|haz|take|capture|make|voir|regarder|olhar|guardare|vedere)\b/.test(normalized)
   
-  return whatDoYouSee || lookAtScreen
+  // 3. Direct screenshot/capture requests
+  const directScreenshot = /\b(screenshot|pantallazo|captura de pantalla|captura de escritorio|screen capture|screen grab)\b/.test(normalized)
+
+  return whatDoYouSee || lookAtScreen || directScreenshot
 }
 
 
@@ -73,7 +71,8 @@ export function evaluateTopLevelRalphGate(
   history: Array<{ attempt: number; kind: string; summary: string }> = [],
   turnSteps: any[] = [],
 ): TopLevelRalphGateResult {
-  const tookScreenshot = turnSteps.some(s => s.type === "tool" && s.tool === "CaptureScreenshot")
+  const hasAttachedScreenshot = lastUserText.includes('kind="photo"') || lastUserText.includes('attachment kind="photo"')
+  const tookScreenshot = turnSteps.some(s => s.type === "tool" && s.tool === "CaptureScreenshot") || hasAttachedScreenshot
   const analyzedScreenshot = turnSteps.some(s => s.type === "tool" && s.tool === "VisionAnalyze")
 
   // Rule 1: User requested to see/analyze screen but no screenshot was taken
