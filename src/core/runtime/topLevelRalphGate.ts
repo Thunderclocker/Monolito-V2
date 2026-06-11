@@ -91,13 +91,13 @@ export function evaluateTopLevelRalphGate(
     }
   }
 
-  // Rule 2: Screenshot was taken but not analyzed
+  // Rule 2: Screenshot was taken/attached but not analyzed
   if (tookScreenshot && !analyzedScreenshot) {
     const feedbackPrompt = wrapAuditFeedback(
       `[Ralph Loop] ALERTA DE COMPORTAMIENTO\n` +
-      `Has ejecutado la herramienta CaptureScreenshot pero NO has analizado la captura resultante con la herramienta VisionAnalyze.\n` +
+      `Se dispone de una captura de pantalla local (ya sea porque la ejecutaste o porque viene adjunta en el mensaje), pero NO la has analizado con la herramienta VisionAnalyze.\n` +
       `Por regla del sistema, toda captura de pantalla local debe ser analizada inmediatamente usando VisionAnalyze pasando el 'path' de la captura para poder responder al usuario qué es lo que se ve en su pantalla.\n` +
-      `Corrige esto: ejecuta VisionAnalyze en el path de la captura de pantalla obtenida y responde con el análisis.`
+      `Corrige esto: ejecuta VisionAnalyze en el path de la captura de pantalla obtenida/adjunta y responde con el análisis.`
     )
     return {
       blocked: true,

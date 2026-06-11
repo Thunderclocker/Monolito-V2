@@ -72,6 +72,7 @@ import { checkToolPermission, runLifecycleHooks, runPostToolHooks } from "./perm
 import { createLogger, createSessionContext, runWithContext, type Logger } from "../logging/logger.ts"
 
 const logger = createLogger("runtime")
+let lastSuccessfulScreenshotCmd: string | null = null
 import { normalizeTtsConfig } from "../channels/config.ts"
 import {
   deployManagedSttContainer,
@@ -2007,12 +2008,30 @@ Review the existing skill library and apply the curation heuristics in your inst
 
       let userText = text
 
+      const isSlash = text.trim().startsWith("/")
+      const isSubAgent = sessionId.startsWith("agent-")
+      const autoAckEnabled = process.env.MONOLITO_AUTO_ACK !== "false"
+
+      // 1. Start screenshot in background if requested
+      let screenshotPromise: Promise<string | null> | null = null
       if (isScreenViewingRequest(userText)) {
-        logger.info(`[screenshot] Screen viewing request detected. Capturing screenshot immediately...`)
-        const screenshotPath = await this.captureScreenshotSilent(profileId).catch(err => {
+        logger.info(`[screenshot] Screen viewing request detected. Capturing screenshot in background...`)
+        screenshotPromise = this.captureScreenshotSilent(profileId).catch(err => {
           logger.warn(`Failed to capture automatic screenshot: ${err}`)
           return null
         })
+      }
+
+      // 2. Start instant acknowledgment concurrently (in background)
+      if (!isSlash && !isSubAgent && autoAckEnabled) {
+        void this.sendInstantAcknowledgment(sessionId, text, options?.delivery).catch(err => {
+          logger.warn(`Failed to generate/deliver instant acknowledgment: ${err instanceof Error ? err.message : String(err)}`)
+        })
+      }
+
+      // 3. Await the screenshot promise before proceeding to the actual runTurn
+      if (screenshotPromise) {
+        const screenshotPath = await screenshotPromise
         if (screenshotPath) {
           logger.info(`[screenshot] Screenshot captured at ${screenshotPath}. Appending to user message as attachment.`)
           userText = `${userText}\n\n<attachment kind="photo" local_path="${screenshotPath}" />`
@@ -2026,16 +2045,6 @@ Review the existing skill library and apply the curation heuristics in your inst
       })
       this.emit({ type: "message.received", sessionId, role: "user", text: userText })
       await this.transitionState(sessionId, "running")
-
-      const isSlash = text.trim().startsWith("/")
-      const isSubAgent = sessionId.startsWith("agent-")
-      const autoAckEnabled = process.env.MONOLITO_AUTO_ACK !== "false"
-      
-      if (!isSlash && !isSubAgent && autoAckEnabled) {
-        void this.sendInstantAcknowledgment(sessionId, text, options?.delivery).catch(err => {
-          logger.warn(`Failed to generate/deliver instant acknowledgment: ${err instanceof Error ? err.message : String(err)}`)
-        })
-      }
 
       await this.runTurn(sessionId, userText, profileId, { delivery: options?.delivery, onAgentLoopEvent: options?.onAgentLoopEvent })
     } finally {
@@ -4297,16 +4306,27 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
     const { existsSync } = await import("node:fs")
     const execFileAsync = promisify(execFile)
 
-    for (const cmd of [
+    const commands = [
       { name: "gnome-screenshot", args: ["-f", localPath] },
       { name: "import", args: ["-window", "root", localPath] },
       { name: "scrot", args: [localPath] },
       { name: "maim", args: [localPath] },
       { name: "grim", args: [localPath] }
-    ]) {
+    ]
+
+    if (lastSuccessfulScreenshotCmd) {
+      const idx = commands.findIndex(c => c.name === lastSuccessfulScreenshotCmd)
+      if (idx > 0) {
+        const [cmd] = commands.splice(idx, 1)
+        commands.unshift(cmd)
+      }
+    }
+
+    for (const cmd of commands) {
       try {
         await execFileAsync(cmd.name, cmd.args)
         if (existsSync(localPath)) {
+          lastSuccessfulScreenshotCmd = cmd.name
           return localPath
         }
       } catch {

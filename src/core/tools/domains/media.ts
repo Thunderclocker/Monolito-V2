@@ -79,6 +79,8 @@ import {
 
 import type { ToolDefinition } from "../registry.ts"
 
+let lastSuccessfulScreenshotCmd: string | null = null;
+
 export const mediaTools: ToolDefinition[] = [
 {
   name: "SttServiceStatus",
@@ -1249,7 +1251,6 @@ export const mediaTools: ToolDefinition[] = [
     }
   }
 },
-
 {
   name: "CaptureScreenshot",
   aliases: ["capture_screenshot", "screenshot"],
@@ -1264,54 +1265,32 @@ export const mediaTools: ToolDefinition[] = [
     const filename = `screenshot-${Date.now()}.png`
     const localPath = join(screenshotDir, filename)
 
-    // Intenta gnome-screenshot
-    try {
-      await execFileAsync("gnome-screenshot", ["-f", localPath])
-      if (existsSync(localPath)) {
-        return { ok: true, local_path: localPath }
+    const commands = [
+      { name: "gnome-screenshot", args: ["-f", localPath] },
+      { name: "import", args: ["-window", "root", localPath] },
+      { name: "scrot", args: [localPath] },
+      { name: "maim", args: [localPath] },
+      { name: "grim", args: [localPath] }
+    ]
+
+    if (lastSuccessfulScreenshotCmd) {
+      const idx = commands.findIndex(c => c.name === lastSuccessfulScreenshotCmd)
+      if (idx > 0) {
+        const [cmd] = commands.splice(idx, 1)
+        commands.unshift(cmd)
       }
-    } catch (err) {
-      // Ignorar y probar siguiente
     }
 
-    // Intenta import (ImageMagick)
-    try {
-      await execFileAsync("import", ["-window", "root", localPath])
-      if (existsSync(localPath)) {
-        return { ok: true, local_path: localPath }
+    for (const cmd of commands) {
+      try {
+        await execFileAsync(cmd.name, cmd.args)
+        if (existsSync(localPath)) {
+          lastSuccessfulScreenshotCmd = cmd.name
+          return { ok: true, local_path: localPath }
+        }
+      } catch (err) {
+        // Ignorar y probar siguiente
       }
-    } catch (err) {
-      // Ignorar y probar siguiente
-    }
-
-    // Intenta scrot
-    try {
-      await execFileAsync("scrot", [localPath])
-      if (existsSync(localPath)) {
-        return { ok: true, local_path: localPath }
-      }
-    } catch (err) {
-      // Ignorar y probar siguiente
-    }
-
-    // Intenta maim
-    try {
-      await execFileAsync("maim", [localPath])
-      if (existsSync(localPath)) {
-        return { ok: true, local_path: localPath }
-      }
-    } catch (err) {
-      // Ignorar y probar siguiente
-    }
-
-    // Intenta grim (Wayland)
-    try {
-      await execFileAsync("grim", [localPath])
-      if (existsSync(localPath)) {
-        return { ok: true, local_path: localPath }
-      }
-    } catch (err) {
-      // Ignorar y probar siguiente
     }
 
     return formatToolError("No se pudo capturar la pantalla con ninguna utilidad (gnome-screenshot, import, scrot, maim, grim).")

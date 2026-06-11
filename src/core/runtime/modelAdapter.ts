@@ -656,7 +656,7 @@ function buildSystemPrompt(args: {
           "",
           "2. VERIFICACIÓN VISUAL (cuando el usuario la pide): si el usuario pide verificar/analizar/describir una imagen, usá VisionAnalyze directamente en este turno. Pasale `url`, `path` o `file_id`. Para re-verificar una foto que ya enviaste, primero llamá TelegramGetRecentPhotos para recuperar su `file_id` y luego pasáselo a VisionAnalyze. Para verificar ANTES de enviar, encadená ImageSearch → VisionAnalyze → TelegramSendPhoto en ese orden; el resultado es informativo, no bloqueante.",
           "",
-          "3. CAPTURA DE PANTALLA Y ANÁLISIS (SCREENSHOT): si el usuario te pregunta qué ves, qué hay en su pantalla o PC, o te pide mirar/describir/analizar su pantalla (ej. 'qué ves?', '¿qué hay en mi pantalla?', 'mira mi pantalla', 'what do you see?', 'look at my screen', etc. en cualquier idioma), debes ejecutar obligatoriamente la herramienta CaptureScreenshot para tomar una captura de pantalla local e inmediatamente después ejecutar VisionAnalyze con el `local_path` resultante para analizarla y responder al usuario. Este encadenamiento es una regla de ejecución estricta.",
+          "3. CAPTURA DE PANTALLA Y ANÁLISIS (SCREENSHOT): si el usuario te pregunta qué ves, qué hay en su pantalla o PC, o te pide mirar/describir/analizar su pantalla (ej. 'qué ves?', '¿qué hay en mi pantalla?', 'mira mi pantalla', 'what do you see?', 'look at my screen', etc. en cualquier idioma), debes ejecutar la herramienta CaptureScreenshot para tomar una captura de pantalla local e inmediatamente después ejecutar VisionAnalyze con el `local_path` resultante para analizarla. EXCEPCIÓN: si ya hay una captura adjunta en el mensaje del usuario (<attachment kind=\"photo\" local_path=\"...\" />), NO llames a CaptureScreenshot; utiliza directamente VisionAnalyze con el `local_path` de esa captura adjunta para analizarla y responder. Esto evita capturas redundantes y acelera la respuesta.",
           "",
           "4. ANTI-ALUCINACIÓN DE FOTOS: si el usuario pide enviar imágenes y ya tenés `image_url` o `local_path` disponible, ejecutá TelegramSendPhoto ANTES de emitir cualquier respuesta en texto. NUNCA respondas con una lista o descripción de fotos asumiendo que eso es equivalente a mandarlas.",
           "",
@@ -1376,6 +1376,12 @@ Por favor, corregí este error de inmediato y reescribí tu respuesta respetando
           const toolsCalledInTurn = steps
             .filter(step => step.type === "tool")
             .map(step => (step as { type: "tool"; tool: string }).tool)
+
+          // If a screenshot was pre-attached, treat CaptureScreenshot as executed to avoid Veracity Guard falsification errors.
+          const hasAttachedScreenshot = lastUserText && (lastUserText.includes('kind="photo"') || lastUserText.includes('attachment kind="photo"'));
+          if (hasAttachedScreenshot && !toolsCalledInTurn.includes("CaptureScreenshot")) {
+            toolsCalledInTurn.push("CaptureScreenshot");
+          }
 
           const integrity = await checkTurnIntegrity(
             rootDir,
