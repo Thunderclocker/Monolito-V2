@@ -35,6 +35,29 @@ export const TOP_LEVEL_RALPH_MAX_ATTEMPTS = 20
 export const TOP_LEVEL_RALPH_ESCAPE_AT = 15
 
 /**
+ * Detects if the user text asks "what do you see?" or requests looking at the screen/PC
+ * in a language-agnostic way (supporting Spanish and English).
+ */
+export function isScreenViewingRequest(text: string): boolean {
+  if (!text) return false
+  const normalized = text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+  
+  // 1. "what do you see" / "que ves" / "que se ve" / "que estas viendo"
+  const whatDoYouSee = /\b(que ves|que se ve|que estas viendo|what (?:do you|can you|doyou|canyou) see)\b/.test(normalized)
+  
+  // 2. "mira mi pantalla" / "look at my screen" / "pantalla" / "screen" combined with look/see/show/describe/analyze
+  // e.g. "mira mi pantalla", "analiza mi pantalla", "look at my screen", "describe my screen", "whats on my screen"
+  const lookAtScreen = /\b(pantalla|screen)\b/.test(normalized) && 
+                       /\b(mira|ver|analiz|describ|mostr|verific|look|see|show|describ|analyz|watch|view|what|que|whats|check)\b/.test(normalized)
+  
+  return whatDoYouSee || lookAtScreen
+}
+
+
+/**
  * Evaluate the top-level Ralph gate for a session. Pure function (modulo
  * the SQLite read); safe to unit-test. The caller is responsible for the
  * loop, the worklog appends, and the actual re-feed via appendMessage +
@@ -48,7 +71,43 @@ export function evaluateTopLevelRalphGate(
   attempt: number,
   assistantReply: string,
   history: Array<{ attempt: number; kind: string; summary: string }> = [],
+  turnSteps: any[] = [],
 ): TopLevelRalphGateResult {
+  const tookScreenshot = turnSteps.some(s => s.type === "tool" && s.tool === "CaptureScreenshot")
+  const analyzedScreenshot = turnSteps.some(s => s.type === "tool" && s.tool === "VisionAnalyze")
+
+  // Rule 1: User requested to see/analyze screen but no screenshot was taken
+  if (isScreenViewingRequest(lastUserText) && !tookScreenshot) {
+    const feedbackPrompt = wrapAuditFeedback(
+      `[Ralph Loop] ALERTA DE COMPORTAMIENTO\n` +
+      `El usuario ha preguntado qué ves en su pantalla o te ha pedido mirar/analizar su pantalla ("${lastUserText}").\n` +
+      `Por regla del sistema, debes tomar obligatoriamente una captura de pantalla usando la herramienta CaptureScreenshot en este turno.\n` +
+      `Corrige esto: ejecuta la herramienta CaptureScreenshot inmediatamente.`
+    )
+    return {
+      blocked: true,
+      shouldRetry: true,
+      feedbackPrompt,
+      unfinished: [{ content: "Tomar una captura de pantalla con CaptureScreenshot", status: "pending" }],
+    }
+  }
+
+  // Rule 2: Screenshot was taken but not analyzed
+  if (tookScreenshot && !analyzedScreenshot) {
+    const feedbackPrompt = wrapAuditFeedback(
+      `[Ralph Loop] ALERTA DE COMPORTAMIENTO\n` +
+      `Has ejecutado la herramienta CaptureScreenshot pero NO has analizado la captura resultante con la herramienta VisionAnalyze.\n` +
+      `Por regla del sistema, toda captura de pantalla local debe ser analizada inmediatamente usando VisionAnalyze pasando el 'path' de la captura para poder responder al usuario qué es lo que se ve en su pantalla.\n` +
+      `Corrige esto: ejecuta VisionAnalyze en el path de la captura de pantalla obtenida y responde con el análisis.`
+    )
+    return {
+      blocked: true,
+      shouldRetry: true,
+      feedbackPrompt,
+      unfinished: [{ content: "Analizar la captura de pantalla con VisionAnalyze", status: "pending" }],
+    }
+  }
+
   const tasks = listSessionTasks(rootDir, sessionId, profileId)
   const unfinished = tasks
     .filter(t => t.status === "pending" || t.status === "in_progress")

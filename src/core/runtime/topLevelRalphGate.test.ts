@@ -15,7 +15,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { listSessionTasks, writeSessionTask, getDb } from "../session/store.ts"
 import type { SessionTask } from "../session/store.ts"
-import { evaluateTopLevelRalphGate } from "./topLevelRalphGate.ts"
+import { evaluateTopLevelRalphGate, isScreenViewingRequest } from "./topLevelRalphGate.ts"
 
 // All tests share a single rootDir because `getPaths` is anchored to
 // MONOLITO_ROOT (a module-level constant) — every test would otherwise
@@ -169,3 +169,73 @@ test("evaluateTopLevelRalphGate: ignores superseded tasks", () => {
   assert.equal(result.blocked, false)
   assert.equal(result.feedbackPrompt, null)
 })
+
+test("isScreenViewingRequest: matches various screen viewing questions and commands", () => {
+  assert.equal(isScreenViewingRequest("qué ves en mi pantalla?"), true)
+  assert.equal(isScreenViewingRequest("mirá mi pantalla"), true)
+  assert.equal(isScreenViewingRequest("mira la pantalla y decime"), true)
+  assert.equal(isScreenViewingRequest("what do you see on my screen?"), true)
+  assert.equal(isScreenViewingRequest("look at my screen"), true)
+  assert.equal(isScreenViewingRequest("describe what's on my screen"), true)
+  assert.equal(isScreenViewingRequest("hola cómo estás?"), false)
+  assert.equal(isScreenViewingRequest("verificá la imagen"), false)
+})
+
+test("evaluateTopLevelRalphGate: blocks when screen-viewing request but CaptureScreenshot not executed", () => {
+  const sessionId = "ralph-screenshot-missing"
+  const profileId = "default"
+  clearActiveTasks(sessionId)
+
+  const result = evaluateTopLevelRalphGate(
+    sharedRoot, sessionId, profileId,
+    "qué ves en mi pantalla?",
+    1,
+    "no veo nada especial",
+    [],
+    []
+  )
+
+  assert.equal(result.blocked, true, "Gate must block when screen viewing request is not captured")
+  assert.equal(result.shouldRetry, true)
+  assert.ok(result.feedbackPrompt?.includes("CaptureScreenshot"))
+})
+
+test("evaluateTopLevelRalphGate: blocks when CaptureScreenshot is called but VisionAnalyze is not", () => {
+  const sessionId = "ralph-vision-missing"
+  const profileId = "default"
+  clearActiveTasks(sessionId)
+
+  const result = evaluateTopLevelRalphGate(
+    sharedRoot, sessionId, profileId,
+    "toma una captura de pantalla",
+    1,
+    "ya la tomé",
+    [],
+    [{ type: "tool", tool: "CaptureScreenshot", input: {} }]
+  )
+
+  assert.equal(result.blocked, true, "Gate must block when screenshot is not analyzed")
+  assert.equal(result.shouldRetry, true)
+  assert.ok(result.feedbackPrompt?.includes("VisionAnalyze"))
+})
+
+test("evaluateTopLevelRalphGate: passes when CaptureScreenshot and VisionAnalyze are both called", () => {
+  const sessionId = "ralph-both-called"
+  const profileId = "default"
+  clearActiveTasks(sessionId)
+
+  const result = evaluateTopLevelRalphGate(
+    sharedRoot, sessionId, profileId,
+    "qué ves?",
+    1,
+    "veo la terminal de visual studio code",
+    [],
+    [
+      { type: "tool", tool: "CaptureScreenshot", input: {} },
+      { type: "tool", tool: "VisionAnalyze", input: { path: "some/path.png" } }
+    ]
+  )
+
+  assert.equal(result.blocked, false, "Gate must not block when both tools are called")
+})
+

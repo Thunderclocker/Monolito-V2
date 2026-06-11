@@ -2420,6 +2420,7 @@ Review the existing skill library and apply the curation heuristics in your inst
             ralphAttempt,
             lastAssistantReplyForRalph,
             ralphAttemptHistory,
+            turn.steps,
           )
           if (!gate.blocked) break
 
