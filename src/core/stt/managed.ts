@@ -42,7 +42,7 @@ export function normalizeSttConfig(config?: Partial<SttConfig>): SttConfig {
       config?.engine === "faster_whisper" || config?.engine === "openai_whisper" || config?.engine === "whisperx"
         ? config.engine
         : "faster_whisper",
-    model: typeof config?.model === "string" && config.model.trim() ? config.model.trim() : "base",
+    model: typeof config?.model === "string" && config.model.trim() ? config.model.trim() : "small",
     language: typeof config?.language === "string" && config.language.trim() ? config.language.trim() : "es",
     vadFilter: typeof config?.vadFilter === "boolean" ? config.vadFilter : true,
   }
