@@ -4264,15 +4264,31 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
 
       // Entregar audio según el canal del mensaje actual
       if (isTelegramMessage) {
-        await this.executeTool(sessionId, "TelegramSendVoice", {
-          audio: speechResult.local_path,
-        }, {
-          rootDir: this.rootDir,
-          cwd: options?.cwd ?? this.rootDir,
-          abortSignal: new AbortController().signal,
-          sessionId,
-          runtime: this,
-        }, undefined, profileId)
+        const rawChatId = getTelegramChatId(sessionId)
+        let telegramChatId: number | null = rawChatId ? Number(rawChatId) : null
+
+        if (telegramChatId === null) {
+          const channelMatch = preparedUserText.match(/<channel\b([^>]*)>/i)
+          const parsedChatId = channelMatch?.[1].match(/chat_id="([^"]+)"/i)?.[1]
+          if (parsedChatId) {
+            telegramChatId = Number(parsedChatId)
+          }
+        }
+
+        if (telegramChatId !== null && !Number.isNaN(telegramChatId)) {
+          await this.executeTool(sessionId, "TelegramSendVoice", {
+            chat_id: telegramChatId,
+            voice: speechResult.local_path,
+          }, {
+            rootDir: this.rootDir,
+            cwd: options?.cwd ?? this.rootDir,
+            abortSignal: new AbortController().signal,
+            sessionId,
+            runtime: this,
+          }, undefined, profileId)
+        } else {
+          logger.warn(`Voice mode: Could not send Telegram voice note. No chat_id found.`)
+        }
       } else {
         // CLI: reproducir localmente (spawn sin detached para evitar race condition)
         const { spawn } = await import("node:child_process")
