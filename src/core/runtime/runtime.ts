@@ -2231,6 +2231,14 @@ Review the existing skill library and apply the curation heuristics in your inst
             appendMessage(this.rootDir, sessionId, "assistant", msg)
             this.emit({ type: "message.received", sessionId, role: "assistant", text: msg })
             await this.deliverText(sessionId, msg, options?.delivery, "Failed to deliver voice mode activation")
+            await this.transitionState(sessionId, "idle")
+            this.emit({
+              type: "turn.completed",
+              sessionId,
+              role: "assistant",
+              durationMs: Date.now() - turnStartedAt,
+              usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
+            })
             return { finalText: msg, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } }
           }
         } else if (session.voiceMode === true) {
@@ -2242,6 +2250,14 @@ Review the existing skill library and apply the curation heuristics in your inst
             appendMessage(this.rootDir, sessionId, "assistant", msg)
             this.emit({ type: "message.received", sessionId, role: "assistant", text: msg })
             await this.deliverText(sessionId, msg, options?.delivery, "Failed to deliver voice mode deactivation")
+            await this.transitionState(sessionId, "idle")
+            this.emit({
+              type: "turn.completed",
+              sessionId,
+              role: "assistant",
+              durationMs: Date.now() - turnStartedAt,
+              usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
+            })
             return { finalText: msg, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } }
           }
         }
