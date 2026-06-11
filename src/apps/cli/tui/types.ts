@@ -69,6 +69,7 @@ export type ComposerState = {
     reason: string
   } | null
   accumulatedThinking?: string
+  showThinkingContent: boolean
 }
 
 export type HeaderState = {

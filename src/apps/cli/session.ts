@@ -572,7 +572,7 @@ export async function ensureCliSession(client: DaemonClient, sessionId?: string)
 
 export async function openInteractiveSession(client: DaemonClient, sessionId?: string) {
   const rootDir = process.cwd()
-  const composer: ComposerState = { input: "", cursor: 0, busy: false, thinkingFrame: 0, thinkingVisible: false, suggestions: [], toolThinkingFrame: 0, toolThinkingText: "", menuState: null, channelMenuState: null, websearchMenuState: null, masterMenuState: null, masterMenuEphemeral: false, permissionPrompt: null, accumulatedThinking: "" }
+  const composer: ComposerState = { input: "", cursor: 0, busy: false, thinkingFrame: 0, thinkingVisible: false, suggestions: [], toolThinkingFrame: 0, toolThinkingText: "", menuState: null, channelMenuState: null, websearchMenuState: null, masterMenuState: null, masterMenuEphemeral: false, permissionPrompt: null, accumulatedThinking: "", showThinkingContent: false }
   const history = createPromptHistory(rootDir)
   const completer = createInteractiveCompleter(rootDir)
   const formatter = new InteractiveTranscriptFormatter()
@@ -1547,12 +1547,15 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
         }
         composer.suggestions = []
       },
+      "\u000f": () => {
+        composer.showThinkingContent = !composer.showThinkingContent
+      },
     }
     let didHandle = false
     const handleControl = (raw: string) => {
       const controlHandler = controlMap[raw]
       if (!controlHandler) return false
-      if (!["\u001b[A", "\u001b[B", "\u0010", "\u000e"].includes(raw)) {
+      if (!["\u001b[A", "\u001b[B", "\u0010", "\u000e", "\u000f"].includes(raw)) {
         history.index = -1
         history.draft = composer.input
       }

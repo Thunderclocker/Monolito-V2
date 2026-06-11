@@ -55,7 +55,7 @@ export function toneColor(tone: TranscriptBlock extends { tone: infer T } ? T : 
   }
 }
 
-export function renderTranscriptBlock(block: TranscriptBlock, width: number) {
+export function renderTranscriptBlock(block: TranscriptBlock, width: number, showThinkingContent = false) {
   if (block.type === "assistant-meta") {
     return wrapTextWithIndent(`${ANSI.dim}${block.text}${ANSI.reset}`, width, "  ", "  ")
   }
@@ -88,7 +88,13 @@ export function renderTranscriptBlock(block: TranscriptBlock, width: number) {
         const thinkingText = (block as any).thinking
         const tokenEstimate = Math.ceil(thinkingText.length / 4)
         const tokenStr = tokenEstimate >= 1000 ? `${(tokenEstimate / 1000).toFixed(1)}k` : String(tokenEstimate)
-        lines.push(`  ${ANSI.dim}💭 Thinking... (${tokenStr} tokens) ▶${ANSI.reset}`)
+        if (showThinkingContent) {
+          lines.push(`  ${ANSI.dim}💭 Thinking... (${tokenStr} tokens) ▼${ANSI.reset}`)
+          const thinkingLines = wrapTextWithIndent(thinkingText, width - 4, `${ANSI.dim}│ `, `${ANSI.dim}│ `)
+          lines.push(...thinkingLines.map(l => `  ${l}${ANSI.reset}`))
+        } else {
+          lines.push(`  ${ANSI.dim}💭 Thinking... (${tokenStr} tokens) ▶${ANSI.reset}`)
+        }
       }
       lines.push(...renderBulletedBlock(block.text, width, ""))
       return lines
@@ -110,17 +116,17 @@ export function renderTranscriptBlock(block: TranscriptBlock, width: number) {
   return renderBulletedBlock("", width, "")
 }
 
-export function flattenTranscript(blocks: TranscriptBlock[], width: number) {
+export function flattenTranscript(blocks: TranscriptBlock[], width: number, showThinkingContent = false) {
   const rows: string[] = []
   for (const block of blocks) {
-    rows.push(...renderTranscriptBlock(block, width))
+    rows.push(...renderTranscriptBlock(block, width, showThinkingContent))
     rows.push("")
   }
   if (rows.length > 0) rows.pop()
   return rows
 }
 
-export function renderCopyTranscriptBlock(block: TranscriptBlock, width: number) {
+export function renderCopyTranscriptBlock(block: TranscriptBlock, width: number, showThinkingContent = false) {
   if (block.type === "assistant-meta") {
     return wrapTextWithIndent(block.text, width, "  ", "  ")
   }
@@ -141,7 +147,12 @@ export function renderCopyTranscriptBlock(block: TranscriptBlock, width: number)
         const thinkingText = (block as any).thinking
         const tokenEstimate = Math.ceil(thinkingText.length / 4)
         const tokenStr = tokenEstimate >= 1000 ? `${(tokenEstimate / 1000).toFixed(1)}k` : String(tokenEstimate)
-        lines.push(`  💭 Thinking... (${tokenStr} tokens)`)
+        if (showThinkingContent) {
+          lines.push(`  💭 Thinking... (${tokenStr} tokens)`)
+          lines.push(...wrapTextWithIndent(thinkingText, width - 4, "  │ ", "  │ "))
+        } else {
+          lines.push(`  💭 Thinking... (${tokenStr} tokens)`)
+        }
       }
       lines.push(...wrapTextWithSinglePrefix(block.text, width, "● ", "  "))
       return lines
@@ -155,10 +166,10 @@ export function renderCopyTranscriptBlock(block: TranscriptBlock, width: number)
   return []
 }
 
-export function flattenCopyTranscript(blocks: TranscriptBlock[], width: number) {
+export function flattenCopyTranscript(blocks: TranscriptBlock[], width: number, showThinkingContent = false) {
   const rows: string[] = []
   for (const block of blocks) {
-    rows.push(...renderCopyTranscriptBlock(block, width))
+    rows.push(...renderCopyTranscriptBlock(block, width, showThinkingContent))
     rows.push("")
   }
   if (rows.length > 0) rows.pop()
@@ -308,7 +319,7 @@ export function renderScreen(header: HeaderState, transcript: TranscriptViewport
       }
     }
   }
-  const transcriptLines = flattenTranscript(displayTranscriptBlocks, cols)
+  const transcriptLines = flattenTranscript(displayTranscriptBlocks, cols, composer.showThinkingContent)
   const scrollOffset = clampScrollOffset(transcript.scrollOffset, transcriptLines.length, transcriptRows)
   const endIndex = Math.max(0, transcriptLines.length - scrollOffset)
   const startIndex = Math.max(0, endIndex - transcriptRows)
