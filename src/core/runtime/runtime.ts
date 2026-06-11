@@ -4208,8 +4208,9 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
     }
 
     try {
-      const delivery = options?.delivery
-      const isTelegram = delivery?.channel === "telegram"
+      // Determinar canal basado en el mensaje actual, no en el delivery cacheado
+      const isTelegramMessage = getTelegramChatId(sessionId) !== null || 
+                                 preparedUserText.includes('<channel source="telegram"')
       const ttsConfig = readChannelsConfig().tts || {}
       const voice = ttsConfig.defaultClonedVoice || ttsConfig.voice || "female-shaonv"
 
@@ -4217,7 +4218,7 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
       const speechResult = await this.executeTool(sessionId, "GenerateSpeech", {
         text: textToSpeak,
         voice,
-        response_format: isTelegram ? "opus" : "mp3",
+        response_format: isTelegramMessage ? "opus" : "mp3",
       }, {
         rootDir: this.rootDir,
         cwd: options?.cwd ?? this.rootDir,
@@ -4231,8 +4232,8 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
         return false
       }
 
-      // Entregar audio según el canal
-      if (isTelegram) {
+      // Entregar audio según el canal del mensaje actual
+      if (isTelegramMessage) {
         await this.executeTool(sessionId, "TelegramSendVoice", {
           audio: speechResult.local_path,
         }, {
@@ -4243,11 +4244,13 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
           runtime: this,
         }, undefined, profileId)
       } else {
-        // CLI: reproducir localmente
+        // CLI: reproducir localmente (spawn sin detached para evitar race condition)
         const { spawn } = await import("node:child_process")
         const player = await this.findAudioPlayer()
         if (player) {
-          spawn(player, [speechResult.local_path], { detached: true, stdio: "ignore" })
+          const child = spawn(player, [speechResult.local_path], { stdio: "ignore" })
+          child.on("error", (err) => logger.warn(`Voice playback failed: ${err.message}`))
+          child.unref()
         } else {
           logger.warn("Voice mode: no audio player found for CLI playback")
         }
