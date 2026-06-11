@@ -2500,12 +2500,8 @@ Review the existing skill library and apply the curation heuristics in your inst
           }
         }
 
-        if (shouldSuppressEmit(userFacingText)) {
-          const wasAborted = !!turn.error ||
-            turn.meta?.stopReason === "max_duration" ||
-            turn.meta?.stopReason === "aborted"
-
-          // Voice mode: intercept response and deliver as audio
+        // Voice mode: intercept response and deliver as audio (runs on EVERY turn when active)
+        if (session.voiceMode) {
           const voiceProcessed = await this.processVoiceModeAndDeliver(
             sessionId,
             turn,
@@ -2515,8 +2511,20 @@ Review the existing skill library and apply the curation heuristics in your inst
             { logger: instanceLogger, cwd: effectiveCwd, traceId, delivery: options?.delivery, onAgentLoopEvent: options?.onAgentLoopEvent },
           )
           if (voiceProcessed) {
-            // Voice mode handled delivery, skip text delivery
-          } else if (hasSideEffects && !wasAborted) {
+            // Voice mode handled delivery (audio sent or played locally), skip text delivery
+            await this.transitionState(sessionId, turn.error ? "error" : "idle")
+            this.maybeFireSkillsTriggers(sessionId, profileId, turn)
+            return turn
+          }
+          // If voice pipeline failed, fall through to normal text delivery
+        }
+
+        if (shouldSuppressEmit(userFacingText)) {
+          const wasAborted = !!turn.error ||
+            turn.meta?.stopReason === "max_duration" ||
+            turn.meta?.stopReason === "aborted"
+
+          if (hasSideEffects && !wasAborted) {
             userFacingText = "✅ ¡Acción completada con éxito! He procesado y enviado los archivos por Telegram."
             appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
             appendWorklog(this.rootDir, sessionId, {
