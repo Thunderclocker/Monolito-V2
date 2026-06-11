@@ -4250,8 +4250,7 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
 
     try {
       // Determinar canal basado en el mensaje actual, no en el delivery cacheado
-      const isTelegramMessage = getTelegramChatId(sessionId) !== null || 
-                                 preparedUserText.includes('<channel source="telegram"')
+      const isTelegramMessage = preparedUserText.includes('<channel source="telegram"')
       const ttsConfig = readChannelsConfig().tts || {}
       const voice = ttsConfig.defaultClonedVoice || ttsConfig.voice || "female-shaonv"
 

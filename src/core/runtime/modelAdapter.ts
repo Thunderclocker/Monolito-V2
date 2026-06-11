@@ -532,10 +532,22 @@ function buildSystemPrompt(args: {
   const isImageIntent = args.extras?.blockedTools?.includes("Bash") ?? false
   const exposeTelegramDownload = args.session.messages.some(m => m.text.includes('status="size_limit_exceeded"'))
 
+  const blockedTools = [...(args.extras?.blockedTools || [])]
+  const isTelegramMessage = lastUserMessage.includes('<channel source="telegram"')
+  if (!isTelegramMessage) {
+    blockedTools.push(
+      "TelegramSend",
+      "TelegramSendPhoto",
+      "TelegramSendAudio",
+      "TelegramSendVoice",
+      "TelegramSendDocument",
+      "TelegramGetRecentPhotos"
+    )
+  }
+
   let skillsBlock = ""
   try {
     const allSkills = listDynamicSkills(args.rootDir)
-    const blockedTools = args.extras?.blockedTools || []
     const availableToolsList = listModelTools(isSubAgent, blockedTools, args.allowedToolNames, args.rootDir, exposeTelegramDownload)
     const availableToolNamesSet = new Set(availableToolsList.map(t => t.name))
 
@@ -651,7 +663,7 @@ function buildSystemPrompt(args: {
           "8. AUDIO/VOZ EN TELEGRAM: para audio/voice no respondas 'generando audio' a menos que el mismo turno ya haya iniciado GenerateSpeech. Completá la secuencia GenerateSpeech → TelegramSendAudio/TelegramSendVoice, y confirmá solo después de que el envío sea exitoso.",
         ].join("\n"),
     "Available tools:",
-    buildToolSummary(isSubAgent, args.extras?.blockedTools || [], args.allowedToolNames, args.rootDir, exposeTelegramDownload),
+    buildToolSummary(isSubAgent, blockedTools, args.allowedToolNames, args.rootDir, exposeTelegramDownload),
     skillsBlock,
     bootstrap ? describeBootEntries(bootstrap.entries) : "",
     isSubAgent ? "" : [
@@ -1704,9 +1716,20 @@ Considera esta estrategia de solución.`
       // model. The side-effect guard still runs as defence in depth
       // (a rejection is a hard stop, but normal flow is approve).
       if (!isSubAgent) {
-        const telegramChatId = session.id.startsWith("telegram-")
-          ? Number(session.id.slice("telegram-".length))
-          : null
+        let telegramChatId: number | null = null
+        const lastUserText = messages.findLast(m => m.role === "user")?.content ?? ""
+        if (lastUserText.includes('<channel source="telegram"')) {
+          const match = lastUserText.match(/<channel\b[^>]*chat_id="([^"]+)"/i)
+          if (match && match[1]) {
+            telegramChatId = Number(match[1])
+          }
+        }
+        if (telegramChatId === null && session.id.startsWith("telegram-")) {
+          // Fallback only if the message text was indeed from Telegram
+          if (lastUserText.includes('<channel source="telegram"')) {
+            telegramChatId = Number(session.id.slice("telegram-".length))
+          }
+        }
         if (telegramChatId !== null && Number.isFinite(telegramChatId)) {
           const undelivered = findUndeliveredToolOutputs(messages)
           for (const u of undelivered) {

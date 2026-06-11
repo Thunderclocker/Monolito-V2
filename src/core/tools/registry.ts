@@ -129,6 +129,9 @@ export function listModelTools(isSubAgent = false, lastUserText?: string | boole
 
   const staticMapped = tools
     .filter(tool => {
+      if (Array.isArray(lastUserText) && lastUserText.includes(tool.name)) {
+        return false
+      }
       // 1. Core Tools are ALWAYS included
       if (CORE_TOOLS.has(tool.name)) {
         if (isSubAgent && hiddenFromSubAgents.has(tool.name)) return false;
