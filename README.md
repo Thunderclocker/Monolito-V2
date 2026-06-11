@@ -109,7 +109,7 @@ The runtime does not rely on workspace markdown files for identity or memory. Th
 
 - Monolito can generate speech audio files through a hosted TTS provider (MiniMax or OpenAI-compatible).
 - For Telegram-backed sessions, it can send those results as audio files or voice notes.
-- For MiniMax, set `tts_provider=minimax` and `tts_api_key=...`; the active MiniMax model profile is also used as a credential fallback. For OpenAI-compatible providers, set `tts_provider=openai` and `tts_base_url` to the API root (e.g. `https://api.openai.com/v1`).
+- By default, MiniMax is used as the TTS provider (using the active MiniMax model profile as a credential fallback if `tts_api_key` is unset). For OpenAI-compatible providers, set `tts_provider=openai` and `tts_base_url` to the API root (e.g. `https://api.openai.com/v1`).
 - `VoiceClone` uploads a 10s–5min sample to MiniMax and persists the cloned voice as an alias in `tts.clonedVoices`.
 - The previous managed local TTS container (`travisvn/openai-edge-tts`) and its `/tts` lifecycle commands were removed; `uninstall.sh` still cleans up any leftover containers from older installs.
 - See [`docs/tts.md`](./docs/tts.md) for the full configuration reference.

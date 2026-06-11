@@ -56,11 +56,11 @@ Supported `/config set` fields for TTS are:
 
 The legacy fields `tts_managed`, `tts_auto_deploy`, and `tts_port` are no longer accepted and return an error.
 
-Recommended defaults for MiniMax TTS are:
+MiniMax is the default TTS provider. If unset, it defaults to:
 
 - `tts_provider = minimax`
+- `tts_voice = female-shaonv`
 - `tts_base_url = https://api.minimax.io/v1`
-- `tts_voice = <cloned alias or MiniMax voice id>`
 
 For OpenAI-compatible TTS backends, `tts_base_url` should point to the service root, for example:
 

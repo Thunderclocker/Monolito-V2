@@ -13,9 +13,9 @@ The runtime prompt explicitly instructs the model to prefer these tools over ad-
 
 ## Supported providers
 
-`GenerateSpeech` accepts two TTS providers, controlled by `tts_provider`:
+`GenerateSpeech` accepts two TTS providers, controlled by `tts_provider` (which defaults to `minimax` if unset):
 
-### MiniMax (default for voice clones)
+### MiniMax (default provider)
 
 - Endpoint: `POST /v1/t2a_v2` on `https://api.minimax.io/v1`
 - Auth: `tts.apiKey` (or `MINIMAX_API_KEY` / `ANTHROPIC_AUTH_TOKEN` env var, or the active model profile if it is `minimax`)

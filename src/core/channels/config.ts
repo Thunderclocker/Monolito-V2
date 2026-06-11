@@ -223,7 +223,7 @@ export function normalizeTtsConfig(config?: Partial<TtsConfig>): TtsConfig {
   return {
     baseUrl: typeof config?.baseUrl === "string" ? config.baseUrl.trim() : "",
     apiKey: typeof config?.apiKey === "string" ? config.apiKey.trim() : "",
-    voice: typeof config?.voice === "string" && config.voice.trim() ? config.voice.trim() : "alloy",
+    voice: typeof config?.voice === "string" && config.voice.trim() ? config.voice.trim() : (config?.provider === "openai" ? "alloy" : "female-shaonv"),
     model: typeof config?.model === "string" && config.model.trim() ? config.model.trim() : "tts-1",
     responseFormat:
       typeof config?.responseFormat === "string" && TTS_RESPONSE_FORMATS.has(config.responseFormat)
@@ -233,7 +233,7 @@ export function normalizeTtsConfig(config?: Partial<TtsConfig>): TtsConfig {
       typeof config?.speed === "number" && Number.isFinite(config.speed) && config.speed > 0
         ? config.speed
         : 1,
-    provider: config?.provider === "minimax" ? "minimax" : "openai",
+    provider: config?.provider === "openai" ? "openai" : "minimax",
     clonedVoices: config?.clonedVoices && typeof config.clonedVoices === "object" && !Array.isArray(config.clonedVoices)
       ? Object.fromEntries(
           Object.entries(config.clonedVoices).filter(([k, v]) => typeof k === "string" && typeof v === "string"),

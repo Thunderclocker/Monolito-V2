@@ -3905,7 +3905,7 @@ Review the existing skill library and apply the curation heuristics in your inst
           model: typeof tts.model === "string" ? tts.model : "",
           responseFormat: typeof tts.responseFormat === "string" ? tts.responseFormat : "",
           speed: typeof tts.speed === "number" ? tts.speed : "",
-          provider: tts.provider ?? "openai",
+          provider: tts.provider ?? "minimax",
           clonedVoiceCount: Object.keys(tts.clonedVoices || {}).length,
           defaultClonedVoice: tts.defaultClonedVoice || "",
           t2aModel: tts.t2aModel || "",
