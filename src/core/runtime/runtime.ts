@@ -2275,7 +2275,6 @@ Review the existing skill library and apply the curation heuristics in your inst
         const ralphAttemptHistory: Array<{ attempt: number; kind: string; summary: string }> = []
         let turn: AssistantTurnResult | null = null
         let lastAssistantReplyForRalph = ""
-        let lastUserTextForRalph = preparedUserText
         // Ralph feedback is in-memory only: it MUST be visible to the agent
         // loop on the next iteration (so the model re-attempts the work) but
         // MUST NOT be persisted as a user-rol message. Persisting it would
@@ -2377,7 +2376,7 @@ Review the existing skill library and apply the curation heuristics in your inst
             this.rootDir,
             sessionId,
             profileId,
-            lastUserTextForRalph,
+            preparedUserText,
             ralphAttempt,
             lastAssistantReplyForRalph,
             ralphAttemptHistory,
@@ -2429,7 +2428,6 @@ Review the existing skill library and apply the curation heuristics in your inst
             // calls (each failing on markdown-fenced JSON) and ballooning
             // the context window.
             pendingRalphFeedback = gate.feedbackPrompt
-            lastUserTextForRalph = gate.feedbackPrompt
           }
           ralphAttempt++
         }

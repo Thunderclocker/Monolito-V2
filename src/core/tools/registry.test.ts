@@ -346,6 +346,8 @@ test("SessionForensics lists available sessions when a non-existent sessionId is
 test("SessionForensics falls back to the current session when sessionId is empty (Fix 3 regression)", async () => {
   const rootDir = createRootDir()
   try {
+    // Wait 10ms to guarantee a distinct, strictly newer timestamp than other tests
+    await new Promise(resolve => setTimeout(resolve, 10))
     ensureSession(rootDir, "session-empty", "Empty session id test")
     const tool = getTool("SessionForensics")
     assert.ok(tool)
