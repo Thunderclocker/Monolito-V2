@@ -118,7 +118,6 @@ export class GlobalHotkeyService {
     proc.stdout?.setEncoding("utf8")
 
     let pending = ""
-    let lastEventType: string | null = null
 
     proc.stdout?.on("data", (chunk: string) => {
       pending += chunk
@@ -134,12 +133,7 @@ export class GlobalHotkeyService {
             void this.onKeyUp()
           }
         })
-        // Track event type across lines
-        if (/RawKey(Press|Release)/.test(line)) {
-          lastEventType = line.includes("RawKeyRelease") ? "RawKeyRelease" : "RawKeyPress"
-        }
       }
-      void lastEventType // keep eslint happy; used via closure below
     })
 
     proc.on("close", (code) => {
@@ -161,17 +155,28 @@ export class GlobalHotkeyService {
 
   /**
    * Parses a single line from `xinput test-xi2 --root`.
-   * The output format is:
-   *   RawKeyPress event, device 16, time 123456, sequence 1
-   *       detail: 49
+   * The actual output format (after trim) is:
    *
-   * We track the current event type and extract the detail on the next line.
+   *   EVENT type 13 (RawKeyPress)
+   *       device: 3 (16)
+   *       time:   12345678
+   *       detail: 49
+   *       flags:
+   *
+   * The event type line contains the human-readable name in parentheses.
+   * We store the pending event type and fire when we see the `detail:` line.
    */
   private _pendingEventType: string | null = null
 
   private handleXinputLine(line: string, cb: (type: string, detail: number) => void) {
-    if (line.startsWith("RawKeyPress") || line.startsWith("RawKeyRelease")) {
-      this._pendingEventType = line.startsWith("RawKeyRelease") ? "RawKeyRelease" : "RawKeyPress"
+    // Detect event type header: "EVENT type 13 (RawKeyPress)"
+    if (line.includes("(RawKeyPress)") || line.includes("(RawKeyRelease)")) {
+      this._pendingEventType = line.includes("(RawKeyRelease)") ? "RawKeyRelease" : "RawKeyPress"
+      return
+    }
+    // Reset pending if a new unrelated event type arrives
+    if (line.startsWith("EVENT type")) {
+      this._pendingEventType = null
       return
     }
     if (this._pendingEventType && line.startsWith("detail:")) {
@@ -294,10 +299,11 @@ export async function createGlobalHotkeyService(
 ): Promise<GlobalHotkeyService | null> {
   const config = readChannelsConfig()
   const hotkey = config.hotkey ?? {}
-  const enabled = hotkey.enabled === true
+  // Enabled by default — disabled only when hotkey.enabled is explicitly set to false
+  const enabled = hotkey.enabled !== false
 
   if (!enabled) {
-    logger.info("[GlobalHotkey] Hotkey disabled in config (hotkey.enabled=false). Skipping.")
+    logger.info("[GlobalHotkey] Hotkey explicitly disabled in config (hotkey.enabled=false). Skipping.")
     return null
   }
 
