@@ -444,6 +444,8 @@ export function renderToolStart(tool: string, input: unknown): ToolRenderLine {
           getString(value, "query"),
         ].filter(Boolean).join(" · ") || undefined,
       }
+    case "GenerateSpeech":
+      return { label: "", tone: "info", text: "" }
     default:
       return { label: "tool", tone: "info", text: `${tool}: ${summarizeInput(tool, input)}` }
   }
@@ -539,6 +541,8 @@ export function renderToolFinish(tool: string, ok: boolean, output: unknown): To
       if (typeof recent === "number") return { label, tone, text: `Memory recall: ${recent} recent item${recent === 1 ? "" : "s"}${typeof wings === "number" ? ` across ${wings} wing${wings === 1 ? "" : "s"}` : ""}` }
       return { label, tone, text: "Memory recall completed" }
     }
+    case "GenerateSpeech":
+      return { label: "", tone: "success", text: "" }
     default:
       return { label, tone, text: `${tool}: ${summarizeOutput(tool, output)}` }
   }

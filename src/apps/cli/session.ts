@@ -479,10 +479,12 @@ class InteractiveTranscriptFormatter {
         }]
       case "tool.start": {
         const line = renderToolStart(event.tool, event.input)
-        return [{ type: "event", label: line.label, tone: line.tone, text: renderToolStartText(line, "└─ ") }]
+        const text = renderToolStartText(line, "└─ ")
+        if (!text) return []
+        return [{ type: "event", label: line.label, tone: line.tone, text }]
       }
       case "tool.finish": {
-        if (event.ok) {
+        if (event.ok && event.tool !== "GenerateSpeech") {
           this.pendingAssistantToolResults.push(stringifyPretty(event.output))
         }
         const line = renderToolFinish(event.tool, event.ok, event.output)

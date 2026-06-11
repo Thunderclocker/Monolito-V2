@@ -4317,13 +4317,12 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
         }
       }
 
-      // Loguear pero NO entregar texto al usuario
-      appendMessage(this.rootDir, sessionId, "assistant", `[voice] ${turn.finalText}`)
+      appendMessage(this.rootDir, sessionId, "assistant", turn.finalText)
       appendWorklog(this.rootDir, sessionId, {
         type: "session",
         summary: `Voice mode: delivered audio (${speechResult.local_path})`,
       })
-      this.emit({ type: "message.received", sessionId, role: "assistant", text: `[voice] ${turn.finalText}`, thinking: turn.thinking })
+      this.emit({ type: "message.received", sessionId, role: "assistant", text: turn.finalText, thinking: turn.thinking })
       this.emit({
         type: "turn.completed",
         sessionId,
