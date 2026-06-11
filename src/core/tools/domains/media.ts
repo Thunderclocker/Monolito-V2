@@ -243,13 +243,20 @@ export const mediaTools: ToolDefinition[] = [
     const model = optionalString(input, "model") ?? (provider === "minimax" ? (tts.t2aModel || "speech-2.8-hd") : tts.model)
     const responseFormat = optionalString(input, "response_format") ?? tts.responseFormat
     const speed = optionalNumber(input, "speed") ?? tts.speed
-    // Resolucion de credenciales: tts.apiKey > profile activo (si minimax) > env vars.
-    const activeProfile = getActiveProfile()
-    let apiKey = (optionalString(input, "api_key") ?? tts.apiKey ?? "").trim()
-    if (!apiKey && activeProfile && ((activeProfile.provider as string) === "minimax" || activeProfile.baseUrl.toLowerCase().includes("minimax"))) {
-      apiKey = (activeProfile.apiKey || "").trim()
+    // Resolucion de credenciales para TTS: SIEMPRE MiniMax, independiente del LLM principal.
+    // El endpoint /v1/t2a_v2 de MiniMax usa credenciales MiniMax, no las del LLM (Grok/Claude/etc.).
+    // Prioridad:
+    // 1. input.api_key (override explícito)
+    // 2. MINIMAX_API_KEY env var (SIEMPRE primero para TTS)
+    // 3. tts.apiKey (config específico de TTS)
+    // NUNCA: activeProfile.apiKey (es del LLM, no de TTS)
+    // NUNCA: ANTHROPIC_AUTH_TOKEN (es del LLM, no de TTS)
+    let apiKey = (optionalString(input, "api_key") ?? "").trim()
+    if (!apiKey) {
+      const minimaxEnv = (process.env.MINIMAX_API_KEY || "").trim()
+      if (minimaxEnv) apiKey = minimaxEnv
     }
-    if (!apiKey) apiKey = (process.env.MINIMAX_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN || "").trim()
+    if (!apiKey) apiKey = (tts.apiKey ?? "").trim()
 
     const paths = ensureDirs(context.rootDir, context.profileId)
     const speechDir = join(paths.scratchpadDir, "tts")
@@ -265,7 +272,7 @@ export const mediaTools: ToolDefinition[] = [
     if (provider === "minimax") {
       // Branch MiniMax: /v1/t2a_v2 con body y response custom (hex en data.audio).
       if (!apiKey) {
-        return formatToolError("MiniMax TTS requiere tts.apiKey, MINIMAX_API_KEY o ANTHROPIC_AUTH_TOKEN.")
+        return formatToolError("MiniMax TTS requiere MINIMAX_API_KEY o tts.apiKey (credenciales independientes del LLM principal).")
       }
       let baseUrl = ((optionalString(input, "base_url") ?? tts.baseUrl) || "https://api.minimax.io/v1").replace(/\/+$/g, "")
       if (!/\/v\d+$/.test(baseUrl)) baseUrl = `${baseUrl}/v1`
@@ -454,15 +461,20 @@ export const mediaTools: ToolDefinition[] = [
       )
     }
 
-    // Resolucion de credenciales: prioriza tts.apiKey, despues el profile activo
-    // (si es minimax o su baseUrl contiene "minimax"), despues env vars.
+    // Resolucion de credenciales para VoiceClone: SIEMPRE MiniMax, independiente del LLM principal.
+    // El endpoint /v1/voice_clone de MiniMax usa credenciales MiniMax, no las del LLM.
+    // Prioridad:
+    // 1. tts.apiKey (config específico de TTS)
+    // 2. MINIMAX_API_KEY env var (SIEMPRE para TTS/VoiceClone)
+    // NUNCA: activeProfile.apiKey (es del LLM, no de TTS)
+    // NUNCA: ANTHROPIC_AUTH_TOKEN (es del LLM, no de TTS)
     let apiKey = (tts.apiKey || "").trim()
-    if (!apiKey && activeIsMiniMax) {
-      apiKey = (activeProfile!.apiKey || "").trim()
-    }
-    if (!apiKey) apiKey = (process.env.MINIMAX_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN || "").trim()
     if (!apiKey) {
-      return formatToolError("Voice clone requiere tts.apiKey, profile activo minimax con apiKey, MINIMAX_API_KEY o ANTHROPIC_AUTH_TOKEN.")
+      const minimaxEnv = (process.env.MINIMAX_API_KEY || "").trim()
+      if (minimaxEnv) apiKey = minimaxEnv
+    }
+    if (!apiKey) {
+      return formatToolError("Voice clone requiere MINIMAX_API_KEY o tts.apiKey (credenciales independientes del LLM principal).")
     }
     // Resolve the MiniMax API base URL. The TTS/voice-clone endpoints
     // live at https://api.minimax.io/v1/... — NOT at the LLM provider's

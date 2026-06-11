@@ -4236,7 +4236,12 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
       }, undefined, profileId) as { local_path?: string; ok?: boolean }
 
       if (!speechResult.ok || !speechResult.local_path) {
-        logger.warn(`Voice mode: GenerateSpeech failed, falling back to text`)
+        const errorMsg = (speechResult as { error?: string }).error || "unknown"
+        if (errorMsg.includes("auth") || errorMsg.includes("401") || errorMsg.includes("key") || errorMsg.includes("credential")) {
+          logger.warn(`Voice mode: GenerateSpeech auth failed. Configurá MINIMAX_API_KEY (es independiente del LLM principal activo).`)
+        } else {
+          logger.warn(`Voice mode: GenerateSpeech failed: ${errorMsg}`)
+        }
         return false
       }
 
