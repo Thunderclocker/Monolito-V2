@@ -12,6 +12,7 @@ export async function callOpenAiCompatibleApi(
   maxTokens: number | undefined,
   isSubAgent: boolean,
   allowedToolNames?: string[],
+  thinkingConfig?: { enabled: boolean; budgetTokens?: number },
 ): Promise<ProviderResponse> {
   const headers: Record<string, string> = {
     "content-type": "application/json",
@@ -21,6 +22,9 @@ export async function callOpenAiCompatibleApi(
   if ((config.provider === "xai-oauth" || config.baseUrl.includes("x.ai")) && config.sessionId) {
     headers["x-grok-conv-id"] = config.sessionId
   }
+
+  const isMiniMax = config.provider === "minimax" || config.baseUrl.includes("minimax.io") || config.baseUrl.includes("api.minimax.io")
+  const minimaxThinking = isMiniMax && thinkingConfig?.enabled === true
 
   const data = await callJsonApi(`${config.baseUrl}/v1/chat/completions`, {
     method: "POST",
@@ -37,6 +41,11 @@ export async function callOpenAiCompatibleApi(
       tool_choice: "auto",
       max_tokens: maxTokens ?? 4_000,
       stream: false,
+      ...(minimaxThinking ? {
+        extra_body: {
+          reasoning_split: true
+        }
+      } : {}),
     }),
     signal: abortSignal,
   })
@@ -48,8 +57,18 @@ export async function callOpenAiCompatibleApi(
     outputTokens: data.usage?.completion_tokens,
   }
 
+  let thinking: string | undefined
+  if (choice.reasoning_details && Array.isArray(choice.reasoning_details)) {
+    thinking = choice.reasoning_details
+      .filter((d: any) => d.text)
+      .map((d: any) => d.text)
+      .join("")
+  } else if (typeof choice.reasoning_content === "string") {
+    thinking = choice.reasoning_content
+  }
+
   if (structured.length > 0) {
-    return { text: rawContent.trim(), toolCalls: structured, usage }
+    return { text: rawContent.trim(), toolCalls: structured, thinking, usage }
   }
 
   const directive = parseDirective(rawContent)
@@ -61,6 +80,7 @@ export async function callOpenAiCompatibleApi(
     return {
       text: cleaned,
       toolCalls: [{ id: `xml-${randomUUID().slice(0, 8)}`, name: directive.tool, input: directive.input }],
+      thinking,
       usage,
     }
   }
@@ -68,9 +88,10 @@ export async function callOpenAiCompatibleApi(
     return {
       text: "",
       toolCalls: directive.tools.map(t => ({ id: `xml-${randomUUID().slice(0, 8)}`, name: t.tool, input: t.input })),
+      thinking,
       usage,
     }
   }
 
-  return { text: rawContent.trim(), toolCalls: [], usage }
+  return { text: rawContent.trim(), toolCalls: [], thinking, usage }
 }

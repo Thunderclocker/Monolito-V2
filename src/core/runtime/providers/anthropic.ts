@@ -25,6 +25,7 @@ export async function callAnthropicApi(
   maxTokens: number | undefined,
   isSubAgent: boolean,
   allowedToolNames?: string[],
+  thinkingConfig?: { enabled: boolean; budgetTokens?: number },
 ): Promise<ProviderResponse> {
   const cleanBaseUrl = config.baseUrl ? sanitizeAnthropicBaseUrl(config.baseUrl) : undefined
   const client = new Anthropic({
@@ -40,9 +41,13 @@ export async function callAnthropicApi(
     input_schema: tool.input_schema,
   }))
 
+  const thinkingEnabled = thinkingConfig?.enabled === true
+  const thinkingBudget = thinkingConfig?.budgetTokens ?? 4_000
+  const activeMaxTokens = thinkingEnabled ? Math.max(maxTokens ?? 8_000, thinkingBudget + 4_000) : (maxTokens ?? 4_000)
+
   const stream = await client.messages.create({
     model: config.model,
-    max_tokens: maxTokens ?? 4_000,
+    max_tokens: activeMaxTokens,
     stream: true,
     system: [
       { type: "text", text: system, cache_control: { type: "ephemeral" } },
@@ -50,15 +55,19 @@ export async function callAnthropicApi(
     ],
     messages: buildAnthropicMessages(messages),
     tools: anthropicTools,
+    ...(thinkingEnabled ? {
+      thinking: { type: "enabled", budget_tokens: thinkingBudget }
+    } : {}),
   }, {
     signal: abortSignal,
   })
 
   const textParts: string[] = []
+  const thinkingParts: string[] = []
   const toolBlocks = new Map<number, ToolUseBlock & { inputBuffer?: string }>()
   let usage: ProviderResponse["usage"] | undefined
 
-  for await (const event of stream as AsyncIterable<RawMessageStreamEvent>) {
+  for await (const event of stream as AsyncIterable<any>) {
     if (event.type === "message_start") {
       usage = {
         inputTokens: event.message.usage.input_tokens,
@@ -87,6 +96,10 @@ export async function callAnthropicApi(
         textParts.push(event.delta.text)
         continue
       }
+      if (event.delta.type === "thinking_delta") {
+        thinkingParts.push(event.delta.thinking)
+        continue
+      }
       if (event.delta.type === "input_json_delta") {
         const toolBlock = toolBlocks.get(event.index)
         if (toolBlock) toolBlock.inputBuffer = `${toolBlock.inputBuffer ?? ""}${event.delta.partial_json}`
@@ -112,6 +125,7 @@ export async function callAnthropicApi(
   return {
     text: textParts.join("").trim(),
     toolCalls,
+    thinking: thinkingParts.length > 0 ? thinkingParts.join("") : undefined,
     usage,
   }
 }

@@ -9,6 +9,7 @@ export type DeliveryHandler = (targetId: string, text: string, context: Delivery
 
 export type AgentYieldEvent =
   | { type: "token"; content: string }
+  | { type: "model_thinking"; content: string }
   | { type: "tool_call"; id?: string; name: string; args: Record<string, unknown> }
   | { type: "retry_backoff"; attempt: number; error: string; retryAfterMs: number }
   | { type: "response"; response: ProviderResponse }

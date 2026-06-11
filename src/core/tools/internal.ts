@@ -95,11 +95,12 @@ export const strictRecordZod = z.record(z.string(), z.unknown())
 export const modelProfileZod = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
-  provider: z.enum(["minimax", "ollama", "openai_compatible", "anthropic_compatible"]),
+  provider: z.enum(["minimax", "ollama", "openai_compatible", "anthropic_compatible", "xai-oauth"]),
   baseUrl: z.string(),
   apiKey: z.string(),
   model: z.string().min(1),
   active: z.boolean(),
+  reasoningLevel: z.enum(["low", "medium", "high", "off"]).optional(),
 }).strict()
 export const modelRegistryZod = z.object({
   version: z.literal(1),

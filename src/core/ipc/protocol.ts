@@ -26,7 +26,7 @@ export type AgentEvent =
   | { type: "session.created"; sessionId: string; title: string }
   | { type: "session.resumed"; sessionId: string }
   | { type: "state.changed"; sessionId: string; state: "idle" | "running" | "error" }
-  | { type: "message.received"; sessionId: string; role: "user" | "assistant" | "system"; text: string }
+  | { type: "message.received"; sessionId: string; role: "user" | "assistant" | "system"; text: string; thinking?: string }
   | { type: "message.queued"; sessionId: string; role: "user"; text: string }
   | {
       type: "turn.completed"
@@ -61,6 +61,8 @@ export type AgentEvent =
       maxAttempts: number
       unfinished: string[]
     }
+  | { type: "model.thinking"; sessionId: string; text: string }
+  | { type: "model.stream"; sessionId: string; text: string }
 
 export type SessionSummary = {
   id: string
@@ -83,6 +85,7 @@ export type SessionRecord = SessionSummary & {
     at: string
     role: "user" | "assistant" | "system"
     text: string
+    thinking?: string
   }>
   worklog: SessionWorklogEntry[]
 }

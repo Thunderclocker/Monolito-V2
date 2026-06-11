@@ -598,6 +598,7 @@ export function getDb(rootDir: string): Database.Database {
       session_id TEXT,
       role TEXT,
       text TEXT,
+      thinking TEXT,
       at TEXT,
       is_compacted INTEGER DEFAULT 0,
       room_id TEXT,
@@ -755,6 +756,13 @@ export function getDb(rootDir: string): Database.Database {
     if (!messageInfo.find(c => c.name === "hidden_from_user")) {
       try {
         db.exec(`ALTER TABLE messages ADD COLUMN hidden_from_user INTEGER DEFAULT 0`)
+      } catch (e) {
+        if (!String(e).includes("duplicate column")) throw e
+      }
+    }
+    if (!messageInfo.find(c => c.name === "thinking")) {
+      try {
+        db.exec(`ALTER TABLE messages ADD COLUMN thinking TEXT`)
       } catch (e) {
         if (!String(e).includes("duplicate column")) throw e
       }
@@ -1172,11 +1180,11 @@ export function getSession(rootDir: string, sessionId: string): SessionRecord | 
   if (!row) return null
 
   const stmtMsgs = db.prepare(
-    `SELECT role, text, at FROM messages
+    `SELECT role, text, thinking, at FROM messages
      WHERE session_id = ? AND (hidden_from_user IS NULL OR hidden_from_user = 0)
      ORDER BY id ASC`,
   )
-  const messages = stmtMsgs.all(sessionId) as Array<{ role: string; text: string; at: string }>
+  const messages = stmtMsgs.all(sessionId) as Array<{ role: string; text: string; thinking: string | null; at: string }>
 
   const stmtLogs = db.prepare(`SELECT type, summary, at FROM worklog WHERE session_id = ? ORDER BY id ASC`)
   const worklogs = stmtLogs.all(sessionId) as Array<{ type: string; summary: string; at: string }>
@@ -1189,7 +1197,7 @@ export function getSession(rootDir: string, sessionId: string): SessionRecord | 
     updatedAt: row.updated_at,
     state: (row.state ?? "idle") as "idle" | "running" | "error",
     voiceMode: row.voice_mode === 1,
-    messages: messages.map(m => ({ at: m.at, role: m.role as "user" | "assistant" | "system", text: m.text })),
+    messages: messages.map(m => ({ at: m.at, role: m.role as "user" | "assistant" | "system", text: m.text, thinking: m.thinking ?? undefined })),
     worklog: worklogs.map(w => ({ at: w.at, type: w.type as "session" | "message" | "tool" | "note", summary: w.summary })),
   }
 }
@@ -1255,6 +1263,7 @@ export interface AppendMessageOptions {
    * Default: false.
    */
   hiddenFromUser?: boolean
+  thinking?: string
 }
 
 export function appendMessage(
@@ -1272,9 +1281,9 @@ export function appendMessage(
   db.exec("BEGIN TRANSACTION")
   try {
     const stmtMsg = db.prepare(
-      `INSERT INTO messages (session_id, role, text, at, hidden_from_user) VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO messages (session_id, role, text, thinking, at, hidden_from_user) VALUES (?, ?, ?, ?, ?, ?)`,
     )
-    const messageResult = stmtMsg.run(sessionId, role, text, now, hiddenFromUser)
+    const messageResult = stmtMsg.run(sessionId, role, text, options.thinking ?? null, now, hiddenFromUser)
     messageId = Number(messageResult.lastInsertRowid)
     const sessionRow = db.prepare(`SELECT profile_id FROM sessions WHERE id = ?`).get(sessionId) as { profile_id: string | null } | undefined
     appendPalaceNode(db, {
@@ -1291,6 +1300,7 @@ export function appendMessage(
         sessionId,
         role,
         text,
+        thinking: options.thinking ?? undefined,
         at: now,
       }),
       now,

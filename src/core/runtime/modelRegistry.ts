@@ -10,6 +10,16 @@ import { coerceConfigRecord } from "../config/wingValue.ts"
 
 export type ModelProvider = "minimax" | "ollama" | "openai_compatible" | "anthropic_compatible" | "xai-oauth"
 
+export type ReasoningLevel = "low" | "medium" | "high" | "off"
+
+export function getDefaultReasoningLevel(provider: string, model: string): ReasoningLevel {
+  const isClaude37 = model.toLowerCase().includes("claude-3-7") || model.toLowerCase().includes("claude-3.7")
+  if (provider === "minimax" || isClaude37) {
+    return "medium"
+  }
+  return "off"
+}
+
 export type ModelProfile = {
   id: string
   name: string
@@ -18,6 +28,7 @@ export type ModelProfile = {
   apiKey: string
   model: string
   active: boolean
+  reasoningLevel?: ReasoningLevel
 }
 
 export type ModelProfileDraft = {
@@ -26,6 +37,7 @@ export type ModelProfileDraft = {
   baseUrl?: string
   apiKey?: string
   model: string
+  reasoningLevel?: ReasoningLevel
 }
 
 export type ModelRegistry = {
@@ -97,7 +109,13 @@ function normalizeProfile(raw: unknown): ModelProfile | null {
   const model = typeof profile.model === "string" ? profile.model : ""
   const active = typeof profile.active === "boolean" ? profile.active : false
   if (!id || !model) return null
-  return { id, name: name || model, provider, baseUrl, apiKey, model, active }
+
+  const defaultLevel = getDefaultReasoningLevel(provider, model)
+  const reasoningLevel = (typeof profile.reasoningLevel === "string" && ["low", "medium", "high", "off"].includes(profile.reasoningLevel))
+    ? profile.reasoningLevel as ReasoningLevel
+    : defaultLevel
+
+  return { id, name: name || model, provider, baseUrl, apiKey, model, active, reasoningLevel }
 }
 
 function inferProviderFromUrl(baseUrl: string): ModelProvider {
@@ -134,6 +152,7 @@ export function addProfile(draft: ModelProfileDraft): ModelProfile {
   const registry = readRegistry()
   const defaults = getProviderDefaults(draft.provider)
   const isFirst = registry.profiles.length === 0
+  const defaultLevel = getDefaultReasoningLevel(draft.provider, draft.model)
   const profile: ModelProfile = {
     id: randomUUID(),
     name: draft.name?.trim() || draft.model,
@@ -142,6 +161,7 @@ export function addProfile(draft: ModelProfileDraft): ModelProfile {
     apiKey: draft.apiKey?.trim() ?? "",
     model: draft.model.trim(),
     active: isFirst, // first profile is auto-activated
+    reasoningLevel: draft.reasoningLevel ?? defaultLevel,
   }
   registry.profiles.push(profile)
   saveRegistry(registry)
@@ -166,6 +186,7 @@ export function updateProfile(id: string, draft: Partial<ModelProfileDraft>): Mo
     baseUrl: draft.baseUrl !== undefined ? draft.baseUrl.trim().replace(/\/+$/, "") : existing.baseUrl,
     apiKey: draft.apiKey !== undefined ? draft.apiKey.trim() : existing.apiKey,
     model: draft.model?.trim() ?? existing.model,
+    reasoningLevel: draft.reasoningLevel !== undefined ? draft.reasoningLevel : existing.reasoningLevel,
   }
   registry.profiles[index] = updated
   saveRegistry(registry)

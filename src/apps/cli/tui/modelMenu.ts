@@ -73,6 +73,7 @@ function renderProfileDetail(profile: ModelProfile): string {
     `  Base URL:  ${redacted.baseUrl || "(default)"}`,
     `  API Key:   ${redacted.apiKey}`,
     `  Model:     ${redacted.model}`,
+    `  Reasoning: ${redacted.reasoningLevel ?? "off"}`,
     `  Active:    ${redacted.active ? "Yes" : "No"}`,
   ].join("\n")
 }
@@ -583,6 +584,7 @@ function handleEditPick(input: string, state: MenuState): MenuResult {
     "  3. Base URL",
     "  4. API Key",
     "  5. Model",
+    "  6. Reasoning Level",
     "  0. Back",
     "",
     "Enter number:",
@@ -602,6 +604,7 @@ function handleEditField(input: string, state: MenuState): MenuResult {
     "3": "baseUrl",
     "4": "apiKey",
     "5": "model",
+    "6": "reasoningLevel",
   }
   const field = fieldMap[input]
   if (!field) {
@@ -618,6 +621,7 @@ function handleEditField(input: string, state: MenuState): MenuResult {
     baseUrl: "Base URL",
     apiKey: "API Key",
     model: "Model",
+    reasoningLevel: "Reasoning Level (low, medium, high, off)",
   }
 
   return {
@@ -644,6 +648,17 @@ function handleEditValue(input: string, state: MenuState): MenuResult {
     else if (field === "baseUrl") draft.baseUrl = value
     else if (field === "apiKey") draft.apiKey = value
     else if (field === "model") draft.model = value
+    else if (field === "reasoningLevel") {
+      const val = value.toLowerCase()
+      if (!["low", "medium", "high", "off"].includes(val)) {
+        return {
+          output: "Invalid reasoning level. Must be low, medium, high, or off. Enter value:",
+          nextState: state,
+          tone: "error",
+        }
+      }
+      draft.reasoningLevel = val as any
+    }
 
     const updated = updateProfile(state!.targetId!, draft)
     // If this is the active profile, update env

@@ -1973,7 +1973,7 @@ Review the existing skill library and apply the curation heuristics in your inst
         if (heartbeatPrompt) {
           logger.info(`Proactive heartbeat triggered user notification: "${userFacingText.slice(0, 100)}..."`)
         }
-        appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
+        appendMessage(this.rootDir, sessionId, "assistant", userFacingText, { thinking: turn.thinking })
         appendWorklog(this.rootDir, sessionId, {
           type: "session",
           summary: turn.error ? `Background turn completed with model error: ${clipForWorklog(turn.error)}` : "Background turn completed",
@@ -1985,7 +1985,7 @@ Review the existing skill library and apply the curation heuristics in your inst
           durationMs: Date.now() - turnStartedAt,
           usage: turn.usage,
         })
-        this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
+        this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText, thinking: turn.thinking })
 
         await this.deliverText(sessionId, userFacingText, undefined, "Failed to deliver background reply")
       }
@@ -2409,7 +2409,16 @@ Review the existing skill library and apply the curation heuristics in your inst
                 maxTurnDurationMs: timeoutMs - 5_000,
               },
             ),
-            options?.onAgentLoopEvent,
+            (event) => {
+              if (options?.onAgentLoopEvent) {
+                options.onAgentLoopEvent(event)
+              }
+              if (event.type === "model_thinking") {
+                this.emit({ type: "model.thinking", sessionId, text: event.text })
+              } else if (event.type === "model_stream") {
+                this.emit({ type: "model.stream", sessionId, text: event.text })
+              }
+            },
           )
           if (turn.usage) {
             recordApiCall(
@@ -2550,12 +2559,12 @@ Review the existing skill library and apply the curation heuristics in your inst
 
           if (hasSideEffects && !wasAborted) {
             userFacingText = "✅ ¡Acción completada con éxito! He procesado y enviado los archivos por Telegram."
-            appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
+            appendMessage(this.rootDir, sessionId, "assistant", userFacingText, { thinking: turn.thinking })
             appendWorklog(this.rootDir, sessionId, {
               type: "session",
               summary: turn.error ? `Turn completed with model error: ${clipForWorklog(turn.error)}` : "Turn completed",
             })
-            this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
+            this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText, thinking: turn.thinking })
             this.emit({
               type: "turn.completed",
               sessionId,
@@ -2579,12 +2588,12 @@ Review the existing skill library and apply the curation heuristics in your inst
               ?.filter(s => s.type === "tool")
               .map(s => (s as { tool: string }).tool)
               .join(", ") ?? "(none)"
-            appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
+            appendMessage(this.rootDir, sessionId, "assistant", userFacingText, { thinking: turn.thinking })
             appendWorklog(this.rootDir, sessionId, {
               type: "note",
               summary: `FABRICATED_SUCCESS_PREVENTED: tools=[${stepsSummary}] | reason=${reason}`,
             })
-            this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
+            this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText, thinking: turn.thinking })
             this.emit({
               type: "turn.completed",
               sessionId,
@@ -2607,12 +2616,12 @@ Review the existing skill library and apply the curation heuristics in your inst
             })
           }
         } else {
-          appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
+          appendMessage(this.rootDir, sessionId, "assistant", userFacingText, { thinking: turn.thinking })
           appendWorklog(this.rootDir, sessionId, {
             type: "session",
             summary: turn.error ? `Turn completed with model error: ${clipForWorklog(turn.error)}` : "Turn completed",
           })
-          this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
+          this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText, thinking: turn.thinking })
           this.emit({
             type: "turn.completed",
             sessionId,
@@ -2769,12 +2778,12 @@ Review the existing skill library and apply the curation heuristics in your inst
           summary: "Suppressed empty startup assistant response",
         })
       } else {
-        appendMessage(this.rootDir, sessionId, "assistant", userFacingText)
+        appendMessage(this.rootDir, sessionId, "assistant", userFacingText, { thinking: turn.thinking })
         appendWorklog(this.rootDir, sessionId, {
           type: "session",
           summary: turn.error ? `Turn completed with model error: ${clipForWorklog(turn.error)}` : "Turn completed",
         })
-        this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText })
+        this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText, thinking: turn.thinking })
         this.emit({
           type: "turn.completed",
           sessionId,
@@ -4315,7 +4324,7 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
         type: "session",
         summary: `Voice mode: delivered audio (${speechResult.local_path})`,
       })
-      this.emit({ type: "message.received", sessionId, role: "assistant", text: `[voice] ${turn.finalText}` })
+      this.emit({ type: "message.received", sessionId, role: "assistant", text: `[voice] ${turn.finalText}`, thinking: turn.thinking })
       this.emit({
         type: "turn.completed",
         sessionId,

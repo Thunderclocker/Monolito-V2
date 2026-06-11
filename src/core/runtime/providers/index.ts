@@ -12,6 +12,7 @@ export async function callProvider(
   abortSignal: AbortSignal | undefined,
   isSubAgent: boolean,
   maxTokens?: number,
+  thinkingConfig?: { enabled: boolean; budgetTokens?: number },
 ): Promise<ProviderResponse> {
   let activeConfig = config
   if (config.provider === "xai-oauth") {
@@ -21,12 +22,12 @@ export async function callProvider(
   }
 
   if (activeConfig.provider === "anthropic_compatible" || activeConfig.provider === "minimax") {
-    return await callAnthropicApi(activeConfig, prompt.system, prompt.bootBlock, messages, abortSignal, maxTokens, isSubAgent, prompt.allowedToolNames)
+    return await callAnthropicApi(activeConfig, prompt.system, prompt.bootBlock, messages, abortSignal, maxTokens, isSubAgent, prompt.allowedToolNames, thinkingConfig)
   }
   if (activeConfig.provider === "ollama") {
     return await callOllamaApi(activeConfig, prompt.system, messages, abortSignal, isSubAgent, prompt.allowedToolNames)
   }
   // Both "xai" and other OpenAI compatible endpoints are routed here
-  return await callOpenAiCompatibleApi(activeConfig, prompt.system, messages, abortSignal, maxTokens, isSubAgent, prompt.allowedToolNames)
+  return await callOpenAiCompatibleApi(activeConfig, prompt.system, messages, abortSignal, maxTokens, isSubAgent, prompt.allowedToolNames, thinkingConfig)
 }
 

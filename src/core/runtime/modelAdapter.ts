@@ -9,7 +9,7 @@ import { estimateTurnCostUSD, type CostState, type TurnUsage } from "../cost/tra
 import { AbortError, ApiError, ContextOverflowError, HttpError, ProviderOverloadedError, RateLimitError } from "../errors.ts"
 import { createLogger, type Logger } from "../logging/logger.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "./modelConfig.ts"
-import { getActiveProfile, type ModelProvider } from "./modelRegistry.ts"
+import { getActiveProfile, type ModelProvider, getDefaultReasoningLevel, type ReasoningLevel } from "./modelRegistry.ts"
 import { compactSession, fileMemory, getSession, getRawMessagesForSession, getDb, readSessionSources, tailEvents, listSessionTasks, listDynamicSkills, appendWorklog, saveResolvedError, querySimilarErrors, deleteMessages, rewriteMessageInPlace } from "../session/store.ts"
 import type { RecentToolCall } from "./coherenceGuard.ts"
 import { wrapAuditFeedback } from "./auditFeedback.ts"
@@ -172,6 +172,7 @@ export type AssistantTurnResult = {
     outputTokens?: number
     totalTokens?: number
   }
+  thinking?: string
   meta?: {
     iterationCount: number
     durationMs: number
@@ -195,6 +196,7 @@ export type AgentLoopRecoverableAction =
 
 export type AgentLoopEvent =
   | { type: "setup"; sessionId: string; iteration: number; model: string; maxIterations: number; maxTurnDurationMs: number }
+  | { type: "model_thinking"; sessionId: string; iteration: number; text: string }
   | { type: "model_invoke_start"; sessionId: string; iteration: number; model: string }
   | { type: "model_stream"; sessionId: string; iteration: number; text: string }
   | { type: "model_invoke_end"; sessionId: string; iteration: number; usage?: AssistantTurnResult["usage"]; toolCallCount: number }
@@ -237,13 +239,27 @@ function sessionToMessages(session: SessionRecord): ConversationMessage[] {
     .filter((message): message is SessionRecord["messages"][number] & { role: "user" | "assistant" } =>
       isConversationRole(message.role) && !shouldSkipMessage(message.text),
     )
-    .map(message => ({ role: message.role, content: message.text } as ConversationMessage))
+    .map(message => {
+      const msg = {
+        role: message.role,
+        content: message.text,
+      } as any
+      if (message.thinking) {
+        msg.thinking = message.thinking
+      }
+      return msg as ConversationMessage
+    })
 
   const merged: ConversationMessage[] = []
   for (const msg of filtered) {
     const prev = merged[merged.length - 1]
     if (prev && prev.role === msg.role) {
       prev.content = `${prev.content}\n\n${msg.content}`
+      const prevAny = prev as any
+      const msgAny = msg as any
+      if (msgAny.thinking) {
+        prevAny.thinking = prevAny.thinking ? `${prevAny.thinking}\n\n${msgAny.thinking}` : msgAny.thinking
+      }
     } else {
       merged.push({ ...msg })
     }
@@ -392,7 +408,7 @@ function sumUsage(total: TurnUsage | undefined, next: TurnUsage | undefined): Tu
   }
 }
 
-function finalize(finalText: string, steps: AssistantTurnStep[], startedAt: number, iterationCount: number, usage?: TurnUsage, error?: string, stopReason: NonNullable<AssistantTurnResult["meta"]>["stopReason"] = "completed"): AssistantTurnResult {
+function finalize(finalText: string, steps: AssistantTurnStep[], startedAt: number, iterationCount: number, usage?: TurnUsage, error?: string, stopReason: NonNullable<AssistantTurnResult["meta"]>["stopReason"] = "completed", thinking?: string): AssistantTurnResult {
   // No hardcoded fallback. If the turn terminated without producing a
   // finalText, we return finalText="" with `error` populated and let
   // the caller (the model on the NEXT turn) see the real reason and
@@ -410,6 +426,7 @@ function finalize(finalText: string, steps: AssistantTurnStep[], startedAt: numb
       outputTokens: usage.outputTokens,
       totalTokens: (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0),
     } : undefined,
+    thinking,
     meta: {
       iterationCount,
       durationMs: Date.now() - startedAt,
@@ -829,7 +846,15 @@ function isRetriableNetworkError(error: unknown) {
   ].includes(code ?? "")
 }
 
-async function* callProviderWithRetry(config: ProviderConfig, prompt: ReturnType<typeof buildSystemPrompt>, messages: ConversationMessage[], abortSignal: AbortSignal | undefined, isSubAgent: boolean, maxTokens: number | undefined): AsyncGenerator<AgentYieldEvent, ProviderResponse> {
+async function* callProviderWithRetry(
+  config: ProviderConfig,
+  prompt: ReturnType<typeof buildSystemPrompt>,
+  messages: ConversationMessage[],
+  abortSignal: AbortSignal | undefined,
+  isSubAgent: boolean,
+  maxTokens: number | undefined,
+  thinkingConfig?: { enabled: boolean; budgetTokens?: number },
+): AsyncGenerator<AgentYieldEvent, ProviderResponse> {
   let currentConfig = config
   let rateLimitAttempts = 0
   let overloadAttempts = 0
@@ -838,8 +863,9 @@ async function* callProviderWithRetry(config: ProviderConfig, prompt: ReturnType
   while (true) {
     try {
       throwIfAborted(abortSignal)
-      const response = await callProvider(currentConfig, prompt, messages, abortSignal, isSubAgent, maxTokens)
+      const response = await callProvider(currentConfig, prompt, messages, abortSignal, isSubAgent, maxTokens, thinkingConfig)
       throwIfAborted(abortSignal)
+      if (response.thinking) yield { type: "model_thinking", content: response.thinking }
       if (response.text) yield { type: "token", content: response.text }
       for (const toolCall of response.toolCalls) {
         throwIfAborted(abortSignal)
@@ -932,6 +958,19 @@ export async function* runAgentLoop(
   const startedAt = options?.turnStartedAt ?? Date.now()
   const maxIterations = options?.maxIterations ?? MAX_TURN_ITERATIONS
   const maxTurnDurationMs = options?.maxTurnDurationMs ?? DEFAULT_MAX_TURN_DURATION_MS
+  const activeProfile = getActiveProfile()
+  const thinkingConfig = activeProfile
+    ? {
+        enabled: (activeProfile.reasoningLevel ?? getDefaultReasoningLevel(activeProfile.provider, activeProfile.model)) !== "off",
+        budgetTokens:
+          (activeProfile.reasoningLevel ?? getDefaultReasoningLevel(activeProfile.provider, activeProfile.model)) === "low"
+            ? 2_048
+            : (activeProfile.reasoningLevel ?? getDefaultReasoningLevel(activeProfile.provider, activeProfile.model)) === "high"
+            ? 32_768
+            : 10_240,
+      }
+    : { enabled: false }
+  const accumulatedThinking: string[] = []
   let config = { ...getEffectiveModelConfig(), sessionId: session.id }
   const isSubAgent = session.id.startsWith("agent-")
   let activeSession = session
@@ -998,12 +1037,12 @@ export async function* runAgentLoop(
     yield { type: "setup", sessionId: session.id, iteration, model: config.model, maxIterations, maxTurnDurationMs }
 
     if (options?.abortSignal?.aborted) {
-      const result = finalize("", steps, startedAt, iteration - 1, usage, undefined, "aborted")
+      const result = finalize("", steps, startedAt, iteration - 1, usage, undefined, "aborted", accumulatedThinking.length > 0 ? accumulatedThinking.join("\n\n") : undefined)
       yield { type: "done", sessionId: session.id, result }
       return result
     }
     if (Date.now() - startedAt > maxTurnDurationMs) {
-      const result = finalize("", steps, startedAt, iteration - 1, usage, "Turn duration exceeded", "max_duration")
+      const result = finalize("", steps, startedAt, iteration - 1, usage, "Turn duration exceeded", "max_duration", accumulatedThinking.length > 0 ? accumulatedThinking.join("\n\n") : undefined)
       yield { type: "done", sessionId: session.id, result }
       return result
     }
@@ -1074,9 +1113,13 @@ export async function* runAgentLoop(
 
       yield { type: "model_invoke_start", sessionId: session.id, iteration, model: config.model }
       let response: ProviderResponse | null = null
-      for await (const event of callProviderWithRetry(config, prompt, messages, options?.abortSignal, isSubAgent, options?.maxTokens)) {
+      for await (const event of callProviderWithRetry(config, prompt, messages, options?.abortSignal, isSubAgent, options?.maxTokens, thinkingConfig)) {
         throwIfAborted(options?.abortSignal)
         switch (event.type) {
+          case "model_thinking":
+            accumulatedThinking.push(event.content)
+            yield { type: "model_thinking", sessionId: session.id, iteration, text: event.content }
+            break
           case "token":
             if (event.content) yield { type: "model_stream", sessionId: session.id, iteration, text: redactSensitiveText(event.content) }
             break
@@ -1091,6 +1134,9 @@ export async function* runAgentLoop(
         }
       }
       if (!response) throw new Error("Provider generator completed without a response")
+      if (response.thinking && !accumulatedThinking.includes(response.thinking)) {
+        accumulatedThinking.push(response.thinking)
+      }
       enforceBudgetLimit(options?.costState, config.model, response.usage)
       usage = sumUsage(usage, response.usage)
       const loopUsage = response.usage ? {
@@ -1284,6 +1330,7 @@ Considera esta estrategia de solución.`
                undefined,
                `coherence_exhausted: ${coherence.reason}`,
                "aborted",
+               accumulatedThinking.length > 0 ? accumulatedThinking.join("\n\n") : undefined,
              );
            }
 
@@ -1387,7 +1434,8 @@ ACCION REQUERIDA: ejecutá al menos una tool en este turno ANTES de declarar que
         // --- END OF UNIFIED INTEGRITY GUARD ---
 
         await detectAndSaveLearning(rootDir, messages, logger)
-        const finalizeResult = finalize(response.text, steps, startedAt, iteration, usage)
+        const finalThinking = accumulatedThinking.length > 0 ? accumulatedThinking.join("\n\n") : undefined
+        const finalizeResult = finalize(response.text, steps, startedAt, iteration, usage, undefined, "completed", finalThinking)
         yield { type: "done", sessionId: session.id, result: finalizeResult }
         return finalizeResult
       }

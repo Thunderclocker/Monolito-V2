@@ -103,6 +103,7 @@ export function createCostState(): CostState {
 export type TurnUsage = {
   inputTokens?: number
   outputTokens?: number
+  thinkingTokens?: number
   cacheReadInputTokens?: number
   cacheCreationInputTokens?: number
 }

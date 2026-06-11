@@ -434,7 +434,12 @@ class InteractiveTranscriptFormatter {
               text: taskNotification.summary ?? "Agent update",
             }]
             if (taskNotification.result) {
-              blocks.push({ type: "message", role: "assistant", text: taskNotification.result })
+              blocks.push({
+                type: "message",
+                role: "assistant",
+                text: taskNotification.result,
+                ...(event.thinking ? { thinking: event.thinking } : {}),
+              })
             }
             if (taskNotification.usage) {
               blocks.push({
@@ -457,7 +462,12 @@ class InteractiveTranscriptFormatter {
           this.pendingMcpCall = null
           return [{ type: "event", label: "mcp", tone: "info", text: `${pending} · ${truncate(event.text, 180)}` }]
         }
-        return [{ type: "message", role: "assistant", text: unwrapChannelMessage(event.text) }]
+        return [{
+          type: "message",
+          role: "assistant",
+          text: unwrapChannelMessage(event.text),
+          ...(event.thinking ? { thinking: event.thinking } : {}),
+        }]
       case "turn.completed":
         return [{ type: "assistant-meta", text: `${formatDuration(event.durationMs)} · ${formatUsage(event.usage)}` }]
       case "todo.updated":
@@ -562,7 +572,7 @@ export async function ensureCliSession(client: DaemonClient, sessionId?: string)
 
 export async function openInteractiveSession(client: DaemonClient, sessionId?: string) {
   const rootDir = process.cwd()
-  const composer: ComposerState = { input: "", cursor: 0, busy: false, thinkingFrame: 0, thinkingVisible: false, suggestions: [], toolThinkingFrame: 0, toolThinkingText: "", menuState: null, channelMenuState: null, websearchMenuState: null, masterMenuState: null, masterMenuEphemeral: false, permissionPrompt: null }
+  const composer: ComposerState = { input: "", cursor: 0, busy: false, thinkingFrame: 0, thinkingVisible: false, suggestions: [], toolThinkingFrame: 0, toolThinkingText: "", menuState: null, channelMenuState: null, websearchMenuState: null, masterMenuState: null, masterMenuEphemeral: false, permissionPrompt: null, accumulatedThinking: "" }
   const history = createPromptHistory(rootDir)
   const completer = createInteractiveCompleter(rootDir)
   const formatter = new InteractiveTranscriptFormatter()
@@ -690,6 +700,15 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       return
     }
 
+    if (event.type === "model.thinking") {
+      composer.accumulatedThinking = (composer.accumulatedThinking ?? "") + event.text
+      redraw()
+      return
+    }
+    if (event.type === "model.stream") {
+      return
+    }
+
     const blocks = formatter.render(event)
     if (event.type === "message.received" && event.role === "user") {
       // Show the Thinking... spinner the MOMENT a user message arrives
@@ -707,12 +726,14 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
         composer.busy = true
         composer.thinkingVisible = true
         composer.toolThinkingText = ""
+        composer.accumulatedThinking = ""
         startThinkingAnimation()
         redraw()
       }
     }
     if (event.type === "message.received" && event.role === "assistant") {
       composer.thinkingVisible = false
+      composer.accumulatedThinking = ""
       if (composer.masterMenuEphemeral) {
         composer.masterMenuState = null
         composer.masterMenuEphemeral = false
@@ -731,6 +752,7 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       composer.thinkingVisible = false
       composer.toolThinkingText = ""
       composer.toolThinkingFrame = 0
+      composer.accumulatedThinking = ""
       stopThinkingAnimation()
     }
     transcript = appendTranscriptBlocks(transcript, blocks)
@@ -753,7 +775,15 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     for (const message of session.messages) {
       if (message.role === "assistant" && isInternalToolEnvelope(message.text)) continue
       if (message.role === "user" || message.role === "assistant") {
-        cliTimed.push({ at: message.at, block: { type: "message", role: message.role, text: unwrapChannelMessage(message.text) } })
+        cliTimed.push({
+          at: message.at,
+          block: {
+            type: "message",
+            role: message.role,
+            text: unwrapChannelMessage(message.text),
+            ...(message.thinking ? { thinking: message.thinking } : {}),
+          }
+        })
       } else {
         cliTimed.push({ at: message.at, block: { type: "event", label: "system", tone: "neutral", text: message.text } })
       }
@@ -1351,6 +1381,7 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     composer.busy = true
     composer.thinkingFrame = 0
     composer.thinkingVisible = true
+    composer.accumulatedThinking = ""
     startThinkingAnimation()
     redraw()
     try {

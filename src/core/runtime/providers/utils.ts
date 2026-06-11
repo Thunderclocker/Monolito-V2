@@ -37,11 +37,18 @@ export function buildAnthropicMessages(messages: ConversationMessage[]): Message
         }],
       }]
     }
-    if ("toolCalls" in message) {
-      const content = []
-      if (message.content.trim()) content.push({ type: "text" as const, text: message.content })
-      for (const toolCall of message.toolCalls) {
-        content.push({ type: "tool_use" as const, id: toolCall.id, name: toolCall.name, input: toolCall.input })
+    if ("toolCalls" in message || message.thinking) {
+      const content: any[] = []
+      if (message.thinking) {
+        content.push({ type: "thinking" as const, thinking: message.thinking })
+      }
+      if (message.content.trim()) {
+        content.push({ type: "text" as const, text: message.content })
+      }
+      if ("toolCalls" in message) {
+        for (const toolCall of message.toolCalls) {
+          content.push({ type: "tool_use" as const, id: toolCall.id, name: toolCall.name, input: toolCall.input })
+        }
       }
       return [{ role: "assistant", content }]
     }
@@ -77,16 +84,23 @@ export function buildOpenAiMessages(system: string, messages: ConversationMessag
       output.push({ role: "tool", tool_call_id: message.toolCallId, content: message.content })
       continue
     }
-    if ("toolCalls" in message) {
-      output.push({
+    if ("toolCalls" in message || message.thinking) {
+      const assistantMsg: Record<string, any> = {
         role: "assistant",
         content: message.content || "",
-        tool_calls: message.toolCalls.map(toolCall => ({
+      }
+      if ("toolCalls" in message) {
+        assistantMsg.tool_calls = message.toolCalls.map(toolCall => ({
           id: toolCall.id,
           type: "function",
           function: { name: toolCall.name, arguments: JSON.stringify(toolCall.input) },
-        })),
-      })
+        }))
+      }
+      if (message.thinking) {
+        assistantMsg.reasoning_content = message.thinking
+        assistantMsg.reasoning_details = [{ text: message.thinking }]
+      }
+      output.push(assistantMsg)
       continue
     }
     // Native multimodal: inject image base64 for user messages with photo attachments

@@ -3,8 +3,8 @@ import type { ModelProvider } from "../modelRegistry.ts"
 import { normalizeToolInputPayload } from "../toolInput.ts"
 
 export type ConversationMessage =
-  | { role: "user" | "assistant"; content: string }
-  | { role: "assistant"; content: string; toolCalls: ToolCall[] }
+  | { role: "user" | "assistant"; content: string; thinking?: string }
+  | { role: "assistant"; content: string; toolCalls: ToolCall[]; thinking?: string }
   | { role: "tool"; toolCallId: string; toolName: string; content: string }
 
 export type ToolCall = {
@@ -16,6 +16,7 @@ export type ToolCall = {
 export type ProviderResponse = {
   text: string
   toolCalls: ToolCall[]
+  thinking?: string
   usage?: TurnUsage
 }
 

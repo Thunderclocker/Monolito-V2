@@ -83,21 +83,29 @@ export function compactInMemoryTier1(
   const tailStart = Math.max(0, messages.length - protectTailCount);
 
   const newMessages = messages.map((msg, idx) => {
+    let cleanMsg = msg
+    if (idx < tailStart && (msg as any).thinking) {
+      const copy = { ...msg } as any
+      delete copy.thinking
+      cleanMsg = copy
+      freedChars += ((msg as any).thinking.length ?? 0)
+    }
+
     if (
       idx >= 2 &&
       idx < tailStart &&
-      msg.role === "tool" &&
-      msg.content &&
-      msg.content.length > PLACEHOLDER.length * 2
+      cleanMsg.role === "tool" &&
+      cleanMsg.content &&
+      cleanMsg.content.length > PLACEHOLDER.length * 2
     ) {
-      const before = msg.content.length;
+      const before = cleanMsg.content.length;
       freedChars += before - PLACEHOLDER.length;
       return {
-        ...msg,
+        ...cleanMsg,
         content: PLACEHOLDER,
       };
     }
-    return msg;
+    return cleanMsg;
   });
 
   return { messages: newMessages, freedChars };

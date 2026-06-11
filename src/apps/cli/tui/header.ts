@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs"
 import { basename, join } from "node:path"
 import { truncate } from "../../../core/renderer/toolRenderer.ts"
 import { readModelSettings } from "../../../core/runtime/modelConfig.ts"
-import { getActiveProfile } from "../../../core/runtime/modelRegistry.ts"
+import { getActiveProfile, getDefaultReasoningLevel } from "../../../core/runtime/modelRegistry.ts"
 import { getPaths } from "../../../core/ipc/protocol.ts"
 import type { HeaderState } from "./types.ts"
 
@@ -43,13 +43,14 @@ export function getHeaderState(rootDir: string, sessionId: string, connected: bo
   // Prefer active profile from registry
   const activeProfile = getActiveProfile()
   if (activeProfile) {
+    const defaultLevel = getDefaultReasoningLevel(activeProfile.provider, activeProfile.model)
     return {
       projectName: metadata.projectName,
       version: metadata.version,
       workspacePath,
       model: activeProfile.model || "(unset)",
       provider: activeProfile.name || inferProvider(activeProfile.baseUrl),
-      reasoning: "default",
+      reasoning: activeProfile.reasoningLevel ?? defaultLevel,
       sessionId,
       connected,
     }
@@ -65,7 +66,7 @@ export function getHeaderState(rootDir: string, sessionId: string, connected: bo
     workspacePath,
     model,
     provider: inferProvider(baseUrl),
-    reasoning: "default",
+    reasoning: getDefaultReasoningLevel(baseUrl.includes("minimax") ? "minimax" : "anthropic_compatible", model),
     sessionId,
     connected,
   }

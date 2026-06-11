@@ -83,7 +83,15 @@ export function renderTranscriptBlock(block: TranscriptBlock, width: number) {
   }
   if (block.type === "message") {
     if (block.role === "assistant") {
-      return renderBulletedBlock(block.text, width, "")
+      const lines: string[] = []
+      if ((block as any).thinking) {
+        const thinkingText = (block as any).thinking
+        const tokenEstimate = Math.ceil(thinkingText.length / 4)
+        const tokenStr = tokenEstimate >= 1000 ? `${(tokenEstimate / 1000).toFixed(1)}k` : String(tokenEstimate)
+        lines.push(`  ${ANSI.dim}💭 Thinking... (${tokenStr} tokens) ▶${ANSI.reset}`)
+      }
+      lines.push(...renderBulletedBlock(block.text, width, ""))
+      return lines
     }
     return wrapTextWithIndent(block.text, width, `${ANSI.purpleFluor}${ANSI.bold}❯${ANSI.reset} `, "  ")
   }
@@ -127,9 +135,18 @@ export function renderCopyTranscriptBlock(block: TranscriptBlock, width: number)
     return lines
   }
   if (block.type === "message") {
-    return block.role === "assistant"
-      ? wrapTextWithSinglePrefix(block.text, width, "● ", "  ")
-      : wrapTextWithIndent(block.text, width, "❯ ", "  ")
+    if (block.role === "assistant") {
+      const lines: string[] = []
+      if ((block as any).thinking) {
+        const thinkingText = (block as any).thinking
+        const tokenEstimate = Math.ceil(thinkingText.length / 4)
+        const tokenStr = tokenEstimate >= 1000 ? `${(tokenEstimate / 1000).toFixed(1)}k` : String(tokenEstimate)
+        lines.push(`  💭 Thinking... (${tokenStr} tokens)`)
+      }
+      lines.push(...wrapTextWithSinglePrefix(block.text, width, "● ", "  "))
+      return lines
+    }
+    return wrapTextWithIndent(block.text, width, "❯ ", "  ")
   }
   if (block.type === "event") {
     if (!block.label) return wrapTextWithIndent(block.text, width, "", "  ")
@@ -270,7 +287,12 @@ export function renderScreen(header: HeaderState, transcript: TranscriptViewport
   // Don't show "Pensando..." while a tool is actively running — the tool animation replaces it
   const showThinking = composer.busy && composer.thinkingVisible && !composer.toolThinkingText
   const displayTranscriptBlocks: TranscriptBlock[] = showThinking
-    ? [...transcript.blocks, { type: "message", role: "assistant", text: getThinkingText(composer.thinkingFrame) }]
+    ? [...transcript.blocks, {
+        type: "message",
+        role: "assistant",
+        text: getThinkingText(composer.thinkingFrame),
+        ...(composer.accumulatedThinking ? { thinking: composer.accumulatedThinking } : {})
+      }]
     : [...transcript.blocks]
 
   // Animate tool thinking dots: replace trailing '...' with cycling dots on the last event block

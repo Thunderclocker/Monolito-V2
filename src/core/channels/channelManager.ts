@@ -160,7 +160,8 @@ function dispatchRuntimeMessage(runtime: MonolitoV2Runtime, sessionId: string, t
         event.type === "tool_execute_start" ||
         event.type === "recoverable_error" ||
         event.type === "model_invoke_start" ||
-        event.type === "model_stream"
+        event.type === "model_stream" ||
+        event.type === "model_thinking"
       ) {
         sendTyping()
       }
