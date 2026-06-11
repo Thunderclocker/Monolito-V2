@@ -992,170 +992,71 @@ export class MonolitoV2Runtime {
   private _isSyntheticSkillsTurn = false
   // Synthetic sessionId used for SkillsAgent turns (used to mark provenance).
   static readonly SKILLS_SYNTHETIC_SESSION_ID = "skills-synthetic"
-  private heartbeatTimer: NodeJS.Timeout | null = null
+  private memoryConsolidationTimer: NodeJS.Timeout | null = null
 
   getLastUserActivity() {
     return this.lastUserActivity
   }
 
+  // Deprecated/Stub legacy heartbeat functions to avoid breaking CLI config commands
   scheduleNextHeartbeat(reason?: string) {
-    if (this.heartbeatTimer) {
-      clearTimeout(this.heartbeatTimer)
-      this.heartbeatTimer = null
-    }
+    // No-op in v2 (heartbeat loop replaced by inactivity timer)
+  }
 
+  startHeartbeatTimer() {
+    // Map to memory consolidation timer start
+    const targetSessionId = MAIN_SESSION_ID
+    this.scheduleMemoryConsolidation(targetSessionId)
+  }
+
+  stopHeartbeatTimer() {
+    // Map to memory consolidation timer cancel
+    this.cancelMemoryConsolidation()
+  }
+
+  async checkAndTriggerHeartbeat() {
+    // No-op in v2
+  }
+
+  private scheduleMemoryConsolidation(sessionId: string) {
     try {
       const config = readConfigWing(this.rootDir, "CONF_HEARTBEAT") as import("../config/configWings.ts").HeartbeatConfig
       const enabled = config?.enabled ?? true
       if (!enabled) {
-        logger.info("Heartbeat is disabled in configuration. Timer stopped.")
+        logger.debug("[MemoryAgent] Autoconsolidation is disabled in configuration. Skipping.")
         return
       }
 
+      this.cancelMemoryConsolidation()
+
+      // Default to 12 minutes if not specified, or fallback to 3 minutes if set to 0.
       const min_idle_minutes = config?.min_idle_minutes ?? 12
-      const interval_minutes = config?.interval_minutes ?? 30
+      const delayMs = Math.max(3 * 60000, min_idle_minutes * 60000)
 
-      const now = Date.now()
-      const nextIdleTime = (this.lastUserActivity || now) + min_idle_minutes * 60000
-      const nextIntervalTime = (this.lastHeartbeatTime || 0) + interval_minutes * 60000
+      logger.info(`[MemoryAgent] Scheduling memory consolidation for session ${sessionId} in ${(delayMs / 60000).toFixed(2)} minutes.`)
 
-      const targetTime = Math.max(nextIdleTime, nextIntervalTime)
-      const delayMs = Math.max(1000, targetTime - now)
-
-      if (reason) {
-        logger.info(`Rescheduling heartbeat due to: ${reason}`)
-      }
-      logger.info(`Scheduling next heartbeat check in ${(delayMs / 60000).toFixed(2)} minutes (at ${new Date(targetTime).toISOString()})`)
-
-      this.heartbeatTimer = setTimeout(() => {
-        this.heartbeatTimer = null
-        this.runHeartbeatCheckAndReschedule()
+      this.memoryConsolidationTimer = setTimeout(async () => {
+        this.memoryConsolidationTimer = null
+        try {
+          const session = getSession(this.rootDir, sessionId)
+          if (!session) return
+          const targetProfileId = session?.profileId || "default"
+          await this.runMemoryConsolidation(sessionId, targetProfileId)
+        } catch (e) {
+          logger.error(`[MemoryAgent] Consolidation failed: ${e instanceof Error ? e.message : String(e)}`)
+        }
       }, delayMs)
-      this.heartbeatTimer.unref()
+      this.memoryConsolidationTimer.unref()
     } catch (e) {
-      logger.error(`Failed to schedule heartbeat: ${e instanceof Error ? e.message : String(e)}`)
-      // Safe fallback: check again in 5 minutes
-      this.heartbeatTimer = setTimeout(() => {
-        this.heartbeatTimer = null
-        this.scheduleNextHeartbeat("error recovery fallback")
-      }, 5 * 60 * 1000)
-      this.heartbeatTimer.unref()
+      logger.error(`[MemoryAgent] Failed to schedule consolidation: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
 
-  private async runHeartbeatCheckAndReschedule() {
-    try {
-      logger.info("Triggering scheduled heartbeat check...")
-      await this.checkAndTriggerHeartbeat()
-    } catch (e) {
-      logger.error(`heartbeat execution error: ${e instanceof Error ? e.message : String(e)}`)
-    } finally {
-      this.scheduleNextHeartbeat()
-    }
-  }
-
-  startHeartbeatTimer() {
-    this.scheduleNextHeartbeat("timer start")
-  }
-
-  stopHeartbeatTimer() {
-    if (this.heartbeatTimer) {
-      clearTimeout(this.heartbeatTimer)
-      this.heartbeatTimer = null
-      logger.info("Heartbeat timer stopped manually.")
-    }
-  }
-
-  async checkAndTriggerHeartbeat() {
-    if (this.isHeartbeatRunning) return
-    
-    let config: import("../config/configWings.ts").HeartbeatConfig | null = null
-    try {
-      config = readConfigWing(this.rootDir, "CONF_HEARTBEAT") as import("../config/configWings.ts").HeartbeatConfig
-    } catch (e) {
-      logger.warn(`Could not read heartbeat config during trigger: ${e instanceof Error ? e.message : String(e)}`)
-    }
-
-    const enabled = config?.enabled ?? true
-    if (!enabled) return
-
-    // We intentionally do NOT gate on user idle anymore. The heartbeat
-    // is responsible for housekeeping (MemoryAgent consolidation) and
-    // for proactive checks, and both should run on the configured
-    // cadence regardless of whether the user is currently typing. The
-    // `activeSessions` check inside runMemoryConsolidation and
-    // runProactiveBackgroundTurn is the natural gate that prevents the
-    // heartbeat from pising a turn that's already in flight.
-    const interval_minutes = config?.interval_minutes ?? 30
-
-    const now = Date.now()
-    const idleTime = (now - (this.lastUserActivity || now)) / 60000
-    const minsSinceLast = (now - (this.lastHeartbeatTime || 0)) / 60000
-    if (minsSinceLast < interval_minutes) {
-      logger.debug(`Heartbeat skipped: interval not met (${minsSinceLast.toFixed(2)}/${interval_minutes} minutes since last)`)
-      this.lastHeartbeatSkippedAt = now
-      return
-    }
-
-    logger.info(`Executing active heartbeat on target session. Idle: ${idleTime.toFixed(2)}m, Interval: ${minsSinceLast.toFixed(2)}m`)
-    this.isHeartbeatRunning = true
-    this.lastHeartbeatTime = Date.now()
-    try {
-      // Always target the canonical main session. The single-session design
-      // (see MAIN_SESSION_ID) means there is exactly one user-facing session
-      // regardless of how many sub-agents, Telegram channels, or other
-      // internal sessions exist. If the main session row does not exist yet
-      // (e.g. fresh install, never sent a message) create it on demand.
-      const targetSessionId = MAIN_SESSION_ID
-      let targetSession = getSession(this.rootDir, targetSessionId)
-      if (!targetSession) {
-        ensureSession(this.rootDir, targetSessionId, "Main session")
-        targetSession = getSession(this.rootDir, targetSessionId)
-      }
-      const targetProfileId = targetSession?.profileId || "default"
-
-      // First run memory consolidation silently!
-      await this.runMemoryConsolidation(targetSessionId, targetProfileId)
-
-      // Skills lifecycle is NO LONGER triggered from the heartbeat. It now
-      // runs on its own cadence: CREATE on tool-iteration count, CURATE on
-      // session count. See maybeFireSkillsTriggers (called at end of user turn).
-
-      // Then ask the model: is there anything urgent the user should know?
-      // The model itself decides what counts as urgent — we previously had
-      // a short-circuit here that skipped the turn if no explicit tasks
-      // were pending, which defeated the whole point of the proactive
-      // check. Removed in favor of letting the model judge.
-      const prompt = `[SYSTEM EVENT: HEARTBEAT_CHECK]
-You are running a proactive autonomy check. The user is currently idle (no
-new messages in the configured idle window).
-
-Read the current state:
-- Recent conversation history (last 10-20 messages)
-- Memory palace recalls relevant to active tasks
-- Knowledge graph facts added or invalidated recently
-- Any error or stall alerts in the worklog
-- The current date and time
-
-Decide if the user would want a proactive notification. Examples of
-"yes, notify":
-- A scheduled task fired and the user should know
-- Something in the conversation went wrong (tool failure, rate limit, etc.)
-- A pattern suggests the user might be stuck (repeating same tool)
-- A new fact the user asked the agent to remember is now queryable
-- The agent previously said "I'll let you know when X" and X is now done
-
-If none of the above apply, reply exactly with: HEARTBEAT_OK
-
-If something does apply, write a SHORT (1-3 sentences) message for the
-user. Be specific. "Just checking in" with no concrete content is a HEARTBEAT_OK.
-
-IMPORTANT: The human user did NOT send or write this message. Do not
-reference this automated system check in your response. Do not say
-"HEARTBEAT_OK" out loud — keep it as the exact token.`
-      await this.runProactiveBackgroundTurn(targetSessionId, targetProfileId, 0, prompt)
-    } finally {
-      this.isHeartbeatRunning = false
+  private cancelMemoryConsolidation() {
+    if (this.memoryConsolidationTimer) {
+      clearTimeout(this.memoryConsolidationTimer)
+      this.memoryConsolidationTimer = null
+      logger.debug("[MemoryAgent] Cancelled pending memory consolidation timer.")
     }
   }
 
@@ -1293,6 +1194,9 @@ reference this automated system check in your response. Do not say
   private releaseSessionLock(sessionId: string) {
     this.activeSessions.delete(sessionId)
     this.flushPendingUserMessage(sessionId)
+    if (sessionId === MAIN_SESSION_ID && !this.pendingUserMessages.has(sessionId)) {
+      this.scheduleMemoryConsolidation(sessionId)
+    }
   }
 
   private rememberDeliveryContext(sessionId: string, delivery?: DeliveryContext) {
@@ -2085,7 +1989,7 @@ Review the existing skill library and apply the curation heuristics in your inst
 
   async processMessage(sessionId: string, text: string, options?: { delivery?: DeliveryContext; onAgentLoopEvent?: (event: AgentLoopEvent) => void }) {
     this.lastUserActivity = Date.now()
-    this.scheduleNextHeartbeat("user message received")
+    this.cancelMemoryConsolidation()
     this.rememberDeliveryContext(sessionId, options?.delivery)
     if (this.activeSessions.has(sessionId)) {
       const queue = this.pendingUserMessages.get(sessionId) ?? []
@@ -2118,6 +2022,7 @@ Review the existing skill library and apply the curation heuristics in your inst
   }
 
   async processSessionStartup(sessionId: string, prompt: string, options?: { logger?: Logger; maxTokens?: number; delivery?: DeliveryContext }) {
+    this.cancelMemoryConsolidation()
     this.rememberDeliveryContext(sessionId, options?.delivery)
     const session = getSession(this.rootDir, sessionId)
     if (!session) throw new Error(`Session ${sessionId} not found`)
