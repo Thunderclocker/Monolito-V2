@@ -21,6 +21,7 @@ import {
 import {
   TTS_RESPONSE_FORMATS,
   emptyInputSchema,
+  execFileAsync,
   formatToolError,
   inferExtensionFromFormat,
   multipartUploadFile,
@@ -1247,6 +1248,74 @@ export const mediaTools: ToolDefinition[] = [
       return formatToolError(`Error durante la generación de la imagen: ${err.message}`)
     }
   }
+},
+
+{
+  name: "CaptureScreenshot",
+  aliases: ["capture_screenshot", "screenshot"],
+  permissionTier: "read",
+  description: "Captura inmediatamente una pantalla de la PC local y la guarda en la carpeta de capturas del scratchpad. Úsala cada vez que el usuario te pregunte qué es lo que ves en su pantalla, qué hay en su PC, o te pida mirar o analizar su pantalla. Devuelve { ok: true, local_path }.",
+  inputSchema: emptyInputSchema,
+  concurrencySafe: false,
+  async run(input, context) {
+    const paths = ensureDirs(context.rootDir, context.profileId)
+    const screenshotDir = join(paths.scratchpadDir, "screenshots")
+    mkdirSync(screenshotDir, { recursive: true })
+    const filename = `screenshot-${Date.now()}.png`
+    const localPath = join(screenshotDir, filename)
+
+    // Intenta gnome-screenshot
+    try {
+      await execFileAsync("gnome-screenshot", ["-f", localPath])
+      if (existsSync(localPath)) {
+        return { ok: true, local_path: localPath }
+      }
+    } catch (err) {
+      // Ignorar y probar siguiente
+    }
+
+    // Intenta import (ImageMagick)
+    try {
+      await execFileAsync("import", ["-window", "root", localPath])
+      if (existsSync(localPath)) {
+        return { ok: true, local_path: localPath }
+      }
+    } catch (err) {
+      // Ignorar y probar siguiente
+    }
+
+    // Intenta scrot
+    try {
+      await execFileAsync("scrot", [localPath])
+      if (existsSync(localPath)) {
+        return { ok: true, local_path: localPath }
+      }
+    } catch (err) {
+      // Ignorar y probar siguiente
+    }
+
+    // Intenta maim
+    try {
+      await execFileAsync("maim", [localPath])
+      if (existsSync(localPath)) {
+        return { ok: true, local_path: localPath }
+      }
+    } catch (err) {
+      // Ignorar y probar siguiente
+    }
+
+    // Intenta grim (Wayland)
+    try {
+      await execFileAsync("grim", [localPath])
+      if (existsSync(localPath)) {
+        return { ok: true, local_path: localPath }
+      }
+    } catch (err) {
+      // Ignorar y probar siguiente
+    }
+
+    return formatToolError("No se pudo capturar la pantalla con ninguna utilidad (gnome-screenshot, import, scrot, maim, grim).")
+  },
 },
 
 ]

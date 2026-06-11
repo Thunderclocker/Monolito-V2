@@ -154,4 +154,5 @@ test("registry barrel loads (smoke)", () => {
   assert.ok(getTool("TelegramSendPhoto"), "TelegramSendPhoto must be registered")
   assert.ok(getTool("TelegramGetRecentPhotos"), "TelegramGetRecentPhotos must be registered")
   assert.ok(getTool("VisionAnalyze"), "VisionAnalyze must be registered")
+  assert.ok(getTool("CaptureScreenshot"), "CaptureScreenshot must be registered")
 })
