@@ -42,8 +42,8 @@ export type SttConfig = {
 export type HotkeyConfig = {
   /** Enable the global push-to-talk listener (requires X11 / `xinput`). */
   enabled: boolean
-  /** X11 raw keycode to watch. Defaults to 49 (º / ordmasculine on ES-layout). */
-  keycode: number
+  /** X11 raw keycode(s) to watch. Can be a single number or an array of numbers. Defaults to 49 (º / ordmasculine on ES-layout). */
+  keycode: number | number[]
 }
 
 export type ChannelsConfig = {

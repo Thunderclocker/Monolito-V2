@@ -66,16 +66,17 @@ function playSound(path: string) {
 // ---------------------------------------------------------------------------
 
 export class GlobalHotkeyService {
-  private keycode: number
+  private keycodes: number[]
   private runtime: MonolitoV2Runtime
   private xinputProc: ChildProcess | null = null
   private arecordProc: ChildProcess | null = null
   private currentRecordingPath: string | null = null
   private isRecording = false
   private stopped = false
+  private pressedKeys = new Set<number>()
 
-  constructor(keycode: number, runtime: MonolitoV2Runtime) {
-    this.keycode = keycode
+  constructor(keycodes: number[], runtime: MonolitoV2Runtime) {
+    this.keycodes = keycodes
     this.runtime = runtime
   }
 
@@ -126,11 +127,22 @@ export class GlobalHotkeyService {
 
       for (const line of lines) {
         this.handleXinputLine(line.trim(), (type, detail) => {
-          if (detail !== this.keycode) return
-          if (type === "RawKeyPress" && !this.isRecording) {
-            void this.onKeyDown()
-          } else if (type === "RawKeyRelease" && this.isRecording) {
-            void this.onKeyUp()
+          if (!this.keycodes.includes(detail)) return
+
+          if (type === "RawKeyPress") {
+            this.pressedKeys.add(detail)
+            const allPressed = this.keycodes.every(code => this.pressedKeys.has(code))
+            if (allPressed && !this.isRecording) {
+              void this.onKeyDown()
+            }
+          } else if (type === "RawKeyRelease") {
+            this.pressedKeys.delete(detail)
+            if (this.isRecording) {
+              const anyReleased = this.keycodes.some(code => !this.pressedKeys.has(code))
+              if (anyReleased) {
+                void this.onKeyUp()
+              }
+            }
           }
         })
       }
@@ -150,7 +162,7 @@ export class GlobalHotkeyService {
     })
 
     this.xinputProc = proc
-    logger.info(`[GlobalHotkey] Listening for keycode ${this.keycode} on DISPLAY=${process.env.DISPLAY}`)
+    logger.info(`[GlobalHotkey] Listening for keycodes [${this.keycodes.join(", ")}] on DISPLAY=${process.env.DISPLAY}`)
   }
 
   /**
@@ -328,9 +340,19 @@ export async function createGlobalHotkeyService(
     return null
   }
 
-  const keycode = typeof hotkey.keycode === "number" && hotkey.keycode > 0
-    ? hotkey.keycode
-    : DEFAULT_KEYCODE
+  const keycodes: number[] = []
+  if (typeof hotkey.keycode === "number" && hotkey.keycode > 0) {
+    keycodes.push(hotkey.keycode)
+  } else if (Array.isArray(hotkey.keycode)) {
+    for (const val of hotkey.keycode) {
+      if (typeof val === "number" && val > 0) {
+        keycodes.push(val)
+      }
+    }
+  }
+  if (keycodes.length === 0) {
+    keycodes.push(DEFAULT_KEYCODE)
+  }
 
-  return new GlobalHotkeyService(keycode, runtime)
+  return new GlobalHotkeyService(keycodes, runtime)
 }
