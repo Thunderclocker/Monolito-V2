@@ -73,6 +73,7 @@ StandardError=append:${daemonLog}
 Environment=NODE_ENV=production
 Environment=MONOLITO_MODE=production
 Environment=MONOLITO_ROOT=${escapedRoot}
+PassEnvironment=DISPLAY XAUTHORITY
 
 [Install]
 WantedBy=default.target
