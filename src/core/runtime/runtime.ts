@@ -2463,6 +2463,13 @@ Review the existing skill library and apply the curation heuristics in your inst
             type: "note",
             summary: `[Top-level Ralph] Blocked delivery on attempt ${ralphAttempt}/${TOP_LEVEL_RALPH_MAX_ATTEMPTS}: ${gate.unfinished.length} unfinished tasks. Re-feeding feedback prompt (ephemeral, not persisted).`,
           })
+          this.emit({
+            type: "ralph.attempt",
+            sessionId,
+            attempt: ralphAttempt,
+            maxAttempts: TOP_LEVEL_RALPH_MAX_ATTEMPTS,
+            unfinished: gate.unfinished.map(t => t.content),
+          })
           ralphAttemptHistory.push({
             attempt: ralphAttempt,
             kind: "unfinished-tasks-top-level",

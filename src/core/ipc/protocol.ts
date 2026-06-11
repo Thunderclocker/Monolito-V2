@@ -54,6 +54,13 @@ export type AgentEvent =
       total: number
       items: Array<{ status: "pending" | "in_progress" | "completed"; content: string; activeForm?: string }>
     }
+  | {
+      type: "ralph.attempt"
+      sessionId: string
+      attempt: number
+      maxAttempts: number
+      unfinished: string[]
+    }
 
 export type SessionSummary = {
   id: string

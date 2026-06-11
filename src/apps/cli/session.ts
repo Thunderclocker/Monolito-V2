@@ -496,6 +496,16 @@ class InteractiveTranscriptFormatter {
       case "mcp.called":
         this.pendingMcpCall = `${event.server}.${event.tool}`
         return [{ type: "event", label: "mcp", tone: "info", text: this.pendingMcpCall }]
+      case "ralph.attempt": {
+        const taskList = event.unfinished.slice(0, 3).join(" · ")
+        const more = event.unfinished.length > 3 ? ` +${event.unfinished.length - 3} más` : ""
+        return [{
+          type: "event",
+          label: "ralph",
+          tone: "info",
+          text: `intento ${event.attempt}/${event.maxAttempts} · ${event.unfinished.length} pendiente${event.unfinished.length !== 1 ? "s" : ""}: ${taskList}${more}`,
+        }]
+      }
       case "error":
         return [{ type: "event", label: "error", tone: "error", text: event.error }]
       default:
@@ -656,6 +666,15 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     if (event.type === "tool.finish") {
       composer.toolThinkingText = ""
       composer.toolThinkingFrame = 0
+    }
+
+    // On ralph.attempt: clear any stale tool spinner and keep the
+    // Thinking... indicator alive so the user sees the agent is retrying.
+    if (event.type === "ralph.attempt") {
+      composer.toolThinkingText = ""
+      composer.toolThinkingFrame = 0
+      composer.thinkingVisible = true
+      startThinkingAnimation()
     }
 
     // Intercept MenuSchemaEnvelope from tool output — activate master dashboard
