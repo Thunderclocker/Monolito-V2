@@ -1989,6 +1989,7 @@ Review the existing skill library and apply the curation heuristics in your inst
   }
 
   async processMessage(sessionId: string, text: string, options?: { delivery?: DeliveryContext; onAgentLoopEvent?: (event: AgentLoopEvent) => void }) {
+    const processStartedAt = Date.now()
     this.lastUserActivity = Date.now()
     this.cancelMemoryConsolidation()
     this.rememberDeliveryContext(sessionId, options?.delivery)
@@ -2023,7 +2024,7 @@ Review the existing skill library and apply the curation heuristics in your inst
       }
 
       // 2. Start instant acknowledgment concurrently (in background)
-      let ackPromise: Promise<string | null> | null = null
+      let ackPromise: Promise<{ text: string; isSimpleGreeting: boolean } | null> | null = null
       if (!isSlash && !isSubAgent && autoAckEnabled) {
         ackPromise = this.sendInstantAcknowledgment(sessionId, text, options?.delivery).catch(err => {
           logger.warn(`Failed to generate/deliver instant acknowledgment: ${err instanceof Error ? err.message : String(err)}`)
@@ -2041,7 +2042,7 @@ Review the existing skill library and apply the curation heuristics in your inst
       }
 
       // Await acknowledgment promise before starting the turn, with a short timeout
-      let instantAcknowledgment: string | null = null
+      let instantAcknowledgment: { text: string; isSimpleGreeting: boolean } | null = null
       if (ackPromise) {
         instantAcknowledgment = await Promise.race([
           ackPromise,
@@ -2050,6 +2051,26 @@ Review the existing skill library and apply the curation heuristics in your inst
       }
 
       appendMessage(this.rootDir, sessionId, "user", userText)
+
+      if (instantAcknowledgment?.isSimpleGreeting) {
+        // Simple greeting: the fast model has already fully answered it.
+        // We persist the acknowledgment response to the DB, complete the turn, and return.
+        appendMessage(this.rootDir, sessionId, "assistant", instantAcknowledgment.text)
+        appendWorklog(this.rootDir, sessionId, {
+          type: "session",
+          summary: `Turn completed (simple greeting handled by fast model: "${instantAcknowledgment.text}")`,
+        })
+        await this.transitionState(sessionId, "idle")
+        this.emit({
+          type: "turn.completed",
+          sessionId,
+          role: "assistant",
+          durationMs: Date.now() - processStartedAt,
+          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+        })
+        return
+      }
+
       appendWorklog(this.rootDir, sessionId, {
         type: "session",
         summary: `Turn started (${text.trim().startsWith("/") ? "slash-command" : "user-message"})`,
@@ -2060,7 +2081,7 @@ Review the existing skill library and apply the curation heuristics in your inst
       await this.runTurn(sessionId, userText, profileId, {
         delivery: options?.delivery,
         onAgentLoopEvent: options?.onAgentLoopEvent,
-        instantAcknowledgment,
+        instantAcknowledgment: instantAcknowledgment?.text ?? null,
       })
     } finally {
       this.releaseSessionLock(sessionId)
@@ -4350,7 +4371,7 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
     return null
   }
 
-  private async sendInstantAcknowledgment(sessionId: string, userText: string, delivery?: DeliveryContext): Promise<string | null> {
+  private async sendInstantAcknowledgment(sessionId: string, userText: string, delivery?: DeliveryContext): Promise<{ text: string; isSimpleGreeting: boolean } | null> {
     const session = this.getSession(sessionId)
     const voiceMode = session?.voiceMode === true
 
@@ -4358,6 +4379,10 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
       "You are a helpful AI assistant. The user just sent a message.",
       "Your job is to generate a very short, natural acknowledgment (1 to 6 words) in the same language as the user's message (e.g. if the user writes in Spanish, respond in Spanish; if in English, respond in English, etc.) indicating that you received the message and are working on it.",
       "Provide a dynamic, context-aware acknowledgment based on the message content.",
+      "",
+      "CRITICAL RULE FOR SIMPLE GREETINGS/PLEASANTRIES:",
+      "If the user message is ONLY a simple greeting, pleasantry, or social comment (e.g. 'hola', 'cómo estás', 'buenas', 'hello', 'how are you', 'buen día') and does NOT ask to perform any task, execute code, read/write files, or search for information, your response MUST start with the prefix '[SIMPLE_GREETING]'. For example: '[SIMPLE_GREETING] Hola, todo bien, ¿y vos?', '[SIMPLE_GREETING] Hello! How can I help you?'.",
+      "",
       "Examples in Spanish:",
       '- If the user asks to write/fix/check code: "Revisando el código...", "A ver, dejame ver el código.", "Ahí me fijo qué pasa."',
       '- If the user asks for information/search: "Buscando eso...", "A ver, investigo un momento.", "Dejame buscar."',
@@ -4370,13 +4395,19 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
       '- If it is a general request: "On it.", "I am on it.", "Let me see..."',
       '- Other natural variations: "Checking now.", "Let me check.", "Got it, looking into it."',
       "",
-      "Do NOT use markdown, emojis, quotes, or any introductory phrases. Output ONLY the raw acknowledgment text."
+      "Do NOT use markdown, emojis, quotes, or any introductory phrases. Output ONLY the raw acknowledgment text (with the '[SIMPLE_GREETING]' prefix if applicable)."
     ].join("\n")
 
     try {
       const { text: ack } = await runBackgroundTextTask(this.rootDir, systemPrompt, userText, { maxTokens: 25 })
-      const ackText = ack.trim().replace(/^["']|["']$/g, "")
+      let ackText = ack.trim().replace(/^["']|["']$/g, "")
       if (!ackText) return null
+
+      let isSimpleGreeting = false
+      if (ackText.includes("[SIMPLE_GREETING]")) {
+        isSimpleGreeting = true
+        ackText = ackText.replace("[SIMPLE_GREETING]", "").trim()
+      }
 
       // Emit event so the client gets the text
       this.emit({ type: "message.received", sessionId, role: "assistant", text: ackText })
@@ -4386,7 +4417,7 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
         logger.warn(`Failed to deliver instant acknowledgment: ${err instanceof Error ? err.message : String(err)}`)
       })
 
-      return ackText
+      return { text: ackText, isSimpleGreeting }
     } catch (e) {
       logger.debug(`[acknowledgement] Instant acknowledgment delivery failed or skipped: ${e instanceof Error ? e.message : String(e)}`)
       return null
