@@ -210,6 +210,7 @@ export const mediaTools: ToolDefinition[] = [
       response_format: { type: "string", enum: ["mp3", "opus", "aac", "flac", "wav", "pcm"], description: "Optional audio format override." },
       speed: { type: "number", description: "Optional playback speed override. OpenAI: 0.25-4.0. MiniMax: 0.5-2.0 (se clampea automaticamente)." },
       filename: { type: "string", description: "Optional filename without directory. Saved under Monolito scratchpad." },
+      language_boost: { type: "string", description: "Optional language boost override for MiniMax (e.g. 'Spanish', 'English', 'Chinese', 'Portuguese', 'auto')." },
     },
     required: ["text"],
     additionalProperties: false,
@@ -308,11 +309,15 @@ export const mediaTools: ToolDefinition[] = [
       if (format === "mp3") {
         audioSetting.bitrate = 128000
       }
-      const body = {
+      const languageBoost = optionalString(input, "language_boost") ?? tts.languageBoost
+      const body: Record<string, any> = {
         model: model || "speech-2.8-hd",
         text,
         voice_setting: { voice_id: resolvedVoice, speed: speedClamped, vol: 1.0, pitch: 0 },
         audio_setting: audioSetting,
+      }
+      if (languageBoost) {
+        body.language_boost = languageBoost
       }
       const response = await fetch(`${baseUrl}/t2a_v2`, {
         method: "POST",
@@ -342,6 +347,7 @@ export const mediaTools: ToolDefinition[] = [
         model: body.model,
         response_format: format,
         speed: speedClamped,
+        language_boost: languageBoost || undefined,
       }
     }
 

@@ -40,6 +40,7 @@ TTS settings live in `CONF_CHANNELS`. Relevant config fields:
 - `tts_model` (OpenAI: `tts-1`, `tts-1-hd`; MiniMax: `speech-2.8-hd`, etc.)
 - `tts_format` (`mp3`, `opus`, `aac`, `flac`, `wav`, `pcm`)
 - `tts_speed` (0.25–4.0 for OpenAI; 0.5–2.0 for MiniMax)
+- `tts_language_boost` (Optional phonetic language optimization for MiniMax, e.g. `Spanish`, `English`, `Portuguese`, `auto`)
 - `tts.clonedVoices` (alias → `voice_id` map; MiniMax only)
 - `tts.defaultClonedVoice`
 - `tts.t2aModel`

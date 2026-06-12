@@ -3533,6 +3533,7 @@ Rules:
           clonedVoiceCount: Object.keys(tts.clonedVoices || {}).length,
           defaultClonedVoice: tts.defaultClonedVoice || "",
           t2aModel: tts.t2aModel || "",
+          languageBoost: tts.languageBoost || "",
         },
         stt: {
           managed: typeof channels.stt?.managed === "boolean" ? channels.stt.managed : "",
@@ -3602,12 +3603,13 @@ Rules:
         this.scheduleNextHeartbeat(`config updated: heartbeat_min_idle_minutes = ${parsed}`)
         return `Saved heartbeat_min_idle_minutes = ${parsed}`
       }
-      else if (field === "tts_base_url" || field === "tts_api_key" || field === "tts_voice" || field === "tts_model" || field === "tts_format" || field === "tts_speed" || field === "tts_provider") {
+      else if (field === "tts_base_url" || field === "tts_api_key" || field === "tts_voice" || field === "tts_model" || field === "tts_format" || field === "tts_speed" || field === "tts_provider" || field === "tts_language_boost") {
         const nextChannels = { ...channels, tts: { ...(channels.tts ?? {}) } }
         if (field === "tts_base_url") nextChannels.tts.baseUrl = value
         if (field === "tts_api_key") nextChannels.tts.apiKey = value
         if (field === "tts_voice") nextChannels.tts.voice = value
         if (field === "tts_model") nextChannels.tts.model = value
+        if (field === "tts_language_boost") nextChannels.tts.languageBoost = value
         if (field === "tts_provider") {
           if (!["minimax", "openai"].includes(value.toLowerCase())) {
             return "Invalid: tts_provider must be 'minimax' or 'openai'"

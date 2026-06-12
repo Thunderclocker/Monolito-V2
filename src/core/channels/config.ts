@@ -24,6 +24,7 @@ export type TtsConfig = {
   clonedVoices?: Record<string, string>
   defaultClonedVoice?: string
   t2aModel?: string
+  languageBoost?: string
 }
 
 export type SttConfig = {
@@ -73,7 +74,7 @@ type LooseChannelsConfig = ChannelsConfig & {
 
 const CHANNELS_TOP_LEVEL_KEYS = new Set(["telegram", "tts", "stt", "hotkey"])
 const TELEGRAM_KEYS = new Set(["token", "enabled", "allowedChats"])
-const TTS_KEYS = new Set(["baseUrl", "apiKey", "voice", "model", "responseFormat", "speed", "provider", "clonedVoices", "defaultClonedVoice", "t2aModel"])
+const TTS_KEYS = new Set(["baseUrl", "apiKey", "voice", "model", "responseFormat", "speed", "provider", "clonedVoices", "defaultClonedVoice", "t2aModel", "languageBoost"])
 const STT_KEYS = new Set(["managed", "autoDeploy", "autoTranscribe", "port", "image", "containerName", "engine", "model", "language", "vadFilter"])
 const HOTKEY_KEYS = new Set(["enabled", "keycode", "screenshotEnabled", "screenshotKeycode"])
 
@@ -262,5 +263,6 @@ export function normalizeTtsConfig(config?: Partial<TtsConfig>): TtsConfig {
       : {},
     defaultClonedVoice: typeof config?.defaultClonedVoice === "string" ? config.defaultClonedVoice.trim() : "",
     t2aModel: typeof config?.t2aModel === "string" && config.t2aModel.trim() ? config.t2aModel.trim() : "speech-2.8-hd",
+    languageBoost: typeof config?.languageBoost === "string" ? config.languageBoost.trim() : undefined,
   }
 }
