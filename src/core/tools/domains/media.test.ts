@@ -171,4 +171,74 @@ test("VoiceClone sync action prunes local voices missing on MiniMax", async () =
   }
 })
 
+test("VoiceClone clone action adopts existing voice on duplicate error", async () => {
+  const tool = getTool("VoiceClone")
+  assert.ok(tool)
+
+  const { writeChannelsConfig, readChannelsConfig } = await import("../../channels/config.ts")
+  writeChannelsConfig({
+    tts: {
+      provider: "minimax",
+      apiKey: "fake-api-key",
+      clonedVoices: {},
+    },
+  })
+
+  // Create a dummy audio file so existsSync doesn't fail
+  const dummyAudioPath = join(testMonolitoRoot, "dummy.mp3")
+  writeFileSync(dummyAudioPath, "fake-audio-content")
+
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    const urlStr = String(url)
+    if (urlStr.endsWith("/files/upload")) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          file_id: "fake-file-id"
+        })
+      } as unknown as Response
+    }
+    if (urlStr.endsWith("/voice_clone")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          base_resp: {
+            status_code: 2056,
+            status_msg: "voice clone voice id duplicate"
+          }
+        })
+      } as unknown as Response
+    }
+    return { ok: false, status: 500, text: async () => "" } as unknown as Response
+  }
+
+  try {
+    const result = await tool.run({
+      action: "clone",
+      alias: "voz_duplicada",
+      source: {
+        type: "path",
+        value: dummyAudioPath
+      }
+    }, {
+      rootDir: testMonolitoRoot,
+      cwd: testMonolitoRoot,
+    }) as { ok: boolean; voice_id: string; note: string }
+
+    assert.ok(result.ok)
+    assert.equal(result.voice_id, "voz_duplicada")
+    assert.match(result.note, /ya existía/)
+
+    // Verify it is registered locally
+    const config = readChannelsConfig()
+    assert.equal(config.tts?.clonedVoices?.["voz_duplicada"], "voz_duplicada")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+
 

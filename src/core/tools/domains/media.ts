@@ -578,6 +578,41 @@ export const mediaTools: ToolDefinition[] = [
       }
       const cloneJson = await cloneResp.json() as { voice_id?: string; base_resp?: { status_code?: number; status_msg?: string } }
       if (cloneJson.base_resp?.status_code && cloneJson.base_resp.status_code !== 0) {
+        const isDuplicate = cloneJson.base_resp.status_code === 2056 || 
+                            String(cloneJson.base_resp.status_msg).toLowerCase().includes("duplicate")
+        if (isDuplicate) {
+          context.logger?.info(`[VoiceClone] La voz ya existe remotamente con voice_id=${alias}. Adoptándola en la configuración local.`)
+          const refreshedConfig = readChannelsConfig()
+          const refreshedTts = normalizeTtsConfig(refreshedConfig.tts)
+          const newVoices = { ...(refreshedTts.clonedVoices || {}), [alias]: alias }
+          const persistedTts: Record<string, unknown> = {
+            ...(refreshedConfig.tts || {}),
+            clonedVoices: newVoices,
+            defaultClonedVoice: setAsDefault ? alias : refreshedTts.defaultClonedVoice
+          }
+          if (!explicitProvider && activeIsMiniMax) {
+            persistedTts.provider = "minimax"
+            if (!persistedTts.apiKey && activeProfile?.apiKey) persistedTts.apiKey = activeProfile.apiKey
+          }
+          writeChannelsConfig({
+            ...refreshedConfig,
+            tts: persistedTts,
+          })
+          appendActionLog(context.rootDir, "Voz clonada adoptada por duplicado", {
+            alias,
+            voice_id: alias,
+            note: "Ya existia en MiniMax remotamente",
+          })
+          return {
+            ok: true,
+            action: "clone",
+            alias,
+            voice_id: alias,
+            model: cloneModel,
+            is_default: setAsDefault,
+            note: "La voz ya existía en MiniMax. Se adoptó y mapeó localmente con éxito.",
+          }
+        }
         throw new Error(`Voice clone rechazado: ${cloneJson.base_resp.status_msg || cloneJson.base_resp.status_code}`)
       }
       const voiceId = cloneJson.voice_id || alias
