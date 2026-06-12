@@ -10,16 +10,37 @@ const MINIMAX_TOKEN_CACHE_TTL = 30 * 60 * 1000 // 30 minutes
 
 let minimaxTokenCache: { balance: string | null; timestamp: number } | null = null
 
-type MinimaxTokenPlan = {
-  success?: boolean
-  base_info?: {
-    plan_name?: string
-    total_tokens?: number
-    used_tokens?: number
-    remaining_tokens?: number
-    reset_date?: string
+type MinimaxTokenPlanInterval = {
+  model_name: string
+  start_time: number
+  end_time: number
+  current_interval_total_count: number
+  current_interval_usage_count: number
+  current_interval_remaining_percent: number
+  current_interval_status: number
+}
+
+type MinimaxTokenPlanResponse = {
+  model_remains: MinimaxTokenPlanInterval[]
+  base_resp?: {
+    status_code: number
+    status_msg?: string
   }
-  error?: string
+}
+
+function formatCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`
+  return String(n)
+}
+
+function formatDaysUntil(msTimestamp: number): string {
+  const ms = msTimestamp - Date.now()
+  const days = Math.ceil(ms / (24 * 60 * 60 * 1000))
+  if (days > 1) return ` │ reset in ${days}d`
+  if (days === 1) return " │ reset in 1d"
+  if (days === 0) return " │ resets today"
+  return ""
 }
 
 async function fetchMinimaxTokenRemains(): Promise<string | null> {
@@ -37,35 +58,25 @@ async function fetchMinimaxTokenRemains(): Promise<string | null> {
       signal: AbortSignal.timeout(8_000),
     })
     if (!res.ok) return null
-    const data = (await res.json()) as MinimaxTokenPlan
-    if (!data.success || !data.base_info) return null
+    const data = (await res.json()) as MinimaxTokenPlanResponse
+    if (data.base_resp && data.base_resp.status_code !== 0) return null
+    if (!data.model_remains?.length) return null
 
-    const { remaining_tokens, total_tokens, reset_date } = data.base_info
-    if (remaining_tokens === undefined || total_tokens === undefined) return null
+    // Prefer "general" model, fallback to first entry
+    const entry = data.model_remains.find(m => m.model_name === "general") ?? data.model_remains[0]
+    const pct = entry.current_interval_remaining_percent
+    const reset = formatDaysUntil(entry.end_time)
 
-    const remaining = remaining_tokens >= 1_000_000
-      ? `${(remaining_tokens / 1_000_000).toFixed(1)}M`
-      : remaining_tokens >= 1_000
-        ? `${(remaining_tokens / 1_000).toFixed(0)}K`
-        : String(remaining_tokens)
-
-    const total = total_tokens >= 1_000_000
-      ? `${(total_tokens / 1_000_000).toFixed(1)}M`
-      : total_tokens >= 1_000
-        ? `${(total_tokens / 1_000).toFixed(0)}K`
-        : String(total_tokens)
-
-    const pct = total_tokens > 0 ? ((remaining_tokens / total_tokens) * 100).toFixed(1) : "0"
-
-    let daysUntilReset = ""
-    if (reset_date) {
-      const ms = new Date(reset_date).getTime() - Date.now()
-      const days = Math.ceil(ms / (24 * 60 * 60 * 1000))
-      if (days > 0) daysUntilReset = ` │ reset in ${days}d`
-      else if (days === 0) daysUntilReset = " │ resets today"
+    // Show token counts if available (some plans report usage)
+    if (entry.current_interval_total_count > 0) {
+      const used = entry.current_interval_usage_count
+      const total = entry.current_interval_total_count
+      const remaining = total - used
+      return `${formatCount(remaining)} / ${formatCount(total)} (${pct}%)${reset}`
     }
 
-    return `${remaining} / ${total} (${pct}%)${daysUntilReset}`
+    // Time-based plan: show percent only
+    return `${pct}% remaining${reset}`
   } catch {
     return null
   }
