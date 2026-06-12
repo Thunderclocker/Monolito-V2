@@ -245,7 +245,9 @@ export function renderHeaderLines(header: HeaderState, cols: number, remainingCo
     `${ANSI.purpleFluor}│${ANSI.reset} ${titleLeft}${" ".repeat(fill)}${titleRight} ${ANSI.purpleFluor}│${ANSI.reset}`,
     `${ANSI.purpleFluor}│${ANSI.reset} ${padLine(`${ANSI.dim}workspace${ANSI.reset} ${workspaceValue}`, innerWidth)} ${ANSI.purpleFluor}│${ANSI.reset}`,
     `${ANSI.purpleFluor}│${ANSI.reset} ${padLine(`${ANSI.dim}model${ANSI.reset} ${truncate(header.model, 26)}   ${ANSI.dim}provider${ANSI.reset} ${truncate(header.provider, 20)}   ${ANSI.dim}reasoning${ANSI.reset} ${header.reasoning}   ${ANSI.dim}ctx${ANSI.reset} ${remainingCompactionPercent}%`, innerWidth)} ${ANSI.purpleFluor}│${ANSI.reset}`,
-    `${ANSI.purpleFluor}│${ANSI.reset} ${padLine(header.minimaxBalance ? `${ANSI.dim}MiniMax remains${ANSI.reset} ${header.minimaxBalance}` : `${ANSI.dim}session${ANSI.reset} ${header.sessionId.slice(0, 8)}`, innerWidth)} ${ANSI.purpleFluor}│${ANSI.reset}`,
+    header.minimaxBalance !== null
+      ? `${ANSI.purpleFluor}│${ANSI.reset} ${padLine(`${ANSI.dim}MiniMax remains${ANSI.reset} ${header.minimaxBalance}`, innerWidth)} ${ANSI.purpleFluor}│${ANSI.reset}`
+      : `${ANSI.purpleFluor}│${ANSI.reset} ${" ".repeat(innerWidth)} ${ANSI.purpleFluor}│${ANSI.reset}`,
     `${ANSI.purpleFluor}╰${"─".repeat(Math.max(0, width - 2))}╯${ANSI.reset}`,
   ]
 }
