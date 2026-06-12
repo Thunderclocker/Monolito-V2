@@ -29,6 +29,7 @@ import {
   queryGraphEntity,
   readBootWing,
   recallMemory,
+  upsertMemoryDrawer,
   writeBootWing,
 } from "../../session/store.ts"
 
@@ -184,8 +185,10 @@ export const memoryTools: ToolDefinition[] = [
     const room = requireString(input, "room")
     const key = optionalString(input, "key")
     const content = requireString(input, "content")
-    const id = await fileMemory(context.rootDir, wing, room, content, context.profileId, key)
-    return { ok: true, id, wing, room, key: key ?? null, shared: wing.trim().toUpperCase() === "SHARED" }
+    const result = key
+      ? await upsertMemoryDrawer(context.rootDir, wing, room, content, context.profileId, key)
+      : { id: await fileMemory(context.rootDir, wing, room, content, context.profileId), action: "inserted" as const }
+    return { ok: true, id: result.id, action: result.action, wing, room, key: key ?? null, shared: wing.trim().toUpperCase() === "SHARED" }
   },
 },
 

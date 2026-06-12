@@ -4,7 +4,7 @@ This document provides technical guidance, architecture rules, and operational p
 
 ## Architecture
 
-Monolito is a local AI orchestration runtime with SQLite-backed persistence. It runs a single main session per turn; user-facing sub-agent delegation is **not** a feature (the orchestrator was removed in migration `20260611_drop_worker_tables.sql`). Internal maintenance work (memory consolidation, skill curation) runs as silent in-process turns, not as workers.
+Monolito is a local AI orchestration runtime with SQLite-backed persistence. It runs a single main session per turn; user-facing sub-agent delegation is **not** a feature (the orchestrator was removed in migration `20260611_drop_worker_tables.sql`). Internal maintenance work (memory consolidation) runs as in-process turns, not as workers.
 
 ### Core Layers
 - **daemon** (`src/apps/daemon.ts`): Owns the runtime server, session management, and channel integration. Receives requests via Unix socket IPC.
@@ -20,20 +20,13 @@ Monolito is a local AI orchestration runtime with SQLite-backed persistence. It 
    - **Single-User Architecture**: Boot wings are seeded exclusively under the `default` profile scope. Other profiles transparently inherit these wings via global fallback, preventing redundant, duplicate rows in SQLite.
    - **Standard Boot Wings**: The allowed boot wings are `BOOT_AGENTS`, `BOOT_SOUL`, `BOOT_TOOLS`, `BOOT_IDENTITY`, `BOOT_USER`, `BOOT_BOOTSTRAP`, and `BOOT_MEMORY`. Creating or writing to custom wings (like `BOOT_PERSONALITY`) is strictly blocked at the tool registry layer.
 
-### Automatic Memory Consolidation & Skill Synthesis
-- **MemoryAgent**: A minimalist, 100% silent agent triggered automatically during the heartbeat check when the user is inactive to synthesize and organize semantic facts.
-  - **Workflow**: Reads recent conversation history, reasons step-by-step about what is important (identity, user profile, general or thematic facts, commitments, projects), and uses the `BootWrite` and `WorkspaceMemoryFiling` tools to store facts in the Memory Palace (`BOOT_WINGS`, `palace_nodes`, `memory_drawers`).
-  - **Silent Operation**: Runs without adding messages to the thread or sending notifications to Telegram/terminal. Logs are recorded only as a note in the session worklog (`MemoryAgent executed silently: CONSOLIDATION_OK`).
-- **SkillsAgent**: An automatic, background automation and skill lifecycle agent triggered immediately after `MemoryAgent` during the heartbeat check when the user is inactive.
-  - **Workflow**: 
-    1. Reads existing dynamic skills using `ListSkills` to analyze the active library.
-    2. Reads recent tool usage, terminal outputs, and Bash command logs to identify repetitive tasks, obsolete patterns, or paradigm shifts.
-    3. Automates repetitive sequences by generating robust, parameterized Bash scripts via `CreateSkill`.
-    4. Merges redundant or overlapping skills under a broad "umbrella" skill (using `CreateSkill` and `DeleteSkill`).
-    5. Updates outdated skills to match new project paradigms (e.g. `npm` to `pnpm`).
-    6. Prunes obsolete or broken skills using `DeleteSkill`.
-  - **Scope Boundary**: SkillsAgent must only synthesize procedural skills (SOPs consisting of executable system tools/actions). It is strictly forbidden from creating skills for cognitive directives, behavioral warnings, rules of engagement, or user preferences, which are the exclusive domain of MemoryAgent and must be filed in the Memory Palace.
-  - **Silent Operation**: Fully silent, recording its outcomes only to the session worklog (`SkillsAgent executed silently: SKILLS_OK`).
+### Automatic Memory Consolidation
+- **MemoryAgent**: A minimalist agent triggered by an inactivity timer (default 3 min idle) that synthesizes and organizes semantic facts.
+  - **Workflow**: Uses a **cursor checkpoint** to track processed messages. On each run, loads only new messages, fits them to ~65% of the model's context budget, prepends existing memory context for dedup awareness, and runs an LLM turn with `BootWrite` and `WorkspaceMemoryFiling` tools.
+  - **Dedup/Update**: The storage layer (`upsertMemoryDrawer`) automatically skips if key+content match, updates if key matches but content differs, or inserts if new.
+  - **Visible progress**: Emits `message.received` events (`role: "system"`) to the CLI. Does not produce audio or send to Telegram.
+  - **Results**: Records stats to the worklog (`MemoryAgent: 3 inserts, 1 update, 2 skips`).
+- **SkillsAgent**: Removed (June 2026).
 
 ### Cognitive Task Persistence & Top-Level Ralph Loop
 - **Cognitive Task Tracking**: The main session uses the SQLite Memory Palace (`palace_nodes` table, `active_tasks` wing) instead of files (like `tasks.json`) to register, track, and update its intermediate objectives. This maintains cross-turn cognitive state, visible and manageable via `TodoWrite`, `TodoList`, and `TodoUpdate` tools.
@@ -115,7 +108,7 @@ npm run db:migrate
 
 ### Multi-Agent
 - The user-facing sub-agent delegation feature was **removed** in migration `20260611_drop_worker_tables.sql`. There are no `AgentSpawn` / `delegate_background_task` / `AgentSendMessage` / `AgentStop` tools. The orchestrator class and `worker_jobs` / `background_tasks` / `background_task_groups` tables no longer exist.
-- For background maintenance, see [`docs/background-agents.md`](./docs/background-agents.md) — MemoryAgent and SkillsAgent run as silent in-process turns, not as workers.
+- For background maintenance, see [`docs/background-agents.md`](./docs/background-agents.md) — MemoryAgent runs as in-process turns, not as workers.
 
 ### IPC & Events
 - **IPC**: Daemon ↔ CLI communicate over Unix socket (`/tmp/monolitod-v2-*.sock`).

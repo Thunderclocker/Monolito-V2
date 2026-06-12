@@ -1713,6 +1713,96 @@ export async function fileMemory(rootDir: string, wing: string, room: string, co
   return id
 }
 
+export async function upsertMemoryDrawer(
+  rootDir: string,
+  wing: string,
+  room: string,
+  content: string,
+  profileId: string = "default",
+  key: string | undefined,
+): Promise<{ id: string; action: "inserted" | "updated" | "skipped" }> {
+  const db = getDb(rootDir)
+  const rawWing = wing.trim()
+  if (rawWing.toUpperCase().startsWith("BOOT_")) {
+    throw new Error("BOOT_* wings are reserved for deterministic bootstrap state. Use BootWrite instead.")
+  }
+  if (rawWing.toUpperCase().startsWith("CONF_")) {
+    throw new Error("CONF_* wings are reserved for technical configuration state. Use ConfigWrite/tool_manage_config instead.")
+  }
+  const normalizedWing = rawWing.length === 0 ? "PRIVATE" : rawWing.toUpperCase() === "SHARED" ? "SHARED" : rawWing
+  const normalizedRoom = room.trim() || "general"
+  const normalizedKey = key?.trim() || null
+  const storedProfileId = normalizedWing.toUpperCase() === "SHARED" ? null : profileId
+
+  if (normalizedKey) {
+    const existing = db.prepare(`
+      SELECT id, content FROM memory_drawers
+      WHERE wing = ? AND room = ? AND memory_key = ?
+        AND (profile_id = ? OR (profile_id IS NULL AND ? IS NULL))
+      ORDER BY created_at DESC LIMIT 1
+    `).get(normalizedWing, normalizedRoom, normalizedKey, storedProfileId, storedProfileId) as { id: string; content: string } | undefined
+
+    if (existing) {
+      if (existing.content === content) {
+        return { id: existing.id, action: "skipped" }
+      }
+
+      let floatArray: Float32Array | null = null
+      try {
+        floatArray = await generateEmbedding(content)
+      } catch (error) {
+        logger.warn("upsertMemoryDrawer: embedding failed for update — " + (error instanceof Error ? error.message : String(error)))
+        if (!isEmbeddingsUnavailableError(error)) throw error
+      }
+
+      const now = new Date().toISOString()
+      db.exec("BEGIN TRANSACTION")
+      try {
+        db.prepare(`UPDATE memory_drawers SET content = ?, created_at = ? WHERE id = ?`)
+          .run(content, now, existing.id)
+
+        const subjectId = normalizedKey ?? normalizedRoom
+        db.prepare(`
+          UPDATE palace_nodes SET superseded_at = ?
+          WHERE namespace = ? AND subject_type = ? AND subject_id = ?
+            AND superseded_at IS NULL
+        `).run(now, PALACE_NAMESPACE.projectFacts, "memory_drawer", subjectId)
+
+        appendPalaceNode(db, {
+          namespace: PALACE_NAMESPACE.projectFacts,
+          wing: normalizedWing,
+          room: normalizedRoom,
+          nodeKey: normalizedKey,
+          profileId: storedProfileId,
+          subjectType: "memory_drawer",
+          subjectId,
+          contentType: "text/plain",
+          content,
+          now,
+        })
+
+        const drawerRow = db.prepare(`SELECT rowid FROM memory_drawers WHERE id = ?`).get(existing.id) as { rowid: number } | undefined
+        if (drawerRow) {
+          db.prepare(`DELETE FROM vec_drawers WHERE id = ?`).run(BigInt(drawerRow.rowid))
+          if (floatArray) {
+            db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(drawerRow.rowid), floatArray)
+          }
+        }
+
+        db.exec("COMMIT")
+      } catch (err) {
+        db.exec("ROLLBACK")
+        throw err
+      }
+
+      return { id: existing.id, action: "updated" }
+    }
+  }
+
+  const id = await fileMemory(rootDir, wing, room, content, profileId, normalizedKey ?? undefined)
+  return { id, action: "inserted" }
+}
+
 export async function recallMemory(rootDir: string, wing?: string, room?: string, query?: string, profileId?: string, key?: string) {
   const db = getDb(rootDir)
   const params: any[] = []

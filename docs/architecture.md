@@ -251,8 +251,8 @@ the pipeline.
                          │
                          ▼
         ┌──────────────────────────────────────┐
-        │ Heartbeat tick (only when user idle) │
-        │  • MemoryAgent  (silent Palace write)│
+        │ Inactivity timer (only when user idle) │
+        │  • MemoryAgent  (cursor-based + event) │
         │  Conf: CONF_HEARTBEAT wing           │
         └──────────────────────────────────────┘
 ```

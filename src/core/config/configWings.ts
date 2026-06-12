@@ -187,6 +187,6 @@ export const DEFAULT_CONFIG_WING_VALUES: ConfigWingValueMap = {
   CONF_HEARTBEAT: {
     enabled: true,
     interval_minutes: 30,
-    min_idle_minutes: 12,
+    min_idle_minutes: 3,
   },
 }

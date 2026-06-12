@@ -298,26 +298,25 @@ incoherence.
 
 ## 6. Heartbeat agents (silent background)
 
-When the user is idle for `min_idle_minutes` (default 12) and the
-interval has elapsed (default 30 min), the heartbeat fires and runs two
-silent sub-agents in sequence. Both are 100% silent — they do not write
-to the message stream, do not push to Telegram, and do not speak to the
-user. Only a single worklog note is recorded.
+When the user is idle for `min_idle_minutes` (default 3, configurable
+via `CONF_HEARTBEAT` wing), the inactivity timer fires and runs the
+MemoryAgent. It uses a **cursor-based checkpoint** to process only
+messages not yet consolidated, avoiding re-processing and duplication.
+Result stats are emitted as visible events to the CLI (but not to
+Telegram or audio).
 
 Configuration: `CONF_HEARTBEAT` wing with `enabled`, `min_idle_minutes`,
 `interval_minutes`.
 
 ### MemoryAgent
 
-Scope: **memory consolidation**. Reads recent chat, reasons about what
-matters, files durable facts into the Memory Palace and the knowledge
-graph.
+Scope: **memory consolidation**. Reads new messages since last checkpoint,
+reasons about what matters, and files durable facts with dedup:
 
-- Identity facts → `BOOT_IDENTITY` / `BOOT_USER`
-- User profile updates → `BOOT_USER`
-- Project facts → `project_facts` namespace
-- Commitments, deadlines → `active_tasks`
-- Thematic memory → custom wings or `BOOT_MEMORY`
+- Identity facts → `BootWrite` `BOOT_USER` / `BOOT_IDENTITY`
+- Behavioral rules → `BootWrite` `BOOT_SOUL`
+- Project facts, decisions, tasks → `WorkspaceMemoryFiling` with descriptive `memory_key`
+- The storage layer (`upsertMemoryDrawer`) deduplicates: same key + same content → skip, same key + different content → update, new key → insert.
 
 **Forbidden:** writing absolute or non-overridable memory constraints
 (commit `ebf9b6f`). MemoryAgent must not synthesize rules that would

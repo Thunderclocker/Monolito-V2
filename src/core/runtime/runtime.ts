@@ -38,9 +38,9 @@ import {
   isMainSession,
   listSessionTasks,
   upsertMutablePalaceNode,
+  upsertMemoryDrawer,
 } from "../session/store.ts"
 import { generateEmbedding, isEmbeddingsUnavailableError } from "../session/embeddings.ts"
-import { isIncrementalConsolidationEnabled } from "./memoryConsolidationPipeline.ts"
 import { getTool, listTools, type ToolContext, type ToolInputSchema } from "../tools/registry.ts"
 import { getEffectiveModelConfig, runAgentLoop, runAssistantTurn, runBackgroundTextTask, type AgentLoopEvent, type AssistantTurnResult } from "./modelAdapter.ts"
 import { getActiveProfile } from "./modelRegistry.ts"
@@ -61,6 +61,7 @@ import { MODEL_PROTOCOL } from "./modelConstants.ts"
 import { createCostState, recordApiCall, recordToolCall, formatCostSummary } from "../cost/tracker.ts"
 import { readChannelsConfig, writeChannelsConfig } from "../channels/config.ts"
 import { readWebSearchConfig, writeWebSearchConfig, type WebSearchProvider } from "../websearch/config.ts"
+import { getContextBudget } from "../context/contextLimits.ts"
 import { getDateContext, getGitContext } from "../context/gitContext.ts"
 import { getWorkspaceContext } from "../context/workspaceContext.ts"
 import { normalizeToolInputPayload } from "./toolInput.ts"
@@ -1021,9 +1022,8 @@ export class MonolitoV2Runtime {
 
       this.cancelMemoryConsolidation()
 
-      // Default to 12 minutes if not specified, or fallback to 3 minutes if set to 0.
-      const min_idle_minutes = config?.min_idle_minutes ?? 12
-      const delayMs = Math.max(3 * 60000, min_idle_minutes * 60000)
+      const min_idle_minutes = config?.min_idle_minutes ?? 3
+      const delayMs = Math.max(60_000, min_idle_minutes * 60000)
 
       logger.info(`[MemoryAgent] Scheduling memory consolidation for session ${sessionId} in ${(delayMs / 60000).toFixed(2)} minutes.`)
 
@@ -1221,276 +1221,178 @@ export class MonolitoV2Runtime {
       return
     }
 
-    // Backoff: if the last 2 MemoryAgent runs failed (no response /
-    // timeout), skip the next one. Without this, the system hits the
-    // same model-stuck failure every interval and logs the same error
-    // repeatedly (observed: 4 in a row, every 30 min).
     const now = Date.now()
     if (this._memoryConsolidationFailures >= 2) {
       const minutesSinceLastFailure = (now - this._lastMemoryConsolidationFailureAt) / 60000
       const backoffMinutes = Math.min(180, this._memoryConsolidationFailures * 30)
       if (minutesSinceLastFailure < backoffMinutes) {
-        logger.warn(
-          `[MemoryAgent] Skipping consolidation: ${this._memoryConsolidationFailures} consecutive failures, backoff active for ${(backoffMinutes - minutesSinceLastFailure).toFixed(1)}m more.`
-        )
-        this.lastHeartbeatSkippedAt = now
+        logger.warn(`[MemoryAgent] Skipping consolidation: ${this._memoryConsolidationFailures} consecutive failures, backoff active for ${(backoffMinutes - minutesSinceLastFailure).toFixed(1)}m more.`)
         return
       }
     }
 
-    // Feature flag: incremental pipeline. When enabled, replace the
-    // "tirarle 100K tokens al LLM" approach with process-and-flush
-    // (one drawer at a time → ficha estructurada → palace_node).
-    // See src/core/runtime/memoryConsolidationPipeline.ts.
-    if (isIncrementalConsolidationEnabled()) {
-      await this.runMemoryConsolidationIncremental(sessionId, profileId)
-      return
-    }
-
     this.activeSessions.add(sessionId)
     const turnStartedAt = Date.now()
-    // Bug #2 (09-jun-2026): 36 'Turn duration exceeded' / 'empty final text'
-    // failures even after commit 63fbb8c bumped inner to 120s. The outer
-    // 90s wall-clock was also tighter than the inner cap, so the outer
-    // killed the turn before the inner could ever produce output. Bump
-    // outer to 200s to give the inner 180s a fair chance. Per-phase
-    // timing (llmMs, totalMs) is emitted to the worklog on both success
-    // and failure so future /update runs can pinpoint the bottleneck.
     const abortController = new AbortController()
-    const turnTimeout = setTimeout(() => {
-      abortController.abort(new TurnTimeoutError("Memory consolidation turn exceeded timeout"))
-    }, 200_000)
+    const turnTimeout = setTimeout(() => abortController.abort(new TurnTimeoutError("Memory consolidation turn exceeded timeout")), 200_000)
+
+    this.emit({ type: "message.received", sessionId, role: "system", text: "⚡ MemoryAgent analizando conversación..." })
 
     try {
-      logger.info(`[MemoryAgent] Starting automatic memory consolidation for session ${sessionId}...`)
+      logger.info(`[MemoryAgent] Starting memory consolidation for session ${sessionId}...`)
       await this.transitionState(sessionId, "running")
 
+      const db = getDb(this.rootDir)
       const session = getSession(this.rootDir, sessionId)
       if (!session) return
 
-      const promptOverride = `You are MemoryAgent, a silent and automatic memory consolidation agent of Monolito V2.
+      // Read cursor: last consolidated message id
+      const cursorRow = db.prepare(`
+        SELECT content FROM palace_nodes
+        WHERE namespace = ? AND wing = 'MEMORY_CONSOLIDATION'
+          AND room = 'checkpoint' AND node_key = 'last_message_id'
+          AND superseded_at IS NULL
+        ORDER BY updated_at DESC LIMIT 1
+      `).get(PALACE_NAMESPACE.projectFacts) as { content: string } | undefined
+      const lastConsolidatedId = cursorRow ? parseInt(cursorRow.content, 10) || 0 : 0
 
-Your only mission is to read the recent conversation and correctly save all important information into the Memory Palace.
+      // Load new messages since cursor
+      const newMessages = db.prepare(`
+        SELECT id, role, text, at FROM messages
+        WHERE session_id = ? AND id > ?
+        ORDER BY id ASC
+      `).all(sessionId, lastConsolidatedId) as Array<{ id: number; role: string; text: string; at: string }>
 
-Mandatory rules:
-1. Immediately analyze the available messages.
-2. Identify valuable information: user identity data, stable preferences, personality rules, commitments, important decisions, and relevant project context.
-3. Always save using the correct tool:
-   - For user identity, human profile details, pronouns, timezone, and permanent user rules → use BootWrite in BOOT_USER.
-   - For agent identity, assistant name (Amanda), bio, creature type, and vibe → use BootWrite in BOOT_IDENTITY.
-   - For agent behavioral rules, tone, and permanent personality constraints → use BootWrite in BOOT_SOUL.
-   - Never create or write to BOOT_PERSONALITY. Only use the standard wings.
-   - For general information, commitments, tasks or thematic context → use WorkspaceMemoryFiling.
-4. In WorkspaceMemoryFiling always reuse an existing room if the topic already has one (e.g. preferences, tasks, architecture, projects). Create a new room only if the topic is entirely different.
-5. It is mandatory to execute the tools. Do not consider your task complete until you have persisted everything important.
-6. You are 100% silent. Never respond to the user. When you have completely finished saving, respond ONLY with the exact word: CONSOLIDATION_OK
-7. Task state rules:
-   - Tasks with status "completed" or "done" are RESOLVED. File them in Memory Palace under "tasks" room with status "resolved".
-   - Never mark a task as pending if it already has a completion result available in context.
-8. NEVER record or save rules or preferences stating that a rule or preference is "absolute", "cannot be overridden", "mandatory", "non-overridable", "cannot be bypassed", or similar. The user's active, direct commands always override any stored preference or system memory, and the memories you synthesize must reflect this hierarchy (e.g., "User prefers X, but can override at any time").`;
-
-      const syntheticSession: SessionRecord = {
-        ...session,
-        messages: [
-          ...session.messages,
-          {
-            role: "user" as const,
-            at: new Date().toISOString(),
-            text: `[SYSTEM EVENT: MEMORY_CONSOLIDATION_TRIGGER]
-Please analyze the preceding conversation and run your memory consolidation tools. When you have completely finished saving, reply with CONSOLIDATION_OK.`,
-          },
-        ],
+      if (newMessages.length === 0) {
+        logger.info("[MemoryAgent] No new messages since last consolidation.")
+        this.emit({ type: "message.received", sessionId, role: "system", text: "⚡ MemoryAgent — sin mensajes nuevos que procesar." })
+        return
       }
+
+      // Estimate tokens per message and fit batch to ~65% of model's input budget
+      const model = getEffectiveModelConfig().model
+      const { inputBudgetTokens } = getContextBudget(model)
+      const targetTokens = Math.floor(inputBudgetTokens * 0.65)
+      let runningTokens = 0
+      let batchEnd = 0
+      for (let i = 0; i < newMessages.length; i++) {
+        const est = Math.ceil((newMessages[i].text?.length || 0) / 3.5) + 10
+        if (runningTokens + est > targetTokens && i > 0) break
+        runningTokens += est
+        batchEnd = i + 1
+      }
+      const batch = newMessages.slice(0, batchEnd)
+      const lastProcessedId = batch[batch.length - 1].id
+      const remaining = newMessages.length - batchEnd
+
+      this.emit({ type: "message.received", sessionId, role: "system", text: `⚡ MemoryAgent procesando ${batch.length} mensaje(s)${remaining > 0 ? ` (${remaining} restantes para próximo ciclo)` : ""}...` })
+
+      // Load existing memory context for dedup awareness
+      const lastQuery = batch[batch.length - 1]?.text || ""
+      const existingMemory = await recallMemory(this.rootDir, undefined, undefined, lastQuery, profileId) as Array<{ wing: string; room: string; memory_key: string | null; content: string }>
+      const memorySummary = existingMemory.slice(0, 8).map(m =>
+        `[${m.wing}/${m.room}${m.memory_key ? ` key=${m.memory_key}` : ""}]: ${m.content.slice(0, 300)}`
+      ).join("\n")
+
+      // Build synthetic session with memory context + new message batch + trigger
+      const syntheticMessages: SessionRecord["messages"] = []
+      if (memorySummary) {
+        syntheticMessages.push({ role: "system", at: new Date().toISOString(), text: `=== MEMORIA EXISTENTE (revisar antes de guardar) ===\n${memorySummary}\n=== FIN MEMORIA EXISTENTE ===` })
+      }
+      syntheticMessages.push(...batch.map(m => ({ role: m.role as "user" | "assistant", at: m.at, text: m.text })))
+      syntheticMessages.push({ role: "user", at: new Date().toISOString(), text: `[SYSTEM EVENT: MEMORY_CONSOLIDATION_TRIGGER]\nRead the conversation above and the existing memory context provided at the top. Save all valuable new information to the Memory Palace. Rules:
+- For user identity → BootWrite BOOT_USER
+- For agent identity → BootWrite BOOT_IDENTITY
+- For behavioral rules → BootWrite BOOT_SOUL
+- For facts, decisions, tasks → WorkspaceMemoryFiling (use descriptive memory_key for dedup)
+- If a key already exists in existing memory and content is still accurate → skip
+- If a key exists but content changed → use SAME key → WorkspaceMemoryFiling updates automatically
+- Never write to BOOT_PERSONALITY
+- NEVER record rules as "absolute" or "non-overridable"
+When done, respond: CONSOLIDATION_OK: N inserts, M updates, S skips` })
+
+      const syntheticSession: SessionRecord = { ...session, messages: syntheticMessages }
+
+      const promptOverride = `You are MemoryAgent, the automatic memory consolidation agent of Monolito V2.
+
+Your only mission: read the conversation and existing memory, then save only what is NEW or CHANGED.
+
+Rules:
+1. You have been given existing memory context at the top of the conversation. READ IT first.
+2. For each piece of information you want to save:
+   a) If it already exists in memory and is accurate → SKIP it.
+   b) If it exists but is outdated → use the SAME wing/room/key to UPDATE it.
+   c) If it's entirely new → file with a descriptive key.
+3. Tool routing:
+   - User identity, timezone, pronouns, permanent preferences → BootWrite BOOT_USER
+   - Agent identity, name, bio → BootWrite BOOT_IDENTITY
+   - Behavioral rules, tone → BootWrite BOOT_SOUL
+   - Facts, decisions, tasks, project context → WorkspaceMemoryFiling with descriptive key
+4. WorkspaceMemoryFiling with a key will automatically detect duplicates and updates.
+5. Never create or write to BOOT_PERSONALITY.
+6. NEVER record rules as "absolute", "cannot be overridden", "non-overridable".
+7. You are SILENT to the user. When done, respond ONLY with:
+   CONSOLIDATION_OK: N inserts, M updates, S skips
+8. Task state: completed tasks go to 'tasks' room with status "resolved".`
 
       const turn = await runAssistantTurn(
         syntheticSession,
         this.rootDir,
         async (tool, input, context, toolUseId) =>
-          this.executeTool(
-            sessionId,
-            tool,
-            input,
-            { ...context, abortSignal: abortController.signal, sessionId, runtime: this },
-            toolUseId,
-            profileId,
-          ),
-        {
-          rootDir: this.rootDir,
-          cwd: this.rootDir,
-          abortSignal: abortController.signal,
-          getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
-          profileId,
-        },
-        {
-          systemPromptOverride: promptOverride,
-          costState: this.costState,
-          abortSignal: abortController.signal,
-          turnStartedAt,
-          // Bug #2: was 120_000. 180s gives Opus more headroom for large
-          // consolidation batches. The outer 200s wall-clock is the hard
-          // ceiling; if the inner cap fires we get 'Turn duration exceeded'
-          // and the phaseTimings worklog entry will tell us where the time
-          // went.
-          maxTurnDurationMs: 180_000,
-        },
+          this.executeTool(sessionId, tool, input, { ...context, abortSignal: abortController.signal, sessionId, runtime: this }, toolUseId, profileId),
+        { rootDir: this.rootDir, cwd: this.rootDir, abortSignal: abortController.signal, getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId), profileId },
+        { systemPromptOverride: promptOverride, costState: this.costState, abortSignal: abortController.signal, turnStartedAt, maxTurnDurationMs: 180_000 },
       )
 
       if (turn.usage) {
-        recordApiCall(
-          this.costState,
-          getEffectiveModelConfig().model,
-          {
-            inputTokens: turn.usage.inputTokens,
-            outputTokens: turn.usage.outputTokens,
-          },
-          Date.now() - turnStartedAt,
-        )
+        recordApiCall(this.costState, getEffectiveModelConfig().model, { inputTokens: turn.usage.inputTokens, outputTokens: turn.usage.outputTokens }, Date.now() - turnStartedAt)
       }
 
       const finalText = (turn.finalText ?? "").trim()
       const success = !turn.error && finalText.length > 0
-      // Bug #2 (09-jun-2026): emit phase timing on every consolidation
-      // outcome. Without this, timeouts are black boxes. The split between
-      // 'llm' (time spent in runAssistantTurn) and 'total' (full wall
-      // clock) is enough to tell whether the bottleneck is the LLM call
-      // (typical) or the surrounding orchestration (rare).
       const totalMs = Date.now() - turnStartedAt
       const llmMs = turn.usage ? Date.now() - turnStartedAt : 0
-      const timingSummary = `[MemoryAgent] Consolidation timing: llm=${llmMs}ms total=${totalMs}ms`
+      const timingSummary = `llm=${llmMs}ms total=${totalMs}ms`
+
       if (success) {
         this._memoryConsolidationFailures = 0
         this._lastMemoryConsolidationFailureAt = 0
-        logger.info(`[MemoryAgent] Consolidation turn finished. Result: ${finalText}`)
-        appendWorklog(this.rootDir, sessionId, {
-          type: "note",
-          summary: `MemoryAgent executed silently: ${finalText}\n${timingSummary}`,
+        // Save cursor checkpoint
+        upsertMutablePalaceNode(db, {
+          namespace: PALACE_NAMESPACE.projectFacts,
+          wing: "MEMORY_CONSOLIDATION",
+          room: "checkpoint",
+          nodeKey: "last_message_id",
+          profileId,
+          contentType: "text/plain",
+          content: String(lastProcessedId),
+          now: new Date().toISOString(),
         })
+        logger.info(`[MemoryAgent] Consolidation done. ${finalText} | ${timingSummary}`)
+        this.emit({ type: "message.received", sessionId, role: "system", text: `✅ MemoryAgent — ${finalText}` })
+        appendWorklog(this.rootDir, sessionId, { type: "note", summary: `MemoryAgent: ${finalText}\n${timingSummary}` })
       } else {
-        // Classify the failure to decide whether to increment the backoff counter.
-        // "empty final text" and "Turn duration exceeded" are recoverable
-        // transients (model stuck, timeout) and should NOT count toward
-        // consecutive-failure backoff — otherwise the agent gets stuck in
-        // an ever-growing backoff (we observed 30+ minute gaps) and the
-        // user never sees consolidated memory. Real errors (5xx, 429 after
-        // the provider's own backoff, parse errors) DO count.
         const reason = turn.error ? `error: ${turn.error}` : "empty final text (model stuck)"
         const isRecoverable = reason.includes("empty final text") || reason.includes("Turn duration exceeded")
         if (!isRecoverable) {
           this._memoryConsolidationFailures += 1
           this._lastMemoryConsolidationFailureAt = Date.now()
-        } else {
-          logger.warn(
-            `[MemoryAgent] Transient failure (${reason}); not incrementing consecutive-failure counter. Will retry on next heartbeat.`
-          )
         }
-        logger.error(
-          `[MemoryAgent] Consolidation turn failed (${this._memoryConsolidationFailures} consecutive): ${reason}`
-        )
-        appendWorklog(this.rootDir, sessionId, {
-          type: "note",
-          summary: `MemoryAgent failed silently: ${reason}${isRecoverable ? " [recoverable, no backoff]" : ""}\n${timingSummary}`,
-        })
+        logger.error(`[MemoryAgent] Consolidation failed (${this._memoryConsolidationFailures} consecutive): ${reason}`)
+        this.emit({ type: "message.received", sessionId, role: "system", text: `❌ MemoryAgent falló: ${reason}` })
+        appendWorklog(this.rootDir, sessionId, { type: "note", summary: `MemoryAgent failed: ${reason}${isRecoverable ? " [recoverable]" : ""}\n${timingSummary}` })
       }
-
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e)
-      // Treat abort/timeout exceptions as recoverable (same logic as the
-      // empty/timeout branch above). Anything else (parse errors, API
-      // failures) is non-recoverable and counts toward backoff.
       const isRecoverable = /abort|timeout|Turn duration exceeded/i.test(errMsg)
       if (!isRecoverable) {
         this._memoryConsolidationFailures += 1
         this._lastMemoryConsolidationFailureAt = Date.now()
-      } else {
-        logger.warn(`[MemoryAgent] Transient execution error (${errMsg}); not incrementing consecutive-failure counter.`)
       }
       logger.error(`[MemoryAgent] Execution error (${this._memoryConsolidationFailures} consecutive): ${errMsg}${isRecoverable ? " [recoverable]" : ""}`)
-      // Bug #2: log timing on catch path too so we can correlate timeouts
-      // with the phase that hit the wall.
+      this.emit({ type: "message.received", sessionId, role: "system", text: `❌ MemoryAgent error: ${errMsg.slice(0, 200)}` })
       const totalMs = Date.now() - turnStartedAt
-      appendWorklog(this.rootDir, sessionId, {
-        type: "note",
-        summary: `[MemoryAgent] Consolidation execution error: ${errMsg}. total=${totalMs}ms`,
-      })
-    } finally {
-      clearTimeout(turnTimeout)
-      await this.transitionState(sessionId, "idle")
-      this.releaseSessionLock(sessionId)
-    }
-  }
-
-  /**
-   * Incremental memory consolidation. Process-and-flush: one drawer at a
-   * time, extract ficha via LLM, persist as palace_node immediately. No
-   * 100K-token prompt, no synthetic session, no runAssistantTurn.
-   *
-   * Backoff semantics are preserved: a turn that throws counts as a failure.
-   */
-  private async runMemoryConsolidationIncremental(sessionId: string, profileId: string) {
-    this.activeSessions.add(sessionId)
-    const turnStartedAt = Date.now()
-    const abortController = new AbortController()
-    // Bug #2: 90s was tight even for the incremental path. Match the legacy
-    // path's 200s ceiling so both branches have the same headroom.
-    const turnTimeout = setTimeout(() => abortController.abort(), 200_000)
-    const { getDb } = await import("../session/store.ts")
-    const { runMemoryConsolidationIncremental: runPipeline } = await import("./memoryConsolidationPipeline.ts")
-
-    try {
-      logger.info(`[MemoryAgent] Starting incremental consolidation for session ${sessionId}...`)
-      await this.transitionState(sessionId, "running")
-      const db = getDb(this.rootDir)
-      const result = await runPipeline(db, {
-        rootDir: this.rootDir,
-        sessionId,
-        profileId,
-        batchSize: 20,
-        resume: true,
-        abortSignal: abortController.signal,
-        llmExtractFicha: async (drawerContent, drawerId) => {
-          // Use the same runBackgroundTextTask path the legacy code uses,
-          // so cost tracking and telemetry keep working.
-          const { runBackgroundTextTask } = await import("./modelAdapter.ts")
-          const system = `You are MemoryAgent's ficha extractor. Given a single memory drawer, output a strict JSON object with EXACTLY these keys:
-{
-  "topics": string[],          // 1-10 short topic labels
-  "key_facts": string[],       // 1-20 concrete facts (entities, dates, decisions)
-  "action_items": string[],    // 0-20 outstanding actions or commitments
-  "person_refs": string[]      // 0-10 names of people mentioned
-}
-No prose, no markdown. Only valid JSON.`
-          const user = `Drawer id: ${drawerId}\n\nContent:\n"""${drawerContent.slice(0, 6000)}"""`
-          const out = await runBackgroundTextTask(this.rootDir, system, user, { maxTokens: 600 })
-          return out.text
-        },
-      })
-
-      if (result.totalErrors === 0) {
-        this._memoryConsolidationFailures = 0
-        this._lastMemoryConsolidationFailureAt = 0
-        logger.info(
-          `[MemoryAgent] Incremental consolidation finished. ${result.fichasInserted} fichas inserted, ${result.fichasSkipped} skipped, ${result.drawersScanned} drawers scanned.`,
-        )
-        appendWorklog(this.rootDir, sessionId, {
-          type: "note",
-          summary: `MemoryAgent incremental: ${result.fichasInserted} fichas inserted, ${result.fichasSkipped} skipped`,
-        })
-      } else {
-        this._memoryConsolidationFailures += 1
-        this._lastMemoryConsolidationFailureAt = Date.now()
-        logger.error(
-          `[MemoryAgent] Incremental consolidation had ${result.totalErrors} errors (${this._memoryConsolidationFailures} consecutive).`,
-        )
-        appendWorklog(this.rootDir, sessionId, {
-          type: "note",
-          summary: `MemoryAgent incremental failed: ${result.totalErrors} errors`,
-        })
-      }
-      void turnStartedAt // unused but kept for symmetry with legacy path
-    } catch (e) {
-      this._memoryConsolidationFailures += 1
-      this._lastMemoryConsolidationFailureAt = Date.now()
-      logger.error(`[MemoryAgent] Incremental consolidation error (${this._memoryConsolidationFailures} consecutive): ${e instanceof Error ? e.message : String(e)}`)
+      appendWorklog(this.rootDir, sessionId, { type: "note", summary: `[MemoryAgent] Execution error: ${errMsg}. total=${totalMs}ms` })
     } finally {
       clearTimeout(turnTimeout)
       await this.transitionState(sessionId, "idle")
