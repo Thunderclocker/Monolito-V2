@@ -419,6 +419,7 @@ export const mediaTools: ToolDefinition[] = [
         additionalProperties: false,
       },
       voice_id: { type: "string", description: "voice_id a borrar. Alternativa a alias para delete." },
+      new_alias: { type: "string", description: "Nuevo nombre amigable para la voz clonada (requerido para rename). Solo chars [a-z0-9_-], 1-32 chars." },
       model: { type: "string", description: "Modelo de voice clone. Default: t2aModel de la config (o 'speech-2.8-hd')." },
       text: { type: "string", description: "Texto opcional de muestra que el provider usa para el clone. Default: '' (MiniMax infiere del audio)." },
       set_default: { type: "boolean", description: "Si true, marca este alias como defaultClonedVoice. Default: false." },
@@ -448,15 +449,19 @@ export const mediaTools: ToolDefinition[] = [
       return "alias or voice_id is required for delete/purge"
     }
     if (action === "rename") {
-      if (!input.alias) return "alias (old) is required for rename"
-      if (!input.new_alias) return "new_alias is required for rename"
-      if (!/^[a-z0-9_-]{1,32}$/.test(String(input.new_alias))) {
+      if (!input.alias || typeof input.alias !== "string") return "alias (old) is required for rename"
+      if (!/^[a-z0-9_-]{1,32}$/.test(input.alias)) {
+        return "alias viejo debe ser alfanumerico, guion o guion bajo, max 32 chars"
+      }
+      if (!input.new_alias || typeof input.new_alias !== "string") return "new_alias is required for rename"
+      if (!/^[a-z0-9_-]{1,32}$/.test(input.new_alias)) {
         return "new_alias debe ser alfanumerico, guion o guion bajo, max 32 chars"
       }
       const src = input.source as { type?: unknown; value?: unknown } | undefined
       if (!src || (src.type !== "path" && src.type !== "telegram_file_id")) {
         return "source (new audio) is required for rename"
       }
+      if (!src.value || typeof src.value !== "string") return "source.value is required"
     }
     return null
   },
@@ -501,19 +506,118 @@ export const mediaTools: ToolDefinition[] = [
     if (!apiKey) {
       return formatToolError("Voice clone requiere MINIMAX_API_KEY o tts.apiKey (credenciales independientes del LLM principal).")
     }
-    // Resolve the MiniMax API base URL. The TTS/voice-clone endpoints
-    // live at https://api.minimax.io/v1/... — NOT at the LLM provider's
-    // baseUrl, which for the MiniMax Anthropic-compatible profile is
-    // https://api.minimax.io/anthropic (no TTS endpoints there).
-    //
-    // We must not fall back to `activeProfile.baseUrl`: that field is for
-    // the LLM API, not the TTS API, and reusing it was producing 404s
-    // when the user had MiniMax as the LLM provider but no explicit
-    // `tts.baseUrl`. Match the GenerateSpeech pattern (line ~270):
-    // `tts.baseUrl` (TTS-specific config) → hardcoded default.
+    // Resolve the MiniMax API base URL.
     let baseUrl = (tts.baseUrl || "https://api.minimax.io/v1").replace(/\/+$/g, "")
     if (!/\/v\d+$/.test(baseUrl)) baseUrl = `${baseUrl}/v1`
-    const headers = { Authorization: `Bearer ${apiKey}` }
+
+    // Helper clone flow to reuse between clone and rename actions
+    const runCloneFlow = async (targetAlias: string, sourceArg: { type: string; value: string }, setAsDefault: boolean) => {
+      const alias = targetAlias.trim().toLowerCase()
+      // 1. Resolver path local
+      let localPath = ""
+      const sourceType = sourceArg.type
+      const sourceValue = sourceArg.value
+      if (sourceType === "path") {
+        localPath = resolve(context.cwd, sourceValue)
+      } else {
+        // telegram_file_id
+        if (!config.telegram?.enabled || !config.telegram.token) {
+          throw new Error("source.type='telegram_file_id' requiere Telegram activo y configurado.")
+        }
+        const download = await resolveTelegramDownload(config.telegram.token, sourceValue, context.rootDir, `voice-clone-${alias}`)
+        if (!download.ok) throw new Error(`Error descargando audio de Telegram: ${JSON.stringify(download)}`)
+        localPath = download.local_path
+      }
+
+      // 2. Validar tamano y extension
+      if (!existsSync(localPath)) throw new Error(`Archivo no encontrado: ${localPath}`)
+      const stats = statSync(localPath)
+      if (stats.size > 20 * 1024 * 1024) throw new Error(`Audio excede 20MB (${stats.size} bytes).`)
+      const ext = localPath.split(".").at(-1)?.toLowerCase() || ""
+      if (!["mp3", "m4a", "wav", "ogg"].includes(ext)) {
+        throw new Error(`Formato no soportado: .${ext}. Usar mp3, m4a, wav u ogg.`)
+      }
+
+      // 3. Upload a MiniMax
+      context.logger?.info(`[VoiceClone] Subiendo ${localPath} a MiniMax /v1/files/upload...`)
+      const upload = await multipartUploadFile(
+        `${baseUrl}/files/upload`,
+        localPath,
+        "file",
+        { purpose: "voice_clone" },
+        { Authorization: `Bearer ${apiKey}` },
+        90_000,
+      )
+      if (!upload.ok) {
+        throw new Error(`Upload fallo: HTTP ${upload.status} ${typeof upload.json === "string" ? upload.json : JSON.stringify(upload.json).slice(0, 300)}`)
+      }
+      if (!upload.json || typeof upload.json !== "object") {
+        throw new Error(`Upload respondio algo inesperado: ${String(upload.json).slice(0, 300)}`)
+      }
+      const fileId = (upload.json as { file?: { file_id?: number } | null; file_id?: string }).file?.file_id
+        ?? (upload.json as { file_id?: string }).file_id
+      if (!fileId) throw new Error(`Upload no devolvio file_id: ${JSON.stringify(upload.json).slice(0, 300)}`)
+
+      // 4. Voice clone
+      const cloneModel = (optionalString(input, "model") || tts.t2aModel || "speech-2.8-hd").trim()
+      context.logger?.info(`[VoiceClone] file_id=${fileId} model=${cloneModel} alias=${alias}`)
+      const cloneResp = await fetch(`${baseUrl}/voice_clone`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          file_id: fileId,
+          voice_id: alias,                     // MiniMax acepta string arbitrario como voice_id
+          model: cloneModel,
+          text: optionalString(input, "text") || "",
+        }),
+        signal: AbortSignal.timeout(60_000),
+      })
+      if (!cloneResp.ok) {
+        const body = await cloneResp.text().catch(() => "")
+        throw new Error(`Voice clone fallo: HTTP ${cloneResp.status}${body ? ` - ${body.slice(0, 400)}` : ""}`)
+      }
+      const cloneJson = await cloneResp.json() as { voice_id?: string; base_resp?: { status_code?: number; status_msg?: string } }
+      if (cloneJson.base_resp?.status_code && cloneJson.base_resp.status_code !== 0) {
+        throw new Error(`Voice clone rechazado: ${cloneJson.base_resp.status_msg || cloneJson.base_resp.status_code}`)
+      }
+      const voiceId = cloneJson.voice_id || alias
+
+      // 5. Persistir (recargar config para tener cambios del paso anterior)
+      const refreshedConfig = readChannelsConfig()
+      const refreshedTts = normalizeTtsConfig(refreshedConfig.tts)
+      const newVoices = { ...(refreshedTts.clonedVoices || {}), [alias]: voiceId }
+      const persistedTts: Record<string, unknown> = {
+        ...(refreshedConfig.tts || {}),
+        clonedVoices: newVoices,
+        defaultClonedVoice: setAsDefault ? alias : refreshedTts.defaultClonedVoice
+      }
+      if (!explicitProvider && activeIsMiniMax) {
+        persistedTts.provider = "minimax"
+        if (!persistedTts.apiKey && activeProfile?.apiKey) persistedTts.apiKey = activeProfile.apiKey
+      }
+      writeChannelsConfig({
+        ...refreshedConfig,
+        tts: persistedTts,
+      })
+      appendActionLog(context.rootDir, "Voz clonada creada", {
+        alias,
+        voice_id: voiceId,
+        file_id: String(fileId),
+        model: cloneModel,
+      })
+
+      return {
+        ok: true,
+        action: "clone",
+        alias,
+        voice_id: voiceId,
+        file_id: String(fileId),
+        model: cloneModel,
+        is_default: setAsDefault,
+        local_path: localPath,
+        note: "Usa el alias en GenerateSpeech (voice='cristian') o setea tts.defaultClonedVoice para invocarla sin parametro.",
+      }
+    }
 
     if (action === "list") {
       // Lista local (config del monolito). Rápido, no llama a MiniMax.
@@ -528,7 +632,6 @@ export const mediaTools: ToolDefinition[] = [
 
     if (action === "list_remote") {
       // GET /v1/get_voice voice_type=voice_cloning (MiniMax real)
-      // Nota: las voces clonadas están inactivas hasta usarse al menos una vez en GenerateSpeech.
       const resp = await fetch(`${baseUrl}/get_voice`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
@@ -556,8 +659,9 @@ export const mediaTools: ToolDefinition[] = [
     if (action === "purge") {
       // DELETE /v1/delete_voice en MiniMax + borrar de config local
       const alias = optionalString(input, "alias")
-      const target = alias ? tts.clonedVoices?.[alias] : optionalString(input, "voice_id")
-      if (!target) return formatToolError(`No se encontro la voz alias='${alias}' o voice_id='${input.voice_id}'`)
+      const voiceId = optionalString(input, "voice_id")
+      const target = alias ? (tts.clonedVoices?.[alias] ?? alias) : voiceId
+      if (!target) return formatToolError(`No se encontro la voz alias='${alias}' o voice_id='${voiceId}'`)
 
       // Llamar a MiniMax DELETE
       let remoteDeleted = false
@@ -616,8 +720,10 @@ export const mediaTools: ToolDefinition[] = [
 
     if (action === "rename") {
       // Purge alias viejo + clone con nuevo alias (requiere nuevo audio)
-      const oldAlias = (input.alias as string).trim().toLowerCase()
-      const newAlias = (input.new_alias as string).trim().toLowerCase()
+      const oldAlias = String(input.alias || "").trim().toLowerCase()
+      const newAlias = String(input.new_alias || "").trim().toLowerCase()
+      if (!oldAlias) return formatToolError("alias (old) is required for rename")
+      if (!newAlias) return formatToolError("new_alias is required for rename")
       const oldVoiceId = tts.clonedVoices?.[oldAlias]
       if (!oldVoiceId) return formatToolError(`No existe alias='${oldAlias}' en config local`)
 
@@ -642,16 +748,19 @@ export const mediaTools: ToolDefinition[] = [
         }
       })()
 
-      // 2. Clone con nuevo alias (reutilizar lógica de clone)
-      // Nota: aquí simplificamos llamando la misma lógica de clone internamente
-      // Para mantener simple, devolvemos instrucción clara al modelo
-      return {
-        ok: false,
-        action: "rename",
-        old_alias: oldAlias,
-        new_alias: newAlias,
-        purged: purgeResult.ok,
-        note: "Rename requiere clonar de nuevo con audio. Usá: VoiceClone clone alias='" + newAlias + "' source={...} set_default=true. Si MiniMax tarda en propagar el delete, podés necesitar un audio distinto.",
+      // 2. Clone con nuevo alias en la misma llamada
+      try {
+        const cloneResult = await runCloneFlow(newAlias, input.source as { type: string; value: string }, input.set_default === true)
+        return {
+          ok: true,
+          action: "rename",
+          old_alias: oldAlias,
+          new_alias: newAlias,
+          purged: purgeResult.ok,
+          clone: cloneResult,
+        }
+      } catch (err) {
+        return formatToolError(`Rename falló en la etapa de clonación: ${err instanceof Error ? err.message : String(err)} (la voz vieja '${oldAlias}' fue purgada: ${purgeResult.ok ? "sí" : "no"})`)
       }
     }
 
@@ -691,108 +800,7 @@ export const mediaTools: ToolDefinition[] = [
       return formatToolError(`El alias '${alias}' ya existe (voice_id=${tts.clonedVoices[alias]}). Usa action='delete' primero o elegi otro alias.`)
     }
 
-    // 1. Resolver path local
-    let localPath = ""
-    const sourceType = (input.source as { type: string; value: string }).type
-    const sourceValue = (input.source as { type: string; value: string }).value
-    if (sourceType === "path") {
-      localPath = resolve(context.cwd, sourceValue)
-    } else {
-      // telegram_file_id
-      if (!config.telegram?.enabled || !config.telegram.token) {
-        return formatToolError("source.type='telegram_file_id' requiere Telegram activo y configurado.")
-      }
-      const download = await resolveTelegramDownload(config.telegram.token, sourceValue, context.rootDir, `voice-clone-${alias}`)
-      if (!download.ok) return formatToolError(`Error descargando audio de Telegram: ${JSON.stringify(download)}`)
-      localPath = download.local_path
-    }
-
-    // 2. Validar tamano y extension
-    if (!existsSync(localPath)) return formatToolError(`Archivo no encontrado: ${localPath}`)
-    const stats = statSync(localPath)
-    if (stats.size > 20 * 1024 * 1024) return formatToolError(`Audio excede 20MB (${stats.size} bytes).`)
-    const ext = localPath.split(".").at(-1)?.toLowerCase() || ""
-    if (!["mp3", "m4a", "wav", "ogg"].includes(ext)) {
-      return formatToolError(`Formato no soportado: .${ext}. Usar mp3, m4a, wav u ogg.`)
-    }
-
-    // 3. Upload a MiniMax
-    context.logger?.info(`[VoiceClone] Subiendo ${localPath} a MiniMax /v1/files/upload...`)
-    const upload = await multipartUploadFile(
-      `${baseUrl}/files/upload`,
-      localPath,
-      "file",
-      { purpose: "voice_clone" },
-      { Authorization: `Bearer ${apiKey}` },
-      90_000,
-    )
-    if (!upload.ok) {
-      return formatToolError(`Upload fallo: HTTP ${upload.status} ${typeof upload.json === "string" ? upload.json : JSON.stringify(upload.json).slice(0, 300)}`)
-    }
-    if (!upload.json || typeof upload.json !== "object") {
-      return formatToolError(`Upload respondio algo inesperado: ${String(upload.json).slice(0, 300)}`)
-    }
-    const fileId = (upload.json as { file?: { file_id?: number } | null; file_id?: string }).file?.file_id
-      ?? (upload.json as { file_id?: string }).file_id
-    if (!fileId) return formatToolError(`Upload no devolvio file_id: ${JSON.stringify(upload.json).slice(0, 300)}`)
-
-    // 4. Voice clone
-    const cloneModel = (optionalString(input, "model") || tts.t2aModel || "speech-2.8-hd").trim()
-    context.logger?.info(`[VoiceClone] file_id=${fileId} model=${cloneModel} alias=${alias}`)
-    const cloneResp = await fetch(`${baseUrl}/voice_clone`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        file_id: fileId,
-        voice_id: alias,                     // MiniMax acepta string arbitrario como voice_id
-        model: cloneModel,
-        text: optionalString(input, "text") || "",
-      }),
-      signal: AbortSignal.timeout(60_000),
-    })
-    if (!cloneResp.ok) {
-      const body = await cloneResp.text().catch(() => "")
-      return formatToolError(`Voice clone fallo: HTTP ${cloneResp.status}${body ? ` - ${body.slice(0, 400)}` : ""}`)
-    }
-    const cloneJson = await cloneResp.json() as { voice_id?: string; base_resp?: { status_code?: number; status_msg?: string } }
-    if (cloneJson.base_resp?.status_code && cloneJson.base_resp.status_code !== 0) {
-      return formatToolError(`Voice clone rechazado: ${cloneJson.base_resp.status_msg || cloneJson.base_resp.status_code}`)
-    }
-    const voiceId = cloneJson.voice_id || alias
-
-    // 5. Persistir
-    const newVoices = { ...(tts.clonedVoices || {}), [alias]: voiceId }
-    const setDefault = input.set_default === true
-    // Also persist the inferred provider (when the user hadn't set tts.provider
-    // explicitly but the clone succeeded via the active minimax profile) so
-    // subsequent calls don't have to re-derive it.
-    const persistedTts: Record<string, unknown> = { ...(config.tts || {}), clonedVoices: newVoices, defaultClonedVoice: setDefault ? alias : tts.defaultClonedVoice }
-    if (!explicitProvider && activeIsMiniMax) {
-      persistedTts.provider = "minimax"
-      if (!persistedTts.apiKey && activeProfile?.apiKey) persistedTts.apiKey = activeProfile.apiKey
-    }
-    writeChannelsConfig({
-      ...config,
-      tts: persistedTts,
-    })
-    appendActionLog(context.rootDir, "Voz clonada creada", {
-      alias,
-      voice_id: voiceId,
-      file_id: String(fileId),
-      model: cloneModel,
-    })
-
-    return {
-      ok: true,
-      action: "clone",
-      alias,
-      voice_id: voiceId,
-      file_id: String(fileId),
-      model: cloneModel,
-      is_default: setDefault,
-      local_path: localPath,
-      note: "Usa el alias en GenerateSpeech (voice='cristian') o setea tts.defaultClonedVoice para invocarla sin parametro.",
-    }
+    return await runCloneFlow(alias, input.source as { type: string; value: string }, input.set_default === true)
   },
 },
 

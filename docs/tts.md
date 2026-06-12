@@ -64,7 +64,15 @@ monolito /config set tts_voice alloy
 
 ## Voice cloning
 
-Use `VoiceClone` to upload a 10s–5min audio sample (mp3/m4a/wav/ogg, ≤20MB) and persist it as an alias. The cloned voice can then be invoked from `GenerateSpeech` by passing the alias as `voice`.
+Use the `VoiceClone` tool to manage cloned voices on MiniMax (requires `tts.provider='minimax'` and MiniMax credentials).
+
+Supported actions:
+- `clone`: Uploads a 10s–5min audio sample (`mp3`, `m4a`, `wav`, or `ogg`, ≤20MB) and registers it on MiniMax under an alias. The cloned voice can then be invoked from `GenerateSpeech` by passing the alias as `voice`.
+- `list`: Lists local cloned voice mappings saved in the configuration.
+- `list_remote`: Fetches the actual list of cloned voices stored in the cloud directly from MiniMax, useful to identify "ghost" voices that are not in the local configuration.
+- `delete`: Removes the voice mapping *only* from the local configuration.
+- `purge`: Deletes/purges the voice both from MiniMax servers and the local configuration. If a voice is remote-only ("ghost") and doesn't exist in the local configuration, you can purge it by passing either its `alias` or remote `voice_id` directly.
+- `rename`: Performs a single-step atomic rename by purging the old voice (both on MiniMax and locally) and cloning the new voice with a new alias and a new sample audio.
 
 ## Removed: managed local TTS container
 

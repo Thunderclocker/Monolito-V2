@@ -41,7 +41,7 @@ import {
   upsertMemoryDrawer,
 } from "../session/store.ts"
 import { generateEmbedding, isEmbeddingsUnavailableError } from "../session/embeddings.ts"
-import { getTool, listTools, type ToolContext, type ToolInputSchema } from "../tools/registry.ts"
+import { getTool, listTools, validateToolInput, type ToolContext, type ToolInputSchema } from "../tools/registry.ts"
 import { getEffectiveModelConfig, runAgentLoop, runAssistantTurn, runBackgroundTextTask, type AgentLoopEvent, type AssistantTurnResult } from "./modelAdapter.ts"
 import { getActiveProfile } from "./modelRegistry.ts"
 import { PALACE_NAMESPACE } from "../db/schema.ts"
@@ -2620,6 +2620,10 @@ Rules:
     let tool = getTool(toolName)
     if (!tool) throw new Error(`Unknown tool: ${toolName}`)
     const normalizedInput = normalizeToolInputPayload(input) as Record<string, unknown>
+    const validationError = validateToolInput(tool.name, normalizedInput)
+    if (validationError) {
+      throw new Error(`Invalid tool input: ${validationError}`)
+    }
     // Fetch the most recent user-role message so the PreToolUse hooks
     // (especially the intent-mismatch check) can compare the user's
     // current intent against the tool being invoked. Cheap read; cached
