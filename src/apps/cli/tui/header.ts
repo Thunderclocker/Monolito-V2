@@ -88,6 +88,15 @@ async function fetchMinimaxTokenRemains(): Promise<string | null> {
 }
 
 function getMinimaxBalance(): string | null {
+  const activeProfile = getActiveProfile()
+  const isMiniMaxNow = activeProfile?.provider === "minimax" || activeProfile?.baseUrl?.toLowerCase().includes("minimax")
+
+  // If current profile is not MiniMax, clear cache and return null
+  if (!isMiniMaxNow) {
+    if (minimaxTokenCache) minimaxTokenCache = null
+    return null
+  }
+
   const now = Date.now()
   if (minimaxTokenCache && now - minimaxTokenCache.timestamp < MINIMAX_TOKEN_CACHE_TTL) {
     return minimaxTokenCache.balance
@@ -166,6 +175,12 @@ export function getHeaderState(rootDir: string, sessionId: string, connected: bo
 }
 
 export function refreshMinimaxBalance() {
+  const activeProfile = getActiveProfile()
+  const isMiniMaxNow = activeProfile?.provider === "minimax" || activeProfile?.baseUrl?.toLowerCase().includes("minimax")
+  if (!isMiniMaxNow) {
+    minimaxTokenCache = { balance: null, timestamp: Date.now() }
+    return
+  }
   minimaxTokenCache = null // force re-fetch on next render
   fetchMinimaxTokenRemains().then(balance => {
     minimaxTokenCache = { balance, timestamp: Date.now() }
