@@ -2013,9 +2013,10 @@ Review the existing skill library and apply the curation heuristics in your inst
       const isSubAgent = sessionId.startsWith("agent-")
       const autoAckEnabled = process.env.MONOLITO_AUTO_ACK !== "false"
 
-      // 1. Start screenshot in background if requested
+      // 1. Start screenshot in background if requested, but only if not already attached
       let screenshotPromise: Promise<string | null> | null = null
-      if (isScreenViewingRequest(userText)) {
+      const hasAttached = userText.includes('kind="photo"') || userText.includes('attachment kind="photo"')
+      if (isScreenViewingRequest(userText) && !hasAttached) {
         logger.info(`[screenshot] Screen viewing request detected. Capturing screenshot in background...`)
         screenshotPromise = this.captureScreenshotSilent(profileId).catch(err => {
           logger.warn(`Failed to capture automatic screenshot: ${err}`)
@@ -2410,6 +2411,10 @@ Review the existing skill library and apply the curation heuristics in your inst
             )
           }
           lastAssistantReplyForRalph = turn.finalText ?? ""
+
+          if (abortController.signal.aborted) {
+            break
+          }
 
           // Gate: refuse to deliver if the cognitive task list has
           // unfinished items. Re-feed a structured prompt asking the
