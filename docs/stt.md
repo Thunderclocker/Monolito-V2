@@ -23,7 +23,7 @@ The managed container defaults to:
 - Container name: `monolito-faster-whisper`
 - Bind address: `127.0.0.1:9000`
 - Default engine: `faster_whisper`
-- Default model: `base`
+- Default model: `large-v3`
 - Default language: `es` (Spanish)
 
 ## Configuration
@@ -35,7 +35,7 @@ Relevant config fields:
 - `stt_auto_deploy`: Automatically start the container when needed.
 - `stt_auto_transcribe`: Automatically transcribe incoming Telegram audio.
 - `stt_port`: Local port for the ASR webservice (default: `9000`).
-- `stt_model`: Whisper model to use (e.g., `base`, `small`, `medium`).
+- `stt_model`: Whisper model to use (e.g., `large-v3`, `medium`, `small`, `base`).
 - `stt_language`: Default language code for transcription (e.g., `es`, `en`).
 - `stt_engine`: Transcription engine (`faster_whisper`, `openai_whisper`, `whisperx`).
 - `stt_vad_filter`: Enable/disable Voice Activity Detection.
@@ -43,7 +43,7 @@ Relevant config fields:
 Typical managed setup:
 ```bash
 monolito /config set stt_language es
-monolito /config set stt_model base
+monolito /config set stt_model large-v3
 monolito /config set stt_managed true
 monolito /config set stt_auto_transcribe true
 monolito /stt deploy

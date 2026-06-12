@@ -96,7 +96,7 @@ Recommended defaults for incoming Telegram audio are:
 - `stt_auto_deploy = true`
 - `stt_auto_transcribe = true`
 - `stt_engine = faster_whisper`
-- `stt_model = small`
+- `stt_model = large-v3`
 - `stt_language = es`
 
 The managed STT service defaults to:
