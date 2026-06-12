@@ -215,6 +215,7 @@ type ContextExtras = {
   systemDirective?: string
   blockedTools?: string[]
   instantAcknowledgment?: string | null
+  ralphAttempt?: number
 }
 
 function normalizeBaseUrl(value: string) {
@@ -1098,9 +1099,45 @@ export async function* runAgentLoop(
         }
       }
 
+      const ralphAttempt = options?.contextExtras?.ralphAttempt ?? 1
+      const configLevel = activeProfile
+        ? (activeProfile.reasoningLevel ?? getDefaultReasoningLevel(activeProfile.provider, activeProfile.model))
+        : "off"
+
+      let targetLevel: ReasoningLevel = "off"
+      if (configLevel === "low") {
+        targetLevel = ralphAttempt === 1 ? "off" : "low"
+      } else if (configLevel === "medium") {
+        if (ralphAttempt === 1) targetLevel = "off"
+        else if (ralphAttempt === 2) targetLevel = "low"
+        else targetLevel = "medium"
+      } else if (configLevel === "high") {
+        if (ralphAttempt === 1) targetLevel = "off"
+        else if (ralphAttempt === 2) targetLevel = "low"
+        else if (ralphAttempt === 3) targetLevel = "medium"
+        else targetLevel = "high"
+      }
+
+      let currentThinkingConfig = { enabled: false, budgetTokens: 0 }
+      if (targetLevel !== "off") {
+        currentThinkingConfig = {
+          enabled: true,
+          budgetTokens:
+            targetLevel === "low"
+              ? 2_048
+              : targetLevel === "high"
+              ? 32_768
+              : 10_240,
+        }
+      }
+
+      if (configLevel !== "off") {
+        logger.info(`[reasoning-escalation] Ralph attempt ${ralphAttempt}: using reasoning level '${targetLevel}' (configured ceiling: '${configLevel}').`)
+      }
+
       yield { type: "model_invoke_start", sessionId: session.id, iteration, model: config.model }
       let response: ProviderResponse | null = null
-      for await (const event of callProviderWithRetry(config, prompt, messages, options?.abortSignal, isSubAgent, options?.maxTokens, thinkingConfig)) {
+      for await (const event of callProviderWithRetry(config, prompt, messages, options?.abortSignal, isSubAgent, options?.maxTokens, currentThinkingConfig)) {
         throwIfAborted(options?.abortSignal)
         switch (event.type) {
           case "model_thinking":

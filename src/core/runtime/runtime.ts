@@ -2017,6 +2017,7 @@ Rules:
                   webSearchProvider: webSearchConfig.provider,
                   stallAlert: this.consumeStallAlert(sessionId),
                   instantAcknowledgment: options?.instantAcknowledgment,
+                  ralphAttempt,
                 },
                 costState: this.costState,
                 abortSignal: abortController.signal,
