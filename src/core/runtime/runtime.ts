@@ -4020,15 +4020,51 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
       }
     }
 
+    // Fast-path local regex checks for common pleasantries, greetings, and closing phrases
+    const cleanedLower = userText.trim().toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?¡!]/g, "")
+    const regexThanks = /^(gracias|genial gracias|muchas gracias|mil gracias|buenisimo gracias|buenísimo gracias|perfecto gracias|gracias che|gracias totales|thanks|thank you|ty|thx)$/
+    const regexGreetings = /^(hola|buenas|buen dia|buen día|buenos dias|buenos días|buenas tardes|buenas noches|como va|cómo va|hello|hi|hey)$/
+    const regexClosings = /^(chau|adios|adiós|nos vemos|bye|goodbye|see you)$/
+    const regexPleasantries = /^(ok|okay|listo|buenisimo|buenísimo|genial|excelente|espectacular|perfecto)$/
+
+    if (regexThanks.test(cleanedLower)) {
+      const isEnglish = /\b(thanks|thank you|ty|thx)\b/i.test(cleanedLower)
+      return {
+        text: isEnglish ? "You're welcome!" : "¡De nada! Cualquier cosa, chiflá. 🚀",
+        isSimpleGreeting: true
+      }
+    }
+    if (regexGreetings.test(cleanedLower)) {
+      const isEnglish = /\b(hello|hi|hey)\b/i.test(cleanedLower)
+      return {
+        text: isEnglish ? "Hello! How can I help you today?" : "¡Hola! ¿En qué te puedo ayudar hoy?",
+        isSimpleGreeting: true
+      }
+    }
+    if (regexClosings.test(cleanedLower)) {
+      const isEnglish = /\b(bye|goodbye|see you)\b/i.test(cleanedLower)
+      return {
+        text: isEnglish ? "Goodbye!" : "¡Nos vemos! Cuidate.",
+        isSimpleGreeting: true
+      }
+    }
+    if (regexPleasantries.test(cleanedLower)) {
+      const isEnglish = /\b(ok|okay)\b/i.test(cleanedLower)
+      return {
+        text: isEnglish ? "Ok!" : "¡Buenísimo!",
+        isSimpleGreeting: true
+      }
+    }
+
     const systemPrompt = [
       "You are a helpful AI assistant. The user just sent a message.",
-      "Determine if the user's message is a simple greeting, pleasantry, or social conversation (e.g., 'hello', 'how are you', 'how's it going', 'all good', 'and you?').",
-      "If the user's message is only a greeting/pleasantry and does NOT ask for any information, task, search, file reading/writing, or code execution, classify it as a simple greeting.",
+      "Determine if the user's message is a simple greeting, pleasantry, acknowledgment, thanks, or closing statement/pleasantry (e.g., 'hello', 'hi', 'how are you', 'thanks', 'thank you', 'gracias', 'genial', 'perfecto', 'ok', 'bye', 'chau').",
+      "If the user's message is only a greeting, pleasantry, thanks, or acknowledgment and does NOT ask for any new information, task, search, file reading/writing, or code execution, classify it as a simple greeting (isSimpleGreeting: true).",
       "If the message asks a question, requests information, or asks to perform a task, it is NOT a simple greeting.",
       "",
       "Your job is to generate a short, natural response (1 to 6 words) in the same language as the user's message, and return a JSON object with the following fields:",
-      "- 'isSimpleGreeting': boolean (true if it is only a greeting/pleasantry, false otherwise)",
-      "- 'text': string (the response text, e.g. '¡Hola! ¿Cómo estás?' for a greeting, or 'Revisando eso...', 'Dejame ver...' for a task/question)",
+      "- 'isSimpleGreeting': boolean (true if it is only a greeting/pleasantry/thanks/acknowledgment, false otherwise)",
+      "- 'text': string (the response text, e.g. '¡De nada!' for thanks, '¡Hola! ¿Cómo va?' for a greeting, or 'Revisando eso...', 'Dejame ver...' for a task/question)",
       "",
       "Output ONLY a raw JSON object. Do NOT wrap in markdown code blocks, do not write anything else."
     ].join("\n")
