@@ -125,7 +125,8 @@ function assertValidChannelsConfigForWrite(config: unknown) {
       throw new Error("CONF_CHANNELS.tts must be an object.")
     }
     const tts = record.tts as Record<string, unknown>
-    const unknownTtsKeys = Object.keys(tts).filter(key => !TTS_KEYS.has(key))
+    const aliasKeys = new Set(["language_boost"])
+    const unknownTtsKeys = Object.keys(tts).filter(key => !TTS_KEYS.has(key) && !aliasKeys.has(key))
     if (unknownTtsKeys.length > 0) {
       throw new Error(`CONF_CHANNELS.tts contains unsupported keys: ${unknownTtsKeys.join(", ")}`)
     }
@@ -241,7 +242,8 @@ const TTS_RESPONSE_FORMATS = new Set(["mp3", "opus", "aac", "flac", "wav", "pcm"
  * that still have them persisted in CONF_CHANNELS, but the type no
  * longer carries them so new writes can't set them.
  */
-export function normalizeTtsConfig(config?: Partial<TtsConfig>): TtsConfig {
+export function normalizeTtsConfig(config?: Partial<TtsConfig> & { language_boost?: unknown }): TtsConfig {
+  const languageBoostRaw = config?.languageBoost ?? config?.language_boost
   return {
     baseUrl: typeof config?.baseUrl === "string" ? config.baseUrl.trim() : "",
     apiKey: typeof config?.apiKey === "string" ? config.apiKey.trim() : "",
@@ -263,6 +265,6 @@ export function normalizeTtsConfig(config?: Partial<TtsConfig>): TtsConfig {
       : {},
     defaultClonedVoice: typeof config?.defaultClonedVoice === "string" ? config.defaultClonedVoice.trim() : "",
     t2aModel: typeof config?.t2aModel === "string" && config.t2aModel.trim() ? config.t2aModel.trim() : "speech-2.8-hd",
-    languageBoost: typeof config?.languageBoost === "string" ? config.languageBoost.trim() : undefined,
+    languageBoost: typeof languageBoostRaw === "string" ? languageBoostRaw.trim() : undefined,
   }
 }
