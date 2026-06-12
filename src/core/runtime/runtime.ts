@@ -162,7 +162,7 @@ const execFileAsync = promisify(execFile)
 // provider APIs only (Brave, Serper, Tavily). The local Docker backend
 // and its associated constants/settings are gone.
 const TELEGRAM_TYPING_REFRESH_MS = 4_000
-const TURN_HARD_TIMEOUT_MS = 95_000
+const TURN_HARD_TIMEOUT_MS = 180_000
 const COMMAND_REPAIR_MAX_ATTEMPTS = 3
 
 const STALL_ALERT_MESSAGE = "SYSTEM ALERT: STALL DETECTED. You have hit the exact same tool execution error twice. Evaluate your remaining viable strategies. If you have a logically distinct path, execute it now. If you have EXHAUSTED ALL viable paths, you MUST format your response to yield control back to the user, summarizing what you tried and why it failed."
@@ -4383,6 +4383,15 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
   }
 
   private async generateInstantAcknowledgment(sessionId: string, userText: string): Promise<{ text: string; isSimpleGreeting: boolean } | null> {
+    const hasPhoto = userText.includes('kind="photo"') || userText.includes('attachment kind="photo"') || isScreenViewingRequest(userText)
+    if (hasPhoto) {
+      const isEnglish = /\b(what|see|screen|look|show|desktop)\b/i.test(userText)
+      return {
+        text: isEnglish ? "Analyzing screenshot..." : "Analizando la captura...",
+        isSimpleGreeting: false
+      }
+    }
+
     const systemPrompt = [
       "You are a helpful AI assistant. The user just sent a message.",
       "Determine if the user's message is a simple greeting, pleasantry, or social conversation (e.g., 'hello', 'how are you', 'how's it going', 'all good', 'and you?').",

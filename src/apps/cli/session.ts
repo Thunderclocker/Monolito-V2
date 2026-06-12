@@ -529,7 +529,7 @@ class InteractiveTranscriptFormatter {
 export async function waitForTurnCompletion(
   client: DaemonClient,
   sessionId: string,
-  timeoutMs = 90_000,
+  timeoutMs = 180_000,
 ) {
   return await new Promise<void>((resolve, reject) => {
     let sawRunning = false

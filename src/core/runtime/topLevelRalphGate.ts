@@ -91,8 +91,10 @@ export function evaluateTopLevelRalphGate(
     }
   }
 
-  // Rule 2: Screenshot was taken/attached but not analyzed
-  if (tookScreenshot && !analyzedScreenshot) {
+  // Rule 2: Screenshot was taken in this turn, but not analyzed.
+  // Pre-attached screenshots are visible natively to multimodal models.
+  const capturedInTurn = turnSteps.some(s => s.type === "tool" && s.tool === "CaptureScreenshot")
+  if (capturedInTurn && !analyzedScreenshot) {
     const feedbackPrompt = wrapAuditFeedback(
       `[Ralph Loop] ALERTA DE COMPORTAMIENTO\n` +
       `Se dispone de una captura de pantalla local (ya sea porque la ejecutaste o porque viene adjunta en el mensaje), pero NO la has analizado con la herramienta VisionAnalyze.\n` +
