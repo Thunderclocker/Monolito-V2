@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { checkTurnIntegrity, parseAuditorJson } from "./veracityGuard.ts"
+import { checkTurnIntegrity, parseAuditorJson, parseAuditorJsonByRegex } from "./veracityGuard.ts"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -403,6 +403,119 @@ test("Fix B: passes execution-negation claim when NO tools were called (legitima
   } finally {
     cleanupRootDir(rootDir)
   }
+})
+
+// -----------------------------------------------------------------------------
+// Fix C (2026-06-11): Improved parseAuditorJson — handles single quotes,
+// trailing commas, unquoted keys.
+// -----------------------------------------------------------------------------
+
+test("parseAuditorJson: handles single quotes instead of double quotes", () => {
+  const r = parseAuditorJson(
+    "{'hasBrokenPromise': false, 'hasFalsifiedExecution': true, 'reason': 'single quotes'}",
+  )
+  assert.ok(r)
+  assert.equal(r.hasFalsifiedExecution, true)
+  assert.equal(r.reason, "single quotes")
+})
+
+test("parseAuditorJson: handles trailing comma before closing brace", () => {
+  const r = parseAuditorJson(
+    '{"hasBrokenPromise": false, "hasFalsifiedExecution": true,}',
+  )
+  assert.ok(r)
+  assert.equal(r.hasFalsifiedExecution, true)
+})
+
+test("parseAuditorJson: handles unquoted keys", () => {
+  const r = parseAuditorJson(
+    "{hasBrokenPromise: false, hasFalsifiedExecution: true, reason: 'unquoted keys'}",
+  )
+  assert.ok(r)
+  assert.equal(r.hasFalsifiedExecution, true)
+  assert.equal(r.reason, "unquoted keys")
+})
+
+// -----------------------------------------------------------------------------
+// Fix D (2026-06-11): parseAuditorJsonByRegex — regex fallback when JSON is
+// completely malformed (truncated, wrapped in prose, mixed formats).
+// -----------------------------------------------------------------------------
+
+test("parseAuditorJsonByRegex: extracts flags from prose", () => {
+  const r = parseAuditorJsonByRegex(
+    "After reviewing the response, I determine hasFalsifiedExecution=true and hasBrokenPromise=false",
+  )
+  assert.ok(r)
+  assert.equal(r.hasFalsifiedExecution, true)
+  assert.equal(r.hasBrokenPromise, false)
+  assert.equal(r.hasUnverifiedIncapacity, false)
+})
+
+test("parseAuditorJsonByRegex: extracts flags from key=value format", () => {
+  const r = parseAuditorJsonByRegex(
+    'hasBrokenPromise=false hasFalsifiedExecution=false hasUnverifiedIncapacity=true reason="No intentó verificar nada"',
+  )
+  assert.ok(r)
+  assert.equal(r.hasUnverifiedIncapacity, true)
+})
+
+test("parseAuditorJsonByRegex: extracts flags from truncated JSON", () => {
+  const r = parseAuditorJsonByRegex(
+    '{"hasBrokenPromise":false, "hasFalsifiedExecution":true, "hasUnverifiedIncapacity"',
+  )
+  assert.ok(r, "regex must extract flags from truncated JSON where only key names remain")
+  assert.equal(r.hasFalsifiedExecution, true, "hasFalsifiedExecution=true is present before truncation")
+  assert.equal(r.hasBrokenPromise, false, "hasBrokenPromise is false in the raw text")
+  assert.equal(r.hasUnverifiedIncapacity, false, "hasUnverifiedIncapacity has no value (truncated)")
+})
+
+test("parseAuditorJsonByRegex: returns null when no flag is found", () => {
+  assert.equal(parseAuditorJsonByRegex("esto es solo texto sin flags"), null)
+  assert.equal(parseAuditorJsonByRegex(""), null)
+})
+
+test("parseAuditorJsonByRegex: extracts reason alongside flags", () => {
+  const r = parseAuditorJsonByRegex(
+    'hasFalsifiedExecution=true reason="The assistant claims execution without calling any tool"',
+  )
+  assert.ok(r)
+  assert.equal(r.hasFalsifiedExecution, true)
+  assert.equal(r.reason, "The assistant claims execution without calling any tool")
+})
+
+test("checkTurnIntegrity: falls back to regex when JSON is malformed but flags are present", async () => {
+  const rootDir = createRootDir()
+  try {
+    // LLM auditor returns prose with inline flags (no valid JSON)
+    const mockLLM = async () => ({
+      text: "I checked: hasFalsifiedExecution=true, hasBrokenPromise=false, hasUnverifiedIncapacity=false",
+    })
+    const res = await checkTurnIntegrity(
+      rootDir,
+      "The container status shows it is running on port 9000.",
+      [],
+      mockLLM,
+    )
+    assert.equal(res.verified, false, "regex fallback must catch falsified execution")
+    assert.equal(res.type, "falsified_execution")
+    assert.match(res.reason ?? "", /regex fallback/)
+  } finally { cleanupRootDir(rootDir) }
+})
+
+test("checkTurnIntegrity: regex fallback passes when all flags are false", async () => {
+  const rootDir = createRootDir()
+  try {
+    const mockLLM = async () => ({
+      text: "hasBrokenPromise=false hasFalsifiedExecution=false hasUnverifiedIncapacity=false — todo en orden",
+    })
+    const res = await checkTurnIntegrity(
+      rootDir,
+      "No tool required, just an explanation.",
+      [],
+      mockLLM,
+    )
+    assert.equal(res.verified, true, "all-false regex fallback must pass")
+  } finally { cleanupRootDir(rootDir) }
 })
 
 test("checkTurnIntegrity: survives LLM auditor returning markdown-fenced JSON", async () => {

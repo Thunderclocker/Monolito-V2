@@ -227,6 +227,16 @@ two checks in one LLM call.
 The judge receives the model's final text and the list of `tool.finish`
 events from the current turn. It returns strict JSON.
 
+**Improvements (2026-06-11):**
+- `parseAuditorJson` now cleans common LLM output issues (single quotes,
+  unquoted keys, trailing commas) before giving up.
+- Added `parseAuditorJsonByRegex` — a code-level regex fallback that
+  extracts boolean flags from raw text even when the JSON is completely
+  malformed (prose, truncated, wrapped in natural language).
+- Increased auditor `maxTokens` from 160 to 300 to reduce truncation.
+- The regex fallback activates silently before the fail-safe path,
+  reducing `VERACITY_GUARD_UNVERIFIED` noise without affecting security.
+
 ### 4.2. Dispositions
 
 | Check                  | Result         | Runtime action                                  |
@@ -234,6 +244,7 @@ events from the current turn. It returns strict JSON.
 | `hasFalsifiedExecution` | true           | Reject; log `VERACITY_GUARD_REJECTED`           |
 | `hasBrokenPromise`     | true           | Reject; log `BROKEN_PROMISE`                    |
 | Both false             | —              | Approve, continue                               |
+| Regex fallback         | —              | Extract flags from raw text (no LLM re-query)  |
 | LLM error              | —              | Approve (fail-safe)                              |
 
 A "rejection" in the post-finalization guard is handled differently from

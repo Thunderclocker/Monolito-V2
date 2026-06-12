@@ -199,16 +199,43 @@ Tools executed in this turn: [${toolsCalledInTurn.join(", ")}]`;
 
   try {
     const { text } = await runBackgroundTextTask(rootDir, systemPrompt, userPrompt, {
-      maxTokens: 160,
+      maxTokens: 300,
     })
 
     const parsed = parseAuditorJson(text)
     if (parsed === null) {
-      // Malformed JSON (e.g. model wrapped response in ```json ... ``` fence
-      // or output got truncated). Fail-graceful: log and let the turn through.
+      // Malformed JSON. Try regex fallback before giving up.
+      const fallback = parseAuditorJsonByRegex(text)
+      if (fallback !== null) {
+        if (fallback.hasFalsifiedExecution === true) {
+          return {
+            verified: false,
+            type: "falsified_execution",
+            reason: `[regex fallback] ${fallback.reason || "Assistant claims execution without invoking corresponding tools"}`,
+          }
+        }
+        if (fallback.hasBrokenPromise === true) {
+          return {
+            verified: false,
+            type: "broken_promise",
+            reason: `[regex fallback] ${fallback.reason || "Assistant made a future promise but did not schedule or delegate a background task"}`,
+          }
+        }
+        if (fallback.hasUnverifiedIncapacity === true) {
+          return {
+            verified: false,
+            type: "unverified_incapacity",
+            reason: `[regex fallback] ${fallback.reason || "Assistant declared inability without attempting to verify the limitation"}`,
+          }
+        }
+        // Regex parsed all flags as false — clean pass
+        return { verified: true, type: "none" }
+      }
+
+      // Both JSON and regex failed. Log and let the turn through.
       console.error(
         `[VERACITY_GUARD_UNVERIFIED] malformed auditor JSON. ` +
-        `Raw: ${text.slice(0, 200).replace(/\s+/g, " ")}. ` +
+        `Raw: ${text.slice(0, 300).replace(/\s+/g, " ")}. ` +
         `Assistant text was NOT validated this turn.`,
       )
       return { verified: true, type: "none" }
@@ -239,11 +266,6 @@ Tools executed in this turn: [${toolsCalledInTurn.join(", ")}]`;
     }
   } catch (error) {
     // Fail-graceful: log the verification gap so it's visible in the daemon stdout
-    // (search for VERACITY_GUARD_UNVERIFIED). Better to surface a gap than silently
-    // let potentially-bad content through. Still return verified=true for continuity
-    // — the user can review the log and decide manually.
-    // Use console.error because the worklog is FK-bound to a real session, and this
-    // system-level event doesn't have a session context.
     console.error(
       `[VERACITY_GUARD_UNVERIFIED] auditor failed (${error instanceof Error ? error.message : String(error)}). ` +
       `Assistant text was NOT validated this turn.`,
@@ -276,7 +298,7 @@ export function parseAuditorJson(raw: string): {
 } | null {
   if (!raw) return null
   let text = raw.trim()
-  // Strip ```json ... ``` or ``` ... ``` fence
+  // Strip ```json ... ``` or ``` ... ``` fence (handle multiline, multiple fences)
   const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/)
   if (fenceMatch) text = fenceMatch[1].trim()
   // Locate the JSON object boundaries defensively
@@ -300,7 +322,84 @@ export function parseAuditorJson(raw: string): {
       reason: typeof obj.reason === "string" ? obj.reason : undefined,
     }
   } catch {
-    return null
+    // JSON.parse failed — try to clean up common issues
+    // Fix single quotes instead of double quotes (common LLM output issue)
+    const cleaned = candidate
+      .replace(/'/g, '"')
+      .replace(/(\w+):/g, '"$1":')
+      .replace(/,\s*([}\]])/g, "$1")
+      .replace(/undefined/g, "null")
+      .replace(/\b(NaN|Infinity)\b/g, "null")
+      // Remove trailing commas before closing braces
+      .replace(/,\s*}/g, "}")
+      .replace(/,\s*\]/g, "]")
+    try {
+      const obj = JSON.parse(cleaned) as Record<string, unknown>
+      const hasAnyFlag =
+        typeof obj.hasBrokenPromise === "boolean" ||
+        typeof obj.hasFalsifiedExecution === "boolean" ||
+        typeof obj.hasUnverifiedIncapacity === "boolean"
+      if (!hasAnyFlag) return null
+      return {
+        hasBrokenPromise: Boolean(obj.hasBrokenPromise),
+        hasFalsifiedExecution: Boolean(obj.hasFalsifiedExecution),
+        hasUnverifiedIncapacity: Boolean(obj.hasUnverifiedIncapacity),
+        reason: typeof obj.reason === "string" ? obj.reason : undefined,
+      }
+    } catch {
+      return null
+    }
+  }
+}
+
+/**
+ * Regex-based fallback parser for the LLM auditor's response.
+ * Activates when parseAuditorJson returns null (malformed JSON).
+ * Extracts boolean flags directly from the raw text using regex patterns,
+ * so the exact JSON format doesn't matter — we just need the key=value pairs.
+ *
+ * This is a CODE solution (not prompt-based): the model can write prose,
+ * markdown, broken JSON, and we still extract the verdict.
+ */
+export function parseAuditorJsonByRegex(raw: string): {
+  hasBrokenPromise: boolean
+  hasFalsifiedExecution: boolean
+  hasUnverifiedIncapacity: boolean
+  reason?: string
+} | null {
+  if (!raw) return null
+
+  // JSON keys are quoted ("key"), prose may use key=value or key: value.
+  // Allow optional quotes and whitespace around the separator.
+  const flagPattern = (name: string, value: string) =>
+    new RegExp(`${name}\\s*"?\\s*[=:]\\s*"?\\s*${value}`, "i")
+
+  const hasBroken = flagPattern("hasBrokenPromise", "true").test(raw)
+  const hasFalsified = flagPattern("hasFalsifiedExecution", "true").test(raw)
+  const hasUnverified = flagPattern("hasUnverifiedIncapacity", "true").test(raw)
+
+  // If none of the flags are true, check if at least one was explicitly false
+  // (meaning the model did produce a verdict, just all negative)
+  const hasBrokenFalse = flagPattern("hasBrokenPromise", "false").test(raw)
+  const hasFalsifiedFalse = flagPattern("hasFalsifiedExecution", "false").test(raw)
+  const hasUnverifiedFalse = flagPattern("hasUnverifiedIncapacity", "false").test(raw)
+
+  const anyFlagFound = hasBroken || hasFalsified || hasUnverified || hasBrokenFalse || hasFalsifiedFalse || hasUnverifiedFalse
+  if (!anyFlagFound) return null
+
+  // Extract reason: look for "reason" followed by : or = and a quoted string
+  let reason: string | undefined
+  const reasonMatch = raw.match(/"reason"\s*:\s*"([^"]+)"/) ||
+    raw.match(/'reason'\s*:\s*'([^']+)'/) ||
+    raw.match(/reason\s*[=:]\s*"([^"]+)"/) ||
+    raw.match(/reason\s*[=:]\s*'([^']+)'/)
+  if (reasonMatch) reason = reasonMatch[1]
+
+  return {
+    hasBrokenPromise: hasBroken,
+    hasFalsifiedExecution: hasFalsified,
+    hasUnverifiedIncapacity: hasUnverified,
+    reason,
   }
 }
 
