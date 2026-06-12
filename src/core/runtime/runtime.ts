@@ -4334,7 +4334,7 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
     return null
   }
 
-  private async captureScreenshotSilent(profileId: string): Promise<string | null> {
+  async captureScreenshotSilent(profileId: string): Promise<string | null> {
     const { ensureDirs } = await import("../ipc/protocol.ts")
     const paths = ensureDirs(this.rootDir, profileId)
     const screenshotDir = join(paths.scratchpadDir, "screenshots")

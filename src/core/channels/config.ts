@@ -44,6 +44,10 @@ export type HotkeyConfig = {
   enabled: boolean
   /** X11 raw keycode(s) to watch. Can be a single number or an array of numbers. Defaults to 49 (º / ordmasculine on ES-layout). */
   keycode: number | number[]
+  /** Enable the screenshot hotkey listener. Defaults to true if hotkeys are enabled. */
+  screenshotEnabled?: boolean
+  /** X11 raw keycode(s) to watch for screenshot. Can be a single number or an array of numbers. Defaults to [50, 107] (Shift + PrintScreen). */
+  screenshotKeycode?: number | number[]
 }
 
 export type ChannelsConfig = {
@@ -71,7 +75,7 @@ const CHANNELS_TOP_LEVEL_KEYS = new Set(["telegram", "tts", "stt", "hotkey"])
 const TELEGRAM_KEYS = new Set(["token", "enabled", "allowedChats"])
 const TTS_KEYS = new Set(["baseUrl", "apiKey", "voice", "model", "responseFormat", "speed", "provider", "clonedVoices", "defaultClonedVoice", "t2aModel"])
 const STT_KEYS = new Set(["managed", "autoDeploy", "autoTranscribe", "port", "image", "containerName", "engine", "model", "language", "vadFilter"])
-const HOTKEY_KEYS = new Set(["enabled", "keycode"])
+const HOTKEY_KEYS = new Set(["enabled", "keycode", "screenshotEnabled", "screenshotKeycode"])
 
 function hasOwn(object: Record<string, unknown>, key: string) {
   return Object.prototype.hasOwnProperty.call(object, key)
@@ -145,6 +149,23 @@ function assertValidChannelsConfigForWrite(config: unknown) {
     const unknownHotkeyKeys = Object.keys(hotkey).filter(key => !HOTKEY_KEYS.has(key))
     if (unknownHotkeyKeys.length > 0) {
       throw new Error(`CONF_CHANNELS.hotkey contains unsupported keys: ${unknownHotkeyKeys.join(", ")}`)
+    }
+    if (hotkey.screenshotEnabled !== undefined && typeof hotkey.screenshotEnabled !== "boolean") {
+      throw new Error("CONF_CHANNELS.hotkey.screenshotEnabled must be a boolean.")
+    }
+    if (hotkey.screenshotKeycode !== undefined) {
+      const isNum = typeof hotkey.screenshotKeycode === "number" && hotkey.screenshotKeycode > 0
+      const isNumArray = Array.isArray(hotkey.screenshotKeycode) && hotkey.screenshotKeycode.every(v => typeof v === "number" && v > 0)
+      if (!isNum && !isNumArray) {
+        throw new Error("CONF_CHANNELS.hotkey.screenshotKeycode must be a positive number or an array of positive numbers.")
+      }
+    }
+    if (hotkey.keycode !== undefined) {
+      const isNum = typeof hotkey.keycode === "number" && hotkey.keycode > 0
+      const isNumArray = Array.isArray(hotkey.keycode) && hotkey.keycode.every(v => typeof v === "number" && v > 0)
+      if (!isNum && !isNumArray) {
+        throw new Error("CONF_CHANNELS.hotkey.keycode must be a positive number or an array of positive numbers.")
+      }
     }
   }
 }

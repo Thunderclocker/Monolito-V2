@@ -66,17 +66,28 @@ function playSound(path: string) {
 // ---------------------------------------------------------------------------
 
 export class GlobalHotkeyService {
-  private keycodes: number[]
+  private voiceKeycodes: number[]
+  private screenshotKeycodes: number[]
+  private screenshotEnabled: boolean
   private runtime: MonolitoV2Runtime
   private xinputProc: ChildProcess | null = null
   private arecordProc: ChildProcess | null = null
   private currentRecordingPath: string | null = null
   private isRecording = false
+  private isCapturingScreenshot = false
+  private screenshotHotkeyActive = false
   private stopped = false
   private pressedKeys = new Set<number>()
 
-  constructor(keycodes: number[], runtime: MonolitoV2Runtime) {
-    this.keycodes = keycodes
+  constructor(
+    voiceKeycodes: number[],
+    screenshotKeycodes: number[],
+    screenshotEnabled: boolean,
+    runtime: MonolitoV2Runtime,
+  ) {
+    this.voiceKeycodes = voiceKeycodes
+    this.screenshotKeycodes = screenshotKeycodes
+    this.screenshotEnabled = screenshotEnabled
     this.runtime = runtime
   }
 
@@ -127,20 +138,43 @@ export class GlobalHotkeyService {
 
       for (const line of lines) {
         this.handleXinputLine(line.trim(), (type, detail) => {
-          if (!this.keycodes.includes(detail)) return
+          const isVoiceKey = this.voiceKeycodes.includes(detail)
+          const isScreenshotKey = this.screenshotKeycodes.includes(detail)
+          if (!isVoiceKey && !isScreenshotKey) return
 
           if (type === "RawKeyPress") {
             this.pressedKeys.add(detail)
-            const allPressed = this.keycodes.every(code => this.pressedKeys.has(code))
-            if (allPressed && !this.isRecording) {
-              void this.onKeyDown()
+
+            if (this.voiceKeycodes.length > 0) {
+              const allVoicePressed = this.voiceKeycodes.every(code => this.pressedKeys.has(code))
+              if (allVoicePressed && !this.isRecording) {
+                void this.onKeyDown()
+              }
+            }
+
+            if (this.screenshotEnabled && this.screenshotKeycodes.length > 0) {
+              const allScreenshotPressed = this.screenshotKeycodes.every(code => this.pressedKeys.has(code))
+              if (allScreenshotPressed) {
+                if (!this.screenshotHotkeyActive && !this.isCapturingScreenshot) {
+                  this.screenshotHotkeyActive = true
+                  void this.onScreenshotHotkeyTriggered()
+                }
+              }
             }
           } else if (type === "RawKeyRelease") {
             this.pressedKeys.delete(detail)
-            if (this.isRecording) {
-              const anyReleased = this.keycodes.some(code => !this.pressedKeys.has(code))
-              if (anyReleased) {
+
+            if (this.isRecording && this.voiceKeycodes.length > 0) {
+              const anyVoiceReleased = this.voiceKeycodes.some(code => !this.pressedKeys.has(code))
+              if (anyVoiceReleased) {
                 void this.onKeyUp()
+              }
+            }
+
+            if (this.screenshotHotkeyActive && this.screenshotKeycodes.length > 0) {
+              const anyScreenshotReleased = this.screenshotKeycodes.some(code => !this.pressedKeys.has(code))
+              if (anyScreenshotReleased) {
+                this.screenshotHotkeyActive = false
               }
             }
           }
@@ -162,7 +196,10 @@ export class GlobalHotkeyService {
     })
 
     this.xinputProc = proc
-    logger.info(`[GlobalHotkey] Listening for keycodes [${this.keycodes.join(", ")}] on DISPLAY=${process.env.DISPLAY}`)
+    const screenshotMsg = this.screenshotEnabled
+      ? `, screenshot keycodes [${this.screenshotKeycodes.join(", ")}]`
+      : ""
+    logger.info(`[GlobalHotkey] Listening for voice keycodes [${this.voiceKeycodes.join(", ")}]${screenshotMsg} on DISPLAY=${process.env.DISPLAY}`)
   }
 
   /**
@@ -275,6 +312,41 @@ export class GlobalHotkeyService {
   }
 
   // --------------------------------------------------------------------------
+  // Screenshot Trigger
+  // --------------------------------------------------------------------------
+
+  private async onScreenshotHotkeyTriggered() {
+    if (this.isCapturingScreenshot) return
+    this.isCapturingScreenshot = true
+
+    // Check for standard camera-shutter sound first, fallback to SOUND_START
+    const shutterSound = "/usr/share/sounds/freedesktop/stereo/camera-shutter.oga"
+    playSound(existsSync(shutterSound) ? shutterSound : SOUND_START)
+
+    logger.info("[GlobalHotkey] Screenshot hotkey triggered. Capturing screenshot…")
+
+    try {
+      // captureScreenshotSilent accepts a profileId (default is "default")
+      const path = await this.runtime.captureScreenshotSilent("default")
+      if (path && existsSync(path)) {
+        logger.info(`[GlobalHotkey] Screenshot captured: ${path}. Submitting to agent…`)
+        
+        playSound(SOUND_STOP)
+
+        this.runtime.ensureSession("orchestrator", "Orchestrator")
+        const message = `Te he enviado una captura de pantalla de mi escritorio.\n\n<attachment kind="photo" local_path="${path}" />`
+        await this.runtime.processMessage("orchestrator", message)
+      } else {
+        logger.warn("[GlobalHotkey] Failed to capture screenshot (path was empty or file missing).")
+      }
+    } catch (err) {
+      logger.warn(`[GlobalHotkey] Screenshot capture or submission failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      this.isCapturingScreenshot = false
+    }
+  }
+
+  // --------------------------------------------------------------------------
   // Transcription + submission
   // --------------------------------------------------------------------------
 
@@ -333,26 +405,48 @@ export async function createGlobalHotkeyService(
   }
 
   // Verify arecord is available
+  let hasArecord = true
   try {
     await execFileAsync("which", ["arecord"])
   } catch {
-    logger.warn("[GlobalHotkey] `arecord` not found in PATH — hotkey listener disabled.")
-    return null
+    hasArecord = false
   }
 
-  const keycodes: number[] = []
-  if (typeof hotkey.keycode === "number" && hotkey.keycode > 0) {
-    keycodes.push(hotkey.keycode)
-  } else if (Array.isArray(hotkey.keycode)) {
-    for (const val of hotkey.keycode) {
-      if (typeof val === "number" && val > 0) {
-        keycodes.push(val)
+  const voiceKeycodes: number[] = []
+  if (hasArecord) {
+    if (typeof hotkey.keycode === "number" && hotkey.keycode > 0) {
+      voiceKeycodes.push(hotkey.keycode)
+    } else if (Array.isArray(hotkey.keycode)) {
+      for (const val of hotkey.keycode) {
+        if (typeof val === "number" && val > 0) {
+          voiceKeycodes.push(val)
+        }
       }
     }
-  }
-  if (keycodes.length === 0) {
-    keycodes.push(DEFAULT_KEYCODE)
+    if (voiceKeycodes.length === 0) {
+      voiceKeycodes.push(DEFAULT_KEYCODE)
+    }
+  } else {
+    logger.warn("[GlobalHotkey] `arecord` not found in PATH — voice recording hotkey disabled.")
   }
 
-  return new GlobalHotkeyService(keycodes, runtime)
+  const screenshotEnabled = hotkey.screenshotEnabled !== false
+  const screenshotKeycodes: number[] = []
+  if (screenshotEnabled) {
+    if (typeof hotkey.screenshotKeycode === "number" && hotkey.screenshotKeycode > 0) {
+      screenshotKeycodes.push(hotkey.screenshotKeycode)
+    } else if (Array.isArray(hotkey.screenshotKeycode)) {
+      for (const val of hotkey.screenshotKeycode) {
+        if (typeof val === "number" && val > 0) {
+          screenshotKeycodes.push(val)
+        }
+      }
+    }
+    if (screenshotKeycodes.length === 0) {
+      // Default: Shift + Print Screen (50, 107)
+      screenshotKeycodes.push(50, 107)
+    }
+  }
+
+  return new GlobalHotkeyService(voiceKeycodes, screenshotKeycodes, screenshotEnabled, runtime)
 }

@@ -182,6 +182,61 @@ test("tool_manage_config rejects JSON string CONF_CHANNELS values that use sessi
   }
 })
 
+test("tool_manage_config validates hotkey screenshot fields", async () => {
+  const rootDir = createRootDir()
+  try {
+    const tool = getTool("tool_manage_config")
+    assert.ok(tool)
+
+    // Valid configuration with screenshot hotkeys
+    const validResult = await tool.run({
+      action: "write",
+      wing: "CONF_CHANNELS",
+      value: JSON.stringify({
+        hotkey: {
+          enabled: true,
+          keycode: [50, 133],
+          screenshotEnabled: true,
+          screenshotKeycode: [50, 107]
+        }
+      }),
+    }, { rootDir, cwd: rootDir })
+    assert.equal((validResult as { ok: boolean }).ok, true)
+
+    // Invalid screenshotEnabled type
+    const invalidBool = await tool.run({
+      action: "write",
+      wing: "CONF_CHANNELS",
+      value: JSON.stringify({
+        hotkey: {
+          enabled: true,
+          keycode: 49,
+          screenshotEnabled: "yes"
+        }
+      }),
+    }, { rootDir, cwd: rootDir }) as string
+    assert.equal(JSON.parse(invalidBool).success, false)
+    assert.match(JSON.parse(invalidBool).error, /screenshotEnabled must be a boolean/)
+
+    // Invalid screenshotKeycode type
+    const invalidKeycode = await tool.run({
+      action: "write",
+      wing: "CONF_CHANNELS",
+      value: JSON.stringify({
+        hotkey: {
+          enabled: true,
+          keycode: 49,
+          screenshotKeycode: ["50", "107"]
+        }
+      }),
+    }, { rootDir, cwd: rootDir }) as string
+    assert.equal(JSON.parse(invalidKeycode).success, false)
+    assert.match(JSON.parse(invalidKeycode).error, /screenshotKeycode must be a positive number or an array of positive numbers/)
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
 test("WebFetch strips noisy HTML assets before selecting relevant text", async () => {
   const rootDir = createRootDir()
   try {
