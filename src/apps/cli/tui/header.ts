@@ -6,6 +6,83 @@ import { getActiveProfile, getDefaultReasoningLevel } from "../../../core/runtim
 import { getPaths } from "../../../core/ipc/protocol.ts"
 import type { HeaderState } from "./types.ts"
 
+const MINIMAX_TOKEN_CACHE_TTL = 30 * 60 * 1000 // 30 minutes
+
+let minimaxTokenCache: { balance: string | null; timestamp: number } | null = null
+
+type MinimaxTokenPlan = {
+  success?: boolean
+  base_info?: {
+    plan_name?: string
+    total_tokens?: number
+    used_tokens?: number
+    remaining_tokens?: number
+    reset_date?: string
+  }
+  error?: string
+}
+
+async function fetchMinimaxTokenRemains(): Promise<string | null> {
+  try {
+    const activeProfile = getActiveProfile()
+    const isMiniMax = activeProfile?.provider === "minimax" || activeProfile?.baseUrl?.toLowerCase().includes("minimax")
+    if (!isMiniMax || !activeProfile?.apiKey) return null
+
+    const res = await fetch("https://www.minimax.io/v1/token_plan/remains", {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${activeProfile.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      signal: AbortSignal.timeout(8_000),
+    })
+    if (!res.ok) return null
+    const data = (await res.json()) as MinimaxTokenPlan
+    if (!data.success || !data.base_info) return null
+
+    const { remaining_tokens, total_tokens, reset_date } = data.base_info
+    if (remaining_tokens === undefined || total_tokens === undefined) return null
+
+    const remaining = remaining_tokens >= 1_000_000
+      ? `${(remaining_tokens / 1_000_000).toFixed(1)}M`
+      : remaining_tokens >= 1_000
+        ? `${(remaining_tokens / 1_000).toFixed(0)}K`
+        : String(remaining_tokens)
+
+    const total = total_tokens >= 1_000_000
+      ? `${(total_tokens / 1_000_000).toFixed(1)}M`
+      : total_tokens >= 1_000
+        ? `${(total_tokens / 1_000).toFixed(0)}K`
+        : String(total_tokens)
+
+    const pct = total_tokens > 0 ? ((remaining_tokens / total_tokens) * 100).toFixed(1) : "0"
+
+    let daysUntilReset = ""
+    if (reset_date) {
+      const ms = new Date(reset_date).getTime() - Date.now()
+      const days = Math.ceil(ms / (24 * 60 * 60 * 1000))
+      if (days > 0) daysUntilReset = ` │ reset in ${days}d`
+      else if (days === 0) daysUntilReset = " │ resets today"
+    }
+
+    return `${remaining} / ${total} (${pct}%)${daysUntilReset}`
+  } catch {
+    return null
+  }
+}
+
+function getMinimaxBalance(): string | null {
+  const now = Date.now()
+  if (minimaxTokenCache && now - minimaxTokenCache.timestamp < MINIMAX_TOKEN_CACHE_TTL) {
+    return minimaxTokenCache.balance
+  }
+  // Fire and forget — update cache asynchronously, return stale or null
+  fetchMinimaxTokenRemains().then(balance => {
+    minimaxTokenCache = { balance, timestamp: Date.now() }
+  })
+  return minimaxTokenCache?.balance ?? null
+}
+
 export function inferProvider(baseUrl: string) {
   const normalized = baseUrl.trim().toLowerCase()
   if (!normalized) return "system/default"
@@ -37,10 +114,9 @@ export function readProjectMetadata(rootDir: string) {
 
 export function getHeaderState(rootDir: string, sessionId: string, connected: boolean): HeaderState {
   const metadata = readProjectMetadata(rootDir)
-  // Workspace real del agente (no el cwd del proyecto).
   const workspacePath = getPaths(rootDir).workspaceDir
+  const minimaxBalance = getMinimaxBalance()
 
-  // Prefer active profile from registry
   const activeProfile = getActiveProfile()
   if (activeProfile) {
     const defaultLevel = getDefaultReasoningLevel(activeProfile.provider, activeProfile.model)
@@ -53,10 +129,10 @@ export function getHeaderState(rootDir: string, sessionId: string, connected: bo
       reasoning: activeProfile.reasoningLevel ?? defaultLevel,
       sessionId,
       connected,
+      minimaxBalance,
     }
   }
 
-  // Fallback to effective system settings when no profile is active
   const settings = readModelSettings()
   const model = settings.env.ANTHROPIC_MODEL.trim() || "(unset)"
   const baseUrl = settings.env.ANTHROPIC_BASE_URL.trim() || ""
@@ -69,5 +145,13 @@ export function getHeaderState(rootDir: string, sessionId: string, connected: bo
     reasoning: getDefaultReasoningLevel(baseUrl.includes("minimax") ? "minimax" : "anthropic_compatible", model),
     sessionId,
     connected,
+    minimaxBalance,
   }
+}
+
+export function refreshMinimaxBalance() {
+  minimaxTokenCache = null // force re-fetch on next render
+  fetchMinimaxTokenRemains().then(balance => {
+    minimaxTokenCache = { balance, timestamp: Date.now() }
+  })
 }

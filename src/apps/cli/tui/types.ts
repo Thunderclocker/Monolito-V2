@@ -81,6 +81,7 @@ export type HeaderState = {
   reasoning: string
   sessionId: string
   connected: boolean
+  minimaxBalance: string | null
 }
 
 export type PromptHistory = {

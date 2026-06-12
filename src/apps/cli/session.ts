@@ -15,7 +15,7 @@ import {
 import { DaemonClient } from "../../core/client/daemonClient.ts"
 import { applyCompletion, createInteractiveCompleter, findCommonPrefix } from "./tui/autocomplete.ts"
 import { ANSI } from "./tui/ansi.ts"
-import { getHeaderState } from "./tui/header.ts"
+import { getHeaderState, refreshMinimaxBalance } from "./tui/header.ts"
 import { commitPromptHistory, createPromptHistory, historyDown, historyUp } from "./tui/history.ts"
 import { readModelSettings } from "../../core/runtime/modelConfig.ts"
 import { getActiveProfile } from "../../core/runtime/modelRegistry.ts"
@@ -994,6 +994,14 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       }
       if (cmd === "/doctor") return formatDoctor(await client.queryDoctor() as string)
       if (cmd === "/status") return { type: "list", tone: "info", content: await client.runDaemonCommand("/status") }
+      if (cmd === "/minimax" && args[0] === "remains") {
+        refreshMinimaxBalance()
+        // Give the async fetch a moment to complete, then read the cache
+        await new Promise(r => setTimeout(r, 500))
+        const state = getHeaderState(rootDir, "", false)
+        const balance = state.minimaxBalance || "No se pudo obtener el saldo (¿API key configurada?)"
+        return { type: "list", tone: "info", content: `MiniMax remains: ${balance}` }
+      }
       if (cmd === "/update") {
         const branch = await runGit(rootDir, ["rev-parse", "--abbrev-ref", "HEAD"])
         if (!branch) {
