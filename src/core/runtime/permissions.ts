@@ -3,7 +3,7 @@ import { promisify } from "node:util"
 import { runBackgroundTextTask } from "./modelAdapter.ts"
 import { getTool } from "../tools/registry.ts"
 import { DEFAULT_CONFIG_WING_VALUES, type HookDefinition, type PermissionMode, type PermissionRule, type PolicyConfig } from "../config/configWings.ts"
-import { readConfigWing, getDynamicSkill } from "../session/store.ts"
+import { readConfigWing } from "../session/store.ts"
 
 const execFileAsync = promisify(execFile)
 

@@ -323,24 +323,7 @@ graph.
 (commit `ebf9b6f`). MemoryAgent must not synthesize rules that would
 override Level 0 user intent.
 
-### SkillsAgent
-
-Scope: **procedural skill synthesis**. Reads recent tool usage and
-identifies patterns that could become a skill.
-
-- New repetitive task → `CreateSkill` with a detailed Markdown SOP
-- Two similar skills → merge into one umbrella skill
-- Outdated skill (e.g. references an old CLI flag) → update or delete
-- Broken skill → prune with `DeleteSkill`
-
-**Scope boundary** (commit `c9e6d96`): SkillsAgent **only** creates
-procedural SOPs (instructions in Markdown for the assistant to follow).
-It must **not** create skills for cognitive directives, behavioral
-warnings, or user preferences — those are MemoryAgent's domain and go
-in the Palace.
-
-If you see a skill that reads like a rule, the boundary was violated.
-Delete it and have MemoryAgent file it as a Palace fact instead.
+The SkillsAgent and entire dynamic skill system have been removed (June 2026). Only MemoryAgent remains for background memory consolidation.
 
 ---
 

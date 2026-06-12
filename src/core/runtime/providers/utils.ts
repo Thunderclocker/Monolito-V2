@@ -224,8 +224,7 @@ const REGISTERED_TOOL_NAMES = [
   "delegate_background_task", "TriggerBackgroundStudy", "AgentList", "ProfileCreate",
   "TodoWrite", "TodoList", "QuerySessionStatus", "QueryCost", "QuerySessionStats",
   "CompactSession", "system_status", "system_reboot", "show_master_dashboard",
-  "search_tools", "CreateSkill", "DeleteSkill", "ArchiveSkill",
-  "RestoreSkill", "ListSkills", "skill_view", "McpInvokeTool", "LspQuery",
+  "search_tools", "McpInvokeTool", "LspQuery",
   "ListMcpResourcesTool", "ReadMcpResourceTool", "GitStatus", "GitDiff", "GitDiffCached",
   "GitAdd", "GitCommit", "list_files", "pwd", "tool_manage_config", "schedule_task",
 ]

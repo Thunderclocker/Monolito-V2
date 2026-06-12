@@ -8,8 +8,8 @@ import { MONOLITO_ROOT } from "../system/root.ts"
  *
  * Monolito-V2 uses a single-session model for the user: the CLI and
  * Telegram both target this same session. Other sessions in the DB
- * (sub-agents, SkillsAgent, etc.) are internal and live in their
- * own `agent-*` / `skills-synthetic` namespaces — they are not
+ * (synthetic background turns) are internal and live in their
+ * own `agent-*` namespaces — they are not
  * candidates for proactive delivery, the heartbeat, or the TUI's
  * "current session" display.
  *

@@ -253,7 +253,6 @@ the pipeline.
         ┌──────────────────────────────────────┐
         │ Heartbeat tick (only when user idle) │
         │  • MemoryAgent  (silent Palace write)│
-        │  • SkillsAgent  (silent SOP write)   │
         │  Conf: CONF_HEARTBEAT wing           │
         └──────────────────────────────────────┘
 ```

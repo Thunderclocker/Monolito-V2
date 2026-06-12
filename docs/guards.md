@@ -336,12 +336,12 @@ follow *before* responding.
 ### 7.1. What it enforces
 
 When the user asks to **enumerate, list, count, read, show, or inventory**
-the current state of a dynamic system resource — skills, sessions, files,
+the current state of a dynamic system resource — sessions, files,
 directories, channel configs, processes, tool lists, model profiles, logs,
 database state — the assistant must:
 
-1. Execute the appropriate tool first (`ListSkills`, `Read`, `Glob`,
-   `list_files`, `list_sessions`, etc. depending on what was asked).
+1. Execute the appropriate tool first (`Read`, `Glob`, `list_files`,
+   `list_sessions`, etc. depending on what was asked).
 2. Answer with the result the tool returned.
 3. **Never** answer from memory and bolt on a disclaimer
    (*"tomátelo con pinzas"*, *"no verifiqué"*, *"ojo con eso"*,
@@ -349,9 +349,9 @@ database state — the assistant must:
 
 The rule explicitly lists which resources it covers:
 
-> *skills, dynamic skills, sessions, files, directories, channel configs,
-> processes, tool lists, model profiles, logs, database state, and any
-> other resource that has a tool to query it.*
+> *sessions, files, directories, channel configs, processes, tool lists,
+> model profiles, logs, database state, and any other resource that has
+> a tool to query it.*
 
 ### 7.2. Memory is for context, not for live state
 

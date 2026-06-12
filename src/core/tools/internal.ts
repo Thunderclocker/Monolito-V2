@@ -46,13 +46,6 @@ import {
   upsertSemanticTool,
   querySemanticTools,
   upsertRalphRule,
-  listDynamicSkills,
-  saveDynamicSkill,
-  getDynamicSkill,
-  deleteDynamicSkill,
-  incrementSkillTelemetry,
-  archiveDynamicSkill,
-  restoreArchivedSkill,
 } from "../session/store.ts"
 import { isEmbeddingsUnavailableError } from "../session/embeddings.ts"
 import { redactSensitiveValue } from "../security/redact.ts"
@@ -340,11 +333,7 @@ export type ToolContext = {
   logger?: Logger
   sessionId?: string
   // Optional whitelist of tool names the LLM is allowed to call in this turn.
-  // Used by SkillsAgent to restrict synthetic turns to lifecycle tools only.
   allowedToolNames?: string[]
-  // Set to true for synthetic SkillsAgent turns so tools (e.g. CreateSkill)
-  // can mark provenance as "agent" instead of "user".
-  isSkillsSynthetic?: boolean
   runtime?: {
     getSystemStatus?: () => Promise<unknown>
     gracefulRestart?: (reason?: string) => void
@@ -1327,67 +1316,6 @@ export const scheduleTaskInputZod = z.discriminatedUnion("action", [
     }
   }),
 ])
-
-// ----- Skills: configuration and security helpers ----------------------------
-
-/**
- * Read the CONF_SKILLS config wing for skill lifecycle settings.
- * Returns sensible defaults if the wing is missing or malformed.
- */
-export function readSkillGuardConfig(rootDir: string): boolean {
-  try {
-    const wing = readConfigWing(rootDir, "CONF_SKILLS") as {
-      guard_agent_created?: boolean
-    } | null
-    return wing?.guard_agent_created === true
-  } catch {
-    return false
-  }
-}
-
-/**
- * Lightweight threat-pattern scanner for agent-created skill guides.
- * Returns the first matched pattern (or null if clean).
- * This is defensive only — not a sandbox. The agent can still execute
- * anything via Bash; the scan just adds friction against self-inflicted
- * bad SOPs that would otherwise look innocuous.
- */
-export const SKILL_THREAT_PATTERNS: { name: string; regex: RegExp }[] = [
-  { name: "rm -rf root", regex: /\brm\s+(-\w*r\w*f\w*\s+)*\/\s*$/m },
-  { name: "rm -rf home", regex: /\brm\s+-\w*r\w*f\w*\s+~(?:\s|$)/m },
-  { name: "rm -rf ssh", regex: /\brm\s+-\w*r\w*f\w*\s+\.?\.?\/?\.ssh/m },
-  { name: "curl pipe bash", regex: /curl[^|]*\|\s*(sudo\s+)?(ba)?sh/m },
-  { name: "exfiltrate env", regex: /\b(cat|printenv|env)\b[^.\n]*\b(AWS_|GITHUB_|OPENAI_|ANTHROPIC_|API_KEY|SECRET|TOKEN)/m },
-  { name: "chmod 777", regex: /\bchmod\s+777\b/ },
-  { name: "dd overwrite disk", regex: /\bdd\s+if=[^\n]*\s+of=\/dev\/(sd|nvme|hd)/m },
-]
-
-export function scanSkillGuideForThreats(guide: string): { threat: boolean; pattern: string | null } {
-  for (const { name, regex } of SKILL_THREAT_PATTERNS) {
-    if (regex.test(guide)) {
-      return { threat: true, pattern: name }
-    }
-  }
-  return { threat: false, pattern: null }
-}
-
-/**
- * Debounce window for skill telemetry. If a skill was used less than this many
- * milliseconds ago, skip the increment. Prevents SQLite writes from a tight
- * loop of skill_view calls in the same turn.
- */
-export const SKILL_TELEMETRY_DEBOUNCE_MS = 60_000
-
-export function shouldRecordSkillUse(skill: { telemetry?: { last_used_at?: string; use_count?: number } }): boolean {
-  // First use (use_count === 0) always counts. After that, debounce.
-  if (!skill.telemetry || (skill.telemetry.use_count ?? 0) === 0) return true
-  const last = skill.telemetry.last_used_at
-  if (!last) return true
-  const lastMs = Date.parse(last)
-  if (Number.isNaN(lastMs)) return true
-  return Date.now() - lastMs >= SKILL_TELEMETRY_DEBOUNCE_MS
-}
-
 
 export function isValidJson(value: string) {
   try {

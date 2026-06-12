@@ -10,7 +10,7 @@
 //   2. If it lives in a brand-new domain, add the import + concat below
 //   3. Update the appropriate docs file in /docs/
 
-import { upsertRalphRule, listDynamicSkills, saveDynamicSkill, getDynamicSkill, upsertSemanticTool, querySemanticTools } from "../session/store.ts"
+import { upsertRalphRule, upsertSemanticTool, querySemanticTools } from "../session/store.ts"
 
 import { withSafeToolFailure } from "./internal.ts"
 import { type Logger, createLogger } from "../logging/logger.ts"
@@ -28,7 +28,6 @@ import { forensicsTools } from "./domains/forensics.ts"
 import { configTools } from "./domains/config.ts"
 import { todoTools } from "./domains/todo.ts"
 import { adminTools } from "./domains/admin.ts"
-import { skillsTools } from "./domains/skills.ts"
 
 import type { ToolDefinition } from "./internal.ts"
 
@@ -49,7 +48,6 @@ const rawTools: ToolDefinition[] = [
   ...configTools,
   ...todoTools,
   ...adminTools,
-  ...skillsTools,
 ]
 
 const tools: ToolDefinition[] = rawTools.map(withSafeToolFailure)
@@ -209,30 +207,6 @@ export async function indexToolsInPalace(rootDir: string) {
   } catch (err) {
     logger.error("Failed to index tools", { errorMessage: String(err), errorStack: err instanceof Error ? err.stack : undefined })
   }
-
-  // Index dynamic skills too
-  try {
-    const skills = listDynamicSkills(rootDir)
-    for (const skill of skills) {
-      try {
-        // Index the skill as a synthetic tool summary for search
-        const existing = await querySemanticTools(rootDir, skill.name, 1)
-        if (existing.length > 0 && existing[0] === skill.name) {
-          // Skip if already there (avoid duplicate indexes)
-          continue
-        }
-        upsertSemanticTool(rootDir, skill.name, JSON.stringify({
-          description: skill.description ?? "(no description)",
-          tier: "read",
-          tags: ["skill", "dynamic"],
-        }))
-      } catch (err) {
-        console.error(`[indexToolsInPalace] Failed to upsert skill '${skill.name}':`, err)
-      }
-    }
-  } catch (err) {
-    logger.error("Failed to index dynamic skills:", { errorMessage: String(err), errorStack: (err instanceof Error ? err.stack : undefined) })
-  }
 }
 
 export async function indexRalphRulesInPalace(rootDir: string) {
@@ -264,11 +238,11 @@ export async function indexRalphRulesInPalace(rootDir: string) {
   // orchestrator skip the check (see orchestrator.ts checkDynamicRalphRules).
   const enumerateDynamicStateRule = {
     name: "Enumerate Dynamic State Rule",
-    description: "Checks if the user is asking to enumerate, list, show, count, or inventory the current state of a dynamic system resource (skills, sessions, files, channels, tools, processes, configs). When the user asks for a live enumeration, the answer must come from a tool, not from memory.",
-    intentRegex: "\\b(listame|lista|listas|listar|enumera|enumerar|mostrame|mostrar|ensename|ensenar|dime\\s+(?:que|cuales|cuantas|cuantos|qué|cuáles|cuántas|cuántos)|inventario|inventaria|qué\\s+(?:skills|herramientas|sessions|sesiones|archivos|files|tools|tienes|hay|existen)|how\\s+many|cuantas?\\s+(?:skills|herramientas|sessions|sesiones|archivos|files|tools|hay)|show\\s+(?:me\\s+)?(?:all\\s+)?(?:your\\s+)?(?:skills|sessions|files|tools))\\b",
-    requiredRegex: "\\b(skills?|herramientas?|tools?|sessions?|sesiones?|archivos?|files?|canales?|channels?|procesos?|processes?|configs?|profiles?|modelos?|models?)\\b",
+    description: "Checks if the user is asking to enumerate, list, show, count, or inventory the current state of a dynamic system resource (sessions, files, channels, tools, processes, configs). When the user asks for a live enumeration, the answer must come from a tool, not from memory.",
+    intentRegex: "\\b(listame|lista|listas|listar|enumera|enumerar|mostrame|mostrar|ensename|ensenar|dime\\s+(?:que|cuales|cuantas|cuantos|qué|cuáles|cuántas|cuántos)|inventario|inventaria|qué\\s+(?:herramientas|sessions|sesiones|archivos|files|tools|tienes|hay|existen)|how\\s+many|cuantas?\\s+(?:herramientas|sessions|sesiones|archivos|files|tools|hay)|show\\s+(?:me\\s+)?(?:all\\s+)?(?:your\\s+)?(?:sessions|files|tools))\\b",
+    requiredRegex: "\\b(herramientas?|tools?|sessions?|sesiones?|archivos?|files?|canales?|channels?|procesos?|processes?|configs?|profiles?|modelos?|models?)\\b",
     requiredTools: [],
-    errorMessage: "[Ralph Loop] SYSTEM ALERT\nEl usuario pidió enumerar/listar el estado actual de un recurso dinámico del sistema (skills, sessions, archivos, tools, etc.).\nTu respuesta parece basada en memoria/recuerdo, NO en una tool ejecutada en este turno.\nEsto está PROHIBIDO. La respuesta correcta es ejecutar la tool correspondiente (ListSkills para skills, Read/Glob/list_files para archivos, etc.) y reportar lo que la tool devuelve.\nNO respondas desde memoria con disclaimers ('tomátelo con pinzas', 'no verifiqué', 'si querés el 100% decime').\nCorregilo: ejecutá la tool apropiada y respondé con el resultado real."
+    errorMessage: "[Ralph Loop] SYSTEM ALERT\nEl usuario pidió enumerar/listar el estado actual de un recurso dinámico del sistema (sessions, archivos, tools, etc.).\nTu respuesta parece basada en memoria/recuerdo, NO en una tool ejecutada en este turno.\nEsto está PROHIBIDO. La respuesta correcta es ejecutar la tool correspondiente (Read/Glob/list_files para archivos, etc.) y reportar lo que la tool devuelve.\nNO respondas desde memoria con disclaimers ('tomátelo con pinzas', 'no verifiqué', 'si querés el 100% decime').\nCorregilo: ejecutá la tool apropiada y respondé con el resultado real."
   }
 
   try {

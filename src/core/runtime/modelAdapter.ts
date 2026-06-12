@@ -10,7 +10,7 @@ import { AbortError, ApiError, ContextOverflowError, HttpError, ProviderOverload
 import { createLogger, type Logger } from "../logging/logger.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider, getDefaultReasoningLevel, type ReasoningLevel } from "./modelRegistry.ts"
-import { compactSession, fileMemory, getSession, getRawMessagesForSession, getDb, readSessionSources, tailEvents, listSessionTasks, listDynamicSkills, appendWorklog, saveResolvedError, querySimilarErrors, deleteMessages, rewriteMessageInPlace } from "../session/store.ts"
+import { compactSession, fileMemory, getSession, getRawMessagesForSession, getDb, readSessionSources, tailEvents, listSessionTasks, appendWorklog, saveResolvedError, querySimilarErrors, deleteMessages, rewriteMessageInPlace } from "../session/store.ts"
 import type { RecentToolCall } from "./coherenceGuard.ts"
 import { wrapAuditFeedback } from "./auditFeedback.ts"
 import { incrementalFlushSession, getContextFlushThresholdChars } from "../context/incrementalFlush.ts"
@@ -552,38 +552,7 @@ function buildSystemPrompt(args: {
     )
   }
 
-  let skillsBlock = ""
-  try {
-    const allSkills = listDynamicSkills(args.rootDir)
-    const availableToolsList = listModelTools(isSubAgent, blockedTools, args.allowedToolNames, args.rootDir, exposeTelegramDownload)
-    const availableToolNamesSet = new Set(availableToolsList.map(t => t.name))
 
-    const filteredSkills = allSkills.filter(skill => {
-      if (!skill.active) return false
-      if (args.allowedToolNames && !args.allowedToolNames.includes(skill.name)) return false
-      if (skill.requiresTools && skill.requiresTools.length > 0) {
-        for (const reqTool of skill.requiresTools) {
-          if (!availableToolNamesSet.has(reqTool)) {
-            return false
-          }
-        }
-      }
-      return true
-    })
-
-    if (filteredSkills.length > 0) {
-      skillsBlock = [
-        "## Available Skills (Procedural SOPs)",
-        "The following dynamic skills are registered in the system. They represent proven standard operating procedures (SOPs) for resolving complex tasks using system tools:",
-        "<available_skills>",
-        filteredSkills.map(s => `- ${s.name}: ${s.description}`).join("\n"),
-        "</available_skills>",
-        "IMPORTANT: If the user's task or any intermediate step aligns with any of the available skills listed above, call the `skill_view` tool (e.g., `skill_view({ name: \"skill_name\" })`) to read the standard operating procedure. Follow the SOP steps by default, BUT if the user explicitly asks to skip, modify, or override any step in the procedure, their instruction takes priority over the SOP.",
-      ].join("\n")
-    }
-  } catch (err) {
-    // Fail-safe
-  }
 
   const staticSystem = [
     "You are Monolito V2, a local assistant with tool access.",
@@ -627,7 +596,7 @@ function buildSystemPrompt(args: {
     "- Never accept a \"read everything\" task literally. If the prompt says \"read all of X\" and X is large (more than ~20 files), scope down to representative samples + a high-level summary, unless the task explicitly demands exhaustive coverage.",
     "",
     "EVIDENCE-FIRST RULE FOR DYNAMIC SYSTEM STATE (CRITICAL):",
-    "- When the user asks to enumerate, list, count, read, show, or inventory the current state of a dynamic resource (skills, sessions, files, channels, processes, tools, configs, etc.), you MUST execute the appropriate tool first. The answer is what the tool returns — not what you remember.",
+    "- When the user asks to enumerate, list, count, read, show, or inventory the current state of a dynamic resource (sessions, files, channels, processes, tools, configs, etc.), you MUST execute the appropriate tool first. The answer is what the tool returns — not what you remember.",
     "- You are FORBIDDEN from responding from memory/recall when a tool can answer the question, and you are FORBIDDEN from adding disclaimers to cover for not having run the tool (e.g. \"tomátelo con pinzas\", \"no verifiqué\", \"ojo con eso\", \"si querés el 100% decime y lo corro\").",
     "- The right pattern is: run the tool → answer with the result. Not: answer from memory → offer to verify later.",
     "- This rule covers: skills, dynamic skills, sessions, files, directories, channel configs, processes, tool lists, model profiles, logs, database state, and any other resource that has a tool to query it.",
@@ -665,22 +634,21 @@ function buildSystemPrompt(args: {
           "",
           "6. WORKFLOW DE VOLUMEN: para tareas de alto volumen (muchas imágenes) que requieran scraping paralelo, usá Bash con loops o websearch, y entregá el resultado en este turno.",
           "",
-          "7. SKILLS DINÁMICOS: NO crees dynamic skills (CreateSkill) ni tools custom para descargar, buscar o enviar imágenes. Usá siempre las tools nativas ImageSearch, TelegramSendPhoto, VisionAnalyze, TelegramGetRecentPhotos y DownloadFile.",
+          "7. IMAGENES: Usá siempre las tools nativas ImageSearch, TelegramSendPhoto, VisionAnalyze, TelegramGetRecentPhotos y DownloadFile. No intentes crear tools custom ni skills para esto.",
           "",
           "8. AUDIO/VOZ EN TELEGRAM: para audio/voice no respondas 'generando audio' a menos que el mismo turno ya haya iniciado GenerateSpeech. Completá la secuencia GenerateSpeech → TelegramSendAudio/TelegramSendVoice, y confirmá solo después de que el envío sea exitoso.",
         ].join("\n"),
     "Available tools:",
     buildToolSummary(isSubAgent, blockedTools, args.allowedToolNames, args.rootDir, exposeTelegramDownload),
-    skillsBlock,
     bootstrap ? describeBootEntries(bootstrap.entries) : "",
     isSubAgent ? "" : [
       "<JERARQUIA_DE_DIRECTIVAS>",
       "In case of conflicting instructions, you MUST respect this priority order:",
-      "Level 0 (SUPREME — USER INTENT): The user's explicit instructions in the active conversation ALWAYS take absolute precedence over everything else. If the user tells you to skip a step, change a workflow, ignore a stored preference, or do something differently than what your BOOT wings, dynamic skills, or system rules say, you MUST obey the user. The user is the owner and operator of this system; stored rules (BOOT_*, CONF_SKILLS) are their own preferences that they can override at any time.",
+      "Level 0 (SUPREME — USER INTENT): The user's explicit instructions in the active conversation ALWAYS take absolute precedence over everything else. If the user tells you to skip a step, change a workflow, ignore a stored preference, or do something differently than what your BOOT wings or system rules say, you MUST obey the user. The user is the owner and operator of this system; stored rules (BOOT_*) are their own preferences that they can override at any time.",
       "Level 1 (CRITICAL): Hard system safety constraints (tool harness limits, token budgets, API rate limits). These are infrastructure limits, not behavioral rules.",
       "Level 2 (HIGH): System prompt behavioral rules and defaults:",
       "- FORBIDDEN: Do not attempt WebSearch or WebFetch to search for images. For simple searches of photos/images, use ImageSearch directly and deliver image_urls or send them via TelegramSendPhoto.",
-      "Level 3 (DEFAULT): Rules, facts, and preferences stored in BOOT_MEMORY, BOOT_TOOLS, BOOT_SOUL, BOOT_AGENTS, and dynamic skills (CONF_SKILLS). These are user-defined soft preferences that the user can override at any time by saying so in the chat.",
+      "Level 3 (DEFAULT): Rules, facts, and preferences stored in BOOT_MEMORY, BOOT_TOOLS, BOOT_SOUL, BOOT_AGENTS. These are user-defined soft preferences that the user can override at any time by saying so in the chat.",
       "  - Default Rule: If a BOOT_MEMORY instruction requires analyzing images synchronously, fulfill the user's request by calling the relevant tools (ImageSearch, VisionAnalyze, etc.) directly in the current turn, and confirm the action as your own.",
       "",
       "CRITICAL: If the user's active chat instruction conflicts with any Level 2 or Level 3 default behavior, the user's instruction wins. Always. Fulfill the request directly without pushback, moralizing, or refusal.",
@@ -951,7 +919,7 @@ export function getEffectiveModelConfig() {
 }
 
 function isOperationalTool(toolName: string): boolean {
-  const technicalTools = ["Bash", "Write", "Edit", "Replace", "patch", "Delete", "Undo", "Save", "CreateSkill", "DeleteSkill"]
+  const technicalTools = ["Bash", "Write", "Edit", "Replace", "patch", "Delete", "Undo", "Save"]
   return !technicalTools.includes(toolName)
 }
 
