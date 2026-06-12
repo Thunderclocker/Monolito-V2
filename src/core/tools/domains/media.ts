@@ -406,7 +406,7 @@ export const mediaTools: ToolDefinition[] = [
   inputSchema: {
     type: "object",
     properties: {
-      action: { type: "string", enum: ["clone", "list", "list_remote", "delete", "purge", "rename"], description: "Accion a realizar. IMPORTANTE: cuando el usuario pregunte por voces en MiniMax, en el provider, remotas, en la nube, o similares, usá SIEMPRE 'list_remote' (que llama a MiniMax GET /v1/get_voice). 'list' solo lee la config local (CONF_CHANNELS.tts.clonedVoices) y NO muestra lo que está en MiniMax. Las demás acciones: 'clone' (nueva voz), 'delete' (solo local), 'purge' (MiniMax DELETE /v1/delete_voice + local), 'rename' (purge+clone con nuevo alias)." },
+      action: { type: "string", enum: ["clone", "list", "list_remote", "delete", "purge", "rename", "sync"], description: "Accion a realizar. IMPORTANTE: cuando el usuario pregunte por voces en MiniMax, en el provider, remotas, en la nube, o similares, usá SIEMPRE 'list_remote' (que llama a MiniMax GET /v1/get_voice). 'list' solo lee la config local (CONF_CHANNELS.tts.clonedVoices) y NO muestra lo que está en MiniMax. Las demás acciones: 'clone' (nueva voz), 'delete' (solo local), 'purge' (MiniMax DELETE /v1/delete_voice + local), 'rename' (purge+clone con nuevo alias), 'sync' (sincroniza voces remotas de MiniMax a la config local adoptando voces huérfanas)." },
       alias: { type: "string", description: "Nombre amigable para la voz clonada (ej: 'cristian', 'mia'). Requerido para clone/delete. Solo chars [a-z0-9_-], 1-32 chars." },
       source: {
         type: "object",
@@ -418,7 +418,7 @@ export const mediaTools: ToolDefinition[] = [
         required: ["type", "value"],
         additionalProperties: false,
       },
-      voice_id: { type: "string", description: "voice_id a borrar. Alternativa a alias para delete." },
+      voice_id: { type: "string", description: "voice_id a borrar o purgar. Alternativa a alias para delete/purge." },
       new_alias: { type: "string", description: "Nuevo nombre amigable para la voz clonada (requerido para rename). Solo chars [a-z0-9_-], 1-32 chars." },
       model: { type: "string", description: "Modelo de voice clone. Default: t2aModel de la config (o 'speech-2.8-hd')." },
       text: { type: "string", description: "Texto opcional de muestra que el provider usa para el clone. Default: '' (MiniMax infiere del audio)." },
@@ -431,8 +431,8 @@ export const mediaTools: ToolDefinition[] = [
   concurrencySafe: false,
   validate: input => {
     const action = input.action
-    if (action !== "clone" && action !== "list" && action !== "list_remote" && action !== "delete" && action !== "purge" && action !== "rename") {
-      return "action must be 'clone', 'list', 'list_remote', 'delete', 'purge' or 'rename'"
+    if (action !== "clone" && action !== "list" && action !== "list_remote" && action !== "delete" && action !== "purge" && action !== "rename" && action !== "sync") {
+      return "action must be 'clone', 'list', 'list_remote', 'delete', 'purge', 'rename' or 'sync'"
     }
     if (action === "clone") {
       if (!input.alias || typeof input.alias !== "string") return "alias is required for clone"
@@ -466,7 +466,7 @@ export const mediaTools: ToolDefinition[] = [
     return null
   },
   async run(input, context) {
-    const action = input.action as "clone" | "list" | "list_remote" | "delete" | "purge" | "rename"
+    const action = input.action as "clone" | "list" | "list_remote" | "delete" | "purge" | "rename" | "sync"
     const config = readChannelsConfig()
     const tts = normalizeTtsConfig(config.tts)
     const activeProfile = getActiveProfile()
@@ -646,13 +646,95 @@ export const mediaTools: ToolDefinition[] = [
       if (json.base_resp?.status_code && json.base_resp.status_code !== 0) {
         return formatToolError(`list_remote rechazado: ${json.base_resp.status_msg || json.base_resp.status_code}`)
       }
+
+      // Auto-sync remote voices to local config (adopt orphans)
+      const remoteVoices = json.voice_cloning || []
+      const localVoices = tts.clonedVoices || {}
+      let updated = false
+      const newVoices = { ...localVoices }
+      const newlyAdopted: string[] = []
+
+      for (const remote of remoteVoices) {
+        const remoteId = remote.voice_id
+        const alreadyMapped = Object.entries(localVoices).some(([alias, id]) => id === remoteId || alias === remoteId)
+        if (!alreadyMapped) {
+          newVoices[remoteId] = remoteId
+          newlyAdopted.push(remoteId)
+          updated = true
+        }
+      }
+
+      if (updated) {
+        writeChannelsConfig({
+          ...config,
+          tts: {
+            ...(config.tts || {}),
+            clonedVoices: newVoices,
+          }
+        })
+      }
+
       return {
         provider: "minimax",
         base_url: baseUrl,
         voice_type: "voice_cloning",
         voices: json.voice_cloning || [],
         count: (json.voice_cloning || []).length,
+        newly_synchronized: newlyAdopted.length > 0 ? newlyAdopted : undefined,
         note: "Las voces clonadas aparecen solo después de usarse al menos una vez con GenerateSpeech.",
+      }
+    }
+
+    if (action === "sync") {
+      // GET /v1/get_voice to sync local with remote
+      const resp = await fetch(`${baseUrl}/get_voice`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ voice_type: "voice_cloning" }),
+        signal: AbortSignal.timeout(30_000),
+      })
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => "")
+        return formatToolError(`sync fallo al consultar MiniMax: HTTP ${resp.status}${body ? ` - ${body.slice(0, 300)}` : ""}`)
+      }
+      const json = await resp.json() as { voice_cloning?: Array<{ voice_id: string; description?: string[]; created_time?: string }>; base_resp?: { status_code?: number; status_msg?: string } }
+      if (json.base_resp?.status_code && json.base_resp.status_code !== 0) {
+        return formatToolError(`sync rechazado: ${json.base_resp.status_msg || json.base_resp.status_code}`)
+      }
+
+      const remoteVoices = json.voice_cloning || []
+      const localVoices = tts.clonedVoices || {}
+      let updated = false
+      const newVoices = { ...localVoices }
+      const newlyAdopted: string[] = []
+
+      for (const remote of remoteVoices) {
+        const remoteId = remote.voice_id
+        const alreadyMapped = Object.entries(localVoices).some(([alias, id]) => id === remoteId || alias === remoteId)
+        if (!alreadyMapped) {
+          newVoices[remoteId] = remoteId
+          newlyAdopted.push(remoteId)
+          updated = true
+        }
+      }
+
+      if (updated) {
+        writeChannelsConfig({
+          ...config,
+          tts: {
+            ...(config.tts || {}),
+            clonedVoices: newVoices,
+          }
+        })
+      }
+
+      return {
+        ok: true,
+        action: "sync",
+        synchronized: newlyAdopted,
+        count_synchronized: newlyAdopted.length,
+        voices: newVoices,
+        total_count: Object.keys(newVoices).length,
       }
     }
 

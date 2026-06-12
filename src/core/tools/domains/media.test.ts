@@ -63,3 +63,57 @@ test("VoiceClone purge handles alias fallback when not in config", async () => {
 
   assert.equal(result.voice_id, "voz_inexistente_local")
 })
+
+test("VoiceClone sync action adopts remote voices to local config", async () => {
+  const tool = getTool("VoiceClone")
+  assert.ok(tool)
+
+  const { writeChannelsConfig, readChannelsConfig } = await import("../../channels/config.ts")
+  writeChannelsConfig({
+    tts: {
+      provider: "minimax",
+      apiKey: "fake-api-key",
+      clonedVoices: {
+        voz_local: "voz_local_id"
+      },
+    },
+  })
+
+  // Mock global fetch
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith("/get_voice")) {
+      return {
+        ok: true,
+        json: async () => ({
+          voice_cloning: [
+            { voice_id: "voz_local_id" },
+            { voice_id: "voz_huerfana_remota" }
+          ],
+          base_resp: { status_code: 0 }
+        })
+      } as unknown as Response
+    }
+    return { ok: false } as unknown as Response
+  }
+
+  try {
+    const result = await tool.run({
+      action: "sync",
+    }, {
+      rootDir: testMonolitoRoot,
+      cwd: testMonolitoRoot,
+    }) as { ok: boolean; synchronized: string[]; voices: Record<string, string> }
+
+    assert.ok(result.ok)
+    assert.deepEqual(result.synchronized, ["voz_huerfana_remota"])
+    
+    // Check config was updated
+    const config = readChannelsConfig()
+    assert.equal(config.tts?.clonedVoices?.["voz_huerfana_remota"], "voz_huerfana_remota")
+    assert.equal(config.tts?.clonedVoices?.["voz_local"], "voz_local_id")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
