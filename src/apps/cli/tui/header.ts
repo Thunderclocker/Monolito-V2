@@ -34,13 +34,18 @@ function formatCount(n: number): string {
   return String(n)
 }
 
-function formatDaysUntil(msTimestamp: number): string {
+function formatResetTime(msTimestamp: number): string {
   const ms = msTimestamp - Date.now()
-  const days = Math.ceil(ms / (24 * 60 * 60 * 1000))
-  if (days > 1) return ` │ reset in ${days}d`
-  if (days === 1) return " │ reset in 1d"
-  if (days === 0) return " │ resets today"
-  return ""
+  if (ms <= 0) return " │ resets now"
+  const totalMinutes = Math.ceil(ms / (60 * 1000))
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  if (hours >= 24) {
+    const days = Math.floor(hours / 24)
+    return ` │ reset in ${days}d`
+  }
+  if (hours > 0) return ` │ resets in ${hours}h ${minutes}m`
+  return ` │ resets in ${minutes}m`
 }
 
 async function fetchMinimaxTokenRemains(): Promise<string | null> {
@@ -65,7 +70,7 @@ async function fetchMinimaxTokenRemains(): Promise<string | null> {
     // Prefer "general" model, fallback to first entry
     const entry = data.model_remains.find(m => m.model_name === "general") ?? data.model_remains[0]
     const pct = entry.current_interval_remaining_percent
-    const reset = formatDaysUntil(entry.end_time)
+    const reset = formatResetTime(entry.end_time)
 
     // Show token counts if available (some plans report usage)
     if (entry.current_interval_total_count > 0) {
