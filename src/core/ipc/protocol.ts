@@ -40,7 +40,7 @@ export type AgentEvent =
       }
     }
   | { type: "tool.start"; sessionId: string; toolUseId?: string; tool: string; input: unknown }
-  | { type: "tool.finish"; sessionId: string; toolUseId?: string; tool: string; ok: boolean; output: unknown }
+  | { type: "tool.finish"; sessionId: string; toolUseId?: string; tool: string; ok: boolean; output: unknown; input?: unknown }
   | { type: "error"; sessionId: string; error: string }
   | { type: "mcp.connected"; sessionId: string; server: string }
   | { type: "mcp.called"; sessionId: string; server: string; tool: string }

@@ -180,10 +180,26 @@ export function appendTranscriptBlocks(viewport: TranscriptViewport, blocks: Tra
   if (blocks.length === 0) return viewport
   let nextBlocks = viewport.blocks
   for (const block of blocks) {
+    if (block.type === "event" && block.toolUseId) {
+      let foundIndex = -1
+      for (let i = nextBlocks.length - 1; i >= 0; i--) {
+        const b = nextBlocks[i]
+        if (b.type === "event" && b.toolUseId === block.toolUseId) {
+          foundIndex = i
+          break
+        }
+      }
+      if (foundIndex !== -1) {
+        const { replacesLastEvent: _drop, ...rest } = block
+        const newBlocks = [...nextBlocks]
+        newBlocks[foundIndex] = rest as TranscriptBlock
+        nextBlocks = newBlocks
+        continue
+      }
+    }
+
     if (block.type === "event" && block.replacesLastEvent && nextBlocks.length > 0) {
-      // In-place mutation of the last event block (used by tool.finish so a
-      // single tool call shows as one bullet whose text updates when the
-      // tool returns, instead of two separate bullets with different colors).
+      // In-place mutation of the last event block (fallback)
       const { replacesLastEvent: _drop, ...rest } = block
       nextBlocks = [...nextBlocks.slice(0, -1), rest as TranscriptBlock]
     } else {

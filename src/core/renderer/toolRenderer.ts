@@ -537,7 +537,7 @@ export function renderToolStart(tool: string, input: unknown): ToolRenderLine {
   }
 }
 
-export function renderToolFinish(tool: string, ok: boolean, output: unknown): ToolRenderLine {
+export function renderToolFinish(tool: string, ok: boolean, output: unknown, input?: unknown): ToolRenderLine {
   const value = record(output)
   const tone: ToolRenderTone = ok ? "success" : "error"
   const label = ok ? "done" : "error"
@@ -556,7 +556,7 @@ export function renderToolFinish(tool: string, ok: boolean, output: unknown): To
           label,
           tone,
           text: `Command running in background${pid ? ` pid ${pid}` : ""}${outputPath ? ` · log ${outputPath}` : ""}${command ? ` · ${truncate(cleanShellCommand(command), 80)}` : ""}`,
-        }
+        };
       }
       const exitCode = getNumber(value, "exitCode")
       const failed = typeof exitCode === "number" && exitCode !== 0
@@ -566,7 +566,9 @@ export function renderToolFinish(tool: string, ok: boolean, output: unknown): To
       if (!stdout.trim() && !stderr.trim()) {
         return { label, tone, text: "(No output)" }
       }
-      return { label, tone, text: "" }
+      const cmdVal = input ? (record(input)?.command ?? getString(value, "command")) : getString(value, "command")
+      const cmdStr = typeof cmdVal === "string" ? `: ${truncate(cleanShellCommand(cmdVal), 80)}` : ""
+      return { label, tone, text: `Command completed${cmdStr}` }
     }
     case "Read": {
       return { label, tone, text: `Read ${humanizePath(getString(value, "path") ?? "file")}` }
@@ -787,7 +789,7 @@ export class ToolUseRenderer {
         return `${prefix}${ANSI.dim}${renderToolStartText(line)}${ANSI.reset}`
       }
       case "tool.finish": {
-        const line = renderToolFinish(event.tool, event.ok, event.output)
+        const line = renderToolFinish(event.tool, event.ok, event.output, event.input)
         const prefix = line.tone === "error" ? `${ANSI.red}${line.label}${ANSI.reset}` : `${ANSI.green}${line.label}${ANSI.reset}`
         if (event.tool === "Bash") this.pendingBashCommand = null
         if (event.ok) {

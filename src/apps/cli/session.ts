@@ -370,10 +370,11 @@ function renderExternalTelegramEvent(event: AgentEvent): TranscriptBlock[] {
         label: "telegram",
         tone: "info",
         text: `telegram ${chatId} ${renderToolStartText(line, "└─ ")}`,
+        toolUseId: event.toolUseId,
       }]
     }
     case "tool.finish": {
-      const line = renderToolFinish(event.tool, event.ok, event.output)
+      const line = renderToolFinish(event.tool, event.ok, event.output, event.input)
       if (!line.text) return []
       return [{
         type: "event",
@@ -381,6 +382,7 @@ function renderExternalTelegramEvent(event: AgentEvent): TranscriptBlock[] {
         tone: event.ok ? "info" : "error",
         text: `telegram ${chatId} ${line.text}`,
         replacesLastEvent: true,
+        toolUseId: event.toolUseId,
       }]
     }
     case "turn.completed":
@@ -450,6 +452,14 @@ class InteractiveTranscriptFormatter {
             return blocks
           }
         }
+        if (event.role === "system") {
+          return [{
+            type: "event",
+            label: "system",
+            tone: "neutral",
+            text: event.text,
+          }]
+        }
         if (event.role === "user") {
           return [{ type: "message", role: "user", text: unwrapChannelMessage(event.text) }]
         }
@@ -469,6 +479,7 @@ class InteractiveTranscriptFormatter {
           ...(event.thinking ? { thinking: event.thinking } : {}),
         }]
       case "turn.completed":
+        refreshMinimaxBalance()
         return [{ type: "assistant-meta", text: `${formatDuration(event.durationMs)} · ${formatUsage(event.usage)}` }]
       case "todo.updated":
         return [{
@@ -481,13 +492,13 @@ class InteractiveTranscriptFormatter {
         const line = renderToolStart(event.tool, event.input)
         const text = renderToolStartText(line, "└─ ")
         if (!text) return []
-        return [{ type: "event", label: line.label, tone: line.tone, text }]
+        return [{ type: "event", label: line.label, tone: line.tone, text, toolUseId: event.toolUseId }]
       }
       case "tool.finish": {
         if (event.ok && event.tool !== "GenerateSpeech") {
           this.pendingAssistantToolResults.push(stringifyPretty(event.output))
         }
-        const line = renderToolFinish(event.tool, event.ok, event.output)
+        const line = renderToolFinish(event.tool, event.ok, event.output, event.input)
         if (line.text) {
           // Replace the in-flight `tool.start` block (same bullet, only the
           // text changes) instead of appending a second one with a "done"
@@ -499,6 +510,7 @@ class InteractiveTranscriptFormatter {
             tone: event.ok ? "info" : "error",
             text: line.text,
             replacesLastEvent: true,
+            toolUseId: event.toolUseId,
           }]
         }
         return []
@@ -596,6 +608,7 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
   let needsClear = true
   let shouldRelaunchCli = false
   let relaunchSessionId: string | undefined
+  let relaunchMessage: string | undefined
   let loadedRevision = ""
   let revisionCheckInFlight = false
 
@@ -928,12 +941,13 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
         loadedRevision = currentRevision
         shouldRelaunchCli = true
         relaunchSessionId = activeSessionId !== "offline" ? activeSessionId : undefined
+        relaunchMessage = `Detected code update to ${currentRevision}. Reloading interactive CLI...`
         transcript = appendTranscriptBlocks(transcript, [
           {
             type: "event",
             label: "update",
             tone: "info",
-            text: `Detected code update to ${currentRevision}. Reloading interactive CLI...`,
+            text: relaunchMessage,
           },
         ])
         redraw()
@@ -1041,18 +1055,20 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
         const nextHead = await runGit(rootDir, ["rev-parse", "--short", "HEAD"])
         shouldRelaunchCli = true
         relaunchSessionId = activeSessionId !== "offline" ? activeSessionId : undefined
+        const successMsg = [
+          `Synchronized successfully with origin/${branch}.`,
+          `Remote: ${remoteUrl}`,
+          `Current revision: ${nextHead}`,
+          backupBranch ? `Previous local HEAD was backed up to branch: ${backupBranch}` : "",
+          stashLabel ? `Local uncommitted changes were backed up automatically to stash: ${stashLabel}` : "",
+          "Daemon restart verified.",
+          "Restarting the interactive CLI to load updated commands and menus...",
+        ].filter(Boolean).join("\n")
+        relaunchMessage = successMsg
         return {
           type: "text",
           tone: "success",
-          content: [
-            `Synchronized successfully with origin/${branch}.`,
-            `Remote: ${remoteUrl}`,
-            `Current revision: ${nextHead}`,
-            backupBranch ? `Previous local HEAD was backed up to branch: ${backupBranch}` : "",
-            stashLabel ? `Local uncommitted changes were backed up automatically to stash: ${stashLabel}` : "",
-            "Daemon restart verified.",
-            "Restarting the interactive CLI to load updated commands and menus...",
-          ].filter(Boolean).join("\n"),
+          content: successMsg,
         }
       }
       if (cmd === "/config") {
@@ -1740,6 +1756,10 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
   } finally {
     cleanup()
     if (shouldRelaunchCli) {
+      if (relaunchMessage) {
+        stdout.write(`\n${relaunchMessage}\n\n`)
+        await new Promise(resolve => setTimeout(resolve, 1500))
+      }
       relaunchInteractiveCli()
     }
   }

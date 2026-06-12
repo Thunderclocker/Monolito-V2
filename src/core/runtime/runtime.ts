@@ -1236,7 +1236,12 @@ export class MonolitoV2Runtime {
     const abortController = new AbortController()
     const turnTimeout = setTimeout(() => abortController.abort(new TurnTimeoutError("Memory consolidation turn exceeded timeout")), 200_000)
 
-    this.emit({ type: "message.received", sessionId, role: "system", text: "⚡ MemoryAgent analizando conversación..." })
+    const emitSystemMessage = (text: string) => {
+      appendMessage(this.rootDir, sessionId, "system", text)
+      this.emit({ type: "message.received", sessionId, role: "system", text })
+    }
+
+    emitSystemMessage("⚡ MemoryAgent analizando conversación...")
 
     try {
       logger.info(`[MemoryAgent] Starting memory consolidation for session ${sessionId}...`)
@@ -1265,7 +1270,7 @@ export class MonolitoV2Runtime {
 
       if (newMessages.length === 0) {
         logger.info("[MemoryAgent] No new messages since last consolidation.")
-        this.emit({ type: "message.received", sessionId, role: "system", text: "⚡ MemoryAgent — sin mensajes nuevos que procesar." })
+        emitSystemMessage("⚡ MemoryAgent — sin mensajes nuevos que procesar.")
         return
       }
 
@@ -1285,7 +1290,7 @@ export class MonolitoV2Runtime {
       const lastProcessedId = batch[batch.length - 1].id
       const remaining = newMessages.length - batchEnd
 
-      this.emit({ type: "message.received", sessionId, role: "system", text: `⚡ MemoryAgent procesando ${batch.length} mensaje(s)${remaining > 0 ? ` (${remaining} restantes para próximo ciclo)` : ""}...` })
+      emitSystemMessage(`⚡ MemoryAgent procesando ${batch.length} mensaje(s)${remaining > 0 ? ` (${remaining} restantes para próximo ciclo)` : ""}...`)
 
       // Load existing memory context for dedup awareness
       const lastQuery = batch[batch.length - 1]?.text || ""
@@ -1369,7 +1374,7 @@ Rules:
           now: new Date().toISOString(),
         })
         logger.info(`[MemoryAgent] Consolidation done. ${finalText} | ${timingSummary}`)
-        this.emit({ type: "message.received", sessionId, role: "system", text: `✅ MemoryAgent — ${finalText}` })
+        emitSystemMessage(`✅ MemoryAgent — ${finalText}`)
         appendWorklog(this.rootDir, sessionId, { type: "note", summary: `MemoryAgent: ${finalText}\n${timingSummary}` })
       } else {
         const reason = turn.error ? `error: ${turn.error}` : "empty final text (model stuck)"
@@ -1379,7 +1384,7 @@ Rules:
           this._lastMemoryConsolidationFailureAt = Date.now()
         }
         logger.error(`[MemoryAgent] Consolidation failed (${this._memoryConsolidationFailures} consecutive): ${reason}`)
-        this.emit({ type: "message.received", sessionId, role: "system", text: `❌ MemoryAgent falló: ${reason}` })
+        emitSystemMessage(`❌ MemoryAgent falló: ${reason}`)
         appendWorklog(this.rootDir, sessionId, { type: "note", summary: `MemoryAgent failed: ${reason}${isRecoverable ? " [recoverable]" : ""}\n${timingSummary}` })
       }
     } catch (e) {
@@ -1390,7 +1395,7 @@ Rules:
         this._lastMemoryConsolidationFailureAt = Date.now()
       }
       logger.error(`[MemoryAgent] Execution error (${this._memoryConsolidationFailures} consecutive): ${errMsg}${isRecoverable ? " [recoverable]" : ""}`)
-      this.emit({ type: "message.received", sessionId, role: "system", text: `❌ MemoryAgent error: ${errMsg.slice(0, 200)}` })
+      emitSystemMessage(`❌ MemoryAgent error: ${errMsg.slice(0, 200)}`)
       const totalMs = Date.now() - turnStartedAt
       appendWorklog(this.rootDir, sessionId, { type: "note", summary: `[MemoryAgent] Execution error: ${errMsg}. total=${totalMs}ms` })
     } finally {

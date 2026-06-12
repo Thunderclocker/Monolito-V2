@@ -8,7 +8,19 @@ import type { HeaderState } from "./types.ts"
 
 const MINIMAX_TOKEN_CACHE_TTL = 30 * 60 * 1000 // 30 minutes
 
-let minimaxTokenCache: { balance: string | null; timestamp: number } | null = null
+type MinimaxTokenBalance = {
+  pct: number
+  total: number
+  used: number
+  endTime: number
+}
+
+let minimaxTokenCache: {
+  balance: MinimaxTokenBalance | null
+  timestamp: number
+  apiKey: string
+  model: string
+} | null = null
 
 type MinimaxTokenPlanInterval = {
   model_name: string
@@ -48,16 +60,12 @@ function formatResetTime(msTimestamp: number): string {
   return ` │ resets in ${minutes}m`
 }
 
-async function fetchMinimaxTokenRemains(): Promise<string | null> {
+async function fetchMinimaxTokenRemains(apiKey: string, model: string): Promise<MinimaxTokenBalance | null> {
   try {
-    const activeProfile = getActiveProfile()
-    const isMiniMax = activeProfile?.provider === "minimax" || activeProfile?.baseUrl?.toLowerCase().includes("minimax")
-    if (!isMiniMax || !activeProfile?.apiKey) return null
-
     const res = await fetch("https://www.minimax.io/v1/token_plan/remains", {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${activeProfile.apiKey}`,
+        Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
       signal: AbortSignal.timeout(8_000),
@@ -67,21 +75,28 @@ async function fetchMinimaxTokenRemains(): Promise<string | null> {
     if (data.base_resp && data.base_resp.status_code !== 0) return null
     if (!data.model_remains?.length) return null
 
-    // Prefer "general" model, fallback to first entry
-    const entry = data.model_remains.find(m => m.model_name === "general") ?? data.model_remains[0]
-    const pct = entry.current_interval_remaining_percent
-    const reset = formatResetTime(entry.end_time)
-
-    // Show token counts if available (some plans report usage)
-    if (entry.current_interval_total_count > 0) {
-      const used = entry.current_interval_usage_count
-      const total = entry.current_interval_total_count
-      const remaining = total - used
-      return `${formatCount(remaining)} / ${formatCount(total)} (${pct}%)${reset}`
+    // Prefer active model, fallback to substring match, then "general", then first entry
+    const activeModel = model
+    let entry = data.model_remains.find(m => m.model_name === activeModel)
+    if (!entry && activeModel) {
+      entry = data.model_remains.find(m =>
+        activeModel.toLowerCase().includes(m.model_name.toLowerCase()) ||
+        m.model_name.toLowerCase().includes(activeModel.toLowerCase())
+      )
+    }
+    if (!entry) {
+      entry = data.model_remains.find(m => m.model_name === "general")
+    }
+    if (!entry) {
+      entry = data.model_remains[0]
     }
 
-    // Time-based plan: show percent only
-    return `${pct}% remaining${reset}`
+    return {
+      pct: entry.current_interval_remaining_percent,
+      total: entry.current_interval_total_count,
+      used: entry.current_interval_usage_count,
+      endTime: entry.end_time,
+    }
   } catch {
     return null
   }
@@ -92,20 +107,53 @@ function getMinimaxBalance(): string | null {
   const isMiniMaxNow = activeProfile?.provider === "minimax" || activeProfile?.baseUrl?.toLowerCase().includes("minimax")
 
   // If current profile is not MiniMax, clear cache and return null
-  if (!isMiniMaxNow) {
+  if (!isMiniMaxNow || !activeProfile?.apiKey) {
     if (minimaxTokenCache) minimaxTokenCache = null
     return null
   }
 
   const now = Date.now()
-  if (minimaxTokenCache && now - minimaxTokenCache.timestamp < MINIMAX_TOKEN_CACHE_TTL) {
-    return minimaxTokenCache.balance
+  const currentKey = activeProfile.apiKey
+  const currentModel = activeProfile.model || ""
+
+  // Invalidate cache if apiKey or model has changed
+  if (minimaxTokenCache && (minimaxTokenCache.apiKey !== currentKey || minimaxTokenCache.model !== currentModel)) {
+    minimaxTokenCache = null
   }
+
+  if (minimaxTokenCache && now - minimaxTokenCache.timestamp < MINIMAX_TOKEN_CACHE_TTL) {
+    if (!minimaxTokenCache.balance) return null
+    const b = minimaxTokenCache.balance
+    const reset = formatResetTime(b.endTime)
+    if (b.total > 0) {
+      const remaining = b.total - b.used
+      return `${formatCount(remaining)} / ${formatCount(b.total)} (${b.pct}%)${reset}`
+    }
+    return `${b.pct}% remaining${reset}`
+  }
+
   // Fire and forget — update cache asynchronously, return stale or null
-  fetchMinimaxTokenRemains().then(balance => {
-    minimaxTokenCache = { balance, timestamp: Date.now() }
+  if (!minimaxTokenCache) {
+    minimaxTokenCache = { balance: null, timestamp: now, apiKey: currentKey, model: currentModel }
+  } else {
+    minimaxTokenCache.timestamp = now
+  }
+
+  fetchMinimaxTokenRemains(currentKey, currentModel).then(balance => {
+    const activeNow = getActiveProfile()
+    if (activeNow?.apiKey === currentKey && (activeNow?.model || "") === currentModel) {
+      minimaxTokenCache = { balance, timestamp: Date.now(), apiKey: currentKey, model: currentModel }
+    }
   })
-  return minimaxTokenCache?.balance ?? null
+
+  if (!minimaxTokenCache.balance) return null
+  const b = minimaxTokenCache.balance
+  const reset = formatResetTime(b.endTime)
+  if (b.total > 0) {
+    const remaining = b.total - b.used
+    return `${formatCount(remaining)} / ${formatCount(b.total)} (${b.pct}%)${reset}`
+  }
+  return `${b.pct}% remaining${reset}`
 }
 
 export function inferProvider(baseUrl: string) {
@@ -177,12 +225,17 @@ export function getHeaderState(rootDir: string, sessionId: string, connected: bo
 export function refreshMinimaxBalance() {
   const activeProfile = getActiveProfile()
   const isMiniMaxNow = activeProfile?.provider === "minimax" || activeProfile?.baseUrl?.toLowerCase().includes("minimax")
-  if (!isMiniMaxNow) {
-    minimaxTokenCache = { balance: null, timestamp: Date.now() }
+  if (!isMiniMaxNow || !activeProfile?.apiKey) {
+    minimaxTokenCache = null
     return
   }
-  minimaxTokenCache = null // force re-fetch on next render
-  fetchMinimaxTokenRemains().then(balance => {
-    minimaxTokenCache = { balance, timestamp: Date.now() }
+  const currentKey = activeProfile.apiKey
+  const currentModel = activeProfile.model || ""
+  minimaxTokenCache = null // force re-fetch
+  fetchMinimaxTokenRemains(currentKey, currentModel).then(balance => {
+    const activeNow = getActiveProfile()
+    if (activeNow?.apiKey === currentKey && (activeNow?.model || "") === currentModel) {
+      minimaxTokenCache = { balance, timestamp: Date.now(), apiKey: currentKey, model: currentModel }
+    }
   })
 }
