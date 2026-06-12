@@ -2023,13 +2023,14 @@ Review the existing skill library and apply the curation heuristics in your inst
         })
       }
 
-      // 2. Start instant acknowledgment concurrently (in background)
-      let ackPromise: Promise<{ text: string; isSimpleGreeting: boolean } | null> | null = null
+      // 2. Generate instant acknowledgment sequentially (no timeouts/racing)
+      let instantAcknowledgment: { text: string; isSimpleGreeting: boolean } | null = null
       if (!isSlash && !isSubAgent && autoAckEnabled) {
-        ackPromise = this.sendInstantAcknowledgment(sessionId, text, options?.delivery).catch(err => {
-          logger.warn(`Failed to generate/deliver instant acknowledgment: ${err instanceof Error ? err.message : String(err)}`)
-          return null
-        })
+        try {
+          instantAcknowledgment = await this.generateInstantAcknowledgment(sessionId, userText)
+        } catch (err) {
+          logger.warn(`Failed to generate instant acknowledgment: ${err instanceof Error ? err.message : String(err)}`)
+        }
       }
 
       // 3. Await the screenshot promise before proceeding to the actual runTurn
@@ -2041,37 +2042,37 @@ Review the existing skill library and apply the curation heuristics in your inst
         }
       }
 
-      // Await acknowledgment promise before starting the turn, with a short timeout
-      let instantAcknowledgment: { text: string; isSimpleGreeting: boolean } | null = null
-      if (ackPromise) {
-        instantAcknowledgment = await Promise.race([
-          ackPromise,
-          new Promise<null>(resolve => setTimeout(() => resolve(null), 1500))
-        ])
-      }
-
       appendMessage(this.rootDir, sessionId, "user", userText)
 
-      if (instantAcknowledgment?.isSimpleGreeting) {
-        // Simple greeting: the fast model has already fully answered it.
-        // We persist the acknowledgment response to the DB, complete the turn, and return.
-        appendMessage(this.rootDir, sessionId, "assistant", instantAcknowledgment.text)
-        appendWorklog(this.rootDir, sessionId, {
-          type: "session",
-          summary: `Turn completed (simple greeting handled by fast model: "${instantAcknowledgment.text}")`,
-        })
-        await this.transitionState(sessionId, "idle")
-        this.emit({
-          type: "turn.completed",
-          sessionId,
-          role: "assistant",
-          durationMs: Date.now() - processStartedAt,
-          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
-        })
-        return
-      }
-
       if (instantAcknowledgment) {
+        const voiceMode = session?.voiceMode === true
+        // Emit event so the client gets the text
+        this.emit({ type: "message.received", sessionId, role: "assistant", text: instantAcknowledgment.text })
+
+        // Deliver in background
+        void this.deliverAcknowledgment(sessionId, instantAcknowledgment.text, userText, voiceMode, options?.delivery).catch(err => {
+          logger.warn(`Failed to deliver instant acknowledgment: ${err instanceof Error ? err.message : String(err)}`)
+        })
+
+        if (instantAcknowledgment.isSimpleGreeting) {
+          // Simple greeting: the fast model has already fully answered it.
+          // We persist the acknowledgment response to the DB, complete the turn, and return.
+          appendMessage(this.rootDir, sessionId, "assistant", instantAcknowledgment.text)
+          appendWorklog(this.rootDir, sessionId, {
+            type: "session",
+            summary: `Turn completed (simple greeting handled by fast model: "${instantAcknowledgment.text}")`,
+          })
+          await this.transitionState(sessionId, "idle")
+          this.emit({
+            type: "turn.completed",
+            sessionId,
+            role: "assistant",
+            durationMs: Date.now() - processStartedAt,
+            usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+          })
+          return
+        }
+
         // Persist the acknowledgment to the database immediately so the main model reads it from the history.
         appendMessage(this.rootDir, sessionId, "assistant", instantAcknowledgment.text)
       }
@@ -4376,57 +4377,34 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
     return null
   }
 
-  private async sendInstantAcknowledgment(sessionId: string, userText: string, delivery?: DeliveryContext): Promise<{ text: string; isSimpleGreeting: boolean } | null> {
-    const session = this.getSession(sessionId)
-    const voiceMode = session?.voiceMode === true
-
+  private async generateInstantAcknowledgment(sessionId: string, userText: string): Promise<{ text: string; isSimpleGreeting: boolean } | null> {
     const systemPrompt = [
       "You are a helpful AI assistant. The user just sent a message.",
-      "Your job is to generate a very short, natural acknowledgment (1 to 6 words) in the same language as the user's message (e.g. if the user writes in Spanish, respond in Spanish; if in English, respond in English, etc.) indicating that you received the message and are working on it.",
-      "Provide a dynamic, context-aware acknowledgment based on the message content.",
+      "Determine if the user's message is a simple greeting, pleasantry, or social conversation (e.g., 'hello', 'how are you', 'how's it going', 'all good', 'and you?').",
+      "If the user's message is only a greeting/pleasantry and does NOT ask for any information, task, search, file reading/writing, or code execution, classify it as a simple greeting.",
+      "If the message asks a question, requests information, or asks to perform a task, it is NOT a simple greeting.",
       "",
-      "CRITICAL RULES:",
-      "1. Do NOT greet the user (e.g. do NOT say 'Hola', 'Hello', '¿cómo estás?', '¿en qué te puedo ayudar?') if the user's message asks a question or requests a task. Greet them ONLY when it is a simple greeting/social check, which MUST be prefixed with '[SIMPLE_GREETING]'.",
-      "2. Only classify as '[SIMPLE_GREETING]' if the user is saying hello, asking 'how are you' (¿cómo estás?, ¿todo bien?), or saying goodbye. If the user asks about ANY topic, concept, story, code, fact, or opinion (e.g. 'monolitos', 'odisea', 'que opinas de...'), it is NOT a simple greeting! It is an informational query.",
-      "3. If the user message is ONLY a simple greeting, pleasantry, or social comment and does NOT ask to perform any task, execute code, read/write files, or search for information, your response MUST start with the prefix '[SIMPLE_GREETING]'. For example: '[SIMPLE_GREETING] Hola, todo bien, ¿y vos?', '[SIMPLE_GREETING] Hello! How can I help you?'.",
+      "Your job is to generate a short, natural response (1 to 6 words) in the same language as the user's message, and return a JSON object with the following fields:",
+      "- 'isSimpleGreeting': boolean (true if it is only a greeting/pleasantry, false otherwise)",
+      "- 'text': string (the response text, e.g. '¡Hola! ¿Cómo estás?' for a greeting, or 'Revisando eso...', 'Dejame ver...' for a task/question)",
       "",
-      "Examples in Spanish (No-Greeting, Neutral):",
-      '- If the user asks to write/fix/check code: "A ver, dejame ver el código.", "Revisando el código...", "Ahí me fijo qué pasa."',
-      '- If the user asks for information/search/explanation: "A ver, dejame revisar.", "Ahí me fijo.", "Dejame ver."',
-      '- If it is a general request: "Estoy en eso.", "Dejame ver.", "A ver..."',
-      '- Other natural variations: "Dejame ver.", "Ahora lo reviso.", "Dale, me pongo con eso."',
-      "",
-      "Examples in English (No-Greeting, Neutral):",
-      '- If the user asks to write/fix/check code: "Checking the code...", "Let me look at the code.", "Let me check."',
-      '- If the user asks for information/search/explanation: "Let me check.", "Let me see.", "Looking into it."',
-      '- If it is a general request: "On it.", "I am on it.", "Let me see..."',
-      '- Other natural variations: "Checking now.", "Let me check.", "Got it, looking into it."',
-      "",
-      "Do NOT use markdown, emojis, quotes, or any introductory phrases. Output ONLY the raw acknowledgment text (with the '[SIMPLE_GREETING]' prefix if applicable)."
+      "Output ONLY a raw JSON object. Do NOT wrap in markdown code blocks, do not write anything else."
     ].join("\n")
 
     try {
-      const { text: ack } = await runBackgroundTextTask(this.rootDir, systemPrompt, userText, { maxTokens: 25 })
-      let ackText = ack.trim().replace(/^["']|["']$/g, "")
-      if (!ackText) return null
-
-      let isSimpleGreeting = false
-      if (ackText.includes("[SIMPLE_GREETING]")) {
-        isSimpleGreeting = true
-        ackText = ackText.replace("[SIMPLE_GREETING]", "").trim()
+      const { text: ack } = await runBackgroundTextTask(this.rootDir, systemPrompt, userText, { maxTokens: 80 })
+      let cleaned = ack.trim()
+      if (cleaned.startsWith("```")) {
+        cleaned = cleaned.replace(/^```json\s*/i, "").replace(/```$/, "").trim()
       }
-
-      // Emit event so the client gets the text
-      this.emit({ type: "message.received", sessionId, role: "assistant", text: ackText })
-
-      // Deliver in background
-      void this.deliverAcknowledgment(sessionId, ackText, userText, voiceMode, delivery).catch(err => {
-        logger.warn(`Failed to deliver instant acknowledgment: ${err instanceof Error ? err.message : String(err)}`)
-      })
+      const parsed = JSON.parse(cleaned)
+      const isSimpleGreeting = parsed.isSimpleGreeting === true
+      const ackText = String(parsed.text || "").trim()
+      if (!ackText) return null
 
       return { text: ackText, isSimpleGreeting }
     } catch (e) {
-      logger.debug(`[acknowledgement] Instant acknowledgment delivery failed or skipped: ${e instanceof Error ? e.message : String(e)}`)
+      logger.debug(`[acknowledgement] Instant acknowledgment generation failed or skipped: ${e instanceof Error ? e.message : String(e)}`)
       return null
     }
   }

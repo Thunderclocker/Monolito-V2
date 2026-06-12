@@ -27,7 +27,7 @@ export function extractPhotoAttachments(content: string): Array<{ localPath: str
 
 export function buildAnthropicMessages(messages: ConversationMessage[]): MessageParam[] {
   const merged = mergeConsecutiveMessages(messages)
-  return merged.flatMap<MessageParam>(message => {
+  const result = merged.flatMap<MessageParam>(message => {
     if (message.role === "tool") {
       return [{
         role: "user",
@@ -76,6 +76,16 @@ export function buildAnthropicMessages(messages: ConversationMessage[]): Message
     }
     return [{ role: message.role, content: message.content }]
   })
+
+  // If the last message is assistant, append a dummy user instruction message to prevent API validation errors and support silence constraint
+  if (result.length > 0 && result[result.length - 1].role === "assistant") {
+    result.push({
+      role: "user",
+      content: "[System: Please continue executing the request and call tools if needed. If the user request has already been fully answered by the assistant's previous message (such as a greeting or simple social pleasantry), and there are no further actions or tools to run, you MUST output absolutely nothing (an empty string).]",
+    })
+  }
+
+  return result
 }
 
 export function buildOpenAiMessages(system: string, messages: ConversationMessage[]) {
@@ -134,7 +144,7 @@ export function buildOpenAiMessages(system: string, messages: ConversationMessag
   if (output.length > 0 && output[output.length - 1].role === "assistant") {
     output.push({
       role: "user",
-      content: "[System: Please continue executing the request and call tools if needed, or provide the final response.]",
+      content: "[System: Please continue executing the request and call tools if needed. If the user request has already been fully answered by the assistant's previous message (such as a greeting or simple social pleasantry), and there are no further actions or tools to run, you MUST output absolutely nothing (an empty string).]",
     })
   }
 
