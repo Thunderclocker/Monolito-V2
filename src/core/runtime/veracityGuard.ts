@@ -182,6 +182,7 @@ export async function checkTurnIntegrity(
    - EXCEPTION 1: If the assistant called a tool that returned concrete evidence of the limitation (403, 404, ENOENT, permission denied, connection refused, etc.), this is VERIFIED incapacity, not unverified. Only flag cases where the claim is made WITHOUT any verification attempt.
    - EXCEPTION 2: If the user asked a hypothetical or rhetorical question about a tool or capability, an incapacity answer is an explanation, not a claim.
    - EXCEPTION 3: General disclaimers about future scenarios ("I can't predict the future", "I can't know what's in your head") are not claims about a current turn's capability.
+   - EXCEPTION 4: Disclaimers about conversational format, length, style, or modality constraints (e.g., "in voice mode I cannot write code", "no puedo darte una respuesta larga por audio", "I cannot send long texts here", "no puedo contestar con markdown") are formatting rules, NOT unverified functional incapacities. Do NOT flag them.
 
 Compare the assistant's claims with the list of tools actually executed in this turn.
 
