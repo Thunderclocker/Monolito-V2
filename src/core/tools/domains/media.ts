@@ -647,12 +647,13 @@ export const mediaTools: ToolDefinition[] = [
         return formatToolError(`list_remote rechazado: ${json.base_resp.status_msg || json.base_resp.status_code}`)
       }
 
-      // Auto-sync remote voices to local config (adopt orphans)
+      // Auto-sync remote voices to local config (adopt orphans + prune stale)
       const remoteVoices = json.voice_cloning || []
       const localVoices = tts.clonedVoices || {}
       let updated = false
       const newVoices = { ...localVoices }
       const newlyAdopted: string[] = []
+      const newlyPruned: string[] = []
 
       for (const remote of remoteVoices) {
         const remoteId = remote.voice_id
@@ -664,12 +665,26 @@ export const mediaTools: ToolDefinition[] = [
         }
       }
 
+      for (const [alias, voiceId] of Object.entries(newVoices)) {
+        const existsRemotely = remoteVoices.some(remote => remote.voice_id === voiceId || remote.voice_id === alias)
+        if (!existsRemotely) {
+          delete newVoices[alias]
+          newlyPruned.push(alias)
+          updated = true
+        }
+      }
+
       if (updated) {
+        let newDefault = tts.defaultClonedVoice || ""
+        if (newDefault && newlyPruned.includes(newDefault)) {
+          newDefault = ""
+        }
         writeChannelsConfig({
           ...config,
           tts: {
             ...(config.tts || {}),
             clonedVoices: newVoices,
+            defaultClonedVoice: newDefault,
           }
         })
       }
@@ -681,6 +696,7 @@ export const mediaTools: ToolDefinition[] = [
         voices: json.voice_cloning || [],
         count: (json.voice_cloning || []).length,
         newly_synchronized: newlyAdopted.length > 0 ? newlyAdopted : undefined,
+        newly_pruned: newlyPruned.length > 0 ? newlyPruned : undefined,
         note: "Las voces clonadas aparecen solo después de usarse al menos una vez con GenerateSpeech.",
       }
     }
@@ -707,6 +723,7 @@ export const mediaTools: ToolDefinition[] = [
       let updated = false
       const newVoices = { ...localVoices }
       const newlyAdopted: string[] = []
+      const newlyPruned: string[] = []
 
       for (const remote of remoteVoices) {
         const remoteId = remote.voice_id
@@ -718,12 +735,26 @@ export const mediaTools: ToolDefinition[] = [
         }
       }
 
+      for (const [alias, voiceId] of Object.entries(newVoices)) {
+        const existsRemotely = remoteVoices.some(remote => remote.voice_id === voiceId || remote.voice_id === alias)
+        if (!existsRemotely) {
+          delete newVoices[alias]
+          newlyPruned.push(alias)
+          updated = true
+        }
+      }
+
       if (updated) {
+        let newDefault = tts.defaultClonedVoice || ""
+        if (newDefault && newlyPruned.includes(newDefault)) {
+          newDefault = ""
+        }
         writeChannelsConfig({
           ...config,
           tts: {
             ...(config.tts || {}),
             clonedVoices: newVoices,
+            defaultClonedVoice: newDefault,
           }
         })
       }
@@ -733,6 +764,8 @@ export const mediaTools: ToolDefinition[] = [
         action: "sync",
         synchronized: newlyAdopted,
         count_synchronized: newlyAdopted.length,
+        pruned: newlyPruned,
+        count_pruned: newlyPruned.length,
         voices: newVoices,
         total_count: Object.keys(newVoices).length,
       }

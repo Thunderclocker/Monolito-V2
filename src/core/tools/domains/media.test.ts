@@ -117,3 +117,58 @@ test("VoiceClone sync action adopts remote voices to local config", async () => 
   }
 })
 
+test("VoiceClone sync action prunes local voices missing on MiniMax", async () => {
+  const tool = getTool("VoiceClone")
+  assert.ok(tool)
+
+  const { writeChannelsConfig, readChannelsConfig } = await import("../../channels/config.ts")
+  writeChannelsConfig({
+    tts: {
+      provider: "minimax",
+      apiKey: "fake-api-key",
+      clonedVoices: {
+        voz_local_1: "voz_local_1_id",
+        voz_stale_2: "voz_stale_2_id",
+      },
+    },
+  })
+
+  // Mock global fetch
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith("/get_voice")) {
+      return {
+        ok: true,
+        json: async () => ({
+          voice_cloning: [
+            { voice_id: "voz_local_1_id" }
+          ],
+          base_resp: { status_code: 0 }
+        })
+      } as unknown as Response
+    }
+    return { ok: false } as unknown as Response
+  }
+
+  try {
+    const result = await tool.run({
+      action: "sync",
+    }, {
+      rootDir: testMonolitoRoot,
+      cwd: testMonolitoRoot,
+    }) as { ok: boolean; synchronized: string[]; pruned: string[]; voices: Record<string, string> }
+
+    assert.ok(result.ok)
+    assert.deepEqual(result.synchronized, [])
+    assert.deepEqual(result.pruned, ["voz_stale_2"])
+    
+    // Check config was updated
+    const config = readChannelsConfig()
+    assert.equal(config.tts?.clonedVoices?.["voz_local_1"], "voz_local_1_id")
+    assert.equal(config.tts?.clonedVoices?.["voz_stale_2"], undefined)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+
