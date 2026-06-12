@@ -446,6 +446,92 @@ export function renderToolStart(tool: string, input: unknown): ToolRenderLine {
       }
     case "GenerateSpeech":
       return { label: "", tone: "info", text: "" }
+    // Web tools
+    case "WebSearch":
+      return {
+        label: "",
+        tone: "info",
+        text: `Searching web for ${truncate(getString(value, "query") ?? "...", 100)}...`,
+        detail: getString(value, "query"),
+      }
+    case "ImageSearch":
+      return {
+        label: "",
+        tone: "info",
+        text: `Searching images for ${truncate(getString(value, "query") ?? "...", 100)}...`,
+        detail: getString(value, "query"),
+      }
+    case "WebFetch":
+      return {
+        label: "",
+        tone: "info",
+        text: `Fetching ${truncate(getString(value, "url") ?? "...", 80)}...`,
+        detail: getString(value, "url"),
+      }
+    case "DownloadFile":
+      return {
+        label: "",
+        tone: "info",
+        text: `Downloading ${truncate(getString(value, "url") ?? "...", 80)}...`,
+        detail: getString(value, "url"),
+      }
+    // Vision
+    case "VisionAnalyze":
+      return {
+        label: "",
+        tone: "info",
+        text: `Analyzing image${getString(value, "url") ? " from URL" : getString(value, "path") ? " from file" : ""}...`,
+        detail: getString(value, "url") ?? (humanizePath(getString(value, "path") ?? "") || undefined),
+      }
+    // Telegram send tools
+    case "TelegramSend":
+      return {
+        label: "",
+        tone: "info",
+        text: `Sending message to Telegram chat ${getNumber(value, "chat_id") ?? "?"}...`,
+        detail: truncate(getString(value, "text") ?? "", 120) || undefined,
+      }
+    case "TelegramSendPhoto":
+      return {
+        label: "",
+        tone: "info",
+        text: `Sending photo to Telegram chat ${getNumber(value, "chat_id") ?? "?"}...`,
+        detail: humanizePath(getString(value, "photo") ?? "") || undefined,
+      }
+    case "TelegramSendAudio":
+      return {
+        label: "",
+        tone: "info",
+        text: `Sending audio to Telegram chat ${getNumber(value, "chat_id") ?? "?"}...`,
+        detail: humanizePath(getString(value, "audio") ?? "") || undefined,
+      }
+    case "TelegramSendVoice":
+      return {
+        label: "",
+        tone: "info",
+        text: `Sending voice to Telegram chat ${getNumber(value, "chat_id") ?? "?"}...`,
+        detail: humanizePath(getString(value, "voice") ?? "") || undefined,
+      }
+    case "TelegramSendDocument":
+      return {
+        label: "",
+        tone: "info",
+        text: `Sending document to Telegram chat ${getNumber(value, "chat_id") ?? "?"}...`,
+        detail: humanizePath(getString(value, "document") ?? "") || undefined,
+      }
+    // Todo tools
+    case "TodoWrite":
+    case "TodoUpdate": {
+      const tasks = getArray(value, "tasks") ?? getArray(value, "updates")
+      const count = tasks?.length ?? 0
+      return {
+        label: "",
+        tone: "info",
+        text: count > 0 ? `Updating tasks (${count} item${count !== 1 ? "s" : ""})...` : "Updating task list...",
+      }
+    }
+    case "TodoList":
+      return { label: "", tone: "info", text: "Reading task list..." }
     default:
       return { label: "tool", tone: "info", text: `${tool}: ${summarizeInput(tool, input)}` }
   }
@@ -543,6 +629,55 @@ export function renderToolFinish(tool: string, ok: boolean, output: unknown): To
     }
     case "GenerateSpeech":
       return { label: "", tone: "success", text: "" }
+    // Web tools
+    case "WebSearch": {
+      const count = getNumber(value, "count") ?? 0
+      const query = getString(value, "query")
+      return { label, tone, text: `Web search: ${count} result${count !== 1 ? "s" : ""}${query ? ` for "${truncate(query, 60)}"` : ""}` }
+    }
+    case "ImageSearch": {
+      const count = getNumber(value, "count") ?? 0
+      const query = getString(value, "query")
+      return { label, tone, text: `Image search: ${count} result${count !== 1 ? "s" : ""}${query ? ` for "${truncate(query, 60)}"` : ""}` }
+    }
+    case "WebFetch": {
+      const url = getString(value, "url")
+      const bytes = getNumber(value, "bytes")
+      return { label, tone, text: `Fetched ${url ? truncate(url, 60) : "URL"}${bytes !== undefined ? ` (${bytes} bytes)` : ""}` }
+    }
+    case "DownloadFile": {
+      const localPath = getString(value, "local_path")
+      const bytes = getNumber(value, "bytes")
+      return { label, tone, text: `Downloaded to ${localPath ? humanizePath(localPath) : "file"}${bytes !== undefined ? ` (${bytes} bytes)` : ""}` }
+    }
+    // Vision
+    case "VisionAnalyze": {
+      const description = getString(value, "description")
+      return { label, tone, text: description ? truncate(description, 160) : "Image analyzed" }
+    }
+    // Telegram send tools
+    case "TelegramSend":
+      return { label, tone, text: `Message sent to chat ${getNumber(value, "chat_id") ?? "?"}` }
+    case "TelegramSendPhoto":
+      return { label, tone, text: `Photo sent to chat ${getNumber(value, "chat_id") ?? "?"}${getString(value, "file_id") ? " ✓" : ""}` }
+    case "TelegramSendAudio":
+      return { label, tone, text: `Audio sent to chat ${getNumber(value, "chat_id") ?? "?"}` }
+    case "TelegramSendVoice":
+      return { label, tone, text: `Voice sent to chat ${getNumber(value, "chat_id") ?? "?"}` }
+    case "TelegramSendDocument":
+      return { label, tone, text: `Document sent to chat ${getNumber(value, "chat_id") ?? "?"}` }
+    // Todo tools
+    case "TodoWrite":
+    case "TodoUpdate": {
+      const tasks = getArray(value, "tasks") ?? getArray(value, "tasks")
+      const count = tasks?.length ?? 0
+      return { label, tone, text: count > 0 ? `Task list updated (${count} item${count !== 1 ? "s" : ""})` : "Task list updated" }
+    }
+    case "TodoList": {
+      const tasks = getArray(value, "tasks")
+      const count = tasks?.length ?? 0
+      return { label, tone, text: `Task list: ${count} item${count !== 1 ? "s" : ""}` }
+    }
     default:
       return { label, tone, text: `${tool}: ${summarizeOutput(tool, output)}` }
   }
