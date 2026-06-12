@@ -945,6 +945,11 @@ export class MonolitoV2Runtime {
   private costState = createCostState()
   private adultModeDisabledSessions = new Set<string>()
   private pendingPermissions = new Map<string, { resolve: (decision: "allow" | "deny" | "ask") => void }>()
+  private bufferedScreenshotPaths = new Map<string, string>()
+
+  public bufferScreenshot(sessionId: string, path: string) {
+    this.bufferedScreenshotPaths.set(sessionId, path)
+  }
 
   public registerPendingPermission(permissionId: string, resolve: (decision: "allow" | "deny" | "ask") => void) {
     this.pendingPermissions.set(permissionId, { resolve })
@@ -2008,6 +2013,15 @@ Review the existing skill library and apply the curation heuristics in your inst
       const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
 
       let userText = text
+
+      const bufferedPath = this.bufferedScreenshotPaths.get(sessionId)
+      if (bufferedPath) {
+        if (existsSync(bufferedPath)) {
+          logger.info(`[screenshot] Appending buffered screenshot to user message: ${bufferedPath}`)
+          userText = `${userText}\n\n<attachment kind="photo" local_path="${bufferedPath}" />`
+        }
+        this.bufferedScreenshotPaths.delete(sessionId)
+      }
 
       const isSlash = text.trim().startsWith("/")
       const isSubAgent = sessionId.startsWith("agent-")

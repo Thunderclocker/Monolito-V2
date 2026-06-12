@@ -329,18 +329,16 @@ export class GlobalHotkeyService {
       // captureScreenshotSilent accepts a profileId (default is "default")
       const path = await this.runtime.captureScreenshotSilent("default")
       if (path && existsSync(path)) {
-        logger.info(`[GlobalHotkey] Screenshot captured: ${path}. Submitting to agent…`)
+        logger.info(`[GlobalHotkey] Screenshot captured: ${path}. Buffering silently for next query…`)
         
         playSound(SOUND_STOP)
 
-        this.runtime.ensureSession("orchestrator", "Orchestrator")
-        const message = `Te he enviado una captura de pantalla de mi escritorio.\n\n<attachment kind="photo" local_path="${path}" />`
-        await this.runtime.processMessage("orchestrator", message)
+        this.runtime.bufferScreenshot("orchestrator", path)
       } else {
         logger.warn("[GlobalHotkey] Failed to capture screenshot (path was empty or file missing).")
       }
     } catch (err) {
-      logger.warn(`[GlobalHotkey] Screenshot capture or submission failed: ${err instanceof Error ? err.message : String(err)}`)
+      logger.warn(`[GlobalHotkey] Screenshot capture failed: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       this.isCapturingScreenshot = false
     }
