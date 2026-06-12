@@ -739,11 +739,6 @@ function buildSystemPrompt(args: {
   if (args.extras?.systemDirective) {
     dynamicContext.push(`=== SYSTEM DIRECTIVE ===\n${args.extras.systemDirective}`)
   }
-  if (args.extras?.instantAcknowledgment) {
-    dynamicContext.push(
-      `The fast acknowledgment model already sent this short response to the user for this turn: "${args.extras.instantAcknowledgment}". Do NOT repeat or duplicate this greeting, phrase, or confirmation in your response. If the user's message is a simple greeting, pleasantry, or social comment, and the fast model's response has already fully and satisfactorily answered/handled it, you MUST output absolutely nothing (an empty string or whitespace) as your final response so that the system does not deliver a redundant reply. Only generate a response if there is an actual question, task, or command that was not resolved by the fast model's acknowledgment.`
-    )
-  }
 
   // Inject session cognitive tasks (Memory Palace) to drive proactivity.
   // Shows ALL tasks (pending + in_progress + completed) so the agent keeps

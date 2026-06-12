@@ -26,7 +26,8 @@ export function extractPhotoAttachments(content: string): Array<{ localPath: str
 }
 
 export function buildAnthropicMessages(messages: ConversationMessage[]): MessageParam[] {
-  return messages.flatMap<MessageParam>(message => {
+  const merged = mergeConsecutiveMessages(messages)
+  return merged.flatMap<MessageParam>(message => {
     if (message.role === "tool") {
       return [{
         role: "user",
@@ -79,7 +80,8 @@ export function buildAnthropicMessages(messages: ConversationMessage[]): Message
 
 export function buildOpenAiMessages(system: string, messages: ConversationMessage[]) {
   const output: Array<Record<string, unknown>> = [{ role: "system", content: system }]
-  for (const message of messages) {
+  const merged = mergeConsecutiveMessages(messages)
+  for (const message of merged) {
     if (message.role === "tool") {
       output.push({ role: "tool", tool_call_id: message.toolCallId, content: message.content })
       continue
@@ -127,6 +129,15 @@ export function buildOpenAiMessages(system: string, messages: ConversationMessag
     }
     output.push({ role: message.role, content: message.content })
   }
+
+  // If the last message is assistant, append a dummy user/system instruction message to prevent API validation errors
+  if (output.length > 0 && output[output.length - 1].role === "assistant") {
+    output.push({
+      role: "user",
+      content: "[System: Please continue executing the request and call tools if needed, or provide the final response.]",
+    })
+  }
+
   return output
 }
 
@@ -243,4 +254,41 @@ export function looksLikeMalformedToolCall(text: string): boolean {
     return true
   }
   return false
+}
+
+export function mergeConsecutiveMessages(messages: ConversationMessage[]): ConversationMessage[] {
+  const merged: ConversationMessage[] = []
+  for (const msg of messages) {
+    const prev = merged[merged.length - 1]
+    if (prev && prev.role === msg.role && prev.role !== "tool") {
+      // Merge content
+      const prevContent = prev.content || ""
+      const msgContent = msg.content || ""
+      prev.content = prevContent && msgContent ? `${prevContent}\n\n${msgContent}` : (prevContent || msgContent)
+
+      // Merge thinking
+      const prevAny = prev as any
+      const msgAny = msg as any
+      if (msgAny.thinking) {
+        prevAny.thinking = prevAny.thinking ? `${prevAny.thinking}\n\n${msgAny.thinking}` : msgAny.thinking
+      }
+
+      // Merge tool calls
+      if ("toolCalls" in msg && msg.toolCalls) {
+        if ("toolCalls" in prev) {
+          prev.toolCalls = [...(prev.toolCalls || []), ...msg.toolCalls]
+        } else {
+          (prev as any).toolCalls = msg.toolCalls
+        }
+      }
+    } else {
+      // Create a shallow copy to avoid mutating the original objects
+      if ("toolCalls" in msg) {
+        merged.push({ ...msg, toolCalls: [...msg.toolCalls] } as any)
+      } else {
+        merged.push({ ...msg } as any)
+      }
+    }
+  }
+  return merged
 }

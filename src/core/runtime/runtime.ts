@@ -2071,6 +2071,11 @@ Review the existing skill library and apply the curation heuristics in your inst
         return
       }
 
+      if (instantAcknowledgment) {
+        // Persist the acknowledgment to the database immediately so the main model reads it from the history.
+        appendMessage(this.rootDir, sessionId, "assistant", instantAcknowledgment.text)
+      }
+
       appendWorklog(this.rootDir, sessionId, {
         type: "session",
         summary: `Turn started (${text.trim().startsWith("/") ? "slash-command" : "user-message"})`,
