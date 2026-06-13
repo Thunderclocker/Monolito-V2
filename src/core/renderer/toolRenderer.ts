@@ -445,7 +445,12 @@ export function renderToolStart(tool: string, input: unknown): ToolRenderLine {
         ].filter(Boolean).join(" · ") || undefined,
       }
     case "GenerateSpeech":
-      return { label: "", tone: "info", text: "" }
+      return {
+        label: "",
+        tone: "info",
+        text: "Generating speech...",
+        detail: truncate(getString(value, "text") ?? "", 140),
+      }
     // Web tools
     case "WebSearch":
       return {
@@ -630,7 +635,11 @@ export function renderToolFinish(tool: string, ok: boolean, output: unknown, inp
       return { label, tone, text: "Memory recall completed" }
     }
     case "GenerateSpeech":
-      return { label: "", tone: "success", text: "" }
+      return {
+        label: "",
+        tone: "success",
+        text: `Speech generated (${getNumber(value, "bytes") ?? "?"} bytes)`,
+      }
     // Web tools
     case "WebSearch": {
       const count = getNumber(value, "count") ?? 0
