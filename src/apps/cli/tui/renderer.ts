@@ -14,7 +14,7 @@ export function getPromptLabel(_sessionId: string) {
 }
 
 function getThinkingText(frame: number) {
-  return `Thinking${["...", "..", "."][frame % 3] ?? "..."}`
+  return `Processing${["...", "..", "."][frame % 3] ?? "..."}`
 }
 
 function wrapTextWithSinglePrefix(text: string, width: number, firstIndent: string, restIndent: string) {
