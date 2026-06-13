@@ -26,7 +26,7 @@ export type AgentEvent =
   | { type: "session.created"; sessionId: string; title: string }
   | { type: "session.resumed"; sessionId: string }
   | { type: "state.changed"; sessionId: string; state: "idle" | "running" | "error" }
-  | { type: "message.received"; sessionId: string; role: "user" | "assistant" | "system"; text: string; thinking?: string }
+  | { type: "message.received"; sessionId: string; role: "user" | "assistant" | "system"; text: string; thinking?: string; isMemoryAgent?: boolean }
   | { type: "message.queued"; sessionId: string; role: "user"; text: string }
   | {
       type: "turn.completed"
@@ -39,11 +39,11 @@ export type AgentEvent =
         totalTokens?: number
       }
     }
-  | { type: "tool.start"; sessionId: string; toolUseId?: string; tool: string; input: unknown }
-  | { type: "tool.finish"; sessionId: string; toolUseId?: string; tool: string; ok: boolean; output: unknown; input?: unknown }
-  | { type: "error"; sessionId: string; error: string }
-  | { type: "mcp.connected"; sessionId: string; server: string }
-  | { type: "mcp.called"; sessionId: string; server: string; tool: string }
+  | { type: "tool.start"; sessionId: string; toolUseId?: string; tool: string; input: unknown; isMemoryAgent?: boolean }
+  | { type: "tool.finish"; sessionId: string; toolUseId?: string; tool: string; ok: boolean; output: unknown; input?: unknown; isMemoryAgent?: boolean }
+  | { type: "error"; sessionId: string; error: string; isMemoryAgent?: boolean }
+  | { type: "mcp.connected"; sessionId: string; server: string; isMemoryAgent?: boolean }
+  | { type: "mcp.called"; sessionId: string; server: string; tool: string; isMemoryAgent?: boolean }
   | { type: "agent.background.completed"; sessionId: string; agentId: string; status: "completed" | "failed" | "killed"; result?: string; error?: string }
   | { type: "permission.request"; sessionId: string; permissionId: string; tool: string; path: string; reason: string }
   | { type: "destructive.confirm"; sessionId: string; confirmId: string; tool: string; command: string; reason: string }

@@ -458,6 +458,7 @@ class InteractiveTranscriptFormatter {
             label: "system",
             tone: "neutral",
             text: event.text,
+            isMemoryAgent: (event as any).isMemoryAgent,
           }]
         }
         if (event.role === "user") {
@@ -470,7 +471,7 @@ class InteractiveTranscriptFormatter {
         if (this.pendingMcpCall) {
           const pending = this.pendingMcpCall
           this.pendingMcpCall = null
-          return [{ type: "event", label: "mcp", tone: "info", text: `${pending} · ${truncate(event.text, 180)}` }]
+          return [{ type: "event", label: "mcp", tone: "info", text: `${pending} · ${truncate(event.text, 180)}`, isMemoryAgent: (event as any).isMemoryAgent }]
         }
         return [{
           type: "message",
@@ -492,7 +493,7 @@ class InteractiveTranscriptFormatter {
         const line = renderToolStart(event.tool, event.input)
         const text = renderToolStartText(line, "└─ ")
         if (!text) return []
-        return [{ type: "event", label: line.label, tone: line.tone, text, toolUseId: event.toolUseId }]
+        return [{ type: "event", label: line.label, tone: line.tone, text, toolUseId: event.toolUseId, isMemoryAgent: (event as any).isMemoryAgent }]
       }
       case "tool.finish": {
         if (event.ok && event.tool !== "GenerateSpeech") {
@@ -511,15 +512,16 @@ class InteractiveTranscriptFormatter {
             text: line.text,
             replacesLastEvent: true,
             toolUseId: event.toolUseId,
+            isMemoryAgent: (event as any).isMemoryAgent,
           }]
         }
         return []
       }
       case "mcp.connected":
-        return [{ type: "event", label: "mcp", tone: "info", text: `connected ${event.server}` }]
+        return [{ type: "event", label: "mcp", tone: "info", text: `connected ${event.server}`, isMemoryAgent: (event as any).isMemoryAgent }]
       case "mcp.called":
         this.pendingMcpCall = `${event.server}.${event.tool}`
-        return [{ type: "event", label: "mcp", tone: "info", text: this.pendingMcpCall }]
+        return [{ type: "event", label: "mcp", tone: "info", text: this.pendingMcpCall, isMemoryAgent: (event as any).isMemoryAgent }]
       case "ralph.attempt": {
         const taskList = event.unfinished.slice(0, 3).join(" · ")
         const more = event.unfinished.length > 3 ? ` +${event.unfinished.length - 3} más` : ""
@@ -531,7 +533,7 @@ class InteractiveTranscriptFormatter {
         }]
       }
       case "error":
-        return [{ type: "event", label: "error", tone: "error", text: event.error }]
+        return [{ type: "event", label: "error", tone: "error", text: event.error, isMemoryAgent: (event as any).isMemoryAgent }]
       default:
         return []
     }

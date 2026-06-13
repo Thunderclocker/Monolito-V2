@@ -117,11 +117,99 @@ export function renderTranscriptBlock(block: TranscriptBlock, width: number, sho
 }
 
 export function flattenTranscript(blocks: TranscriptBlock[], width: number, showThinkingContent = false) {
-  const rows: string[] = []
-  for (const block of blocks) {
-    rows.push(...renderTranscriptBlock(block, width, showThinkingContent))
-    rows.push("")
+  // 1. Identify which blocks are part of MemoryAgent runs.
+  // We scan the blocks array and group sequences of non-message blocks.
+  // If a sequence contains any block whose text contains "MemoryAgent" or is marked as isMemoryAgent,
+  // then all event and meta blocks in that sequence are tagged as memory agent blocks.
+  const taggedBlocks = blocks.map(b => ({ ...b, isMemoryAgent: (b as any).isMemoryAgent }));
+  
+  let seqStart = -1;
+  let hasMemoryAgent = false;
+  
+  for (let i = 0; i < taggedBlocks.length; i++) {
+    const b = taggedBlocks[i];
+    const isEventOrMeta = b.type === "event" || b.type === "assistant-meta" || b.type === "todo-list";
+    
+    if (isEventOrMeta) {
+      if (seqStart === -1) {
+        seqStart = i;
+        hasMemoryAgent = false;
+      }
+      if (b.type === "event" && (b.isMemoryAgent || b.text.includes("MemoryAgent"))) {
+        hasMemoryAgent = true;
+      }
+    } else {
+      // End of sequence
+      if (seqStart !== -1 && hasMemoryAgent) {
+        for (let j = seqStart; j < i; j++) {
+          if (taggedBlocks[j].type === "event" || taggedBlocks[j].type === "assistant-meta") {
+            (taggedBlocks[j] as any).isMemoryAgent = true;
+          }
+        }
+      }
+      seqStart = -1;
+      hasMemoryAgent = false;
+    }
   }
+  if (seqStart !== -1 && hasMemoryAgent) {
+    for (let j = seqStart; j < taggedBlocks.length; j++) {
+      if (taggedBlocks[j].type === "event" || taggedBlocks[j].type === "assistant-meta") {
+        (taggedBlocks[j] as any).isMemoryAgent = true;
+      }
+    }
+  }
+
+  const rows: string[] = []
+  
+  if (showThinkingContent) {
+    for (const block of taggedBlocks) {
+      rows.push(...renderTranscriptBlock(block, width, showThinkingContent))
+      rows.push("")
+    }
+  } else {
+    let i = 0
+    while (i < taggedBlocks.length) {
+      const block = taggedBlocks[i]
+      if ((block.type === "event" || block.type === "assistant-meta") && (block as any).isMemoryAgent) {
+        let start = i
+        while (
+          i < taggedBlocks.length &&
+          (taggedBlocks[i].type === "event" || taggedBlocks[i].type === "assistant-meta") &&
+          (taggedBlocks[i] as any).isMemoryAgent
+        ) {
+          i++
+        }
+        const memBlocks = taggedBlocks.slice(start, i)
+        let statusText = ""
+        const eventBlocks = memBlocks.filter(b => b.type === "event") as Extract<TranscriptBlock, { type: "event" }>[]
+        const lastBlock = eventBlocks[eventBlocks.length - 1] || memBlocks[memBlocks.length - 1]
+        
+        const completionBlock = [...eventBlocks].reverse().find(b => 
+          b.text.includes("✅") || b.text.includes("CONSOLIDATION_OK") || b.text.includes("❌") || b.text.includes("sin mensajes nuevos")
+        )
+        
+        if (completionBlock) {
+          statusText = completionBlock.text.replace(/\r?\n/g, " ").trim()
+        } else {
+          statusText = lastBlock.text.replace(/\r?\n/g, " ").trim()
+        }
+        
+        const maxTextLen = Math.max(10, width - 35)
+        if (statusText.length > maxTextLen) {
+          statusText = statusText.slice(0, maxTextLen) + "..."
+        }
+        
+        const summaryLine = `${ANSI.dim}● 🧠 MemoryAgent: ${statusText} (Ctrl+O to expand)${ANSI.reset}`
+        rows.push(summaryLine)
+        rows.push("")
+      } else {
+        rows.push(...renderTranscriptBlock(block, width, showThinkingContent))
+        rows.push("")
+        i++
+      }
+    }
+  }
+  
   if (rows.length > 0) rows.pop()
   return rows
 }
@@ -167,11 +255,96 @@ export function renderCopyTranscriptBlock(block: TranscriptBlock, width: number,
 }
 
 export function flattenCopyTranscript(blocks: TranscriptBlock[], width: number, showThinkingContent = false) {
-  const rows: string[] = []
-  for (const block of blocks) {
-    rows.push(...renderCopyTranscriptBlock(block, width, showThinkingContent))
-    rows.push("")
+  // 1. Identify which blocks are part of MemoryAgent runs.
+  const taggedBlocks = blocks.map(b => ({ ...b, isMemoryAgent: (b as any).isMemoryAgent }));
+  
+  let seqStart = -1;
+  let hasMemoryAgent = false;
+  
+  for (let i = 0; i < taggedBlocks.length; i++) {
+    const b = taggedBlocks[i];
+    const isEventOrMeta = b.type === "event" || b.type === "assistant-meta" || b.type === "todo-list";
+    
+    if (isEventOrMeta) {
+      if (seqStart === -1) {
+        seqStart = i;
+        hasMemoryAgent = false;
+      }
+      if (b.type === "event" && (b.isMemoryAgent || b.text.includes("MemoryAgent"))) {
+        hasMemoryAgent = true;
+      }
+    } else {
+      // End of sequence
+      if (seqStart !== -1 && hasMemoryAgent) {
+        for (let j = seqStart; j < i; j++) {
+          if (taggedBlocks[j].type === "event" || taggedBlocks[j].type === "assistant-meta") {
+            (taggedBlocks[j] as any).isMemoryAgent = true;
+          }
+        }
+      }
+      seqStart = -1;
+      hasMemoryAgent = false;
+    }
   }
+  if (seqStart !== -1 && hasMemoryAgent) {
+    for (let j = seqStart; j < taggedBlocks.length; j++) {
+      if (taggedBlocks[j].type === "event" || taggedBlocks[j].type === "assistant-meta") {
+        (taggedBlocks[j] as any).isMemoryAgent = true;
+      }
+    }
+  }
+
+  const rows: string[] = []
+  
+  if (showThinkingContent) {
+    for (const block of taggedBlocks) {
+      rows.push(...renderCopyTranscriptBlock(block, width, showThinkingContent))
+      rows.push("")
+    }
+  } else {
+    let i = 0
+    while (i < taggedBlocks.length) {
+      const block = taggedBlocks[i]
+      if ((block.type === "event" || block.type === "assistant-meta") && (block as any).isMemoryAgent) {
+        let start = i
+        while (
+          i < taggedBlocks.length &&
+          (taggedBlocks[i].type === "event" || taggedBlocks[i].type === "assistant-meta") &&
+          (taggedBlocks[i] as any).isMemoryAgent
+        ) {
+          i++
+        }
+        const memBlocks = taggedBlocks.slice(start, i)
+        let statusText = ""
+        const eventBlocks = memBlocks.filter(b => b.type === "event") as Extract<TranscriptBlock, { type: "event" }>[]
+        const lastBlock = eventBlocks[eventBlocks.length - 1] || memBlocks[memBlocks.length - 1]
+        
+        const completionBlock = [...eventBlocks].reverse().find(b => 
+          b.text.includes("✅") || b.text.includes("CONSOLIDATION_OK") || b.text.includes("❌") || b.text.includes("sin mensajes nuevos")
+        )
+        
+        if (completionBlock) {
+          statusText = completionBlock.text.replace(/\r?\n/g, " ").trim()
+        } else {
+          statusText = lastBlock.text.replace(/\r?\n/g, " ").trim()
+        }
+        
+        const maxTextLen = Math.max(10, width - 35)
+        if (statusText.length > maxTextLen) {
+          statusText = statusText.slice(0, maxTextLen) + "..."
+        }
+        
+        const summaryLine = `● [MemoryAgent] ${statusText} (Ctrl+O to expand)`
+        rows.push(summaryLine)
+        rows.push("")
+      } else {
+        rows.push(...renderCopyTranscriptBlock(block, width, showThinkingContent))
+        rows.push("")
+        i++
+      }
+    }
+  }
+  
   if (rows.length > 0) rows.pop()
   return rows
 }

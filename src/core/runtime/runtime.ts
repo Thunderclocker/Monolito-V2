@@ -2284,7 +2284,13 @@ Rules:
   }
 
   emit(event: AgentEvent) {
+    if (this.isMemoryAgentRunning) {
+      (event as any).isMemoryAgent = true
+    }
     const safeEvent = redactSensitiveValue(event) as AgentEvent
+    if (this.isMemoryAgentRunning) {
+      (safeEvent as any).isMemoryAgent = true
+    }
     appendEvent(this.rootDir, safeEvent)
     void this.mirrorTelegramEvent(safeEvent)
     for (const listener of this.listeners) {
