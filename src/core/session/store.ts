@@ -1398,8 +1398,8 @@ export function clearMemoryPalace(rootDir: string, profileId = "default") {
     SELECT COUNT(*) as count
     FROM palace_nodes
     WHERE profile_scope = ?
-      AND namespace NOT IN (?, ?, ?)
-  `).get(palaceProfileScope(profileId), PALACE_NAMESPACE.config, PALACE_NAMESPACE.chatHistory, PALACE_NAMESPACE.boot) as { count: number }
+      AND namespace NOT IN (?, ?)
+  `).get(palaceProfileScope(profileId), PALACE_NAMESPACE.config, PALACE_NAMESPACE.boot) as { count: number }
 
   db.exec("BEGIN TRANSACTION")
   try {
@@ -1416,8 +1416,8 @@ export function clearMemoryPalace(rootDir: string, profileId = "default") {
     db.prepare(`
       DELETE FROM palace_nodes
       WHERE profile_scope = ?
-        AND namespace NOT IN (?, ?, ?)
-    `).run(palaceProfileScope(profileId), PALACE_NAMESPACE.config, PALACE_NAMESPACE.chatHistory, PALACE_NAMESPACE.boot)
+        AND namespace NOT IN (?, ?)
+    `).run(palaceProfileScope(profileId), PALACE_NAMESPACE.config, PALACE_NAMESPACE.boot)
     for (const wing of BOOT_WING_ORDER) {
       upsertMutablePalaceNode(db, {
         namespace: PALACE_NAMESPACE.boot,
