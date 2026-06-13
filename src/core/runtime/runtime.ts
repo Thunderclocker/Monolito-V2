@@ -1339,7 +1339,7 @@ Rules:
         async (tool, input, context, toolUseId) =>
           this.executeTool(sessionId, tool, input, { ...context, abortSignal: abortController.signal, sessionId, runtime: this }, toolUseId, profileId),
         { rootDir: this.rootDir, cwd: this.rootDir, abortSignal: abortController.signal, getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId), profileId },
-        { systemPromptOverride: promptOverride, costState: this.costState, abortSignal: abortController.signal, turnStartedAt, maxTurnDurationMs: 180_000 },
+        { systemPromptOverride: promptOverride, costState: this.costState, abortSignal: abortController.signal, turnStartedAt, maxTurnDurationMs: 180_000, reasoningLevelOverride: "off" },
       )
 
       if (turn.usage) {

@@ -940,6 +940,7 @@ export async function* runAgentLoop(
     costState?: CostState
     contextExtras?: ContextExtras
     turnStartedAt?: number
+    reasoningLevelOverride?: ReasoningLevel
   },
 ): AsyncGenerator<AgentLoopEvent, AssistantTurnResult> {
   const logger = getLogger(context, options?.logger)
@@ -947,17 +948,18 @@ export async function* runAgentLoop(
   const maxIterations = options?.maxIterations ?? MAX_TURN_ITERATIONS
   const maxTurnDurationMs = options?.maxTurnDurationMs ?? DEFAULT_MAX_TURN_DURATION_MS
   const activeProfile = getActiveProfile()
-  const thinkingConfig = activeProfile
-    ? {
-        enabled: (activeProfile.reasoningLevel ?? getDefaultReasoningLevel(activeProfile.provider, activeProfile.model)) !== "off",
-        budgetTokens:
-          (activeProfile.reasoningLevel ?? getDefaultReasoningLevel(activeProfile.provider, activeProfile.model)) === "low"
-            ? 2_048
-            : (activeProfile.reasoningLevel ?? getDefaultReasoningLevel(activeProfile.provider, activeProfile.model)) === "high"
-            ? 32_768
-            : 10_240,
-      }
-    : { enabled: false }
+  const rawConfigLevel = options?.reasoningLevelOverride ?? (activeProfile
+    ? (activeProfile.reasoningLevel ?? getDefaultReasoningLevel(activeProfile.provider, activeProfile.model))
+    : "off")
+  const thinkingConfig = {
+    enabled: rawConfigLevel !== "off",
+    budgetTokens:
+      rawConfigLevel === "low"
+        ? 2_048
+        : rawConfigLevel === "high"
+        ? 32_768
+        : 10_240,
+  }
   const accumulatedThinking: string[] = []
   let config = { ...getEffectiveModelConfig(), sessionId: session.id }
   const isSubAgent = session.id.startsWith("agent-")
@@ -1100,9 +1102,9 @@ export async function* runAgentLoop(
       }
 
       const ralphAttempt = options?.contextExtras?.ralphAttempt ?? 1
-      const configLevel = activeProfile
+      const configLevel = options?.reasoningLevelOverride ?? (activeProfile
         ? (activeProfile.reasoningLevel ?? getDefaultReasoningLevel(activeProfile.provider, activeProfile.model))
-        : "off"
+        : "off")
 
       let targetLevel: ReasoningLevel = "off"
       if (configLevel === "low") {
@@ -2016,6 +2018,7 @@ export async function runAssistantTurn(
     costState?: CostState
     contextExtras?: ContextExtras
     turnStartedAt?: number
+    reasoningLevelOverride?: ReasoningLevel
   },
 ): Promise<AssistantTurnResult> {
   let finalResult: AssistantTurnResult | null = null
