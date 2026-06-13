@@ -7,6 +7,8 @@ import {
   readFileSync,
   statSync,
   writeFileSync,
+  readdirSync,
+  rmSync,
 } from "node:fs"
 
 import {
@@ -1461,4 +1463,363 @@ export const mediaTools: ToolDefinition[] = [
   },
 },
 
+{
+  name: "VideoAnalyze",
+  permissionTier: "read",
+  description: "Analiza un video desde una URL, un path local o un file_id de Telegram. Extrae el audio para transcribirlo con el backend STT local (Whisper), extrae fotogramas clave con ffmpeg, y describe la secuencia visual usando la API de visión del modelo activo. Retorna { visual_description, transcript, frame_count, local_path }.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      url: { type: "string", description: "URL del video a descargar y analizar." },
+      path: { type: "string", description: "Ruta local del archivo de video a analizar." },
+      file_id: { type: "string", description: "Telegram file_id para descargar desde los servidores de Telegram." },
+      fps: { type: "number", description: "Cuadros por segundo a extraer. Por defecto es 0.5 (1 cuadro cada 2 segundos)." },
+      max_frames: { type: "number", description: "Máximo de cuadros a extraer para evitar saturar el contexto. Por defecto es 10." },
+    },
+    additionalProperties: false,
+  },
+  concurrencySafe: true,
+  validate: input => {
+    if (typeof input.url !== "string" && typeof input.path !== "string" && typeof input.file_id !== "string") {
+      return "Debes proporcionar 'url', 'path' o 'file_id' como string."
+    }
+    const max_frames = optionalNumber(input, "max_frames")
+    if (max_frames !== undefined && max_frames <= 0) return "max_frames debe ser mayor a 0"
+    const fps = optionalNumber(input, "fps")
+    if (fps !== undefined && fps <= 0) return "fps debe ser mayor a 0"
+    return null
+  },
+  async run(input, context) {
+    const url = optionalString(input, "url")
+    const pathArg = optionalString(input, "path")
+    const fileId = optionalString(input, "file_id")
+    const fps = optionalNumber(input, "fps") ?? 0.5
+    const max_frames = optionalNumber(input, "max_frames") ?? 10
+
+    let localPath = ""
+
+    if (fileId) {
+      const config = readChannelsConfig()
+      if (!config.telegram?.enabled || !config.telegram.token) {
+        return formatToolError("Telegram no está configurado. file_id requiere Telegram activo.")
+      }
+      try {
+        const download = await resolveTelegramDownload(config.telegram.token, fileId, context.rootDir)
+        if (!download.ok) {
+          return formatToolError(`Error descargando desde Telegram: ${JSON.stringify(download)}`)
+        }
+        localPath = download.local_path
+      } catch (error: any) {
+        return formatToolError(`Error descargando desde Telegram: ${error.message || error}`)
+      }
+    } else if (url) {
+      try {
+        const response = await fetch(url, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          },
+          signal: context.abortSignal,
+        })
+        if (!response.ok) return formatToolError(`Error descargando video desde URL: HTTP ${response.status}`)
+        const buffer = Buffer.from(await response.arrayBuffer())
+
+        const scratchpadDir = join(MONOLITO_ROOT, "workspace", "scratchpad")
+        mkdirSync(scratchpadDir, { recursive: true })
+        localPath = join(scratchpadDir, `video-${randomUUID()}.mp4`)
+        writeFileSync(localPath, buffer)
+      } catch (error: any) {
+        return formatToolError(`Error descargando video desde URL: ${error.message || error}`)
+      }
+    } else if (pathArg) {
+      const absolutePath = resolve(context.cwd, pathArg)
+      if (!existsSync(absolutePath)) return formatToolError(`Archivo no encontrado: ${absolutePath}`)
+      localPath = absolutePath
+    } else {
+      return formatToolError("Debes proporcionar 'url', 'path' o 'file_id'.")
+    }
+
+    const tempDir = join(MONOLITO_ROOT, "workspace", "scratchpad", `video-temp-${randomUUID()}`)
+    mkdirSync(tempDir, { recursive: true })
+
+    // 1. Detectar si el video tiene pista de audio usando ffprobe
+    let hasAudio = false
+    try {
+      const ffprobeRes = await execFileAsync("ffprobe", [
+        "-v", "error",
+        "-select_streams", "a",
+        "-show_entries", "stream=codec_type",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        localPath
+      ])
+      if (ffprobeRes.stdout && ffprobeRes.stdout.trim().includes("audio")) {
+        hasAudio = true
+      }
+    } catch (err) {
+      // Ignorar y asumir sin audio si ffprobe falla
+    }
+
+    // 2. Extraer y transcribir el audio si existe
+    let transcript = "[No audio track found]"
+    if (hasAudio) {
+      const audioPath = join(tempDir, "audio.mp3")
+      try {
+        await execFileAsync("ffmpeg", [
+          "-y",
+          "-i", localPath,
+          "-vn",
+          "-acodec", "libmp3lame",
+          "-q:a", "4",
+          audioPath
+        ])
+        const config = readChannelsConfig()
+        const stt = normalizeSttConfig(config.stt)
+        if (stt.managed && stt.autoDeploy) {
+          await deployManagedSttContainer(stt)
+        }
+        const sttResult = await transcribeManagedAudioFile(audioPath, stt)
+        if (sttResult.ok && sttResult.text) {
+          transcript = sttResult.text
+        } else {
+          transcript = `[Audio transcription failed: ${sttResult.error ?? "unknown error"}]`
+        }
+      } catch (err: any) {
+        transcript = `[Audio extraction/transcription error: ${err.message || err}]`
+      }
+    }
+
+    // 3. Extraer fotogramas clave con ffmpeg
+    const framesPattern = join(tempDir, "frame_%03d.png")
+    try {
+      await execFileAsync("ffmpeg", [
+        "-y",
+        "-i", localPath,
+        "-vf", `fps=${fps}`,
+        "-vframes", String(max_frames),
+        framesPattern
+      ])
+    } catch (err: any) {
+      rmSync(tempDir, { recursive: true, force: true })
+      if (url && existsSync(localPath)) rmSync(localPath, { force: true })
+      return formatToolError(`Error al extraer fotogramas del video: ${err.message || err}`)
+    }
+
+    // 4. Leer y codificar fotogramas
+    let files = readdirSync(tempDir)
+    files = files.filter(f => f.startsWith("frame_") && f.endsWith(".png")).sort()
+    if (files.length === 0) {
+      rmSync(tempDir, { recursive: true, force: true })
+      if (url && existsSync(localPath)) rmSync(localPath, { force: true })
+      return formatToolError("No se pudieron extraer fotogramas del video. Verifique que el archivo no esté corrupto.")
+    }
+
+    const base64Frames: string[] = []
+    for (const file of files) {
+      const framePath = join(tempDir, file)
+      const frameBuffer = readFileSync(framePath)
+      base64Frames.push(frameBuffer.toString("base64"))
+    }
+
+    // 5. Consultar Vision API del modelo activo
+    const activeProfile = getActiveProfile()
+    let provider = "anthropic_compatible"
+    let baseUrl = ""
+    let apiKey = ""
+    let model = ""
+
+    if (activeProfile) {
+      provider = activeProfile.provider
+      baseUrl = activeProfile.baseUrl.trim().replace(/\/+$/, "")
+      apiKey = activeProfile.apiKey.trim()
+      model = activeProfile.model.trim()
+    } else {
+      const settings = readModelSettings()
+      provider = "anthropic_compatible"
+      baseUrl = settings.env.ANTHROPIC_BASE_URL.trim().replace(/\/+$/, "")
+      apiKey = settings.env.ANTHROPIC_AUTH_TOKEN.trim()
+      model = settings.env.ANTHROPIC_MODEL.trim()
+    }
+
+    if (provider === "xai-oauth") {
+      try {
+        const { resolveGrokAccessToken } = await import("../../runtime/providers/grokAuth.ts")
+        apiKey = await resolveGrokAccessToken()
+      } catch (err) {
+        context.logger?.error(`Error resolving Grok access token in VideoAnalyze: ${err}`)
+      }
+    }
+
+    let visualDescription = ""
+    let usedNativeMinimax = false
+
+    if (provider === "minimax") {
+      try {
+        context.logger?.info("Using native MiniMax Video Understanding API...")
+        const fileBuffer = readFileSync(localPath)
+        const blob = new Blob([fileBuffer], { type: "video/mp4" })
+        const form = new FormData()
+        form.append("purpose", "video_understanding")
+        const filename = localPath.split(/[/\\]/).pop() || "video.mp4"
+        form.append("file", blob, filename)
+
+        const uploadResponse = await fetch("https://api.minimax.io/v1/files/upload", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${apiKey}`
+          },
+          body: form
+        })
+
+        if (!uploadResponse.ok) {
+          const errText = await uploadResponse.text()
+          throw new Error(`MiniMax video upload failed (${uploadResponse.status}): ${errText}`)
+        }
+
+        const uploadData = await uploadResponse.json() as { file?: { file_id?: string } }
+        const nativeFileId = uploadData.file?.file_id
+        if (!nativeFileId) {
+          throw new Error(`MiniMax upload response did not contain file_id: ${JSON.stringify(uploadData)}`)
+        }
+
+        const chatResponse = await fetch("https://api.minimax.io/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${apiKey}`
+          },
+          body: JSON.stringify({
+            model: model || "MiniMax-M3",
+            messages: [
+              {
+                role: "user",
+                content: [
+                  {
+                    type: "text",
+                    text: "Describe exactly what happens in this video in detail."
+                  },
+                  {
+                    type: "video_url",
+                    video_url: {
+                      url: `mm_file://${nativeFileId}`,
+                      detail: "default"
+                    }
+                  }
+                ]
+              }
+            ]
+          }),
+          signal: context.abortSignal
+        })
+
+        if (!chatResponse.ok) {
+          const errText = await chatResponse.text()
+          throw new Error(`MiniMax native chat completions query failed (${chatResponse.status}): ${errText}`)
+        }
+
+        const chatData = await chatResponse.json() as { choices?: Array<{ message?: { content?: string } }> }
+        visualDescription = chatData.choices?.[0]?.message?.content || ""
+        usedNativeMinimax = true
+      } catch (err: any) {
+        context.logger?.error(`Native MiniMax Video Understanding failed: ${err.message || err}. Falling back to image frame extraction...`)
+      }
+    }
+
+    if (!usedNativeMinimax) {
+      try {
+        if (provider === "anthropic_compatible" || provider === "minimax") {
+          const cleanBaseUrl = baseUrl.replace(/\/v1\/messages\/?$/, "")
+          const endpoint = cleanBaseUrl ? `${cleanBaseUrl}/v1/messages` : "https://api.anthropic.com/v1/messages"
+          
+          const content: any[] = base64Frames.map(data => ({
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: "image/png",
+              data: data
+            }
+          }))
+          content.push({
+            type: "text",
+            text: "These are chronological frames extracted from a video. Describe exactly what happens in this video in detail."
+          })
+
+          const response = await fetch(endpoint, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-api-key": apiKey || "not-needed",
+              "anthropic-version": "2023-06-01"
+            },
+            body: JSON.stringify({
+              model: model,
+              max_tokens: 1000,
+              messages: [{ role: "user", content }]
+            }),
+            signal: context.abortSignal
+          })
+
+          if (!response.ok) {
+            const text = await response.text()
+            throw new Error(`Anthropic/MiniMax API failed (${response.status}): ${text}`)
+          }
+
+          const data = await response.json() as { content?: Array<{ text?: string }> }
+          visualDescription = data.content?.[0]?.text || ""
+        } else {
+          const endpoint = baseUrl ? `${baseUrl}/v1/chat/completions` : "https://api.openai.com/v1/chat/completions"
+          
+          const content: any[] = base64Frames.map(data => ({
+            type: "image_url",
+            image_url: {
+              url: `data:image/png;base64,${data}`
+            }
+          }))
+          content.push({
+            type: "text",
+            text: "These are chronological frames extracted from a video. Describe exactly what happens in this video in detail."
+          })
+
+          const response = await fetch(endpoint, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "authorization": `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+              model: model,
+              max_tokens: 1000,
+              messages: [{ role: "user", content }]
+            }),
+            signal: context.abortSignal
+          })
+
+          if (!response.ok) {
+            const text = await response.text()
+            throw new Error(`OpenAI/Grok API failed (${response.status}): ${text}`)
+          }
+
+          const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> }
+          visualDescription = data.choices?.[0]?.message?.content || ""
+        }
+      } catch (err: any) {
+        visualDescription = `[Vision API error describing frames: ${err.message || err}]`
+      }
+    }
+
+    // 6. Limpieza
+    rmSync(tempDir, { recursive: true, force: true })
+    if (url && existsSync(localPath)) {
+      rmSync(localPath, { force: true })
+    }
+
+    return {
+      ok: true,
+      visual_description: visualDescription,
+      transcript: transcript,
+      frame_count: base64Frames.length,
+      local_path: url ? undefined : localPath
+    }
+  },
+},
+
 ]
+

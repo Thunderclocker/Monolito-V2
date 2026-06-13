@@ -123,6 +123,7 @@ export function listModelTools(isSubAgent = false, lastUserText?: string | boole
     "VisionAnalyze",
     "TelegramGetRecentPhotos",
     "CaptureScreenshot",
+    "VideoAnalyze",
   ])
 
   const staticMapped = tools
