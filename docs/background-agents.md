@@ -14,7 +14,7 @@ Focuses on semantic memory synthesis and organization:
   - Same key + same content → **skip** (no duplication)
   - Same key + different content → **update** (obsolete info replaced)
   - New key → **insert**
-- Emits **visible progress events** to the CLI (`message.received` with `role: "system"`) so the user sees consolidation activity in real time. Does **not** produce audio (bypasses voice mode).
+- Emits **visible progress events** to the CLI (`message.received` with `role: "system"`) so the user sees consolidation activity in real time. By default, these verbose console logs are collapsed in the TUI client into a single summary line (`● 🧠 MemoryAgent: <status> (Ctrl+O to expand)`) to reduce visual noise. Pressing `Ctrl+O` expands the log sequence to show full details (such as tool start/finish events and reads/writes), toggled along with the assistant thinking content. It does **not** produce audio (bypasses voice mode).
 - Records final stats to the worklog (`MemoryAgent: 3 inserts, 1 update, 2 skips`).
 
 The SkillsAgent and entire dynamic skill system (`CreateSkill`, `ListSkills`, `skill_view`, etc.) have been removed. Only `MemoryAgent` remains as the background maintenance agent.
