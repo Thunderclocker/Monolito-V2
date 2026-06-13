@@ -180,6 +180,25 @@ export function appendTranscriptBlocks(viewport: TranscriptViewport, blocks: Tra
   if (blocks.length === 0) return viewport
   let nextBlocks = viewport.blocks
   for (const block of blocks) {
+    if (block.type === "message" && block.role === "user") {
+      let replaced = false
+      for (let i = nextBlocks.length - 1; i >= 0; i--) {
+        const b = nextBlocks[i]
+        if (b.type === "message" && b.role === "user") {
+          const cleanA = b.text.trim()
+          const cleanB = block.text.trim()
+          if (cleanA === cleanB || cleanB.startsWith(cleanA) || cleanA.startsWith(cleanB)) {
+            const newBlocks = [...nextBlocks]
+            newBlocks[i] = block
+            nextBlocks = newBlocks
+            replaced = true
+            break
+          }
+        }
+      }
+      if (replaced) continue
+    }
+
     if (block.type === "event" && block.toolUseId) {
       let foundIndex = -1
       for (let i = nextBlocks.length - 1; i >= 0; i--) {

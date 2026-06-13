@@ -1404,6 +1404,11 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       needsClear = true
       redraw()
     }
+    if (!line.startsWith("/")) {
+      transcript = appendTranscriptBlocks(transcript, [
+        { type: "message", role: "user", text: line }
+      ])
+    }
     composer.busy = true
     composer.thinkingFrame = 0
     composer.thinkingVisible = true
