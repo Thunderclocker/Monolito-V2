@@ -1551,6 +1551,7 @@ Rules:
       }
 
       appendMessage(this.rootDir, sessionId, "user", userText)
+      this.emit({ type: "message.received", sessionId, role: "user", text: userText })
 
       if (instantAcknowledgment) {
         const voiceMode = session?.voiceMode === true
@@ -1589,7 +1590,6 @@ Rules:
         type: "session",
         summary: `Turn started (${text.trim().startsWith("/") ? "slash-command" : "user-message"})`,
       })
-      this.emit({ type: "message.received", sessionId, role: "user", text: userText })
       await this.transitionState(sessionId, "running")
 
       await this.runTurn(sessionId, userText, profileId, {
