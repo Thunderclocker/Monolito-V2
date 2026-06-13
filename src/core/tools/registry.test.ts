@@ -450,15 +450,6 @@ test("clearMemoryPalace removes profile memory while preserving configuration", 
 test("Tool registry basic functionality", async () => {
   const rootDir = createRootDir()
   try {
-    const createTool = getTool("CreateSkill")!
-    const listTool = getTool("ListSkills")!
-    const deleteTool = getTool("DeleteSkill")
-    const viewTool = getTool("skill_view")!
-    assert.ok(createTool)
-    assert.ok(listTool)
-    assert.ok(deleteTool)
-    assert.ok(viewTool)
-
     // Basic smoke test for core tools
     const bashTool = getTool("Bash")
     const writeTool = getTool("Write")
@@ -482,28 +473,6 @@ test("Tool provenance handling", async () => {
   }
 })
 
-test("DeleteSkill and ArchiveSkill basic behavior", async () => {
-  const rootDir = createRootDir()
-  try {
-    const deleteTool = getTool("DeleteSkill")
-    const archiveTool = getTool("ArchiveSkill")
-    assert.ok(deleteTool && archiveTool)
-  } finally {
-    cleanupRootDir(rootDir)
-  }
-})
-
-test("ArchiveSkill and RestoreSkill basic behavior", async () => {
-  const rootDir = createRootDir()
-  try {
-    const archiveTool = getTool("ArchiveSkill")
-    const restoreTool = getTool("RestoreSkill")
-    assert.ok(archiveTool && restoreTool)
-  } finally {
-    cleanupRootDir(rootDir)
-  }
-})
-
 test("listDynamicSkills and telemetry", async () => {
   // The skill system was removed. These functions no longer exist.
   const store = await import("../session/store.ts")
@@ -521,25 +490,6 @@ test("Skill system removal verification", async () => {
   assert.ok(typeof store.getDynamicSkill === "undefined", "getDynamicSkill was removed")
   // @ts-expect-error skill system was removed
   assert.ok(typeof store.saveDynamicSkill === "undefined", "saveDynamicSkill was removed")
-})
-
-test("ArchiveSkill and RestoreSkill error handling on missing skill", async () => {
-  const rootDir = createRootDir()
-  try {
-    const archiveTool = getTool("ArchiveSkill")
-    const restoreTool = getTool("RestoreSkill")
-    assert.ok(archiveTool && restoreTool)
-
-    const arch = await archiveTool.run({ name: "nonexistent_skill" }, { rootDir, cwd: rootDir }) as { ok: boolean; error?: string }
-    assert.equal(arch.ok, false)
-    assert.match(arch.error ?? "", /not found/i)
-
-    const restore = await restoreTool.run({ name: "nonexistent_skill" }, { rootDir, cwd: rootDir }) as { ok: boolean; error?: string }
-    assert.equal(restore.ok, false)
-    assert.match(restore.error ?? "", /not found/i)
-  } finally {
-    cleanupRootDir(rootDir)
-  }
 })
 
 test("tool_manage_config action 'get' reads nested configuration path", async () => {
