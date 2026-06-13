@@ -1518,7 +1518,6 @@ Rules:
 
       const isSlash = text.trim().startsWith("/")
       const isSubAgent = sessionId.startsWith("agent-")
-      const autoAckEnabled = process.env.MONOLITO_AUTO_ACK !== "false"
 
       // 1. Start screenshot in background if requested, but only if not already attached
       let screenshotPromise: Promise<string | null> | null = null
@@ -1531,17 +1530,7 @@ Rules:
         })
       }
 
-      // 2. Generate instant acknowledgment sequentially (no timeouts/racing)
-      let instantAcknowledgment: { text: string; isSimpleGreeting: boolean } | null = null
-      if (!isSlash && !isSubAgent && autoAckEnabled) {
-        try {
-          instantAcknowledgment = await this.generateInstantAcknowledgment(sessionId, userText)
-        } catch (err) {
-          logger.warn(`Failed to generate instant acknowledgment: ${err instanceof Error ? err.message : String(err)}`)
-        }
-      }
-
-      // 3. Await the screenshot promise before proceeding to the actual runTurn
+      // 2. Await the screenshot promise before proceeding to the actual runTurn
       if (screenshotPromise) {
         const screenshotPath = await screenshotPromise
         if (screenshotPath) {
@@ -1553,39 +1542,6 @@ Rules:
       appendMessage(this.rootDir, sessionId, "user", userText)
       this.emit({ type: "message.received", sessionId, role: "user", text: userText })
 
-      if (instantAcknowledgment) {
-        const voiceMode = session?.voiceMode === true
-        // Emit event so the client gets the text
-        this.emit({ type: "message.received", sessionId, role: "assistant", text: instantAcknowledgment.text })
-
-        // Deliver in background
-        void this.deliverAcknowledgment(sessionId, instantAcknowledgment.text, userText, voiceMode, options?.delivery).catch(err => {
-          logger.warn(`Failed to deliver instant acknowledgment: ${err instanceof Error ? err.message : String(err)}`)
-        })
-
-        if (instantAcknowledgment.isSimpleGreeting) {
-          // Simple greeting: the fast model has already fully answered it.
-          // We persist the acknowledgment response to the DB, complete the turn, and return.
-          appendMessage(this.rootDir, sessionId, "assistant", instantAcknowledgment.text)
-          appendWorklog(this.rootDir, sessionId, {
-            type: "session",
-            summary: `Turn completed (simple greeting handled by fast model: "${instantAcknowledgment.text}")`,
-          })
-          await this.transitionState(sessionId, "idle")
-          this.emit({
-            type: "turn.completed",
-            sessionId,
-            role: "assistant",
-            durationMs: Date.now() - processStartedAt,
-            usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
-          })
-          return
-        }
-
-        // Persist the acknowledgment to the database immediately so the main model reads it from the history.
-        appendMessage(this.rootDir, sessionId, "assistant", instantAcknowledgment.text)
-      }
-
       appendWorklog(this.rootDir, sessionId, {
         type: "session",
         summary: `Turn started (${text.trim().startsWith("/") ? "slash-command" : "user-message"})`,
@@ -1595,7 +1551,6 @@ Rules:
       await this.runTurn(sessionId, userText, profileId, {
         delivery: options?.delivery,
         onAgentLoopEvent: options?.onAgentLoopEvent,
-        instantAcknowledgment: instantAcknowledgment?.text ?? null,
       })
     } finally {
       this.releaseSessionLock(sessionId)
@@ -1649,12 +1604,12 @@ Rules:
     return finalResult
   }
 
-  async runTurn(sessionId: string, lastUserText: string, profileId = "default", options?: { logger?: Logger; cwd?: string; traceId?: string; maxTokens?: number; delivery?: DeliveryContext; onAgentLoopEvent?: (event: AgentLoopEvent) => void; instantAcknowledgment?: string | null }) {
+  async runTurn(sessionId: string, lastUserText: string, profileId = "default", options?: { logger?: Logger; cwd?: string; traceId?: string; maxTokens?: number; delivery?: DeliveryContext; onAgentLoopEvent?: (event: AgentLoopEvent) => void }) {
     this.rememberDeliveryContext(sessionId, options?.delivery)
     return runWithContext(createSessionContext(sessionId), () => this.runTurnWithContext(sessionId, lastUserText, profileId, options))
   }
 
-  private async runTurnWithContext(sessionId: string, lastUserText: string, profileId = "default", options?: { logger?: Logger; cwd?: string; traceId?: string; maxTokens?: number; delivery?: DeliveryContext; onAgentLoopEvent?: (event: AgentLoopEvent) => void; instantAcknowledgment?: string | null }) {
+  private async runTurnWithContext(sessionId: string, lastUserText: string, profileId = "default", options?: { logger?: Logger; cwd?: string; traceId?: string; maxTokens?: number; delivery?: DeliveryContext; onAgentLoopEvent?: (event: AgentLoopEvent) => void }) {
     const turnStartedAt = Date.now()
     const instanceLogger = options?.logger
     const effectiveCwd = options?.cwd ?? this.rootDir
@@ -1886,7 +1841,6 @@ Rules:
                   adultMode: this.hasAdultMode(sessionId),
                   webSearchProvider: webSearchConfig.provider,
                   stallAlert: this.consumeStallAlert(sessionId),
-                  instantAcknowledgment: options?.instantAcknowledgment,
                   ralphAttempt,
                 },
                 costState: this.costState,
@@ -3877,144 +3831,7 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
     return null
   }
 
-  private async generateInstantAcknowledgment(sessionId: string, userText: string): Promise<{ text: string; isSimpleGreeting: boolean } | null> {
-    const hasPhoto = userText.includes('kind="photo"') || userText.includes('attachment kind="photo"') || isScreenViewingRequest(userText)
-    if (hasPhoto) {
-      const isEnglish = /\b(what|see|screen|look|show|desktop)\b/i.test(userText)
-      return {
-        text: isEnglish ? "Analyzing screenshot..." : "Analizando la captura...",
-        isSimpleGreeting: false
-      }
-    }
 
-    // Fast-path local regex checks for common pleasantries, greetings, and closing phrases
-    const cleanedLower = userText.trim().toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?¡!]/g, "")
-    const regexThanks = /^(gracias|genial gracias|muchas gracias|mil gracias|buenisimo gracias|buenísimo gracias|perfecto gracias|gracias che|gracias totales|thanks|thank you|ty|thx)$/
-    const regexGreetings = /^(hola|buenas|buen dia|buen día|buenos dias|buenos días|buenas tardes|buenas noches|como va|cómo va|hello|hi|hey)$/
-    const regexClosings = /^(chau|adios|adiós|nos vemos|bye|goodbye|see you)$/
-    const regexPleasantries = /^(ok|okay|listo|buenisimo|buenísimo|genial|excelente|espectacular|perfecto)$/
-
-    if (regexThanks.test(cleanedLower)) {
-      const isEnglish = /\b(thanks|thank you|ty|thx)\b/i.test(cleanedLower)
-      return {
-        text: isEnglish ? "You're welcome!" : "¡De nada! Cualquier cosa, chiflá. 🚀",
-        isSimpleGreeting: true
-      }
-    }
-    if (regexGreetings.test(cleanedLower)) {
-      const isEnglish = /\b(hello|hi|hey)\b/i.test(cleanedLower)
-      return {
-        text: isEnglish ? "Hello! How can I help you today?" : "¡Hola! ¿En qué te puedo ayudar hoy?",
-        isSimpleGreeting: true
-      }
-    }
-    if (regexClosings.test(cleanedLower)) {
-      const isEnglish = /\b(bye|goodbye|see you)\b/i.test(cleanedLower)
-      return {
-        text: isEnglish ? "Goodbye!" : "¡Nos vemos! Cuidate.",
-        isSimpleGreeting: true
-      }
-    }
-    if (regexPleasantries.test(cleanedLower)) {
-      const isEnglish = /\b(ok|okay)\b/i.test(cleanedLower)
-      return {
-        text: isEnglish ? "Ok!" : "¡Buenísimo!",
-        isSimpleGreeting: true
-      }
-    }
-
-    const systemPrompt = [
-      "You are a helpful AI assistant. The user just sent a message.",
-      "Determine if the user's message is a simple greeting, pleasantry, acknowledgment, thanks, or closing statement/pleasantry (e.g., 'hello', 'hi', 'how are you', 'thanks', 'thank you', 'gracias', 'genial', 'perfecto', 'ok', 'bye', 'chau').",
-      "If the user's message is only a greeting, pleasantry, thanks, or acknowledgment and does NOT ask for any new information, task, search, file reading/writing, or code execution, classify it as a simple greeting (isSimpleGreeting: true).",
-      "If the message asks a question, requests information, or asks to perform a task, it is NOT a simple greeting.",
-      "",
-      "Your job is to generate a short, natural response (1 to 6 words) in the same language as the user's message, and return a JSON object with the following fields:",
-      "- 'isSimpleGreeting': boolean (true if it is only a greeting/pleasantry/thanks/acknowledgment, false otherwise)",
-      "- 'text': string (the response text, e.g. '¡De nada!' for thanks, '¡Hola! ¿Cómo va?' for a greeting, or 'Revisando eso...', 'Dejame ver...' for a task/question)",
-      "",
-      "Output ONLY a raw JSON object. Do NOT wrap in markdown code blocks, do not write anything else."
-    ].join("\n")
-
-    try {
-      const { text: ack } = await runBackgroundTextTask(this.rootDir, systemPrompt, userText, { maxTokens: 80 })
-      let cleaned = ack.trim()
-      if (cleaned.startsWith("```")) {
-        cleaned = cleaned.replace(/^```json\s*/i, "").replace(/```$/, "").trim()
-      }
-      const parsed = JSON.parse(cleaned)
-      const isSimpleGreeting = parsed.isSimpleGreeting === true
-      const ackText = String(parsed.text || "").trim()
-      if (!ackText) return null
-
-      return { text: ackText, isSimpleGreeting }
-    } catch (e) {
-      logger.debug(`[acknowledgement] Instant acknowledgment generation failed or skipped: ${e instanceof Error ? e.message : String(e)}`)
-      return null
-    }
-  }
-
-  private async deliverAcknowledgment(sessionId: string, ackText: string, userText: string, voiceMode: boolean, delivery?: DeliveryContext) {
-    const session = this.getSession(sessionId)
-    const profileId = session?.profileId ?? "default"
-
-    if (voiceMode) {
-      // Voice mode active: generate speech and deliver as audio
-      const isTelegramMessage = userText.includes('<channel source="telegram"')
-      const ttsConfig = readChannelsConfig().tts || {}
-      const voice = ttsConfig.defaultClonedVoice || ttsConfig.voice || "female-shaonv"
-
-      const speechResult = await this.executeTool(sessionId, "GenerateSpeech", {
-        text: ackText,
-        voice,
-        response_format: isTelegramMessage ? "opus" : "mp3",
-      }, {
-        rootDir: this.rootDir,
-        cwd: this.rootDir,
-        abortSignal: new AbortController().signal,
-        sessionId,
-        runtime: this,
-      }, undefined, profileId) as { local_path?: string; ok?: boolean }
-
-      if (speechResult.ok && speechResult.local_path) {
-        if (isTelegramMessage) {
-          const rawChatId = getTelegramChatId(sessionId)
-          let telegramChatId: number | null = rawChatId ? Number(rawChatId) : null
-          if (telegramChatId === null) {
-            const channelMatch = userText.match(/<channel\b([^>]*)>/i)
-            const parsedChatId = channelMatch?.[1].match(/chat_id="([^"]+)"/i)?.[1]
-            if (parsedChatId) {
-              telegramChatId = Number(parsedChatId)
-            }
-          }
-          if (telegramChatId !== null && !Number.isNaN(telegramChatId)) {
-            await this.executeTool(sessionId, "TelegramSendVoice", {
-              chat_id: telegramChatId,
-              voice: speechResult.local_path,
-            }, {
-              rootDir: this.rootDir,
-              cwd: this.rootDir,
-              abortSignal: new AbortController().signal,
-              sessionId,
-              runtime: this,
-            }, undefined, profileId)
-          }
-        } else {
-          // CLI: play audio
-          const { spawn } = await import("node:child_process")
-          const player = await this.findAudioPlayer()
-          if (player) {
-            const child = spawn(player, [speechResult.local_path], { stdio: "ignore" })
-            child.on("error", (err) => logger.warn(`Voice playback failed: ${err.message}`))
-            child.unref()
-          }
-        }
-      }
-    } else {
-      // Text mode: deliver text normally
-      await this.deliverText(sessionId, ackText, delivery, "Failed to deliver instant acknowledgment")
-    }
-  }
 }
 
 function clipForWorklog(value: string, maxChars = 180) {

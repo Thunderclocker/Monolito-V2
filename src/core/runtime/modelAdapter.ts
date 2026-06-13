@@ -214,7 +214,6 @@ type ContextExtras = {
   stallAlert?: string
   systemDirective?: string
   blockedTools?: string[]
-  instantAcknowledgment?: string | null
   ralphAttempt?: number
 }
 
