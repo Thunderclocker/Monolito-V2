@@ -109,9 +109,14 @@ export function evaluateTopLevelRalphGate(
     }
   }
 
+  // If the assistant declared TASK_FAILED, do not block the gate.
+  if (assistantReply && assistantReply.includes("TASK_FAILED")) {
+    return { blocked: false, shouldRetry: false, feedbackPrompt: null, unfinished: [] }
+  }
+
   const tasks = listSessionTasks(rootDir, sessionId, profileId)
   const unfinished = tasks
-    .filter(t => t.status === "pending" || t.status === "in_progress")
+    .filter(t => (t.status === "pending" || t.status === "in_progress") && t.category !== "life")
     .map(t => ({ content: t.content, status: t.status }))
 
   if (unfinished.length === 0) {

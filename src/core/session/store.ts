@@ -399,6 +399,7 @@ export interface SessionTask {
   createdAt: string
   updatedAt?: string
   sessionId?: string
+  category?: "cognitive" | "life"
 }
 
 export function writeSessionTask(

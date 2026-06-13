@@ -262,3 +262,53 @@ test("evaluateTopLevelRalphGate: passes when screenshot is pre-attached to user 
   assert.equal(result.blocked, false, "Gate must pass without CaptureScreenshot if already attached and analyzed")
 })
 
+test("evaluateTopLevelRalphGate: passes when assistantReply contains TASK_FAILED", () => {
+  const sessionId = "ralph-failed-escape"
+  const profileId = "default"
+  clearActiveTasks(sessionId)
+  writeSessionTask(sharedRoot, sessionId, "task-1", {
+    id: "task-1",
+    sessionId,
+    content: "Task A",
+    activeForm: "Doing A",
+    status: "pending",
+    createdAt: "2026-06-05T13:13:05.372Z",
+    updatedAt: "2026-06-05T13:13:05.372Z",
+  } as SessionTask, profileId)
+
+  const result = evaluateTopLevelRalphGate(
+    sharedRoot, sessionId, profileId,
+    "do task",
+    1,
+    "Lo intenté pero: TASK_FAILED: No se pudo conectar a internet",
+  )
+
+  assert.equal(result.blocked, false, "Gate must not block if TASK_FAILED is present in the assistant reply")
+})
+
+test("evaluateTopLevelRalphGate: ignores tasks with category 'life'", () => {
+  const sessionId = "ralph-life-task"
+  const profileId = "default"
+  clearActiveTasks(sessionId)
+  writeSessionTask(sharedRoot, sessionId, "task-1", {
+    id: "task-1",
+    sessionId,
+    content: "Repintar marco metalico",
+    activeForm: "Repintando marco",
+    status: "pending",
+    category: "life",
+    createdAt: "2026-06-05T13:13:05.372Z",
+    updatedAt: "2026-06-05T13:13:05.372Z",
+  } as SessionTask, profileId)
+
+  const result = evaluateTopLevelRalphGate(
+    sharedRoot, sessionId, profileId,
+    "repaint frame",
+    1,
+    "No puedo hacerlo yo mismo en el mundo fisico",
+  )
+
+  assert.equal(result.blocked, false, "Gate must not block on life tasks")
+})
+
+

@@ -50,6 +50,11 @@ export const todoTools: ToolDefinition[] = [
               enum: ["pending", "in_progress", "completed"],
               description: "Status of this todo item. Exactly ONE may be 'in_progress' at a time.",
             },
+            category: {
+              type: "string",
+              enum: ["cognitive", "life"],
+              description: "Category of the task. Use 'cognitive' for agent execution steps (e.g. 'Run tests', 'Fix bug') that must block turn completion. Use 'life' for real-world or long-term user objectives (e.g. 'Repaint metal frame', 'Buy groceries') that should not block the turn.",
+            },
           },
           required: ["content", "activeForm", "status"],
           additionalProperties: false,
@@ -98,6 +103,7 @@ export const todoTools: ToolDefinition[] = [
       const content = typeof t.content === "string" ? t.content.trim() : ""
       const activeForm = typeof t.activeForm === "string" ? t.activeForm.trim() : ""
       const status = typeof t.status === "string" ? t.status : ""
+      const category = typeof t.category === "string" ? t.category : undefined
       if (content.length === 0) {
         return formatToolError(`todos[${i}].content cannot be empty.`)
       }
@@ -106,6 +112,9 @@ export const todoTools: ToolDefinition[] = [
       }
       if (!validStatuses.has(status)) {
         return formatToolError(`todos[${i}].status must be one of pending|in_progress|completed (got '${status}').`)
+      }
+      if (category !== undefined && category !== "cognitive" && category !== "life") {
+        return formatToolError(`todos[${i}].category must be one of cognitive|life (got '${category}').`)
       }
     }
 
@@ -132,7 +141,7 @@ export const todoTools: ToolDefinition[] = [
 
     const persisted: SessionTask[] = []
     for (const t of todos) {
-      const tt = t as { content: string; activeForm: string; status: "pending" | "in_progress" | "completed" }
+      const tt = t as { content: string; activeForm: string; status: "pending" | "in_progress" | "completed"; category?: "cognitive" | "life" }
       const taskId = `task-${randomUUID().slice(0, 8)}`
       const task: SessionTask = {
         id: taskId,
@@ -142,6 +151,7 @@ export const todoTools: ToolDefinition[] = [
         status: tt.status,
         createdAt: now,
         updatedAt: now,
+        category: tt.category || "cognitive",
       }
       writeSessionTask(context.rootDir, sessionId, taskId, task, profileId)
       persisted.push(task)
