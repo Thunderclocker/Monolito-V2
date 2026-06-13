@@ -1,6 +1,6 @@
 import { type Socket } from "node:net"
 import { randomUUID } from "node:crypto"
-import { execFile, spawn } from "node:child_process"
+import { execFile, spawn, type ChildProcess } from "node:child_process"
 import { existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { promisify } from "node:util"
@@ -946,6 +946,7 @@ export class MonolitoV2Runtime {
   private adultModeDisabledSessions = new Set<string>()
   private pendingPermissions = new Map<string, { resolve: (decision: "allow" | "deny" | "ask") => void }>()
   private bufferedScreenshotPaths = new Map<string, string>()
+  private activeAudioProcess: ChildProcess | null = null
 
   public bufferScreenshot(sessionId: string, path: string) {
     this.bufferedScreenshotPaths.set(sessionId, path)
@@ -3740,8 +3741,22 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
         const { spawn } = await import("node:child_process")
         const player = await this.findAudioPlayer()
         if (player) {
+          if (this.activeAudioProcess) {
+            try {
+              this.activeAudioProcess.kill("SIGKILL")
+            } catch (err) {
+              logger.warn(`Failed to kill active audio process: ${err instanceof Error ? err.message : String(err)}`)
+            }
+            this.activeAudioProcess = null
+          }
           const child = spawn(player, [speechResult.local_path], { stdio: "ignore" })
+          this.activeAudioProcess = child
           child.on("error", (err) => logger.warn(`Voice playback failed: ${err.message}`))
+          child.on("exit", () => {
+            if (this.activeAudioProcess === child) {
+              this.activeAudioProcess = null
+            }
+          })
           child.unref()
         } else {
           logger.warn("Voice mode: no audio player found for CLI playback")
