@@ -250,11 +250,11 @@ the pipeline.
             (CLI: TUI render | Telegram: sendMessage)
                          │
                          ▼
-        ┌──────────────────────────────────────┐
-        │ Inactivity timer (only when user idle) │
-        │  • MemoryAgent  (cursor-based + event) │
-        │  Conf: CONF_HEARTBEAT wing           │
-        └──────────────────────────────────────┘
+         ┌──────────────────────────────────────┐
+         │ Inactivity timer (only when user idle) │
+         │  • MemoryAgent  (cursor-based + event) │
+         │  Conf: CONF_MEMORYAGENT wing         │
+         └──────────────────────────────────────┘
 ```
 
 If at any point the provider throws `ContextOverflowError`, the recovery
@@ -385,7 +385,7 @@ Configuration is split between three layers:
 
 1. **`.env` file** — bootstrap values: provider URL, API key, model id.
 2. **`CONF_*` wings in SQLite** — runtime state: active profile, channel
-   tokens, web search mode, heartbeat, permissions, policy. Mutated via
+   tokens, web search mode, memoryagent, permissions, policy. Mutated via
    `tool_manage_config` (read/write/get/set/activate_model).
 3. **In-memory hot state** — `MONOLITO_ROOT`, registered listeners, MCP
    clients, abort controllers. Lost on restart by design.

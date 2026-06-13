@@ -26,7 +26,7 @@ export const forensicsTools: ToolDefinition[] = [
 {
   name: "SessionForensics",
   permissionTier: "read",
-  description: "Inspect persisted session evidence before answering questions about what happened, what was said, which tools/workers ran, or where a prior conclusion came from. This is ALSO the correct tool for questions about internal daemon events such as heartbeat history, memory consolidation runs, background turns, and worklog entries — use this instead of Bash/Grep over source code.",
+  description: "Inspect persisted session evidence before answering questions about what happened, what was said, which tools/workers ran, or where a prior conclusion came from. This is ALSO the correct tool for questions about internal daemon events such as memory agent consolidation runs, background turns, and worklog entries — use this instead of Bash/Grep over source code.",
   inputSchema: {
     type: "object",
     properties: {

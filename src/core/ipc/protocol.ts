@@ -10,7 +10,7 @@ import { MONOLITO_ROOT } from "../system/root.ts"
  * Telegram both target this same session. Other sessions in the DB
  * (synthetic background turns) are internal and live in their
  * own `agent-*` namespaces — they are not
- * candidates for proactive delivery, the heartbeat, or the TUI's
+ * candidates for proactive delivery, the MemoryAgent inactivity timer, or the TUI's
  * "current session" display.
  *
  * `/new` does NOT create a new session row — it calls `resetSession`

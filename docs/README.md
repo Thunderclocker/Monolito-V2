@@ -37,7 +37,7 @@ the operational map.
 - [`bootstrap-and-core-files.md`](./bootstrap-and-core-files.md) —
   startup BOOT wings, onboarding, and the current memory-layer split.
 - [`background-agents.md`](./background-agents.md) — silent
-  background agent (`MemoryAgent`) that runs during heartbeat for
+  background agent (`MemoryAgent`) that runs during inactivity periods for
   memory consolidation. (SkillsAgent and the entire dynamic skill system were removed.)
 - [`tool-harness.md`](./tool-harness.md) — tool execution model,
   permission gating, BOOT tools, and Memory Palace behavior.

@@ -214,7 +214,7 @@ type SystemStatus = {
     packageJson: "ok" | "missing"
     bootstrapPending: boolean
   }
-  heartbeat: {
+  memoryAgent: {
     lastExecutedAt: string | null
     lastSkippedAt: string | null
     isRunning: boolean
@@ -981,9 +981,9 @@ export class MonolitoV2Runtime {
     this.adultModeDisabledSessions.add(sessionId)
   }
   private lastUserActivity = Date.now()
-  private lastHeartbeatTime = 0
-  private lastHeartbeatSkippedAt = 0
-  private isHeartbeatRunning = false
+  private lastMemoryAgentTime = 0
+  private lastMemoryAgentSkippedAt = 0
+  private isMemoryAgentRunning = false
 
   private memoryConsolidationTimer: NodeJS.Timeout | null = null
 
@@ -991,29 +991,18 @@ export class MonolitoV2Runtime {
     return this.lastUserActivity
   }
 
-  // Deprecated/Stub legacy heartbeat functions to avoid breaking CLI config commands
-  scheduleNextHeartbeat(reason?: string) {
-    // No-op in v2 (heartbeat loop replaced by inactivity timer)
-  }
-
-  startHeartbeatTimer() {
-    // Map to memory consolidation timer start
+  startMemoryAgentTimer() {
     const targetSessionId = MAIN_SESSION_ID
     this.scheduleMemoryConsolidation(targetSessionId)
   }
 
-  stopHeartbeatTimer() {
-    // Map to memory consolidation timer cancel
+  stopMemoryAgentTimer() {
     this.cancelMemoryConsolidation()
-  }
-
-  async checkAndTriggerHeartbeat() {
-    // No-op in v2
   }
 
   private scheduleMemoryConsolidation(sessionId: string) {
     try {
-      const config = readConfigWing(this.rootDir, "CONF_HEARTBEAT") as import("../config/configWings.ts").HeartbeatConfig
+      const config = readConfigWing(this.rootDir, "CONF_MEMORYAGENT") as import("../config/configWings.ts").MemoryAgentConfig
       const enabled = config?.enabled ?? true
       if (!enabled) {
         logger.debug("[MemoryAgent] Autoconsolidation is disabled in configuration. Skipping.")
@@ -1089,9 +1078,9 @@ export class MonolitoV2Runtime {
     loadAndApplyModelSettings(process.env)
     this.reconcileModelConfigWing()
 
-    const config = readConfigWing(this.rootDir, "CONF_HEARTBEAT") as import("../config/configWings.ts").HeartbeatConfig
+    const config = readConfigWing(this.rootDir, "CONF_MEMORYAGENT") as import("../config/configWings.ts").MemoryAgentConfig
     if (config?.enabled) {
-      this.startHeartbeatTimer()
+      this.startMemoryAgentTimer()
     }
   }
 
@@ -1232,6 +1221,8 @@ export class MonolitoV2Runtime {
     }
 
     this.activeSessions.add(sessionId)
+    this.isMemoryAgentRunning = true
+    this.lastMemoryAgentTime = Date.now()
     const turnStartedAt = Date.now()
     const abortController = new AbortController()
     const turnTimeout = setTimeout(() => abortController.abort(new TurnTimeoutError("Memory consolidation turn exceeded timeout")), 200_000)
@@ -1271,6 +1262,8 @@ export class MonolitoV2Runtime {
       if (newMessages.length === 0) {
         logger.info("[MemoryAgent] No new messages since last consolidation.")
         emitSystemMessage("⚡ MemoryAgent — sin mensajes nuevos que procesar.")
+        this.lastMemoryAgentSkippedAt = Date.now()
+        this.isMemoryAgentRunning = false
         return
       }
 
@@ -1401,135 +1394,7 @@ Rules:
     } finally {
       clearTimeout(turnTimeout)
       await this.transitionState(sessionId, "idle")
-      this.releaseSessionLock(sessionId)
-    }
-  }
-
-  private async runProactiveBackgroundTurn(sessionId: string, profileId: string, attempt: number, heartbeatPrompt?: string) {
-    if (this.activeSessions.has(sessionId)) {
-      // Re-queue: the session is busy; the heartbeat will retry on the next tick.
-      return
-    }
-
-    this.activeSessions.add(sessionId)
-    const turnStartedAt = Date.now()
-    const abortController = new AbortController()
-    const turnTimeout = setTimeout(() => {
-      abortController.abort(new TurnTimeoutError(`Background turn exceeded hard timeout of ${TURN_HARD_TIMEOUT_MS}ms`))
-    }, TURN_HARD_TIMEOUT_MS)
-    try {
-      loadAndApplyModelSettings(process.env)
-      await this.transitionState(sessionId, "running")
-
-      const session = getSession(this.rootDir, sessionId)
-      if (!session) return
-      const sessionMessages = session.messages ?? []
-
-      // Build a synthetic user message that prompts the model to check
-      // for heartbeat-relevant work. The model decides whether to emit
-      // HEARTBEAT_OK (silently discarded) or a real notification. If
-      // no heartbeat prompt is supplied, the model is asked to do its
-      // normal work.
-      const backgroundSession: SessionRecord = heartbeatPrompt
-        ? {
-            ...session,
-            messages: [
-              ...sessionMessages,
-              {
-                role: "user" as const,
-                text: heartbeatPrompt,
-                at: new Date().toISOString(),
-              },
-            ],
-          }
-        : session
-      const ragSession = await prepareSemanticRagSession(this.rootDir, backgroundSession, profileId)
-
-      const isMainSession = !session.id.startsWith("agent-") && !session.id.startsWith("telegram-")
-      const [gitContext, dateContext, workspaceContext] = await Promise.all([
-        getGitContext(this.rootDir),
-        Promise.resolve(getDateContext()),
-        Promise.resolve(getWorkspaceContext(this.rootDir, profileId, { isMainSession })),
-      ])
-      const webSearchConfig = readWebSearchConfig()
-
-      const turn = await runAssistantTurn(
-        ragSession,
-        this.rootDir,
-        async (tool, input, context, toolUseId) => this.executeTool(sessionId, tool, input, { ...context, abortSignal: abortController.signal, sessionId, runtime: this }, toolUseId, profileId),
-        {
-          rootDir: this.rootDir,
-          cwd: this.rootDir,
-          abortSignal: abortController.signal,
-          getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId),
-          profileId,
-        },
-        {
-          contextExtras: {
-            gitContext,
-            dateContext,
-            workspaceContext,
-            adultMode: this.hasAdultMode(sessionId),
-            webSearchProvider: webSearchConfig.provider,
-          },
-          costState: this.costState,
-          abortSignal: abortController.signal,
-          turnStartedAt,
-          maxTurnDurationMs: TURN_HARD_TIMEOUT_MS - 5_000,
-        },
-      )
-
-      if (turn.usage) {
-        recordApiCall(
-          this.costState,
-          getEffectiveModelConfig().model,
-          {
-            inputTokens: turn.usage.inputTokens,
-            outputTokens: turn.usage.outputTokens,
-          },
-          Date.now() - turnStartedAt,
-        )
-      }
-
-      const isHeartbeatOk = turn.finalText?.trim().toUpperCase().replace(/[^A-Z_]/g, "") === "HEARTBEAT_OK"
-      if (heartbeatPrompt && isHeartbeatOk) {
-        logger.info("Proactive heartbeat evaluated as HEARTBEAT_OK (silent discard).")
-        appendWorklog(this.rootDir, sessionId, {
-          type: "note",
-          summary: "Proactive heartbeat evaluated as HEARTBEAT_OK (silent discard).",
-        })
-        return
-      }
-
-      const userFacingText = sanitizeExternalAssistantText(sessionId, turn.finalText)
-      if (shouldSuppressEmit(userFacingText)) {
-        appendWorklog(this.rootDir, sessionId, {
-          type: "note",
-          summary: "Suppressed empty background assistant response",
-        })
-      } else {
-        if (heartbeatPrompt) {
-          logger.info(`Proactive heartbeat triggered user notification: "${userFacingText.slice(0, 100)}..."`)
-        }
-        appendMessage(this.rootDir, sessionId, "assistant", userFacingText, { thinking: turn.thinking })
-        appendWorklog(this.rootDir, sessionId, {
-          type: "session",
-          summary: turn.error ? `Background turn completed with model error: ${clipForWorklog(turn.error)}` : "Background turn completed",
-        })
-        this.emit({
-          type: "turn.completed",
-          sessionId,
-          role: "assistant",
-          durationMs: Date.now() - turnStartedAt,
-          usage: turn.usage,
-        })
-        this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText, thinking: turn.thinking })
-
-        await this.deliverText(sessionId, userFacingText, undefined, "Failed to deliver background reply")
-      }
-    } finally {
-      clearTimeout(turnTimeout)
-      await this.transitionState(sessionId, "idle")
+      this.isMemoryAgentRunning = false
       this.releaseSessionLock(sessionId)
     }
   }
@@ -2887,7 +2752,7 @@ Rules:
   }
 
   close() {
-    this.stopHeartbeatTimer()
+    this.stopMemoryAgentTimer()
     for (const client of this.mcpClients.values()) {
       client.close()
     }
@@ -3289,10 +3154,10 @@ Rules:
         packageJson: existsSync(join(this.rootDir, "package.json")) ? "ok" : "missing",
         bootstrapPending: workspace.bootstrapPending,
       },
-      heartbeat: {
-        lastExecutedAt: this.lastHeartbeatTime ? new Date(this.lastHeartbeatTime).toISOString() : null,
-        lastSkippedAt: this.lastHeartbeatSkippedAt ? new Date(this.lastHeartbeatSkippedAt).toISOString() : null,
-        isRunning: this.isHeartbeatRunning,
+      memoryAgent: {
+        lastExecutedAt: this.lastMemoryAgentTime ? new Date(this.lastMemoryAgentTime).toISOString() : null,
+        lastSkippedAt: this.lastMemoryAgentSkippedAt ? new Date(this.lastMemoryAgentSkippedAt).toISOString() : null,
+        isRunning: this.isMemoryAgentRunning,
       },
       cost: formatCostSummary(this.costState),
     }
@@ -3371,11 +3236,11 @@ Rules:
       lines.push("")
     }
 
-    if (status.heartbeat) {
-      lines.push("Heartbeat:")
-      lines.push(`🫀 Last executed: ${status.heartbeat.lastExecutedAt ?? "never"}`)
-      lines.push(`⏭  Last skipped:  ${status.heartbeat.lastSkippedAt ?? "never"}`)
-      lines.push(`⚙️  Running now:   ${status.heartbeat.isRunning ? "yes" : "no"}`)
+    if (status.memoryAgent) {
+      lines.push("MemoryAgent:")
+      lines.push(`🧠 Last executed: ${status.memoryAgent.lastExecutedAt ?? "never"}`)
+      lines.push(`⏭  Last skipped:  ${status.memoryAgent.lastSkippedAt ?? "never"}`)
+      lines.push(`⚙️  Running now:   ${status.memoryAgent.isRunning ? "yes" : "no"}`)
       lines.push("")
     }
 
@@ -3554,7 +3419,7 @@ Rules:
           engine: typeof channels.stt?.engine === "string" ? channels.stt.engine : "",
           vadFilter: typeof channels.stt?.vadFilter === "boolean" ? channels.stt.vadFilter : "",
         },
-        heartbeat: readConfigWing(this.rootDir, "CONF_HEARTBEAT"),
+        memoryagent: readConfigWing(this.rootDir, "CONF_MEMORYAGENT"),
       }, null, 2)
     }
     if (action === "set") {
@@ -3579,38 +3444,31 @@ Rules:
         applyModelSettingsToEnv(process.env, next)
         return `Saved ${field} = ${value}`
       }
-      else if (field === "heartbeat_enabled") {
+      else if (field === "memoryagent_enabled") {
         if (!["true", "false", "on", "off", "yes", "no", "1", "0"].includes(value.toLowerCase())) {
-          return "Invalid: heartbeat_enabled must be true or false"
+          return "Invalid: memoryagent_enabled must be true or false"
         }
         const isEnabled = ["true", "on", "yes", "1"].includes(value.toLowerCase())
-        const wing = readConfigWing(this.rootDir, "CONF_HEARTBEAT") as import("../config/configWings.ts").HeartbeatConfig
+        const wing = readConfigWing(this.rootDir, "CONF_MEMORYAGENT") as import("../config/configWings.ts").MemoryAgentConfig
         wing.enabled = isEnabled
-        writeConfigWing(this.rootDir, "CONF_HEARTBEAT", wing)
+        writeConfigWing(this.rootDir, "CONF_MEMORYAGENT", wing)
         if (isEnabled) {
-          this.startHeartbeatTimer()
+          this.startMemoryAgentTimer()
         } else {
-          this.stopHeartbeatTimer()
+          this.stopMemoryAgentTimer()
         }
-        return `Saved heartbeat_enabled = ${isEnabled}`
+        return `Saved memoryagent_enabled = ${isEnabled}`
       }
-      else if (field === "heartbeat_interval_minutes") {
+      else if (field === "memoryagent_min_idle_minutes") {
         const parsed = Number(value)
-        if (!Number.isFinite(parsed) || parsed <= 0) return "Invalid: heartbeat_interval_minutes must be a positive number"
-        const wing = readConfigWing(this.rootDir, "CONF_HEARTBEAT") as import("../config/configWings.ts").HeartbeatConfig
-        wing.interval_minutes = parsed
-        writeConfigWing(this.rootDir, "CONF_HEARTBEAT", wing)
-        this.scheduleNextHeartbeat(`config updated: heartbeat_interval_minutes = ${parsed}`)
-        return `Saved heartbeat_interval_minutes = ${parsed}`
-      }
-      else if (field === "heartbeat_min_idle_minutes") {
-        const parsed = Number(value)
-        if (!Number.isFinite(parsed) || parsed < 0) return "Invalid: heartbeat_min_idle_minutes must be a non-negative number"
-        const wing = readConfigWing(this.rootDir, "CONF_HEARTBEAT") as import("../config/configWings.ts").HeartbeatConfig
+        if (!Number.isFinite(parsed) || parsed < 0) return "Invalid: memoryagent_min_idle_minutes must be a non-negative number"
+        const wing = readConfigWing(this.rootDir, "CONF_MEMORYAGENT") as import("../config/configWings.ts").MemoryAgentConfig
         wing.min_idle_minutes = parsed
-        writeConfigWing(this.rootDir, "CONF_HEARTBEAT", wing)
-        this.scheduleNextHeartbeat(`config updated: heartbeat_min_idle_minutes = ${parsed}`)
-        return `Saved heartbeat_min_idle_minutes = ${parsed}`
+        writeConfigWing(this.rootDir, "CONF_MEMORYAGENT", wing)
+        if (wing.enabled) {
+          this.startMemoryAgentTimer()
+        }
+        return `Saved memoryagent_min_idle_minutes = ${parsed}`
       }
       else if (field === "tts_base_url" || field === "tts_api_key" || field === "tts_voice" || field === "tts_model" || field === "tts_format" || field === "tts_speed" || field === "tts_provider" || field === "tts_language_boost") {
         const nextChannels = { ...channels, tts: { ...(channels.tts ?? {}) } }

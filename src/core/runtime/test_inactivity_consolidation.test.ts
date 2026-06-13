@@ -1,16 +1,13 @@
 /**
- * Tests for the proactive heartbeat system and the single-session design.
+ * Tests for the inactivity consolidation system and the single-session design.
  *
  * These tests pin down:
  *   - MAIN_SESSION_ID is the constant "orchestrator"
- *   - The heartbeat targets MAIN_SESSION_ID (not a filtered listSessions)
- *   - The "skip if no tasks" short-circuit is gone — the model is always
- *     consulted on a heartbeat tick
- *   - The HEARTBEAT_OK response is correctly recognized
+ *   - The MemoryAgent targets MAIN_SESSION_ID (not a filtered listSessions)
  *
  * We don't call the model API in these tests (that requires real
  * credentials). The test_runtime_integration.test.ts file already
- * covers the wiring. These tests focus on the heartbeat's structural
+ * covers the wiring. These tests focus on the consolidator's structural
  * contract.
  */
 
@@ -20,7 +17,7 @@ import { MAIN_SESSION_ID } from "../ipc/protocol.ts"
 import { ensureSession, getSession } from "../session/store.ts"
 import { rmSync, existsSync } from "node:fs"
 
-const TEST_ROOT = "/tmp/monolito-heartbeat-test"
+const TEST_ROOT = "/tmp/monolito-memoryagent-test"
 
 // Route DB access through the tempdir. Without this, `getPaths()` falls
 // back to the captured MONOLITO_ROOT constant and the 09-jun-2026 runtime
@@ -45,7 +42,7 @@ test("ensureSession + getSession: MAIN_SESSION_ID round-trip works", () => {
   if (existsSync(TEST_ROOT)) {
     rmSync(TEST_ROOT, { recursive: true, force: true })
   }
-  ensureSession(TEST_ROOT, MAIN_SESSION_ID, "Main session (heartbeat test)")
+  ensureSession(TEST_ROOT, MAIN_SESSION_ID, "Main session (inactivity consolidation test)")
   const session = getSession(TEST_ROOT, MAIN_SESSION_ID)
   assert.ok(session, "MAIN_SESSION_ID session must be retrievable")
   assert.equal(session.id, MAIN_SESSION_ID)

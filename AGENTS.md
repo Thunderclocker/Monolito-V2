@@ -157,7 +157,7 @@ verifiques"*, *"sin chequear"*, *"decime de memoria"* wins.
 - **Prompt-Based Solutions**: Prompt engineering or prompt modifications must be treated as a last resort, to be used only when code-based, structural, state-based, or algorithmic solutions are completely unviable.
 - **Strict Limitation on Modifications**: You are strictly FORBIDDEN from modifying, creating, or deleting source code files, test scripts, or configuration files in the local workspace or the VPS checkout unless the user has explicitly and directly requested you to do so in the chat.
 - **No Hallucinate Configuration**: Agents/workers MUST NOT hallucinate or textually claim they have modified, saved, or loaded system configurations (such as active channels, Telegram tokens, or search credentials) without having first invoked the corresponding configuration management tools (`tool_manage_config` or matching registry endpoints).
-- **Configuration Management (`tool_manage_config`)**: Agents MUST use `tool_manage_config` for reading/writing configuration wings (`CONF_MODELS`, `CONF_SYSTEM`, `CONF_CHANNELS`, `CONF_WEBSEARCH`, `CONF_MCP`, `CONF_POLICY`, `CONF_HEARTBEAT`). It supports:
+- **Configuration Management (`tool_manage_config`)**: Agents MUST use `tool_manage_config` for reading/writing configuration wings (`CONF_MODELS`, `CONF_SYSTEM`, `CONF_CHANNELS`, `CONF_WEBSEARCH`, `CONF_MCP`, `CONF_POLICY`, `CONF_MEMORYAGENT`). It supports:
   - `action: "read"`: Read entire configuration block of a wing.
   - `action: "write"`: Replace entire configuration block of a wing.
   - `action: "get"`: Read a specific path using dot-notation (e.g., `telegram.enabled`).

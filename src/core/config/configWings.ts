@@ -12,7 +12,7 @@ export const CONFIG_WING_ORDER = [
   "CONF_WEBSEARCH",
   "CONF_MCP",
   "CONF_POLICY",
-  "CONF_HEARTBEAT",
+  "CONF_MEMORYAGENT",
 ] as const
 
 export type ConfigWingName = (typeof CONFIG_WING_ORDER)[number]
@@ -24,12 +24,11 @@ export type ConfigWingValueMap = {
   CONF_WEBSEARCH: WebSearchConfig
   CONF_MCP: Record<string, ResolvedMcpServerConfig>
   CONF_POLICY: PolicyConfig
-  CONF_HEARTBEAT: HeartbeatConfig
+  CONF_MEMORYAGENT: MemoryAgentConfig
 }
 
-export type HeartbeatConfig = {
+export type MemoryAgentConfig = {
   enabled: boolean
-  interval_minutes: number
   min_idle_minutes: number
 }
 
@@ -184,9 +183,8 @@ export const DEFAULT_CONFIG_WING_VALUES: ConfigWingValueMap = {
       SessionEnd: [],
     },
   },
-  CONF_HEARTBEAT: {
+  CONF_MEMORYAGENT: {
     enabled: true,
-    interval_minutes: 30,
     min_idle_minutes: 3,
   },
 }

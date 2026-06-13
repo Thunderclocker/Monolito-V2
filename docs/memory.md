@@ -296,17 +296,16 @@ incoherence.
 
 ---
 
-## 6. Heartbeat agents (silent background)
+## 6. Background agents (silent background)
 
 When the user is idle for `min_idle_minutes` (default 3, configurable
-via `CONF_HEARTBEAT` wing), the inactivity timer fires and runs the
+via `CONF_MEMORYAGENT` wing), the inactivity timer fires and runs the
 MemoryAgent. It uses a **cursor-based checkpoint** to process only
 messages not yet consolidated, avoiding re-processing and duplication.
 Result stats are emitted as visible events to the CLI (but not to
 Telegram or audio).
 
-Configuration: `CONF_HEARTBEAT` wing with `enabled`, `min_idle_minutes`,
-`interval_minutes`.
+Configuration: `CONF_MEMORYAGENT` wing with `enabled`, `min_idle_minutes`.
 
 ### MemoryAgent
 
