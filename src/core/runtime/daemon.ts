@@ -14,7 +14,6 @@ import {
 import { clearUpdateRestartState, MonolitoV2Runtime, readUpdateRestartState } from "./runtime.ts"
 import { startChannels, stopChannels } from "../channels/channelManager.ts"
 import { addLogSink, createDailyRotatingFileSink, createLogger, log } from "../logging/logger.ts"
-import { initEmbeddingEngine } from "../session/embeddings.ts"
 import { cleanupScratchpad } from "../system/root.ts"
 import { createGlobalHotkeyService, type GlobalHotkeyService } from "./globalHotkey.ts"
 
@@ -78,7 +77,7 @@ export class MonolitoV2Daemon {
       this.writeDaemonLog(`monolitod-v2 listening on tcp ${paths.tcpHost}:${paths.tcpPort}`)
     }
     this.startOwnershipMonitor()
-    void this.startEmbeddingsWarmup()
+    this.startToolIndexing()
     startChannels(this.runtime, {
       onRestartRequested: () => this.scheduleSelfRestart(),
       onStopRequested: () => this.scheduleSelfStop(),
@@ -489,51 +488,21 @@ export class MonolitoV2Daemon {
     }
   }
 
-  private async startEmbeddingsWarmup() {
-    this.writeDaemonLog("embeddings warmup started")
-    // Bumped from 30_000 to 90_000: on cold boot the bge-m3 model load via
-    // Ollama can take 30-60s; the previous 30s budget triggered a
-    // "lazy mode" fallback on the first start of every daemon restart,
-    // which meant the first semantic recall after a restart returned 0
-    // results. 90s is comfortably above the worst observed load time.
-    const timeoutMs = 90_000
-    const timeout = new Promise<{ ok: false; timeout: true }>(resolve => {
-      setTimeout(() => resolve({ ok: false, timeout: true }), timeoutMs).unref()
+  private startToolIndexing() {
+    import("../tools/registry.ts").then(({ indexToolsInPalace, indexRalphRulesInPalace }) => {
+      indexToolsInPalace(this.rootDir).then(() => {
+        this.writeDaemonLog("Tool indexing completed")
+      }).catch(err => {
+        this.writeDaemonLog(`Tool indexing failed: ${err}`)
+      })
+      indexRalphRulesInPalace(this.rootDir).then(() => {
+        this.writeDaemonLog("Ralph rules indexing completed")
+      }).catch(err => {
+        this.writeDaemonLog(`Ralph rules indexing failed: ${err}`)
+      })
+    }).catch(err => {
+      this.writeDaemonLog(`Failed to load tool registry for indexing: ${err}`)
     })
-    try {
-      const result = await Promise.race([initEmbeddingEngine(), timeout])
-      if ("timeout" in result) {
-        this.writeDaemonLog(`embeddings warmup timed out after ${timeoutMs}ms; continuing in lazy mode`)
-        return
-      }
-      if ("error" in result) {
-        this.writeDaemonLog(`embeddings warmup failed; continuing in lazy mode: ${result.error}`)
-      } else {
-        this.writeDaemonLog(`Embedding Engine ready. Palacio de Memoria activo. model=${result.model} baseUrl=${result.baseUrl} dimensions=${result.dimensions}`)
-        
-        // Dynamically import and run semantic tool and Ralph rule indexing
-        import("../tools/registry.ts").then(({ indexToolsInPalace, indexRalphRulesInPalace }) => {
-          indexToolsInPalace(this.rootDir).then(() => {
-            this.writeDaemonLog("Dynamic semantic tool indexing completed successfully")
-          }).catch(err => {
-            this.writeDaemonLog(`Dynamic semantic tool indexing failed: ${err}`)
-          })
-          indexRalphRulesInPalace(this.rootDir).then(() => {
-            this.writeDaemonLog("Dynamic Ralph rules indexing completed successfully")
-          }).catch(err => {
-            this.writeDaemonLog(`Dynamic Ralph rules indexing failed: ${err}`)
-          })
-        }).catch(err => {
-          this.writeDaemonLog(`Failed to load tool registry for indexing: ${err}`)
-        })
-
-        void this.runtime.syncMissingEmbeddings().catch(error => {
-          this.writeDaemonLog(`background embeddings sync failed: ${error instanceof Error ? error.message : String(error)}`)
-        })
-      }
-    } catch (error) {
-      this.writeDaemonLog(`embeddings warmup failed; continuing in lazy mode: ${error instanceof Error ? error.message : String(error)}`)
-    }
   }
 
   private safeWrite(socket: Socket, payload: string) {

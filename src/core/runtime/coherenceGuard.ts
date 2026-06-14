@@ -1,5 +1,4 @@
 import { readBootWing, recallMemory, appendWorklog } from "../session/store.ts"
-import { generateEmbedding } from "../session/embeddings.ts"
 
 export interface CoherenceCheckResult {
   coherent: boolean

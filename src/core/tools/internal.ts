@@ -47,7 +47,6 @@ import {
   querySemanticTools,
   upsertRalphRule,
 } from "../session/store.ts"
-import { isEmbeddingsUnavailableError } from "../session/embeddings.ts"
 import { redactSensitiveValue } from "../security/redact.ts"
 import { type Logger } from "../logging/logger.ts"
 import { CONFIG_WING_ORDER, type ConfigWingName } from "../config/configWings.ts"

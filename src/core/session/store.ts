@@ -1,8 +1,7 @@
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import Database from "better-sqlite3"
-import * as sqliteVec from "sqlite-vec"
-import { randomUUID, createHash } from "node:crypto"
+import { randomUUID } from "node:crypto"
 import {
   type AgentEvent,
   type SessionRecord,
@@ -11,13 +10,6 @@ import {
   ensureDirs,
   getPaths,
 } from "../ipc/protocol.ts"
-import { bindSemanticSearchDb, generateEmbedding, isEmbeddingsUnavailableError } from "./embeddings.ts"
-import {
-  isMultiChunkEmbeddingsEnabled,
-  embedChunked,
-  insertChunkEmbeddings,
-  recallMultiChunk,
-} from "./multiChunkEmbeddings.ts"
 import {
   BOOT_WING_ORDER,
   DEFAULT_BOOT_WING_CONTENT,
@@ -30,7 +22,7 @@ import {
   type ConfigWingValueMap,
 } from "../config/configWings.ts"
 import { createLogger } from "../logging/logger.ts"
-import { PALACE_NAMESPACE, PALACE_SCHEMA_SQL, VECTOR_SCHEMA_SQL, type PalaceContentType, type PalaceNamespace } from "../db/schema.ts"
+import { PALACE_NAMESPACE, PALACE_SCHEMA_SQL, type PalaceContentType, type PalaceNamespace } from "../db/schema.ts"
 
 let dbInstance: Database.Database | null = null
 let dbPathCache: string | null = null
@@ -106,12 +98,6 @@ export type KnowledgeGraphTriple = {
   is_active: boolean
 }
 
-export type VectorMemoryStatus = {
-  extensionLoaded: boolean
-  vecMessagesCount: number
-  vecDrawersCount: number
-}
-
 function palaceProfileScope(profileId: string | null | undefined) {
   return profileId ?? GLOBAL_PROFILE_SCOPE
 }
@@ -120,73 +106,56 @@ function ensurePalaceSchema(db: Database.Database) {
   db.exec(PALACE_SCHEMA_SQL)
 }
 
-function ensureVectorSchema(db: Database.Database) {
+function ensureFtsSchema(db: Database.Database) {
+  // FTS5 sobre mensajes — keyword recall del historial
   db.exec(`
-    DROP TRIGGER IF EXISTS fts_drawers_ai;
-    DROP TRIGGER IF EXISTS fts_drawers_ad;
-    DROP TRIGGER IF EXISTS fts_drawers_au;
-    DROP TABLE IF EXISTS fts_drawers;
-  `)
-
-  const vectorTables = db.prepare(`
-    SELECT name, sql
-    FROM sqlite_master
-    WHERE name IN ('vec_drawers', 'vec_messages')
-  `).all() as Array<{ name: string; sql: string | null }>
-  const hasLegacyVectorTable = vectorTables.some(row => 
-    !row.sql?.includes("float[1024]") ||
-    (row.name === "vec_drawers" && row.sql?.includes("id TEXT"))
-  )
-
-  let isVectorDbCorrupt = false
-  try {
-    if (vectorTables.length > 0) {
-      db.prepare("SELECT id FROM vec_drawers LIMIT 1").all()
-      db.prepare("SELECT id FROM vec_messages LIMIT 1").all()
-    }
-  } catch (error) {
-    logger.warn(`Vector tables integrity check failed (will auto-recreate): ${error}`)
-    isVectorDbCorrupt = true
-  }
-
-  if (hasLegacyVectorTable || isVectorDbCorrupt) {
-    db.exec(`
-      DROP TABLE IF EXISTS vec_drawers;
-      DROP TABLE IF EXISTS vec_messages;
-    `)
-  }
-  db.exec(VECTOR_SCHEMA_SQL)
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS embedding_cache (
-      provider TEXT,
-      model TEXT,
-      hash TEXT,
-      embedding TEXT,
-      dims INTEGER,
-      updated_at INTEGER,
-      PRIMARY KEY (provider, model, hash)
+    CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+      text,
+      content='messages',
+      content_rowid='id',
+      tokenize='unicode61'
     );
-    CREATE INDEX IF NOT EXISTS idx_embedding_cache_updated_at ON embedding_cache(updated_at);
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS drawers_fts USING fts5(
+      content,
+      memory_key,
+      wing,
+      room,
+      content='memory_drawers',
+      content_rowid='rowid',
+      tokenize='unicode61'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages BEGIN
+      INSERT INTO messages_fts(rowid, text) VALUES (new.id, new.text);
+    END;
+    CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
+      INSERT INTO messages_fts(messages_fts, rowid, text) VALUES ('delete', old.id, old.text);
+    END;
+    CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE OF text ON messages BEGIN
+      INSERT INTO messages_fts(messages_fts, rowid, text) VALUES ('delete', old.id, old.text);
+      INSERT INTO messages_fts(rowid, text) VALUES (new.id, new.text);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS drawers_fts_ai AFTER INSERT ON memory_drawers BEGIN
+      INSERT INTO drawers_fts(rowid, content, memory_key, wing, room)
+      VALUES (new.rowid, new.content, new.memory_key, new.wing, new.room);
+    END;
+    CREATE TRIGGER IF NOT EXISTS drawers_fts_ad AFTER DELETE ON memory_drawers BEGIN
+      INSERT INTO drawers_fts(drawers_fts, rowid, content, memory_key, wing, room)
+      VALUES ('delete', old.rowid, old.content, old.memory_key, old.wing, old.room);
+    END;
+    CREATE TRIGGER IF NOT EXISTS drawers_fts_au AFTER UPDATE ON memory_drawers BEGIN
+      INSERT INTO drawers_fts(drawers_fts, rowid, content, memory_key, wing, room)
+      VALUES ('delete', old.rowid, old.content, old.memory_key, old.wing, old.room);
+      INSERT INTO drawers_fts(rowid, content, memory_key, wing, room)
+      VALUES (new.rowid, new.content, new.memory_key, new.wing, new.room);
+    END;
   `)
 
-  // Multi-chunk embeddings metadata. Lives in a regular table because:
-  //   1. vec0 only allows single-column INTEGER PRIMARY KEY.
-  //   2. CREATE INDEX on virtual tables is not allowed in SQLite.
-  // The (drawer_rowid, chunk_index) → chunk_id mapping is here, and the
-  // uniqueness invariant is enforced by idx_drawer_chunk_meta_unique.
-  // The actual float vector lives in vec_drawer_chunks keyed by chunk_id.
-  // See db/migrations/20260608_vec_drawer_chunks.sql.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS drawer_chunk_meta (
-      chunk_id INTEGER PRIMARY KEY,
-      drawer_rowid INTEGER NOT NULL,
-      chunk_index INTEGER NOT NULL
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_drawer_chunk_meta_unique
-      ON drawer_chunk_meta(drawer_rowid, chunk_index);
-    CREATE INDEX IF NOT EXISTS idx_drawer_chunk_meta_by_drawer
-      ON drawer_chunk_meta(drawer_rowid);
-  `)
+  // Backfill inicial del índice FTS desde las tablas existentes
+  try { db.exec(`INSERT INTO messages_fts(messages_fts) VALUES('rebuild')`) } catch { /* ya poblado */ }
+  try { db.exec(`INSERT INTO drawers_fts(drawers_fts) VALUES('rebuild')`) } catch { /* ya poblado */ }
 }
 
 function readLatestPalaceContent(
@@ -568,9 +537,6 @@ export function getDb(rootDir: string): Database.Database {
   let db: Database.Database
   try {
     db = new Database(path)
-    sqliteVec.load(db)
-    bindSemanticSearchDb(db)
-  
     db.pragma(`journal_mode = WAL`);
     db.pragma(`synchronous = NORMAL`);
     db.pragma(`foreign_keys = ON`);
@@ -723,7 +689,7 @@ export function getDb(rootDir: string): Database.Database {
     INSERT OR IGNORE INTO profiles (id, name, description, created_at)
     VALUES ('default', 'Default Agent', 'El agente Monolito principal por defecto.', CURRENT_TIMESTAMP);
   `)
-    ensureVectorSchema(db)
+    ensureFtsSchema(db)
     ensurePalaceSchema(db)
 
     // Migration: Add profile_id to sessions if missing (better-sqlite3)
@@ -794,32 +760,6 @@ export function getDb(rootDir: string): Database.Database {
   dbInstance = db
   dbPathCache = path
   return db
-}
-
-export async function getVectorMemoryStatus(): Promise<VectorMemoryStatus> {
-  if (!dbInstance) {
-    return {
-      extensionLoaded: false,
-      vecMessagesCount: 0,
-      vecDrawersCount: 0,
-    }
-  }
-
-  try {
-    const vecMessages = dbInstance.prepare(`SELECT count(*) as c FROM vec_messages`).get() as { c: number | bigint }
-    const vecDrawers = dbInstance.prepare(`SELECT count(*) as c FROM vec_drawers`).get() as { c: number | bigint }
-    return {
-      extensionLoaded: true,
-      vecMessagesCount: Number(vecMessages.c),
-      vecDrawersCount: Number(vecDrawers.c),
-    }
-  } catch {
-    return {
-      extensionLoaded: false,
-      vecMessagesCount: 0,
-      vecDrawersCount: 0,
-    }
-  }
 }
 
 export function closeMemoryDb() {
@@ -1238,19 +1178,41 @@ export function listSessionRecords(rootDir: string): SessionRecord[] {
   return summaries.map(s => getSession(rootDir, s.id)!)
 }
 
-export function getSemanticMessageContext(rootDir: string, vector: number[] | Float32Array, limit = 10) {
+/**
+ * Sanitiza una query para FTS5: descarta tokens cortos y caracteres especiales,
+ * devuelve null si no queda nada buscable.
+ */
+function sanitizeFtsQuery(q: string): string | null {
+  const tokens = q
+    .replace(/["^*()\[\]:]/g, " ")
+    .split(/\s+/)
+    .map(t => t.trim())
+    .filter(t => t.length >= 2)
+  if (tokens.length === 0) return null
+  return tokens.map(t => `"${t}"`).join(" OR ")
+}
+
+export function getSemanticMessageContext(rootDir: string, query: string, limit = 10) {
   const db = getDb(rootDir)
-  const rows = db.prepare(`
-    SELECT m.id, m.session_id, m.role, m.text, m.at, v.distance
-    FROM vec_messages v
-    JOIN messages m ON m.id = v.id
-    WHERE v.embedding MATCH ?
-      AND k = ?
-      AND m.session_id NOT LIKE 'agent-%'
-      AND m.session_id NOT LIKE 'worker-%'
-    ORDER BY distance ASC
-  `).all(vector instanceof Float32Array ? vector : Float32Array.from(vector), limit) as Array<{ id: number; session_id: string; role: string; text: string; at: string; distance?: number }>
-  return rows
+  const sanitized = sanitizeFtsQuery(query)
+  if (!sanitized) return []
+  try {
+    const rows = db.prepare(`
+      SELECT m.id, m.session_id, m.role, m.text, m.at
+      FROM messages_fts f
+      JOIN messages m ON m.id = f.rowid
+      WHERE messages_fts MATCH ?
+        AND m.session_id NOT LIKE 'agent-%'
+        AND m.session_id NOT LIKE 'worker-%'
+        AND m.role != 'system'
+      ORDER BY f.rank
+      LIMIT ?
+    `).all(sanitized, limit) as Array<{ id: number; session_id: string; role: string; text: string; at: string }>
+    return rows
+  } catch (error) {
+    logger.warn(`FTS message recall failed: ${error}`)
+    return []
+  }
 }
 
 export interface AppendMessageOptions {
@@ -1318,23 +1280,6 @@ export function appendMessage(
     db.exec("ROLLBACK")
     throw err
   }
-
-  if (messageId !== null && role !== "system" && text.trim()) {
-    void indexMessageEmbedding(rootDir, sessionId, messageId, text)
-  }
-}
-
-async function indexMessageEmbedding(rootDir: string, sessionId: string, messageId: number, text: string) {
-  if (!isMainSession(sessionId)) return
-  try {
-    const embedding = await generateEmbedding(text)
-    const db = getDb(rootDir)
-    const id = BigInt(messageId)
-    db.prepare(`DELETE FROM vec_messages WHERE id = ?`).run(id)
-    db.prepare(`INSERT INTO vec_messages (id, embedding) VALUES (?, ?)`).run(id, embedding)
-  } catch (error) {
-    logger.warn("Embeddings fallaron, guardando mensaje sin vector: " + (error instanceof Error ? error.message : String(error)))
-  }
 }
 
 export function appendWorklog(rootDir: string, sessionId: string, entry: Omit<SessionWorklogEntry, "at"> & { at?: string }) {
@@ -1362,9 +1307,6 @@ export function resetSession(rootDir: string, sessionId: string, options?: { sum
   const summary = options?.summary ?? "Session reset via /new"
   db.exec("BEGIN TRANSACTION")
   try {
-    const messageRows = db.prepare(`SELECT id FROM messages WHERE session_id = ?`).all(sessionId) as Array<{ id: number }>
-    const deleteVec = db.prepare(`DELETE FROM vec_messages WHERE id = ?`)
-    for (const row of messageRows) deleteVec.run(BigInt(row.id))
     db.prepare(`DELETE FROM messages WHERE session_id = ?`).run(sessionId)
     db.prepare(`DELETE FROM worklog WHERE session_id = ?`).run(sessionId)
     db.prepare(`DELETE FROM events WHERE session_id = ?`).run(sessionId)
@@ -1404,10 +1346,6 @@ export function clearMemoryPalace(rootDir: string, profileId = "default") {
 
   db.exec("BEGIN TRANSACTION")
   try {
-    const deleteVec = db.prepare(`DELETE FROM vec_drawers WHERE id = ?`)
-    for (const row of rows) {
-      deleteVec.run(BigInt(row.rowid))
-    }
     db.prepare(`
       DELETE FROM memory_drawers
       WHERE profile_id = ?
@@ -1551,7 +1489,6 @@ export function compactSession(rootDir: string, sessionId: string, options: Comp
     try {
       for (const candidate of snipCandidates) {
         updateSnip.run(COMPACT_SNIP_TARGET_CHARS, COMPACT_SNIP_SUFFIX, candidate.id)
-        db.prepare(`DELETE FROM vec_messages WHERE id = ?`).run(BigInt(candidate.id))
       }
       db.exec("COMMIT")
     } catch (err) {
@@ -1580,9 +1517,6 @@ export function compactSession(rootDir: string, sessionId: string, options: Comp
 
   db.exec("BEGIN TRANSACTION")
   try {
-    const deleteVec = db.prepare(`DELETE FROM vec_messages WHERE id = ?`)
-    for (const row of removed) deleteVec.run(BigInt(row.id))
-    // Delete them
     const stmtDel = db.prepare(`DELETE FROM messages WHERE session_id = ? AND id <= ?`)
     stmtDel.run(sessionId, lastIdRemoved)
     
@@ -1661,18 +1595,11 @@ export async function fileMemory(rootDir: string, wing: string, room: string, co
   const normalizedRoom = room.trim() || "general"
   const normalizedKey = key?.trim() || null
   const storedProfileId = normalizedWing.toUpperCase() === "SHARED" ? null : profileId
-  let floatArray: Float32Array | null = null
-  try {
-    floatArray = await generateEmbedding(content)
-  } catch (error) {
-    logger.warn("Embeddings fallaron, guardando memoria sin vectores: " + (error instanceof Error ? error.message : String(error)))
-    if (!isEmbeddingsUnavailableError(error)) throw error
-  }
-  
+
   db.exec("BEGIN TRANSACTION")
   try {
     const stmt = db.prepare(`INSERT INTO memory_drawers (id, profile_id, wing, room, memory_key, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    const result = stmt.run(id, storedProfileId, normalizedWing, normalizedRoom, normalizedKey, content, now)
+    stmt.run(id, storedProfileId, normalizedWing, normalizedRoom, normalizedKey, content, now)
     appendPalaceNode(db, {
       namespace: PALACE_NAMESPACE.projectFacts,
       wing: normalizedWing,
@@ -1685,27 +1612,6 @@ export async function fileMemory(rootDir: string, wing: string, room: string, co
       content,
       now,
     })
-
-    // Vector storage. Two paths:
-    //   - Legacy (default): one vector in vec_drawers keyed by drawer rowid.
-    //   - Multi-chunk (env MONOLITO_USE_MULTI_CHUNK_EMBEDDINGS=1): one vector
-    //     per chunk in vec_drawer_chunks. The legacy vec_drawers row still
-    //     gets a fallback vector (first chunk) so old recall paths keep working.
-    if (isMultiChunkEmbeddingsEnabled()) {
-      const chunked = await embedChunked(content, { targetTokens: 1500, overlapTokens: 150 })
-      if (chunked.length > 0) {
-        const drawerRowid = Number(result.lastInsertRowid)
-        insertChunkEmbeddings(db, drawerRowid, chunked)
-        // Legacy fallback: insert the first chunk's vector into vec_drawers.
-        const stmtVec = db.prepare(`INSERT OR IGNORE INTO vec_drawers (id, embedding) VALUES (?, ?)`)
-        stmtVec.run(BigInt(drawerRowid), chunked[0]!.embedding)
-      }
-      // No embedding at all: skip both tables.
-    } else if (floatArray) {
-      const stmtVec = db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`)
-      stmtVec.run(BigInt(result.lastInsertRowid), floatArray)
-    }
-
     db.exec("COMMIT")
   } catch (err) {
     db.exec("ROLLBACK")
@@ -1748,14 +1654,6 @@ export async function upsertMemoryDrawer(
         return { id: existing.id, action: "skipped" }
       }
 
-      let floatArray: Float32Array | null = null
-      try {
-        floatArray = await generateEmbedding(content)
-      } catch (error) {
-        logger.warn("upsertMemoryDrawer: embedding failed for update — " + (error instanceof Error ? error.message : String(error)))
-        if (!isEmbeddingsUnavailableError(error)) throw error
-      }
-
       const now = new Date().toISOString()
       db.exec("BEGIN TRANSACTION")
       try {
@@ -1782,14 +1680,6 @@ export async function upsertMemoryDrawer(
           now,
         })
 
-        const drawerRow = db.prepare(`SELECT rowid FROM memory_drawers WHERE id = ?`).get(existing.id) as { rowid: number } | undefined
-        if (drawerRow) {
-          db.prepare(`DELETE FROM vec_drawers WHERE id = ?`).run(BigInt(drawerRow.rowid))
-          if (floatArray) {
-            db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(drawerRow.rowid), floatArray)
-          }
-        }
-
         db.exec("COMMIT")
       } catch (err) {
         db.exec("ROLLBACK")
@@ -1810,8 +1700,11 @@ export async function recallMemory(rootDir: string, wing?: string, room?: string
   const conditions: string[] = [
     `m.wing NOT LIKE 'BOOT\\_%' ESCAPE '\\'`,
     `m.wing NOT LIKE 'CONF\\_%' ESCAPE '\\'`,
+    `m.wing != 'LOG_ACTIONS'`,
+    `m.wing != 'messages'`,
+    `m.memory_key NOT LIKE 'consolidation\\_%' ESCAPE '\\'`,
   ]
-  
+
   if (wing) {
     const normalizedWing = wing.trim().toUpperCase() === "SHARED" ? "SHARED" : wing.trim()
     conditions.push(`m.wing = ?`)
@@ -1819,71 +1712,47 @@ export async function recallMemory(rootDir: string, wing?: string, room?: string
   }
   if (room) { conditions.push(`m.room = ?`); params.push(room.trim()) }
   if (key) { conditions.push(`m.memory_key = ?`); params.push(key.trim()) }
-  
-  // Shared memories are stored with NULL profile_id. Unscoped queries only see shared memory.
+
+  // Shared memories are stored with NULL profile_id.
   if (profileId) {
     conditions.push(`(m.profile_id = ? OR m.profile_id IS NULL)`)
     params.push(profileId)
   } else {
     conditions.push(`m.profile_id IS NULL`)
   }
-  
+
   if (query && query.trim().length > 0) {
-    // Multi-chunk path: vector stored as one row per chunk in vec_drawer_chunks.
-    if (isMultiChunkEmbeddingsEnabled()) {
-      const queryVector = await generateEmbedding(query)
-      const hits = recallMultiChunk(
-        db,
-        queryVector,
-        {
-          wing,
-          room,
-          key,
-          profileId,
-          excludeWings: ["BOOT\\_", "CONF\\_"],
-        },
-        15,
-        200,
-      )
-      // Reshape to legacy contract: { id, profile_id, wing, room, memory_key, content, created_at, distance }.
-      return hits.map((h) => ({
-        id: h.drawerId,
-        profile_id: h.profileId,
-        wing: h.wing,
-        room: h.room,
-        memory_key: h.memoryKey,
-        content: h.content,
-        created_at: h.createdAt,
-        distance: h.meanDistance,
-      }))
+    // Keyword FTS5 recall con BM25 ranking
+    const sanitized = sanitizeFtsQuery(query)
+    if (sanitized) {
+      try {
+        const whereClause = conditions.join(" AND ")
+        const rows = db.prepare(`
+          SELECT m.id, m.profile_id, m.wing, m.room, m.memory_key, m.content, m.created_at,
+                 f.rank AS distance
+          FROM drawers_fts f
+          JOIN memory_drawers m ON m.rowid = f.rowid
+          WHERE drawers_fts MATCH ?
+            AND ${whereClause}
+          ORDER BY f.rank
+          LIMIT 15
+        `).all(sanitized, ...params) as Array<{ id: number; profile_id: string | null; wing: string; room: string; memory_key: string | null; content: string; created_at: string; distance: number }>
+        return rows
+      } catch (error) {
+        logger.warn(`FTS drawer recall failed, falling back to recent: ${error}`)
+      }
     }
-
-    const floatArray = await generateEmbedding(query)
-    let sql = `SELECT m.id, m.profile_id, m.wing, m.room, m.memory_key, m.content, m.created_at,
-                      v.distance
-               FROM vec_drawers v
-               JOIN memory_drawers m ON m.rowid = v.id
-               WHERE v.embedding MATCH ? AND k = 50`
-
-    if (conditions.length > 0) {
-      sql += ` AND ` + conditions.join(" AND ")
-    }
-
-    sql += ` ORDER BY v.distance ASC LIMIT 15`
-
-    const stmt = db.prepare(sql)
-    return stmt.all(floatArray, ...params) as Array<{ id: number; profile_id: string | null; wing: string; room: string; memory_key: string | null; content: string; created_at: string; distance: number }>
-  } else {
-    // Non-semantic pure recall
-    let sql = `SELECT id, profile_id, wing, room, memory_key, content, created_at FROM memory_drawers m`
-    if (conditions.length > 0) {
-      sql += ` WHERE ` + conditions.join(" AND ")
-    }
-    sql += ` ORDER BY m.created_at DESC LIMIT 50`
-
-    const stmt = db.prepare(sql)
-    return stmt.all(...params) as Array<{ id: number; profile_id: string | null; wing: string; room: string; memory_key: string | null; content: string; created_at: string }>
   }
+
+  // Sin query o FTS falló: devuelve más recientes
+  let sql = `SELECT id, profile_id, wing, room, memory_key, content, created_at FROM memory_drawers m`
+  if (conditions.length > 0) {
+    sql += ` WHERE ` + conditions.join(" AND ")
+  }
+  sql += ` ORDER BY m.created_at DESC LIMIT 50`
+
+  const stmt = db.prepare(sql)
+  return stmt.all(...params) as Array<{ id: number; profile_id: string | null; wing: string; room: string; memory_key: string | null; content: string; created_at: string }>
 }
 
 export function listProfiles(rootDir: string) {
@@ -2027,138 +1896,30 @@ export function queryGraphEntity(
 
 // --- Background Embeddings Synchronization ---
 
-export async function syncMissingEmbeddings(rootDir: string) {
-  const db = getDb(rootDir)
-  
-  // Automated migration: Check if vectors are normalized
-  try {
-    const sampleDrawer = db.prepare(`SELECT embedding FROM vec_drawers LIMIT 1`).get() as { embedding: Buffer } | undefined
-    const sampleMessage = db.prepare(`SELECT embedding FROM vec_messages LIMIT 1`).get() as { embedding: Buffer } | undefined
-    const sample = sampleDrawer ?? sampleMessage
-    if (sample?.embedding) {
-      const floatArray = new Float32Array(sample.embedding.buffer, sample.embedding.byteOffset, sample.embedding.byteLength / 4)
-      let sum = 0
-      for (let i = 0; i < floatArray.length; i++) {
-        sum += floatArray[i] * floatArray[i]
-      }
-      const magnitude = Math.sqrt(sum)
-      if (Math.abs(magnitude - 1.0) > 0.05) {
-        logger.info("Unnormalized vectors detected in vector database. Wiping tables for automated regeneration...")
-        db.prepare("DELETE FROM vec_drawers").run()
-        db.prepare("DELETE FROM vec_messages").run()
-      }
-    }
-  } catch (error) {
-    logger.error(`Failed to run automated vector normalization check: ${error}`)
-  }
 
-  // 1. Find missing message embeddings
-  const missingMessages = db.prepare(`
-    SELECT id, text 
-    FROM messages 
-    WHERE role != 'system' 
-      AND is_compacted = 0 
-      AND session_id NOT LIKE 'agent-%' 
-      AND session_id NOT LIKE 'worker-%'
-      AND text != ''
-      AND id NOT IN (SELECT id FROM vec_messages)
-  `).all() as Array<{ id: number; text: string }>
-
-  let messagesSynced = 0
-  for (const row of missingMessages) {
-    try {
-      const embedding = await generateEmbedding(row.text)
-      db.prepare(`DELETE FROM vec_messages WHERE id = ?`).run(BigInt(row.id))
-      db.prepare(`INSERT INTO vec_messages (id, embedding) VALUES (?, ?)`).run(BigInt(row.id), embedding)
-      messagesSynced++
-    } catch (error) {
-      if (isEmbeddingsUnavailableError(error)) {
-        logger.warn("Sync aborted: Embeddings unavailable.")
-        return // Abort early if Ollama is down again
-      }
-      logger.error(`Failed to sync embedding for message ${row.id}: ${error}`)
-    }
-  }
-
-  // 2. Find missing memory drawer embeddings
-  const missingDrawers = db.prepare(`
-    SELECT rowid, id, content 
-    FROM memory_drawers 
-    WHERE wing NOT LIKE 'CONF\\_%' ESCAPE '\\'
-      AND content != ''
-      AND rowid NOT IN (SELECT id FROM vec_drawers)
-  `).all() as Array<{ rowid: number; id: string; content: string }>
-
-  let drawersSynced = 0
-  for (const row of missingDrawers) {
-    try {
-      const embedding = await generateEmbedding(row.content)
-      db.prepare(`DELETE FROM vec_drawers WHERE id = ?`).run(BigInt(row.rowid))
-      db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(row.rowid), embedding)
-      drawersSynced++
-    } catch (error) {
-      if (isEmbeddingsUnavailableError(error)) {
-        logger.warn("Sync aborted: Embeddings unavailable.")
-        return
-      }
-      logger.error(`Failed to sync embedding for drawer ${row.id}: ${error}`)
-    }
-  }
-
-  if (messagesSynced > 0 || drawersSynced > 0) {
-    logger.info(`Embeddings sync completed: ${messagesSynced} messages, ${drawersSynced} memory drawers.`)
-  }
-}
-
-export async function upsertSemanticTool(rootDir: string, name: string, description: string) {
+export async function upsertSemanticTool(rootDir: string, name: string, description: string): Promise<void> {
   const db = getDb(rootDir)
   const wing = "CONF_TOOLS"
   const room = "registry"
   const now = new Date().toISOString()
-  
-  // Check if already exists and has the same content
+
   const existing = db.prepare(`
-    SELECT rowid, id, content FROM memory_drawers
+    SELECT id, content FROM memory_drawers
     WHERE wing = ? AND room = ? AND memory_key = ?
     LIMIT 1
-  `).get(wing, room, name) as { rowid: number; id: string; content: string } | undefined
+  `).get(wing, room, name) as { id: string; content: string } | undefined
 
   if (existing) {
-    if (existing.content === description) {
-      // Check if it already has an embedding
-      const hasVec = db.prepare(`SELECT 1 FROM vec_drawers WHERE id = ?`).get(BigInt(existing.rowid))
-      if (hasVec) return
-    }
-    // Update content
-    db.prepare(`
-      UPDATE memory_drawers
-      SET content = ?
-      WHERE id = ?
-    `).run(description, existing.id)
-    try {
-      const floatArray = await generateEmbedding(description)
-      db.prepare(`DELETE FROM vec_drawers WHERE id = ?`).run(BigInt(existing.rowid))
-      db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(existing.rowid), floatArray)
-    } catch (err) {
-      logger.error(`Failed to update tool embedding for ${name}: ${err}`)
-    }
+    if (existing.content === description) return
+    db.prepare(`UPDATE memory_drawers SET content = ? WHERE id = ?`).run(description, existing.id)
     return
   }
 
-  // Create new
   const id = randomUUID()
-  const result = db.prepare(`
+  db.prepare(`
     INSERT INTO memory_drawers (id, profile_id, wing, room, memory_key, content, created_at)
     VALUES (?, NULL, ?, ?, ?, ?, ?)
   `).run(id, wing, room, name, description, now)
-
-  try {
-    const floatArray = await generateEmbedding(description)
-    db.prepare(`DELETE FROM vec_drawers WHERE id = ?`).run(BigInt(result.lastInsertRowid))
-    db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(result.lastInsertRowid), floatArray)
-  } catch (err) {
-    logger.error(`Failed to generate tool embedding for ${name}: ${err}`)
-  }
 }
 
 export async function querySemanticTools(rootDir: string, prompt: string, limit = 5): Promise<string[]> {
@@ -2166,20 +1927,27 @@ export async function querySemanticTools(rootDir: string, prompt: string, limit 
   const room = "registry"
   try {
     const db = getDb(rootDir)
-    const floatArray = await generateEmbedding(prompt)
-    const sql = `
-      SELECT m.memory_key as name
-      FROM vec_drawers v
-      JOIN memory_drawers m ON m.rowid = v.id
-      WHERE m.wing = ? AND m.room = ?
-        AND v.embedding MATCH ? AND k = 50
-      ORDER BY v.distance ASC
+    const sanitized = sanitizeFtsQuery(prompt)
+    if (!sanitized) {
+      // Sin query: devuelve los más recientes
+      const rows = db.prepare(`
+        SELECT memory_key as name FROM memory_drawers
+        WHERE wing = ? AND room = ? AND memory_key IS NOT NULL
+        ORDER BY created_at DESC LIMIT ?
+      `).all(wing, room, limit) as Array<{ name: string }>
+      return rows.map(r => r.name)
+    }
+    const rows = db.prepare(`
+      SELECT m.memory_key AS name
+      FROM drawers_fts f
+      JOIN memory_drawers m ON m.rowid = f.rowid
+      WHERE drawers_fts MATCH ? AND m.wing = ? AND m.room = ?
+      ORDER BY f.rank
       LIMIT ?
-    `
-    const rows = db.prepare(sql).all(wing, room, floatArray, limit) as Array<{ name: string }>
+    `).all(sanitized, wing, room, limit) as Array<{ name: string }>
     return rows.map(r => r.name)
   } catch (error) {
-    logger.error(`Error querying semantic tools for prompt: ${error}`)
+    logger.error(`Error querying tools for prompt: ${error}`)
     return []
   }
 }
@@ -2254,9 +2022,6 @@ export function getRawMessagesForSession(rootDir: string, sessionId: string): Ar
 export function rewriteMessageInPlace(rootDir: string, messageId: number, text: string, isCompacted: number = 1) {
   const db = getDb(rootDir)
   db.prepare(`UPDATE messages SET text = ?, is_compacted = ? WHERE id = ?`).run(text, isCompacted, messageId)
-  try {
-    db.prepare(`DELETE FROM vec_messages WHERE id = ?`).run(BigInt(messageId))
-  } catch {}
 }
 
 export function deleteMessages(rootDir: string, messageIds: number[]) {
@@ -2265,13 +2030,7 @@ export function deleteMessages(rootDir: string, messageIds: number[]) {
   db.exec("BEGIN TRANSACTION")
   try {
     const stmtDel = db.prepare(`DELETE FROM messages WHERE id = ?`)
-    const stmtDelVec = db.prepare(`DELETE FROM vec_messages WHERE id = ?`)
-    for (const id of messageIds) {
-      stmtDel.run(id)
-      try {
-        stmtDelVec.run(BigInt(id))
-      } catch {}
-    }
+    for (const id of messageIds) stmtDel.run(id)
     db.exec("COMMIT")
   } catch (err) {
     db.exec("ROLLBACK")
@@ -2279,60 +2038,25 @@ export function deleteMessages(rootDir: string, messageIds: number[]) {
   }
 }
 
-export async function recallProfileFacts(rootDir: string, query: string, profileId = "default"): Promise<string[]> {
+/**
+ * Devuelve los wings curados (BOOT_USER, BOOT_MEMORY, BOOT_IDENTITY) completos
+ * como array de strings — ya entran en contexto sin necesidad de búsqueda.
+ * El argumento `query` se mantiene por compatibilidad con el caller en modelAdapter.ts.
+ */
+export async function recallProfileFacts(rootDir: string, _query: string, profileId = "default"): Promise<string[]> {
   try {
-    let userText = ""
-    let memText = ""
-    let identityText = ""
-    try { userText = readBootWing(rootDir, "BOOT_USER", profileId) ?? "" } catch {}
-    try { memText = readBootWing(rootDir, "BOOT_MEMORY", profileId) ?? "" } catch {}
-    try { identityText = readBootWing(rootDir, "BOOT_IDENTITY", profileId) ?? "" } catch {}
-    
-    const combinedText = `${userText}\n\n${memText}\n\n${identityText}`
-    
-    // Split into meaningful paragraphs or bullet points
-    const paragraphs = combinedText
-      .split(/\n+/)
-      .map(p => p.trim())
-      .filter(p => p.length > 10 && !p.startsWith("#") && !p.startsWith("---"))
-      
-    if (paragraphs.length === 0) return []
-    
-    const queryVec = await generateEmbedding(query)
-    const matches: Array<{ text: string; score: number }> = []
-    
-    for (const paragraph of paragraphs) {
+    const results: string[] = []
+    for (const wing of ["BOOT_USER", "BOOT_MEMORY", "BOOT_IDENTITY"] as const) {
       try {
-        const paragraphVec = await generateEmbedding(paragraph)
-        const score = cosineSimilarity(queryVec, paragraphVec)
-        matches.push({ text: paragraph, score })
-      } catch (err) {
-        // Skip individual failure
-      }
+        const text = readBootWing(rootDir, wing, profileId)
+        if (text && text.trim().length > 10) results.push(text.trim())
+      } catch { /* wing no existe */ }
     }
-    
-    // Sort by score descending and take the ones above 0.55 threshold
-    return matches
-      .sort((a, b) => b.score - a.score)
-      .filter(m => m.score > 0.55)
-      .slice(0, 3)
-      .map(m => m.text)
+    return results
   } catch (error) {
-    logger.error("Error recalling profile facts semantically:", error)
+    logger.error("Error reading profile boot wings:", error)
     return []
   }
-}
-
-function cosineSimilarity(a: Float32Array, b: Float32Array): number {
-  let dotProduct = 0
-  let normA = 0
-  let normB = 0
-  for (let i = 0; i < a.length; i++) {
-    dotProduct += a[i] * b[i]
-    normA += a[i] * a[i]
-    normB += b[i] * b[i]
-  }
-  return normA === 0 || normB === 0 ? 0 : dotProduct / (Math.sqrt(normA) * Math.sqrt(normB))
 }
 
 export async function saveResolvedError(
@@ -2344,48 +2068,28 @@ export async function saveResolvedError(
   const wing = "CONF_ERRORS"
   const room = "resolved_errors"
   const now = new Date().toISOString()
-  
+
   const content = JSON.stringify({ error: errorSnippet, solution: solutionSnippet })
+  const { createHash } = await import("node:crypto")
   const memoryKey = createHash("sha256").update(errorSnippet.trim()).digest("hex")
 
-  // Check if it already exists to avoid duplicate work/vector inserts
   const existing = db.prepare(`
-    SELECT rowid, id FROM memory_drawers
+    SELECT id FROM memory_drawers
     WHERE wing = ? AND room = ? AND memory_key = ?
     LIMIT 1
-  `).get(wing, room, memoryKey) as { rowid: number; id: string } | undefined
+  `).get(wing, room, memoryKey) as { id: string } | undefined
 
   if (existing) {
-    db.prepare(`
-      UPDATE memory_drawers
-      SET content = ?, created_at = ?
-      WHERE id = ?
-    `).run(content, now, existing.id)
-    
-    try {
-      const floatArray = await generateEmbedding(errorSnippet)
-      db.prepare(`DELETE FROM vec_drawers WHERE id = ?`).run(BigInt(existing.rowid))
-      db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(existing.rowid), floatArray)
-    } catch (err) {
-      logger.error(`Failed to update resolved error embedding: ${err}`)
-    }
+    db.prepare(`UPDATE memory_drawers SET content = ?, created_at = ? WHERE id = ?`)
+      .run(content, now, existing.id)
     return
   }
 
-  // Create new
   const id = randomUUID()
-  const result = db.prepare(`
+  db.prepare(`
     INSERT INTO memory_drawers (id, profile_id, wing, room, memory_key, content, created_at)
     VALUES (?, NULL, ?, ?, ?, ?, ?)
   `).run(id, wing, room, memoryKey, content, now)
-
-  try {
-    const floatArray = await generateEmbedding(errorSnippet)
-    db.prepare(`DELETE FROM vec_drawers WHERE id = ?`).run(BigInt(result.lastInsertRowid))
-    db.prepare(`INSERT INTO vec_drawers (id, embedding) VALUES (?, ?)`).run(BigInt(result.lastInsertRowid), floatArray)
-  } catch (err) {
-    logger.error(`Failed to generate resolved error embedding: ${err}`)
-  }
 }
 
 export async function querySimilarErrors(
@@ -2396,42 +2100,22 @@ export async function querySimilarErrors(
   const db = getDb(rootDir)
   const wing = "CONF_ERRORS"
   const room = "resolved_errors"
-
+  const sanitized = sanitizeFtsQuery(errorSnippet)
+  if (!sanitized) return null
   try {
-    const queryVector = await generateEmbedding(errorSnippet)
-    
-    // 1. Vector similarity query using MATCH
-    const matches = db.prepare(`
-      SELECT v.id as row_id, v.distance
-      FROM vec_drawers v
-      WHERE v.embedding MATCH ? AND v.k = ?
-      ORDER BY v.distance ASC
-    `).all(queryVector, limit + 5) as Array<{ row_id: number; distance: number }>
-
-    if (matches.length === 0) return null
-
-    // 2. Resolve matching rowids to memory drawers
-    for (const match of matches) {
-      const drawer = db.prepare(`
-        SELECT content FROM memory_drawers
-        WHERE rowid = ? AND wing = ? AND room = ?
-        LIMIT 1
-      `).get(BigInt(match.row_id), wing, room) as { content: string } | undefined
-
-      if (drawer?.content) {
-        // Cosine distance is returned by match distance.
-        // Let's filter to make sure similarity is high enough (distance < 0.40)
-        if (match.distance < 0.40) {
-          try {
-            return JSON.parse(drawer.content) as { error: string; solution: string }
-          } catch {
-            // Skip invalid JSON
-          }
-        }
-      }
+    const rows = db.prepare(`
+      SELECT m.content
+      FROM drawers_fts f
+      JOIN memory_drawers m ON m.rowid = f.rowid
+      WHERE drawers_fts MATCH ? AND m.wing = ? AND m.room = ?
+      ORDER BY f.rank
+      LIMIT ?
+    `).all(sanitized, wing, room, limit) as Array<{ content: string }>
+    for (const row of rows) {
+      try { return JSON.parse(row.content) as { error: string; solution: string } } catch { /* skip */ }
     }
   } catch (err) {
-    logger.error(`Failed to query similar errors semantically: ${err}`)
+    logger.error(`Failed to query similar errors: ${err}`)
   }
   return null
 }

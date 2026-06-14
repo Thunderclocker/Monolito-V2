@@ -1,16 +1,22 @@
 # Memory system
 
-Monolito V2 has a three-layer memory architecture, plus a vector search
-backend, plus a recovery engine for long sessions. This document is the
-map of all five.
+Monolito V2 has a two-layer memory architecture plus a recovery engine
+for long sessions.
 
 | Layer | Storage | Purpose | Mutability |
 |-------|---------|---------|------------|
-| 1. BOOT wings | `palace_nodes` (`BOOT_WING` namespace) | Deterministic bootstrap state | Mutable, versioned |
-| 2. Memory Palace | `palace_nodes` (other namespaces) | Durable episodic + thematic context | Mutable, versioned |
+| 1. BOOT wings | `palace_nodes` (`BOOT_WING` namespace) | Curated bootstrap state — always loaded in full each turn | Mutable, versioned |
+| 2. Memory Palace | `palace_nodes` + `memory_drawers` | Durable episodic + thematic context | Mutable, versioned |
 | 3. Knowledge graph | `graph_triples` | Time-scoped relations | Append + invalidate |
-| 4. Embeddings | `vec_drawers`, `vec_messages` (sqlite-vec) | Semantic recall | Append-only, regenerable |
+| 4. FTS5 recall | `messages_fts` + `drawers_fts` (SQLite FTS5/BM25) | Keyword recall for history and palace | Sync'd via triggers |
 | 5. Context Engine | in-memory + DB rewrite | Anti-amnesia for long sessions | Compresses in place |
+
+**Design principle (Jun 2026 refactor):** The embedding/vector layer
+(sqlite-vec + Ollama bge-m3) was removed. The curated BOOT wings
+(`BOOT_USER`, `BOOT_MEMORY`, `BOOT_IDENTITY`) are injected in full on
+every turn — no search required for what matters most. Historical
+recall uses SQLite FTS5 (BM25 ranking) which is deterministic, fast,
+and needs no external container.
 
 All five share one SQLite database at
 `$MONOLITO_ROOT/memory/memory.sqlite`.
@@ -159,72 +165,46 @@ high-cardinality rows.
 
 ---
 
-## 4. Embeddings
+## 4. FTS5 Keyword Recall
 
-The vector layer powers semantic recall. Two sqlite-vec virtual tables
-back it:
+Recall is powered by SQLite FTS5 (full-text search with BM25 ranking).
+No external container or model is required.
 
 ```sql
-CREATE VIRTUAL TABLE vec_drawers USING vec0(
-  id INTEGER PRIMARY KEY,
-  embedding float[1024]
+CREATE VIRTUAL TABLE messages_fts USING fts5(
+  text, content='messages', content_rowid='id', tokenize='unicode61'
 );
-
-CREATE VIRTUAL TABLE vec_messages USING vec0(
-  id INTEGER PRIMARY KEY,
-  embedding float[1024]
+CREATE VIRTUAL TABLE drawers_fts USING fts5(
+  content, memory_key, wing, room,
+  content='memory_drawers', content_rowid='rowid', tokenize='unicode61'
 );
 ```
 
-Vectors are 1024-dimensional, produced by Ollama running
-`bge-m3` in the `monolito-v2-ollama-embeddings` container.
+### How it works
 
-### Lifecycle
+1. **Triggers** keep both FTS tables in sync with their source tables on
+   INSERT / UPDATE / DELETE.
+2. **Write path** — no extra work. `appendMessage` and `fileMemory` just
+   write to the source tables; triggers handle the FTS index.
+3. **Read path** — `getSemanticMessageContext(rootDir, query, limit)` runs
+   a FTS5 `MATCH` with BM25 ranking over `messages_fts`. `recallMemory`
+   with a query runs FTS5 over `drawers_fts`.
+4. **Backfill** — on each daemon startup, `ensureFtsSchema()` calls
+   `INSERT INTO *_fts(*_fts) VALUES('rebuild')` once to backfill from
+   the source tables. Idempotent.
 
-1. **Startup warmup** — `initEmbeddingEngine()` in
-   [`src/core/session/embeddings.ts`](../src/core/session/embeddings.ts).
-   Probes Ollama, deploys the container if missing, pulls the model.
-   Times out at 30s; falls back to lazy mode.
-2. **Write path** — every `appendMessage`, every `palace_nodes` insert,
-   goes through `generateEmbedding(text)` which:
-   - Computes SHA-256 of the text.
-   - Checks `embedding_cache` (LRU, 10k entries) for a hit.
-   - Hits Ollama `/api/embeddings` for the vector.
-   - Normalizes the vector (unit length) for cosine-similarity.
-   - Persists to the appropriate `vec_*` table.
-3. **Read path** — `getSemanticMessageContext(rootDir, queryVector, limit)`
-   runs KNN over `vec_messages`, joins back to `messages` to fetch the
-   text, formats the result for the dynamic context block.
-4. **Background sync** — on daemon startup, `syncMissingEmbeddings()`
-   scans for `messages` and `palace_nodes` rows that landed while
-   Ollama was down and back-fills their embeddings in the background.
+### Noise exclusions
 
-### Degraded mode
+`recallMemory` permanently excludes wings: `LOG_ACTIONS`, `messages`,
+`BOOT_*`, `CONF_*`, and keys matching `consolidation_*`. This prevents
+MemoryAgent internal markers from polluting search results.
 
-If Ollama is unavailable, the runtime continues without errors. The
-semantic recall path simply returns the last 12 messages linearly
-(instead of the 12 most similar). `WorkspaceMemoryRecall` returns the
-most recent rows ordered by `updated_at` instead of by similarity.
+### Curated always-loaded layer
 
-This is intentional. The runtime is more useful with stale recall
-than with no runtime at all.
-
-### Cache
-
-```sql
-CREATE TABLE embedding_cache (
-  provider TEXT,
-  model TEXT,
-  hash TEXT,
-  embedding TEXT,
-  dims INTEGER,
-  updated_at INTEGER,
-  PRIMARY KEY (provider, model, hash)
-);
-```
-
-Pruned at 10k entries (oldest first). The hash is SHA-256 of the
-normalized text, so identical inputs hit the cache across sessions.
+For the most important facts (user profile, pending tasks, preferences),
+the agent uses `BOOT_USER` and `BOOT_MEMORY` which are **always injected
+in full** at turn start — no search needed. MemoryAgent is responsible
+for keeping these wings curated and current.
 
 ---
 

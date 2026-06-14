@@ -38,10 +38,6 @@ import {
   isBootWingName,
 } from "../../bootstrap/bootWings.ts"
 
-import {
-  isEmbeddingsUnavailableError,
-} from "../../session/embeddings.ts"
-
 import type { ToolDefinition } from "../registry.ts"
 
 export const memoryTools: ToolDefinition[] = [
@@ -202,7 +198,7 @@ export const memoryTools: ToolDefinition[] = [
       wing: { type: "string", description: "Optional filter for a specific wing." },
       room: { type: "string", description: "Optional filter for a specific room to narrow down." },
       key: { type: "string", description: "Optional stable key filter for an exact memory group." },
-      query: { type: "string", description: "Optional natural language query for deep semantic search." }
+      query: { type: "string", description: "Optional keyword query for full-text search (FTS5/BM25) over memory content." }
     },
     additionalProperties: false,
   },
@@ -214,22 +210,17 @@ export const memoryTools: ToolDefinition[] = [
     const query = optionalString(input, "query")
 
     let results: any[] = []
-    let warning: string | null = null
-    let semanticSearchActive = !!query
+    const keywordSearchActive = !!query
     try {
       results = await recallMemory(context.rootDir, wing, room, query, context.profileId, key)
     } catch (error) {
-      if (!query || !isEmbeddingsUnavailableError(error)) return formatToolError(error)
-      semanticSearchActive = false
-      warning = "La memoria semántica no está disponible en este momento; muestro memoria básica reciente."
-      results = await recallMemory(context.rootDir, wing, room, undefined, context.profileId, key)
+      return formatToolError(error)
     }
     
     if (!wing && !room && !key && !query) {
       return {
         wings: listWings(context.rootDir, context.profileId),
         recentMemories: results,
-        warning,
       }
     }
     if (wing && !room && !key && !query) {
@@ -237,7 +228,6 @@ export const memoryTools: ToolDefinition[] = [
         wing,
         rooms: listRooms(context.rootDir, wing, context.profileId),
         memories: results,
-        warning,
       }
     }
     return {
@@ -245,8 +235,7 @@ export const memoryTools: ToolDefinition[] = [
       room,
       key,
       query,
-      semanticSearchActive,
-      warning,
+      keywordSearchActive,
       memories: results
     }
   },

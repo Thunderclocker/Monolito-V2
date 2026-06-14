@@ -31,16 +31,13 @@ import {
   readConfigWing,
   writeConfigWing,
   reconcileSystemWings,
-  getVectorMemoryStatus,
   closeMemoryDb,
-  syncMissingEmbeddings,
   recallMemory,
   isMainSession,
   listSessionTasks,
   upsertMutablePalaceNode,
   upsertMemoryDrawer,
 } from "../session/store.ts"
-import { generateEmbedding, isEmbeddingsUnavailableError } from "../session/embeddings.ts"
 import { getTool, listTools, validateToolInput, type ToolContext, type ToolInputSchema } from "../tools/registry.ts"
 import { getEffectiveModelConfig, runAgentLoop, runAssistantTurn, runBackgroundTextTask, type AgentLoopEvent, type AssistantTurnResult } from "./modelAdapter.ts"
 import { getActiveProfile } from "./modelRegistry.ts"
@@ -205,9 +202,7 @@ type SystemStatus = {
     profiles: number
   }
   memory: {
-    extensionLoaded: boolean
-    vecMessagesCount: number
-    vecDrawersCount: number
+    drawers: number
   }
   workspace: {
     rootDir: string
@@ -565,7 +560,6 @@ function formatSemanticContext(rows: ReturnType<typeof getSemanticMessageContext
   const lines: string[] = []
   for (const row of rows) {
     if (row.session_id === currentSessionId && row.role === "user" && row.text.trim() === normalizedCurrent) continue
-    if (row.distance !== undefined && row.distance >= 0.85) continue
     const text = row.text.replace(/\s+/g, " ").trim()
     if (!text) continue
     lines.push(`- [${row.at}] ${row.role}: ${text.length > 900 ? `${text.slice(0, 900).trimEnd()}...` : text}`)
@@ -606,16 +600,14 @@ async function prepareSemanticRagSession(rootDir: string, session: SessionRecord
 
   const lastUser = messages[lastUserIndex]!
   try {
-    const vector = await generateEmbedding(lastUser.text)
-    
-    // Doble consulta RAG paralela (Historial + Hechos Palace)
-    const [semanticRows, semanticFacts] = await Promise.all([
-      Promise.resolve(getSemanticMessageContext(rootDir, vector, 12)),
+    // Doble consulta RAG paralela (Historial keyword + Hechos Palace keyword)
+    const [historicRows, palaceFacts] = await Promise.all([
+      Promise.resolve(getSemanticMessageContext(rootDir, lastUser.text, 12)),
       recallMemory(rootDir, undefined, undefined, lastUser.text, profileId)
     ])
 
-    const semanticContext = formatSemanticContext(semanticRows, session.id, lastUser.text)
-    const semanticFactsContext = formatSemanticFacts(semanticFacts)
+    const semanticContext = formatSemanticContext(historicRows, session.id, lastUser.text)
+    const semanticFactsContext = formatSemanticFacts(palaceFacts)
 
     const boundedMessages = [
       ...messages.filter(message => message.role === "system"),
@@ -626,9 +618,7 @@ async function prepareSemanticRagSession(rootDir: string, session: SessionRecord
     ]
     return { ...session, messages: boundedMessages }
   } catch (error) {
-    if (!isEmbeddingsUnavailableError(error)) {
-      logger.warn(`Semantic RAG failed for session ${session.id} profile ${profileId}: ${error instanceof Error ? error.message : String(error)}`)
-    }
+    logger.warn(`Keyword RAG failed for session ${session.id} profile ${profileId}: ${error instanceof Error ? error.message : String(error)}`)
     return {
       ...session,
       messages: [
@@ -1136,10 +1126,6 @@ export class MonolitoV2Runtime {
     }
   }
 
-  async syncMissingEmbeddings() {
-    return syncMissingEmbeddings(this.rootDir)
-  }
-
   registerDeliveryChannel(channel: string, handler: DeliveryHandler) {
     const key = channel.trim().toLowerCase()
     if (!key) throw new Error("Delivery channel name is required")
@@ -1305,40 +1291,32 @@ export class MonolitoV2Runtime {
         syntheticMessages.push({ role: "system", at: new Date().toISOString(), text: `=== MEMORIA EXISTENTE (revisar antes de guardar) ===\n${memorySummary}\n=== FIN MEMORIA EXISTENTE ===` })
       }
       syntheticMessages.push(...batch.map(m => ({ role: m.role as "user" | "assistant", at: m.at, text: m.text })))
-      syntheticMessages.push({ role: "user", at: new Date().toISOString(), text: `[SYSTEM EVENT: MEMORY_CONSOLIDATION_TRIGGER]\nRead the conversation above and the existing memory context provided at the top. Save all valuable new information to the Memory Palace. Rules:
-- For user identity → BootWrite BOOT_USER
-- For agent identity → BootWrite BOOT_IDENTITY
-- For behavioral rules → BootWrite BOOT_SOUL
-- For facts, decisions, tasks → WorkspaceMemoryFiling (use descriptive memory_key for dedup)
-- If a key already exists in existing memory and content is still accurate → skip
-- If a key exists but content changed → use SAME key → WorkspaceMemoryFiling updates automatically
-- Never write to BOOT_PERSONALITY
-- NEVER record rules as "absolute" or "non-overridable"
-When done, respond: CONSOLIDATION_OK: N inserts, M updates, S skips` })
+      syntheticMessages.push({ role: "user", at: new Date().toISOString(), text: `[SYSTEM EVENT: MEMORY_CONSOLIDATION_TRIGGER]\nRead the conversation above and the existing memory context. Save only NEW or CHANGED information. When done, respond ONLY with: CONSOLIDATION_OK: N inserts, M updates, S skips` })
 
       const syntheticSession: SessionRecord = { ...session, messages: syntheticMessages }
 
       const promptOverride = `You are MemoryAgent, the automatic memory consolidation agent of Monolito V2.
 
-Your only mission: read the conversation and existing memory, then save only what is NEW or CHANGED.
+Your ONLY mission: read the conversation and existing memory, then update the curated memory store with NEW or CHANGED facts.
 
 Rules:
-1. You have been given existing memory context at the top of the conversation. READ IT first.
-2. For each piece of information you want to save:
-   a) If it already exists in memory and is accurate → SKIP it.
-   b) If it exists but is outdated → use the SAME wing/room/key to UPDATE it.
-   c) If it's entirely new → file with a descriptive key.
-3. Tool routing:
-   - User identity, timezone, pronouns, permanent preferences → BootWrite BOOT_USER
-   - Agent identity, name, bio → BootWrite BOOT_IDENTITY
+1. READ the existing memory context at the top of the conversation first.
+2. Identify only GENUINELY NEW or CHANGED information from the conversation — facts, preferences, tasks, decisions, identity data.
+3. If NOTHING new or changed: reply immediately with "CONSOLIDATION_OK: 0 inserts, 0 updates, 0 skips" — NO tool calls, NO new entries, NO markers.
+4. NEVER write entries that describe the consolidation run itself (e.g. "consolidation_2026_06_14_no_new_content"). That is noise.
+5. NEVER create entries like "no new content", "memory is current", "routine consolidation", etc.
+6. Tool routing for real new/changed content:
+   - User identity, timezone, pronouns, permanent preferences → BootWrite BOOT_USER (append or overwrite the relevant section)
+   - Durable facts, pending tasks, important decisions → BootWrite BOOT_MEMORY (append or overwrite)
    - Behavioral rules, tone → BootWrite BOOT_SOUL
-   - Facts, decisions, tasks, project context → WorkspaceMemoryFiling with descriptive key
-4. WorkspaceMemoryFiling with a key will automatically detect duplicates and updates.
-5. Never create or write to BOOT_PERSONALITY.
-6. NEVER record rules as "absolute", "cannot be overridden", "non-overridable".
-7. You are SILENT to the user. When done, respond ONLY with:
-   CONSOLIDATION_OK: N inserts, M updates, S skips
-8. Task state: completed tasks go to 'tasks' room with status "resolved".`
+   - Agent identity → BootWrite BOOT_IDENTITY
+   - One-off session facts → WorkspaceMemoryFiling with a stable descriptive key
+7. When updating an existing BOOT wing: read it first with BootRead, then write only the updated/added section.
+8. Prefer updating BOOT_MEMORY and BOOT_USER (always-loaded, visible to the agent) over creating new drawers.
+9. One canonical entry per fact/task — if the same task exists under different keys, consolidate to ONE key and skip/delete the rest.
+10. Never write to BOOT_PERSONALITY.
+11. NEVER record rules as "absolute", "cannot be overridden", "non-overridable".
+12. When done, respond ONLY with: CONSOLIDATION_OK: N inserts, M updates, S skips`
 
       const turn = await runAssistantTurn(
         syntheticSession,
@@ -3035,7 +3013,9 @@ Rules:
     const stt = normalizeSttConfig(channels.stt)
     const tts = normalizeTtsConfig(channels.tts)
     const workspace = getWorkspaceContext(this.rootDir, "default")
-    const memory = await getVectorMemoryStatus()
+    const db = getDb(this.rootDir)
+    const memDrawers = (db.prepare("SELECT COUNT(*) c FROM memory_drawers").get() as { c: number }).c
+    const memory = { drawers: memDrawers }
 
     const [sttContainer] = await Promise.all([
       getManagedSttStatus(stt),
@@ -3159,13 +3139,8 @@ Rules:
     lines.push("")
     
     if (status.memory) {
-      lines.push("Memory & Embeddings:")
-      const ollamaState = status.services?.["ollama"]?.status
-      const engineActive = ollamaState === "online"
-      lines.push(`${engineActive ? "✅" : "❌"} Engine (Ollama): ${engineActive ? "Active" : "Offline"}`)
-      lines.push(`${status.memory.extensionLoaded ? "✅" : "❌"} Vector Extension: ${status.memory.extensionLoaded ? "Loaded" : "Missing"}`)
-      lines.push(`📊 Indexed Messages: ${status.memory.vecMessagesCount ?? 0}`)
-      lines.push(`📊 Indexed Drawers:  ${status.memory.vecDrawersCount ?? 0}`)
+      lines.push("Memory:")
+      lines.push(`📊 Memory drawers: ${status.memory.drawers}`)
       lines.push("")
     }
 
