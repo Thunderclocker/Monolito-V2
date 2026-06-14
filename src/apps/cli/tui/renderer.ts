@@ -408,6 +408,38 @@ export function clampScrollOffset(offset: number, totalRows: number, visibleRows
   return Math.max(0, Math.min(offset, Math.max(0, totalRows - visibleRows)))
 }
 
+/** Scroll so the start of a transcript block is visible when it exceeds the viewport. */
+export function scrollOffsetToRevealBlockStart(
+  blocks: TranscriptBlock[],
+  blockIndex: number,
+  width: number,
+  visibleRows: number,
+): number {
+  if (blockIndex < 0 || blockIndex >= blocks.length) return 0
+  const allLines = flattenTranscript(blocks, width)
+  const linesBefore = flattenTranscript(blocks.slice(0, blockIndex), width)
+  const blockLines = flattenTranscript([blocks[blockIndex]!], width)
+  if (blockLines.length <= visibleRows) return 0
+  const blockStart = linesBefore.length
+  const endIndex = blockStart + visibleRows
+  return clampScrollOffset(allLines.length - endIndex, allLines.length, visibleRows)
+}
+
+export function appendTranscriptBlocksAligned(
+  viewport: TranscriptViewport,
+  blocks: TranscriptBlock[],
+  width: number,
+  visibleRows: number,
+): TranscriptViewport {
+  const next = appendTranscriptBlocks(viewport, blocks)
+  if (blocks.length === 0) return next
+  const blockIndex = next.blocks.length - 1
+  return {
+    ...next,
+    scrollOffset: scrollOffsetToRevealBlockStart(next.blocks, blockIndex, width, visibleRows),
+  }
+}
+
 export function parseMouseEvent(sequence?: string): { action: MouseAction } | null {
   if (!sequence) return null
   const match = /^\u001b\[<(\d+);(\d+);(\d+)([mM])$/.exec(sequence)

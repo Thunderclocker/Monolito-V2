@@ -29,6 +29,7 @@ import {
 } from "./tui/formatters.ts"
 import {
   appendTranscriptBlocks,
+  appendTranscriptBlocksAligned,
   clampScrollOffset,
   flattenTranscript,
   getTranscriptVisibleRows,
@@ -617,6 +618,11 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
   const refreshHeader = () => {
     header = getHeaderState(rootDir, activeSessionId, connectionHealthy)
   }
+  const appendMenuTranscript = (viewport: TranscriptViewport, blocks: TranscriptBlock[]) => {
+    const cols = stdout.columns || 80
+    const visibleRows = getTranscriptVisibleRows(header, composer)
+    return appendTranscriptBlocksAligned(viewport, blocks, cols, visibleRows)
+  }
   const redraw = () => {
     refreshHeader()
     const clear = needsClear
@@ -913,7 +919,7 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     if (!hasConfiguredModel()) {
       const result = openMissingModelMenu()
       composer.menuState = result.nextState
-      transcript = appendTranscriptBlocks(transcript, [
+      transcript = appendMenuTranscript(transcript, [
         { type: "event", label: "model", tone: result.tone, text: result.output },
       ])
       redraw()
@@ -1144,7 +1150,7 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       const { result, state } = await processMasterMenuInput(rawLine, composer.masterMenuState)
       composer.masterMenuState = state
       if (!state) composer.masterMenuEphemeral = false
-      transcript = appendTranscriptBlocks(transcript, [
+      transcript = appendMenuTranscript(transcript, [
         { type: "event", label: "config", tone: result.tone, text: result.output },
       ])
       if (result.restartDaemon) {
@@ -1182,7 +1188,7 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       }
       const result = await processMenuInput(rawLine, composer.menuState)
       composer.menuState = result.nextState
-      transcript = appendTranscriptBlocks(transcript, [
+      transcript = appendMenuTranscript(transcript, [
         { type: "event", label: result.nextState ? "model" : "model", tone: result.tone, text: result.output },
       ])
       if (result.refreshHeader) refreshHeader()
@@ -1279,7 +1285,7 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
 
       const result = openModelMenu()
       composer.menuState = result.nextState
-      transcript = appendTranscriptBlocks(transcript, [
+      transcript = appendMenuTranscript(transcript, [
         { type: "event", label: "model", tone: result.tone, text: result.output },
       ])
       redraw()
@@ -1371,7 +1377,7 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
           if (!modelConfigured) {
             const result = openMissingModelMenu()
             composer.menuState = result.nextState
-            transcript = appendTranscriptBlocks(transcript, [
+            transcript = appendMenuTranscript(transcript, [
               { type: "event", label: "model", tone: result.tone, text: result.output },
             ])
             redraw()
@@ -1670,7 +1676,12 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
         return
       }
       if (char === "\r" || char === "\n") {
-        if (!composer.busy) {
+        const inInteractiveMenu =
+          Boolean(composer.menuState) ||
+          Boolean(composer.channelMenuState) ||
+          Boolean(composer.websearchMenuState) ||
+          Boolean(composer.masterMenuState)
+        if (!composer.busy || inInteractiveMenu) {
           void submitCurrentInput()
         } else {
           const line = composer.input.trim()
@@ -1752,7 +1763,7 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       } else {
         const result = openMissingModelMenu()
         composer.menuState = result.nextState
-        transcript = appendTranscriptBlocks(transcript, [
+        transcript = appendMenuTranscript(transcript, [
           { type: "event", label: "model", tone: result.tone, text: result.output },
         ])
       }
