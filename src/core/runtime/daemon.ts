@@ -12,7 +12,7 @@ import {
   getPaths,
 } from "../ipc/protocol.ts"
 import { clearUpdateRestartState, MonolitoV2Runtime, readUpdateRestartState } from "./runtime.ts"
-import { startChannels, stopChannels } from "../channels/channelManager.ts"
+import { reloadChannels, startChannels, stopChannels } from "../channels/channelManager.ts"
 import { addLogSink, createDailyRotatingFileSink, createLogger, log } from "../logging/logger.ts"
 import { cleanupScratchpad } from "../system/root.ts"
 import { createGlobalHotkeyService, type GlobalHotkeyService } from "./globalHotkey.ts"
@@ -36,6 +36,10 @@ export class MonolitoV2Daemon {
   private ownerFd: number | null = null
   private ownershipMonitor: NodeJS.Timeout | null = null
   private hotkeyService: GlobalHotkeyService | null = null
+  private readonly channelStartOptions = {
+    onRestartRequested: () => this.scheduleSelfRestart(),
+    onStopRequested: () => this.scheduleSelfStop(),
+  }
 
   constructor(rootDir: string) {
     this.rootDir = rootDir
@@ -78,10 +82,7 @@ export class MonolitoV2Daemon {
     }
     this.startOwnershipMonitor()
     this.startToolIndexing()
-    startChannels(this.runtime, {
-      onRestartRequested: () => this.scheduleSelfRestart(),
-      onStopRequested: () => this.scheduleSelfStop(),
-    })
+    startChannels(this.runtime, this.channelStartOptions)
     void this.startGlobalHotkey()
     return this.server
   }
@@ -260,6 +261,20 @@ export class MonolitoV2Daemon {
       setTimeout(() => process.exit(0), 50)
     }, 5_000)
     this.ownershipMonitor.unref()
+  }
+
+  private handlePostTurnSideEffects() {
+    if (this.runtime.consumeStopRequest()) {
+      this.scheduleSelfStop()
+      return
+    }
+    if (this.runtime.consumeChannelsReloadRequest()) {
+      reloadChannels(this.runtime, this.channelStartOptions)
+      return
+    }
+    if (this.runtime.consumeRestartRequest()) {
+      this.scheduleSelfRestart()
+    }
   }
 
   private scheduleSelfRestart() {
@@ -560,6 +575,7 @@ export class MonolitoV2Daemon {
           void this.runtime.processSessionStartup(request.sessionId, request.prompt)
             .then(() => {
               if (this.runtime.consumeStopRequest()) this.scheduleSelfStop()
+              else if (this.runtime.consumeChannelsReloadRequest()) reloadChannels(this.runtime, this.channelStartOptions)
               else if (this.runtime.consumeRestartRequest()) this.scheduleSelfRestart()
             })
             .catch(error => this.writeDaemonLog(`async session.startup failed: ${error instanceof Error ? error.message : String(error)}`))
@@ -593,6 +609,7 @@ export class MonolitoV2Daemon {
           void this.runtime.processMessage(request.sessionId, request.text)
             .then(() => {
               if (this.runtime.consumeStopRequest()) this.scheduleSelfStop()
+              else if (this.runtime.consumeChannelsReloadRequest()) reloadChannels(this.runtime, this.channelStartOptions)
               else if (this.runtime.consumeRestartRequest()) this.scheduleSelfRestart()
             })
             .catch(error => this.writeDaemonLog(`async message.send failed: ${error instanceof Error ? error.message : String(error)}`))
@@ -608,6 +625,8 @@ export class MonolitoV2Daemon {
           const reply = await this.runtime.runDaemonCommand(req.command)
           if (this.runtime.consumeStopRequest()) {
             this.scheduleSelfStop()
+          } else if (this.runtime.consumeChannelsReloadRequest()) {
+            reloadChannels(this.runtime, this.channelStartOptions)
           } else if (this.runtime.consumeRestartRequest()) {
             this.scheduleSelfRestart()
           }
@@ -620,6 +639,7 @@ export class MonolitoV2Daemon {
           void this.runtime.askAgent(sessionId, req.prompt, { stream: req.stream ?? false, socket })
             .then(() => {
               if (this.runtime.consumeStopRequest()) this.scheduleSelfStop()
+              else if (this.runtime.consumeChannelsReloadRequest()) reloadChannels(this.runtime, this.channelStartOptions)
               else if (this.runtime.consumeRestartRequest()) this.scheduleSelfRestart()
             })
             .catch(error => this.writeDaemonLog(`async session.ask failed: ${error instanceof Error ? error.message : String(error)}`))

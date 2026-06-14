@@ -103,18 +103,69 @@ function persistSentPhoto(rootDir: string, row: { chatId: number; messageId: num
   }
 }
 
+type TelegramSendMessageResult = {
+  ok: boolean
+  result?: unknown
+  description?: string
+}
+
+async function postTelegramSendMessage(
+  token: string,
+  body: Record<string, unknown>,
+): Promise<TelegramSendMessageResult> {
+  const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15000),
+  })
+  return await response.json() as TelegramSendMessageResult
+}
+
+async function sendTelegramChatMessage(
+  token: string,
+  chatId: number,
+  text: string,
+  parseMode?: string,
+): Promise<{ ok: true; message: unknown; parse_mode_used?: string } | { ok: false; error: string }> {
+  const attempts: Array<{ parse_mode?: string; label: string }> = []
+  if (parseMode) attempts.push({ parse_mode: parseMode, label: parseMode })
+  attempts.push({ label: "plain" })
+
+  let lastError = "Unknown Telegram API error"
+  for (const attempt of attempts) {
+    const body: Record<string, unknown> = { chat_id: chatId, text }
+    if (attempt.parse_mode) body.parse_mode = attempt.parse_mode
+    const data = await postTelegramSendMessage(token, body)
+    if (data.ok) {
+      return {
+        ok: true,
+        message: data.result,
+        parse_mode_used: attempt.parse_mode ?? "plain",
+      }
+    }
+    lastError = data.description ?? "Unknown Telegram API error"
+    const parseEntityFailure = /can't parse entities|Can't find end of the entity/i.test(lastError)
+    if (!parseEntityFailure && attempt.parse_mode) break
+  }
+  return { ok: false, error: `Telegram API error: ${lastError}` }
+}
+
 export const telegramTools: ToolDefinition[] = [
 {
   name: "TelegramSend",
   aliases: ["telegram_send"],
   permissionTier: "edit",
-  description: "Send a message to a Telegram chat. Requires Telegram to be configured and enabled via /channels.",
+  description:
+    "Send a message to a Telegram chat. Requires Telegram to be configured and enabled via /channels. " +
+    "Default is plain text (no parse_mode). For long URL lists, prefer plain text or TelegramSendDocument — " +
+    "avoid MarkdownV2 unless you can escape every reserved character.",
   inputSchema: {
     type: "object",
     properties: {
       chat_id: { type: "number", description: "The Telegram chat ID to send the message to." },
       text: { type: "string", description: "The text message to send." },
-      parse_mode: { type: "string", enum: ["Markdown", "MarkdownV2", "HTML"], description: "Optional parse mode for formatting." },
+      parse_mode: { type: "string", enum: ["Markdown", "MarkdownV2", "HTML"], description: "Optional parse mode. On entity parse errors, retries as plain text automatically." },
     },
     required: ["chat_id", "text"],
     additionalProperties: false,
@@ -134,19 +185,16 @@ export const telegramTools: ToolDefinition[] = [
     if (!config.telegram?.enabled || !config.telegram.token) {
       return formatToolError("Telegram is not configured or not enabled. Use /channels to set it up.")
     }
-    const body: Record<string, unknown> = { chat_id: chatId, text }
-    if (parseMode) body.parse_mode = parseMode
-    const response = await fetch(`https://api.telegram.org/bot${config.telegram.token}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(15000),
-    })
-    const data = await response.json() as { ok: boolean; result?: unknown; description?: string }
-    if (!data.ok) {
-      return formatToolError(`Telegram API error: ${data.description ?? response.status}`)
+    const result = await sendTelegramChatMessage(config.telegram.token, chatId, text, parseMode)
+    if (!result.ok) {
+      return formatToolError(result.error)
     }
-    return { ok: true, chat_id: chatId, message: data.result }
+    return {
+      ok: true,
+      chat_id: chatId,
+      message: result.message,
+      parse_mode_used: result.parse_mode_used,
+    }
   },
 },
 

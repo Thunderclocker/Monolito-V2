@@ -58,7 +58,7 @@ test("tool_manage_config writes CONF_CHANNELS when value is a JSON string with v
 
     assert.equal((result as { wing: string }).wing, "CONF_CHANNELS")
     assert.equal((result as { ok: boolean }).ok, true)
-    assert.equal((result as { effect: string }).effect, "daemon_restart_required")
+    assert.equal((result as { effect: string }).effect, "channels_reload_required")
     assert.deepEqual(readConfigWing(rootDir, "CONF_CHANNELS"), {
       telegram: { token: "abc", enabled: true, allowedChats: [] },
     })
@@ -553,6 +553,107 @@ test("tool_manage_config action 'set' updates nested configuration path", async 
 
     const updated = readConfigWing(rootDir, "CONF_CHANNELS")
     assert.equal(updated.telegram?.enabled, true)
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("tool_manage_config CONF_WEBSEARCH set returns config_stored without channel restart", async () => {
+  const rootDir = createRootDir()
+  try {
+    const tool = getTool("tool_manage_config")
+    assert.ok(tool)
+
+    const result = await tool.run({
+      action: "set",
+      wing: "CONF_WEBSEARCH",
+      path: "provider",
+      value: "brave",
+    }, { rootDir, cwd: rootDir }) as { effect: string; ok: boolean }
+
+    assert.equal(result.ok, true)
+    assert.equal(result.effect, "config_stored")
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("tool_manage_config normalizes telegram.chatId to allowedChats", async () => {
+  const rootDir = createRootDir()
+  try {
+    const tool = getTool("tool_manage_config")
+    assert.ok(tool)
+
+    await tool.run({
+      action: "write",
+      wing: "CONF_CHANNELS",
+      value: "{\"telegram\":{\"token\":\"abc\",\"enabled\":true,\"allowedChats\":[]}}",
+    }, { rootDir, cwd: rootDir })
+
+    const result = await tool.run({
+      action: "set",
+      wing: "CONF_CHANNELS",
+      path: "telegram.chatId",
+      value: "1515784684",
+    }, { rootDir, cwd: rootDir }) as { ok: boolean; effect: string }
+
+    assert.equal(result.ok, true)
+    assert.equal(result.effect, "channels_reload_required")
+    assert.deepEqual(readConfigWing(rootDir, "CONF_CHANNELS").telegram?.allowedChats, [1515784684])
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("tool_manage_config set skips write when value unchanged", async () => {
+  const rootDir = createRootDir()
+  try {
+    const tool = getTool("tool_manage_config")
+    assert.ok(tool)
+
+    await tool.run({
+      action: "write",
+      wing: "CONF_CHANNELS",
+      value: "{\"telegram\":{\"token\":\"abc\",\"enabled\":true,\"allowedChats\":[123]}}",
+    }, { rootDir, cwd: rootDir })
+
+    const result = await tool.run({
+      action: "set",
+      wing: "CONF_CHANNELS",
+      path: "telegram.enabled",
+      value: true,
+    }, { rootDir, cwd: rootDir }) as { changed: boolean; effect: string }
+
+    assert.equal(result.changed, false)
+    assert.equal(result.effect, "none")
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
+
+test("SessionForensics finds tool_manage_config across noisy WebSearch worklog", async () => {
+  const rootDir = createRootDir()
+  try {
+    ensureSession(rootDir, "session-tools", "Tool forensics")
+    appendWorklog(rootDir, "session-tools", { type: "tool", summary: "Tool tool_manage_config finished successfully: provider" })
+    for (let i = 0; i < 30; i++) {
+      appendWorklog(rootDir, "session-tools", { type: "tool", summary: `Tool WebSearch finished successfully: query ${i}` })
+    }
+
+    const tool = getTool("SessionForensics")
+    assert.ok(tool)
+
+    const result = await tool.run({
+      sessionId: "session-tools",
+      question: "tool_manage_config invocation this session",
+      worklogLimit: 20,
+    }, { rootDir, cwd: rootDir }) as {
+      toolInvocationCount?: number
+      evidence: string[]
+    }
+
+    assert.equal(result.toolInvocationCount, 1)
+    assert.ok(result.evidence.some(line => line.includes("tool_manage_config")))
   } finally {
     cleanupRootDir(rootDir)
   }

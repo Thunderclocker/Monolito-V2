@@ -70,6 +70,13 @@ Mantiene `memory.md` como **digest curado** (~12 KB máx.). Debe consolidar, ded
 `MONOLITO_MEMORY_BACKEND=sqlite` restaura FTS + palace para memoria.  
 `MONOLITO_STORAGE_BACKEND=sqlite` restaura `memory.sqlite` para config, sesiones y estado.
 
+## Config hot-reload (Jun 2026)
+
+- `tool_manage_config` writes to `memory/config/CONF_*.json` (not SQLite by default).
+- `CONF_WEBSEARCH` changes apply immediately (`effect: config_stored`) — tools read config on each call.
+- `CONF_CHANNELS` changes trigger in-process `reloadChannels()` (`effect: channels_reload_required`) — Telegram poller restarts without full daemon exit.
+- `get` / unchanged `set` returns `effect: none` — safe to verify `telegram.enabled` without reconfiguring.
+
 ## Git
 
 Con `MONOLITO_MEMORY_GIT` distinto de `0` (default), cada escritura intenta `git commit` en `memory/`.

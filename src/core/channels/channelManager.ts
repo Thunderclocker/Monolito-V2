@@ -12,6 +12,7 @@ import { appendWorklog, markTelegramUpdateProcessed, persistTelegramUpdate } fro
 const logger = createLogger("channels")
 let activePoller: TelegramPoller | null = null
 let activeDeliveryUnregister: (() => void) | null = null
+let activeChannelOptions: { onRestartRequested?: () => void; onStopRequested?: () => void } | null = null
 const pendingTelegramInputs = new Map<number, { kind: "channels-token" | "channels-chats" | "websearch-test" }>()
 
 /**
@@ -166,7 +167,9 @@ function dispatchRuntimeMessage(runtime: MonolitoV2Runtime, sessionId: string, t
         sendTyping()
       }
     }
-    if (runtime.consumeRestartRequest()) {
+    if (runtime.consumeChannelsReloadRequest()) {
+      reloadChannels(runtime, activeChannelOptions ?? undefined)
+    } else if (runtime.consumeRestartRequest()) {
       onRestartRequested?.()
     }
   })().catch(error => {
@@ -422,7 +425,17 @@ async function handleChannelsCallback(token: string, callback: TelegramCallbackQ
   return false
 }
 
+export function reloadChannels(
+  runtime: MonolitoV2Runtime,
+  options?: { onRestartRequested?: () => void; onStopRequested?: () => void },
+) {
+  process.stderr.write("[ChannelManager] reloadChannels: refreshing Telegram poller and delivery handler\n")
+  stopChannels("reload")
+  startChannels(runtime, options ?? activeChannelOptions ?? undefined)
+}
+
 export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartRequested?: () => void; onStopRequested?: () => void }) {
+  activeChannelOptions = options ?? null
   const config = readChannelsConfig()
   process.stderr.write(`[ChannelManager] startChannels called. Telegram enabled: ${!!config.telegram?.enabled}\n`)
 
@@ -573,7 +586,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
               nextConfig.telegram = { ...telegramCfg, token, enabled: true }
               writeChannelsConfig(nextConfig)
               await sendTelegramMenu(telegram.token, chatId, "Token saved.", buildChannelsMenuButtons())
-              options?.onRestartRequested?.()
+              reloadChannels(runtime, options)
               return
             }
             if (pending.kind === "channels-chats") {
@@ -588,7 +601,7 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
               nextConfig.telegram = { ...telegram, allowedChats: ids }
               writeChannelsConfig(nextConfig)
               await sendTelegramMenu(telegram.token, chatId, `Allowed chats saved: ${ids.join(", ")}`, buildChannelsMenuButtons())
-              options?.onRestartRequested?.()
+              reloadChannels(runtime, options)
               return
             }
           } catch (error) {
@@ -811,6 +824,8 @@ export function stopChannels(reason?: string) {
   if (activePoller) {
     if (reason === "telegram-terminal-error") {
       logger.info("Stopping Telegram integration (invalid token, no restart)")
+    } else if (reason === "reload") {
+      logger.info("Stopping Telegram integration for in-process channel reload...")
     } else {
       logger.info("Stopping Telegram integration...")
     }

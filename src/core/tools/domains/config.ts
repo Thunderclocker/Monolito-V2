@@ -30,34 +30,105 @@ import {
 
 import {
   CONFIG_WING_ORDER,
+  type ConfigWingName,
 } from "../../config/configWings.ts"
 
 import type { ToolDefinition } from "../registry.ts"
+
+function getPathValue(obj: unknown, path: string): unknown {
+  if (!path) return obj
+  const parts = path.split(".")
+  let current: unknown = obj
+  for (const part of parts) {
+    if (current === null || current === undefined || typeof current !== "object") return undefined
+    current = (current as Record<string, unknown>)[part]
+  }
+  return current
+}
+
+function setPathValue(obj: Record<string, unknown>, path: string, val: unknown): Record<string, unknown> {
+  if (!path) return val as Record<string, unknown>
+  const parts = path.split(".")
+  const last = parts.pop()!
+  let current: Record<string, unknown> = obj
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i]!
+    const nextKey = parts[i + 1] ?? last
+    if (current[part] === undefined || current[part] === null || typeof current[part] !== "object") {
+      current[part] = /^\d+$/.test(nextKey) ? [] : {}
+    }
+    current = current[part] as Record<string, unknown>
+  }
+  current[last] = val
+  return obj
+}
+
+function valuesEqual(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+function normalizeTelegramSetPath(path: string, val: unknown): { path: string; value: unknown } {
+  if (path === "telegram.chatId" || path === "telegram.chat_id") {
+    const normalizedPath = "telegram.allowedChats"
+    if (typeof val === "number" && Number.isFinite(val)) {
+      return { path: normalizedPath, value: [val] }
+    }
+    if (typeof val === "string" && /^\d+$/.test(val.trim())) {
+      return { path: normalizedPath, value: [Number(val.trim())] }
+    }
+    if (Array.isArray(val)) {
+      return { path: normalizedPath, value: val }
+    }
+    return { path: normalizedPath, value: val }
+  }
+  return { path, value: val }
+}
+
+function resolveConfigWriteEffect(wing: ConfigWingName, changed: boolean): string {
+  if (!changed) return "none"
+  if (wing === "CONF_SYSTEM" || wing === "CONF_MODELS") return "model_config_reloaded"
+  if (wing === "CONF_WEBSEARCH") return "config_stored"
+  if (wing === "CONF_CHANNELS") return "channels_reload_required"
+  return "stored"
+}
 
 export const configTools: ToolDefinition[] = [
 {
   name: "tool_manage_config",
   permissionTier: "edit",
-  description: "Read or update technical configuration stored in SQLite CONF_* wings. Use this instead of reading or writing JSON config files manually. ALWAYS wrap channel settings inside their provider key (e.g., { 'telegram': { 'enabled': true } }).\n\nSchemas for wings:\n- CONF_WEBSEARCH: { provider: 'default' | 'brave' | 'serper' | 'tavily', apiKey?: string } (Brave, Serper and Tavily are cloud search provider APIs)\n- CONF_CHANNELS: { telegram: { enabled: boolean, token?: string, ... }, ... }\n- CONF_SYSTEM: System environment variables\n- CONF_MODELS: Models and provider configuration\n\nEXAMPLES (correct calls):\n- Set websearch provider: { action: 'set', wing: 'CONF_WEBSEARCH', path: 'provider', value: 'brave' }\n- Set websearch apiKey: { action: 'set', wing: 'CONF_WEBSEARCH', path: 'apiKey', value: 'BSAYcJPX...' }\n- Read full websearch config: { action: 'read', wing: 'CONF_WEBSEARCH' }\n- Enable telegram: { action: 'set', wing: 'CONF_CHANNELS', path: 'telegram.enabled', value: true }\n\nWRONG (will fail): passing only 'provider' or 'apiKey' as a string — always include action, wing, path, value.",
+  description:
+    "Read or update technical configuration stored as JSON under memory/config/ (CONF_*.json). " +
+    "Do NOT read or write those JSON files manually. " +
+    "If Telegram is already enabled with a token and allowedChats, do NOT call set/write again unless the user explicitly asks to reconfigure.\n\n" +
+    "Schemas for wings:\n" +
+    "- CONF_WEBSEARCH: { provider: 'default' | 'brave' | 'serper' | 'tavily', apiKey?: string }\n" +
+    "- CONF_CHANNELS: { telegram: { enabled: boolean, token?: string, allowedChats: number[] }, ... }\n" +
+    "- CONF_SYSTEM, CONF_MODELS: model and environment settings\n\n" +
+    "EXAMPLES:\n" +
+    "- Set websearch provider: { action: 'set', wing: 'CONF_WEBSEARCH', path: 'provider', value: 'brave' }\n" +
+    "- Enable telegram: { action: 'set', wing: 'CONF_CHANNELS', path: 'telegram.enabled', value: true }\n" +
+    "- Allowed chat: { action: 'set', wing: 'CONF_CHANNELS', path: 'telegram.allowedChats', value: [1515784684] }\n" +
+    "Use allowedChats (not chatId). action 'get' never changes config.",
   inputSchema: {
     type: "object",
     properties: {
       action: {
         type: "string",
         enum: ["read", "write", "get", "set", "activate_model"],
-        description: "La acción a realizar:\n- 'read': Lee el bloque completo de la sección (wing).\n- 'write': Escribe/reemplaza el bloque completo de la sección.\n- 'get': Lee una propiedad específica usando notación de puntos (ej: 'telegram.enabled').\n- 'set': Modifica una propiedad específica usando notación de puntos (ej: 'telegram.enabled').\n- 'activate_model': Cambia el modelo activo del sistema usando el ID del perfil."
+        description:
+          "read/write/get/set on a wing, or activate_model to switch the active model profile.",
       },
       wing: {
         type: "string",
         enum: [...CONFIG_WING_ORDER],
-        description: "La sección de configuración (requerido para 'read', 'write', 'get', 'set')."
+        description: "Configuration wing (required for read, write, get, set).",
       },
       path: {
         type: "string",
-        description: "Ruta del valor a leer o modificar en notación de puntos (ej: 'telegram.enabled' o 'profiles.0.active'). Requerido para 'get' y 'set'."
+        description: "Dot path for get/set (e.g. telegram.enabled, telegram.allowedChats).",
       },
       value: {
-        description: "El valor a escribir. Puede ser un JSON string, objeto, array, número, booleano, etc. Requerido para 'write', 'set' y 'activate_model' (donde representa el ID del perfil)."
+        description: "Value for write/set/activate_model.",
       },
     },
     required: ["action"],
@@ -70,38 +141,11 @@ export const configTools: ToolDefinition[] = [
     const action = parsed.action
     const wing = parsed.wing
 
-    // Friendly guard for common model mistake: passing loose strings instead of proper {action,wing,path,value}
     if (typeof input === "object" && input !== null && !("action" in input) && Object.keys(input).length === 1) {
       const loneKey = Object.keys(input)[0]
       if (["provider", "apiKey", "token", "enabled"].includes(loneKey)) {
         return { ok: false, error: `Wrong invocation. Use: { action: 'set', wing: 'CONF_WEBSEARCH' (or CONF_CHANNELS), path: '${loneKey}', value: '...' }` }
       }
-    }
-
-    function getPathValue(obj: any, path: string): any {
-      if (!path) return obj
-      const parts = path.split(".")
-      let current = obj
-      for (const part of parts) {
-        if (current === null || current === undefined) return undefined
-        current = current[part]
-      }
-      return current
-    }
-
-    function setPathValue(obj: any, path: string, val: any): any {
-      if (!path) return val
-      const parts = path.split(".")
-      const last = parts.pop()!
-      let current = obj
-      for (const part of parts) {
-        if (current[part] === undefined || current[part] === null || typeof current[part] !== "object") {
-          current[part] = /^\d+$/.test(parts[parts.indexOf(part) + 1] || last) ? [] : {}
-        }
-        current = current[part]
-      }
-      current[last] = val
-      return obj
     }
 
     if (action === "activate_model") {
@@ -128,18 +172,38 @@ export const configTools: ToolDefinition[] = [
       const config = readConfigWing(context.rootDir, wing)
       const redactedConfig = redactSensitiveValue(config)
       const val = getPathValue(redactedConfig, path)
-      return { wing, path, value: val }
+      return { wing, path, value: val, effect: "none" }
     }
 
     let valueToSave: unknown
+    let effectivePath = parsed.path || ""
+
     if (action === "write") {
       const val = parseJsonStringValue(parsed.value)
       if (val === undefined) return formatToolError("value is required when action='write'")
       valueToSave = val
     } else if (action === "set") {
-      const path = parsed.path || ""
-      const val = parseJsonStringValue(parsed.value)
-      const currentConfig = JSON.parse(JSON.stringify(readConfigWing(context.rootDir, wing))) // deep copy
+      let path = parsed.path || ""
+      let val = parseJsonStringValue(parsed.value)
+      if (wing === "CONF_CHANNELS") {
+        const normalized = normalizeTelegramSetPath(path, val)
+        path = normalized.path
+        val = normalized.value
+      }
+      effectivePath = path
+      const currentConfig = JSON.parse(JSON.stringify(readConfigWing(context.rootDir, wing))) as Record<string, unknown>
+      const currentAtPath = getPathValue(currentConfig, path)
+      if (valuesEqual(currentAtPath, val)) {
+        return {
+          wing,
+          path,
+          ok: true,
+          changed: false,
+          bytes: 0,
+          effect: "none",
+          message: "Value already configured; no write performed.",
+        }
+      }
       valueToSave = setPathValue(currentConfig, path, val)
     } else {
       return formatToolError(`Unsupported action: ${action}`)
@@ -153,19 +217,17 @@ export const configTools: ToolDefinition[] = [
     appendActionLog(context.rootDir, "Configuracion tecnica modificada", {
       wing,
       changed: result.changed,
-      path: action === "set" ? parsed.path : undefined,
+      path: action === "set" ? effectivePath : undefined,
     })
+    const effect = resolveConfigWriteEffect(wing, result.changed)
     return {
       wing,
-      path: action === "set" ? parsed.path : undefined,
+      path: action === "set" ? effectivePath : undefined,
       ok: true,
       changed: result.changed,
       bytes: result.bytes,
-      effect: wing === "CONF_SYSTEM" || wing === "CONF_MODELS"
-        ? "model_config_reloaded"
-        : wing === "CONF_WEBSEARCH" || wing === "CONF_CHANNELS"
-          ? "daemon_restart_required"
-          : "stored",
+      effect,
+      ...(result.changed ? {} : { message: "Value already configured; no write performed." }),
     }
   },
 },

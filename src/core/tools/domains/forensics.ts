@@ -2,10 +2,6 @@
 // Domain: forensics (1 tools)
 
 import {
-  spawn,
-} from "node:child_process"
-
-import {
   buildEventLine,
   inferForensicsIntent,
   optionalNumber,
@@ -20,7 +16,34 @@ import {
   tailEvents,
 } from "../../session/store.ts"
 
+import {
+  listTools,
+} from "../registry.ts"
+
 import type { ToolDefinition } from "../registry.ts"
+
+function extractToolNamesFromQuestion(question: string | undefined): string[] {
+  if (!question?.trim()) return []
+  const qLower = question.toLowerCase()
+  const qCompact = qLower.replace(/[\s_-]+/g, "")
+  const found: string[] = []
+  for (const tool of listTools()) {
+    const nameLower = tool.name.toLowerCase()
+    if (qLower.includes(nameLower)) {
+      found.push(tool.name)
+      continue
+    }
+    const compactName = nameLower.replace(/_/g, "")
+    if (compactName.length >= 6 && qCompact.includes(compactName)) {
+      found.push(tool.name)
+    }
+  }
+  return [...new Set(found)]
+}
+
+function worklogMatchesTool(summary: string, toolName: string): boolean {
+  return summary.includes(`Tool ${toolName}`) || summary.includes(toolName)
+}
 
 export const forensicsTools: ToolDefinition[] = [
 {
@@ -52,21 +75,47 @@ export const forensicsTools: ToolDefinition[] = [
 
     const session = pickForensicsSession(context.rootDir, context.profileId, requestedSessionId)
 
+    const explicitToolNames = extractToolNamesFromQuestion(question)
+
     // Extracción de palabras clave significativas (min. 3 caracteres)
     const searchTerms = question
       ? Array.from(new Set(question
           .normalize("NFD")
           .replace(/[\u0300-\u036f]/g, "")
           .toLowerCase()
-          .match(/[a-z0-9]{3,}/g) ?? []))
-          .filter(term => !["para", "por", "con", "una", "uno", "unos", "unas", "del", "las", "los", "the", "and", "for", "from", "that", "this", "sobre", "como", "cual", "que", "est", "este", "esta", "sus"].includes(term))
+          .match(/[a-z0-9_]{3,}/g) ?? []))
+          .filter(term => !["para", "por", "con", "una", "uno", "unos", "unas", "del", "las", "los", "the", "and", "for", "from", "that", "this", "sobre", "como", "cual", "que", "est", "este", "esta", "sus", "tool", "manage", "config", "session", "invocation", "invoc"].includes(term))
       : []
 
     let events: ReturnType<typeof tailEvents>
     let recentMessages: typeof session.messages
     let recentWorklog: typeof session.worklog
 
-    if (searchTerms.length > 0) {
+    if (explicitToolNames.length > 0) {
+      const matchedLogs = session.worklog.filter(entry =>
+        explicitToolNames.some(name => worklogMatchesTool(entry.summary, name)),
+      )
+      recentWorklog = matchedLogs.length > 0
+        ? matchedLogs.slice(-worklogLimit)
+        : session.worklog.slice(-worklogLimit)
+
+      const allEvents = tailEvents(context.rootDir, session.id, 200)
+      const matchedEvts = allEvents.filter(event => {
+        const tool = typeof (event as { tool?: unknown }).tool === "string"
+          ? String((event as { tool?: unknown }).tool)
+          : ""
+        return explicitToolNames.includes(tool)
+      })
+      events = matchedEvts.length > 0 ? matchedEvts.slice(-eventLimit) : allEvents.slice(-eventLimit)
+
+      const matchedMsgs = session.messages.filter(message => {
+        const textNorm = message.text.toLowerCase()
+        return explicitToolNames.some(name => textNorm.includes(name.toLowerCase()))
+      })
+      recentMessages = matchedMsgs.length > 0
+        ? matchedMsgs.slice(-messageLimit)
+        : session.messages.slice(-messageLimit)
+    } else if (searchTerms.length > 0) {
       // Filtrar todos los mensajes
       const matchedMsgs = session.messages.filter(m => {
         const textNorm = m.text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
@@ -149,8 +198,17 @@ export const forensicsTools: ToolDefinition[] = [
       }
       case "actions":
       default:
-        summary = "Usá worklog y eventos como fuente principal para explicar qué hizo el runtime en esta sesión."
-        evidence = uniqueLines([...worklogLines, ...eventLines]).slice(-12)
+        if (explicitToolNames.length > 0) {
+          const invocationCount = session.worklog.filter(entry =>
+            explicitToolNames.some(name => worklogMatchesTool(entry.summary, name)),
+          ).length
+          summary = invocationCount > 0
+            ? `Encontré ${invocationCount} entrada(s) de worklog para: ${explicitToolNames.join(", ")}.`
+            : `No hay entradas de worklog para: ${explicitToolNames.join(", ")} en esta sesión.`
+        } else {
+          summary = "Usá worklog y eventos como fuente principal para explicar qué hizo el runtime en esta sesión."
+        }
+        evidence = uniqueLines([...worklogLines, ...eventLines]).slice(-Math.max(12, worklogLimit))
         recommendedSources = ["worklog", "events", "messages"]
         break
     }
@@ -169,6 +227,10 @@ export const forensicsTools: ToolDefinition[] = [
       summary,
       recommendedSources,
       evidence,
+      explicitToolNames: explicitToolNames.length > 0 ? explicitToolNames : undefined,
+      toolInvocationCount: explicitToolNames.length > 0
+        ? session.worklog.filter(entry => explicitToolNames.some(name => worklogMatchesTool(entry.summary, name))).length
+        : undefined,
       counts: {
         messagesInspected: recentMessages.length,
         worklogInspected: recentWorklog.length,

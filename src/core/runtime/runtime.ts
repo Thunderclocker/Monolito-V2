@@ -1037,6 +1037,7 @@ export class MonolitoV2Runtime {
   }
 
   private restartRequested = false
+  private channelsReloadRequested = false
   private stopRequested = false
   private toolStallState = new Map<string, { key: string; count: number }>()
   private stallAlerts = new Map<string, string>()
@@ -2238,12 +2239,19 @@ Rules:
     return requested
   }
 
+  consumeChannelsReloadRequest() {
+    const requested = this.channelsReloadRequested
+    this.channelsReloadRequested = false
+    return requested
+  }
+
   consumeStopRequest() {
     const requested = this.stopRequested
     this.stopRequested = false
     if (requested) {
       // Stop wins over restart when both are requested in the same turn.
       this.restartRequested = false
+      this.channelsReloadRequested = false
     }
     return requested
   }
@@ -2628,8 +2636,12 @@ Rules:
         profileId: profileId ?? context.profileId,
       }, output)
       const outputRecord = asRecord(output)
-      if (tool.name === "tool_manage_config" && outputRecord?.effect === "daemon_restart_required") {
-        this.restartRequested = true
+      if (tool.name === "tool_manage_config") {
+        const effect = outputRecord?.effect
+        if (effect === "channels_reload_required" || effect === "daemon_restart_required") {
+          // CONF_CHANNELS writes reload the Telegram poller in-process (no full daemon exit).
+          this.channelsReloadRequested = true
+        }
       }
       const executionError = buildToolExecutionError(tool.name, output)
       if (executionError) {
