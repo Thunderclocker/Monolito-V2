@@ -83,10 +83,6 @@ function readPreamble(markdown: string): string {
   return markdown.slice(0, idx).trim()
 }
 
-export function isMarkdownMemoryBackend(_rootDir: string): boolean {
-  return true
-}
-
 export function createMarkdownMemoryStore(rootDir: string): MemoryStore {
   const root = memoryRoot(rootDir)
 

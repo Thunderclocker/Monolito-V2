@@ -47,26 +47,17 @@ Deterministic BOOT wings like `BOOT_SOUL`, `BOOT_IDENTITY`, `BOOT_USER`, and `BO
 
 ## Memory tools
 
-The memory tools use a SQLite-backed Memory Palace structure with:
+Memory is file-backed:
 
-- `wing`
-- `room`
-- optional `key`
-- content
+- BOOT wings: `memory/boot/*.md` via `BootRead` / `BootWrite`
+- Curated facts: `memory/memory.md` sections via `WorkspaceMemoryFiling` / `WorkspaceMemoryRecall`
+- Session history: `sessions/<id>/messages.jsonl` via `SearchHistory` and keyword recall
 
-Recall supports both structural filtering and semantic lookup.
-
-Semantic lookup depends on embeddings. Monolito now warms the local embeddings pipeline in the background at daemon startup, but the system does not block boot on that warmup. If embeddings are unavailable:
-
-- filing can still succeed without vectors
-- semantic recall falls back to recent non-semantic memory
-- the user only sees a warning when the missing embeddings materially affect the requested recall
-
-This means semantic memory is opportunistic, not a hard boot dependency.
+Recall uses keyword matching over markdown sections and message JSONL (no embeddings).
 
 ## Knowledge graph tools
 
-Monolito also exposes temporal knowledge graph tools backed by SQLite:
+Temporal triples in `state/knowledge_graph.jsonl`:
 
 - `KgAdd`
 - `KgInvalidate`

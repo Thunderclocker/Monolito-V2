@@ -223,10 +223,7 @@ export async function indexRalphRulesInPalace(rootDir: string) {
   // consolidated guidance lives in BOOT_TOOLS and in the main
   // system prompt's "Visual & Media Processing Protocol" section.
   //
-  // Any pre-existing rows in palace_nodes are left in place but
-  // become inert — they are no longer re-indexed here, and the
-  // checkDynamicRalphRules flow will simply not find a rule with
-  // name "image_verification" unless something else adds it back.
+  // Legacy palace_nodes Ralph rules are no longer seeded here.
 
   // The enumerate_dynamic_state rule is enforced semantically via the
   // EVIDENCE-FIRST RULE in the orchestrator system prompt. The orchestrator's

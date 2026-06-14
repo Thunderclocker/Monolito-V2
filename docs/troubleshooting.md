@@ -181,13 +181,10 @@ fires (see [`memory.md`](./memory.md#context-engine)):
 The boot blocks (system + BOOT wings) might be huge. Inspect:
 
 ```bash
-sqlite3 ~/.monolito/memory/memory.sqlite \
-  "SELECT wing, length(content) FROM palace_nodes
-   WHERE namespace = 'BOOT_WING' AND superseded_at IS NULL
-   ORDER BY length(content) DESC LIMIT 10"
+wc -c ~/.monolito/memory/boot/*.md ~/.monolito/memory/memory.md | sort -n
 ```
 
-Truncate or summarize the largest wings.
+Truncate or summarize the largest files.
 
 ---
 
@@ -292,51 +289,28 @@ monolito -p '/system_status --restart vision'
 
 ---
 
-## Memory / Palace issues
+## Memory issues
 
-### Symptom: `palace_nodes` growing unbounded
+### Symptom: `memory.md` growing unbounded
 
-The MemoryAgent and the runtime both write to Palace. There is no
-automatic GC. To audit:
-
-```bash
-sqlite3 ~/.monolito/memory/memory.sqlite \
-  "SELECT wing, room, COUNT(*) FROM palace_nodes
-   WHERE superseded_at IS NULL
-   GROUP BY wing, room ORDER BY COUNT(*) DESC LIMIT 20"
-```
-
-To prune:
+MemoryAgent and the runtime both write curated facts. There is no automatic GC.
+To audit section sizes:
 
 ```bash
-sqlite3 ~/.monolito/memory/memory.sqlite \
-  "DELETE FROM palace_nodes WHERE superseded_at IS NOT NULL
-   AND superseded_at < datetime('now', '-30 days')"
+grep -n '^##' ~/.monolito/memory/memory.md | head -30
+wc -c ~/.monolito/memory/memory.md
 ```
 
-Set up an `anacron` job for the prune if it happens often.
-
-### Symptom: `vec_drawers` integrity check fails on startup
-
-The runtime auto-recreates the vector tables if integrity fails. This is
-self-healing (commit `eae9564`). You will see a warning in the daemon
-log:
-
-> *Vector tables integrity check failed (will auto-recreate)*
-
-No action needed. Embeddings are regenerated lazily.
+Prune obsolete sections manually or via `WorkspaceMemoryFiling` from a fresh session.
 
 ### Symptom: `BOOT_USER` was accidentally overwritten with the wrong content
 
-BOOT wings are mutable but versioned. To roll back:
+BOOT wings are plain markdown files. To roll back, restore from git/backup or
+re-write the desired content with `BootWrite` from a fresh session:
 
 ```bash
-sqlite3 ~/.monolito/memory/memory.sqlite \
-  "SELECT id, content, created_at FROM palace_nodes
-   WHERE wing = 'BOOT_USER' ORDER BY created_at DESC LIMIT 5"
+less ~/.monolito/memory/boot/user.md
 ```
-
-Then re-write the desired content with `BootWrite` from a fresh session.
 
 ---
 
@@ -447,11 +421,9 @@ monolito /status > /tmp/monolito-status.txt
 # 2. Last 500 log lines
 tail -n 500 ~/.monolito/logs/monolitod.log > /tmp/monolito-log.txt
 
-# 3. Database health
-sqlite3 ~/.monolito/memory/memory.sqlite "PRAGMA integrity_check"
-sqlite3 ~/.monolito/memory/memory.sqlite \
-  "SELECT type, name FROM sqlite_master ORDER BY type, name" \
-  > /tmp/monolito-schema.txt
+# 3. Memory tree health
+find ~/.monolito/memory -type f | head -50 > /tmp/monolito-memory-files.txt
+wc -c ~/.monolito/memory/boot/*.md ~/.monolito/memory/memory.md >> /tmp/monolito-memory-files.txt
 
 # 4. Container state
 docker ps -a --filter name=monolito > /tmp/monolito-docker.txt

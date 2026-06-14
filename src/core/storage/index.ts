@@ -1,7 +1,6 @@
 export type { MemoryStore } from "./types.ts"
 export {
   createMarkdownMemoryStore,
-  isMarkdownMemoryBackend,
   MEMORY_MD_MAX_BYTES,
   listBootFilesOnDisk,
 } from "./markdownMemory.ts"
@@ -13,7 +12,6 @@ export {
   BOOT_WING_FILENAME,
 } from "./memoryPaths.ts"
 export {
-  isFileStorageBackend,
   getFileStorage,
   FileStorageBackend,
 } from "./fileStorage.ts"

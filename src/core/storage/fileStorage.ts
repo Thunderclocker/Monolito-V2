@@ -67,10 +67,6 @@ type FileKnowledgeGraphTriple = {
   is_active: boolean
 }
 
-export function isFileStorageBackend(_rootDir?: string): boolean {
-  return true
-}
-
 // --- low-level helpers ---
 
 function ensureParent(path: string) {

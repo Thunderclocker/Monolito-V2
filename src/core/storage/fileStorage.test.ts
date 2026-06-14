@@ -8,7 +8,6 @@ import { getFileStorage } from "./fileStorage.ts"
 
 const root = mkdtempSync(join(tmpdir(), "monolito-file-storage-"))
 process.env.MONOLITO_ROOT = root
-process.env.MONOLITO_STORAGE_BACKEND = "files"
 
 test.after(() => {
   rmSync(root, { recursive: true, force: true })

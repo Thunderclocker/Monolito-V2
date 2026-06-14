@@ -12,9 +12,8 @@
 // executeTurn). The sub-agent feature has since been removed; this file
 // keeps the surviving top-level gate and its prompt builder.
 //
-// Implementation note: this file is pure (modulo a SQLite read via
-// listSessionTasks). The runtime owns the loop, the worklog appends, and
-// the actual re-feed via appendMessage + re-running the agent loop.
+// Implementation note: this file is pure (modulo optional file reads via store);
+// safe to unit-test. The caller owns the loop, worklog appends, and re-feed.
 // -----------------------------------------------------------------------------
 
 import { wrapAuditFeedback } from "./auditFeedback.ts"
@@ -70,7 +69,7 @@ export function isScreenViewingRequest(text: string): boolean {
 
 /**
  * Evaluate the top-level Ralph gate for a session. Pure function (modulo
- * the SQLite read); safe to unit-test. The caller is responsible for the
+ * optional file reads via store); safe to unit-test. The caller is responsible for the
  * loop, the worklog appends, and the actual re-feed via appendMessage +
  * re-running the agent loop.
  */

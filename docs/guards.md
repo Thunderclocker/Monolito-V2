@@ -388,10 +388,7 @@ Every guard rejection is a one-line worklog entry with a stable prefix.
 To audit a session:
 
 ```bash
-sqlite3 ~/.monolito/memory/memory.sqlite \
-  "SELECT summary, at FROM worklog
-   WHERE session_id = ? AND summary LIKE '%GUARD%' OR summary LIKE '%BROKEN_PROMISE%'
-   ORDER BY at ASC"
+grep -i GUARD ~/.monolito/memory/sessions/*/worklog.jsonl | tail -20
 ```
 
 Or use the in-app `SessionForensics` tool, which is the supported
@@ -399,8 +396,8 @@ interface and returns the same data with surrounding context.
 
 If you see the same guard rejecting on the same turn more than 3 times
 in a row, the agent is probably stuck in a contradiction with the user
-profile or the dynamic rules. Read the latest Palace memories and the
-active `RalphRule` rows; something is asserting an impossible prerequisite.
+profile or dynamic rules in `memory.md`. Read recent worklog entries and
+active Ralph rules in `state/ralph_rules.json`.
 
 ---
 

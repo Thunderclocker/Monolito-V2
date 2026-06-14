@@ -1,6 +1,6 @@
 # Monolito v2
 
-Local orchestration runtime for AI agents: daemon + terminal UI, SQLite-first memory, multi-agent delegation, structured tool execution, slash commands, Telegram channels, TTS/STT, and MCP support.
+Local orchestration runtime for AI agents: daemon + terminal UI, file-backed memory, structured tool execution, slash commands, Telegram channels, TTS/STT, and MCP support.
 
 ## Install
 
@@ -24,9 +24,9 @@ Further documentation lives in [`docs/`](./docs/README.md).
 ## Core capabilities
 
 - Daemon + CLI client with resumable local sessions
-- SQLite-backed runtime for sessions, worklog, events, BOOT wings, verbatim long-term memory, and the temporal knowledge graph
-- Profile-based workspaces with deterministic `BOOT_*` wings stored in SQLite instead of legacy markdown memory files
-- Verbatim long-term memory filing into SQLite `memory.sqlite`, plus a temporal knowledge graph for subject-predicate-object facts with validity windows
+- File-backed runtime: sessions, worklog, events, BOOT wings (`memory/boot/*.md`), curated memory (`memory.md`), config JSON, and state JSONL
+- Profile-based workspaces with deterministic `BOOT_*` wings as markdown files
+- Long-term memory in `memory.md` (sections) plus a temporal knowledge graph in `state/knowledge_graph.jsonl`
 - First-run bootstrap ritual that persists bootstrap state into BOOT wings and the knowledge graph
 - Multi-agent orchestration with worker spawning, follow-up messaging, stop controls, and real filesystem isolation via Git Worktrees
 - Tool harness for shell execution, web fetches, workspace file access, BOOT access, Memory Palace filing/recall, knowledge-graph tools, MCP calls, Telegram send, and task tracking
@@ -35,7 +35,7 @@ Further documentation lives in [`docs/`](./docs/README.md).
 - Slash-command interface for runtime inspection and control
 - Channel ingestion and reply flow for Telegram chats
 - Web search mode switching with a menu-driven SearxNG local backend for web and image search
-- Persisted runtime configuration in SQLite `CONF_*` wings, plus permission rules and post-tool hooks
+- Persisted runtime configuration in `memory/config/CONF_*.json`, plus permission rules and post-tool hooks
 - MCP bridge for listing tools/resources, reading resources, and calling remote MCP tools
 - Agnostic model backend selection across Anthropic-compatible endpoints, OpenAI-compatible endpoints, and local Ollama instances
 - Native Anthropic prompt caching layout with static prompt blocks separated from dynamic turn context
@@ -48,28 +48,18 @@ Monolito is split into a few main layers:
 - daemon/runtime: owns sessions, orchestration, slash commands, background work, channels, and logging
 - model adapter: builds the prompt, injects BOOT/config, applies prompt-caching boundaries, and handles provider recovery state
 - tool registry: exposes structured tools with permission checks and renderer metadata
-- session store: persists messages, worklog, events, tasks, BOOT wings, Memory Palace entries, and the temporal knowledge graph in SQLite
+- session store: persists messages, worklog, events, tasks, BOOT wings, memory sections, and the knowledge graph under `memory/`
 - channels: Telegram ingestion/reply flow plus media handling
 - managed services: optional local TTS, STT, and SearxNG lifecycle helpers
 
-The runtime does not rely on workspace markdown files for identity or memory. The local production installation keeps operational state in SQLite `memory.sqlite`, plus runtime files under `~/.monolito/` for logs, sockets, caches, and managed services.
+Operational state lives under `~/.monolito/memory/` (JSON, JSONL, markdown) plus runtime files for logs, sockets, and managed services.
 
 ## Memory system
 
-- Session history, messages, worklog entries, runtime events, BOOT wings, Memory Palace entries, and graph triples are persisted locally in SQLite.
-- Long-term memory has three layers:
-  - `BOOT_*` for deterministic bootstrap state
-  - Memory Palace for broader durable context and verbatim turn capture
-  - temporal knowledge graph for time-scoped relations
-- Verbatim conversation storage now writes the latest `USER` / `ASSISTANT` turn pair directly into SQLite under `HISTORY/verbatim`.
-- Memory Palace entries are stored as `wing`, `room`, optional `key`, and `content`.
-- Knowledge graph entries are stored as `subject`, `predicate`, `object`, `valid_from`, and optional `valid_to`.
-- `SHARED` wings are visible across profiles; other Memory Palace entries and graph triples stay profile-scoped.
-- Recall supports structural filters (`wing`, `room`, `key`) and semantic lookup with local embeddings.
-- Embeddings use a local Ollama instance with the `bge-m3` model, managed automatically via Docker if needed, and are warmed in the background at daemon startup.
-- If embeddings are unavailable, Monolito degrades cleanly: filing can continue without vectors and semantic recall falls back to recent non-semantic memory.
-- A background synchronization process automatically runs on daemon startup to catch up and generate embeddings for any messages or memories saved while Ollama was down.
-- Session history can also be compacted while keeping continuity markers.
+- Session history, messages, worklog, and events are persisted as JSON/JSONL under `memory/sessions/`.
+- BOOT identity lives in `memory/boot/*.md`; long-term digest in `memory/memory.md`.
+- Knowledge graph triples live in `memory/state/knowledge_graph.jsonl`.
+- Keyword recall scans `memory.md` sections and message JSONL (no SQLite, no embeddings).
 
 ## Multi-agent model
 
@@ -127,7 +117,7 @@ The runtime does not rely on workspace markdown files for identity or memory. Th
 - `/websearch` opens an interactive menu in the local CLI and a button-based menu in Telegram.
 - The available providers are `default` (no search), `brave`, `serper`, and `tavily`. All three hosted API providers require an API key in `CONF_WEBSEARCH.apiKey`.
 - The previous local SearXNG managed-container flow was removed; `WebSearch` and `ImageSearch` now consume hosted provider APIs only. Legacy SearXNG containers from old installs are cleaned up by `uninstall.sh`.
-- The active provider and key are stored in the SQLite `CONF_WEBSEARCH` wing.
+- The active provider and key are stored in `memory/config/CONF_WEBSEARCH.json`.
 
 ## Interactive menus
 
@@ -232,9 +222,7 @@ monolito -p '/stt status'
 
 ## Notes
 
-- Runtime config lives in SQLite `CONF_*` wings: `CONF_SYSTEM`, `CONF_MODELS`, `CONF_CHANNELS`, `CONF_WEBSEARCH`
-- Web search no longer uses a managed local config file; providers are configured via `CONF_WEBSEARCH.apiKey`.
-- Session data: `~/.monolito/`
-- Local memory database: `~/.monolito/memory/memory.sqlite`
+- Runtime config: `~/.monolito/memory/config/CONF_*.json`
+- Session + memory data: `~/.monolito/memory/` (boot, sessions, state, memory.md)
 - Daemon log: `~/.monolito/logs/monolitod.log`
 - Profile workspaces: `~/.monolito/profiles/<profile-id>/workspace/`

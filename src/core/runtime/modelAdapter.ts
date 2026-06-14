@@ -11,7 +11,6 @@ import { createLogger, type Logger } from "../logging/logger.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider, getDefaultReasoningLevel, type ReasoningLevel } from "./modelRegistry.ts"
 import { compactSession, fileMemory, getSession, getRawMessagesForSession, readSessionSources, tailEvents, listSessionTasks, appendWorklog, saveResolvedError, querySimilarErrors, deleteMessages, rewriteMessageInPlace, loadCachedMemoryContext } from "../session/store.ts"
-import { isMarkdownMemoryBackend } from "../storage/index.ts"
 import type { RecentToolCall } from "./coherenceGuard.ts"
 import { wrapAuditFeedback } from "./auditFeedback.ts"
 import { incrementalFlushSession, getContextFlushThresholdChars } from "../context/incrementalFlush.ts"
@@ -531,7 +530,6 @@ function buildSystemPrompt(args: {
   extras?: ContextExtras
   systemPromptOverride?: string
   allowedToolNames?: string[]
-  recalledProfileFacts?: string[]
 }) {
   if (args.systemPromptOverride?.trim()) return { system: args.systemPromptOverride.trim(), memoryBlock: "", bootBlock: "" }
   const bootstrap = args.bootstrap ?? args.extras?.workspaceContext
@@ -643,7 +641,7 @@ function buildSystemPrompt(args: {
         ].join("\n"),
     "Available tools:",
     buildToolSummary(isSubAgent, blockedTools, args.allowedToolNames, args.rootDir, exposeTelegramDownload),
-    bootstrap && !isMarkdownMemoryBackend(args.rootDir) ? describeBootEntries(bootstrap.entries) : "",
+    "",
     isSubAgent ? "" : [
       "<JERARQUIA_DE_DIRECTIVAS>",
       "In case of conflicting instructions, you MUST respect this priority order:",
@@ -780,17 +778,7 @@ function buildSystemPrompt(args: {
     // Silent fail
   }
 
-  if (args.recalledProfileFacts && args.recalledProfileFacts.length > 0 && !isMarkdownMemoryBackend(args.rootDir)) {
-    dynamicContext.push([
-      "### Relevant Personal Profile Facts (Retrieved Semantically)",
-      "The following facts from your long-term profile memory are highly relevant to the current user's request:",
-      args.recalledProfileFacts.map(f => `- ${f}`).join("\n")
-    ].join("\n"))
-  }
-
-  const memoryBlock = isMarkdownMemoryBackend(args.rootDir)
-    ? (loadCachedMemoryContext(args.rootDir) ?? "")
-    : ""
+  const memoryBlock = loadCachedMemoryContext(args.rootDir) ?? ""
 
   return {
     system: staticSystem,
@@ -995,17 +983,6 @@ export async function* runAgentLoop(
   // We completely disable RAG semantic tool pre-filtering to prevent tool-blindness.
   let allowedToolNames: string[] | undefined = undefined;
 
-
-  let recalledProfileFacts: string[] = []
-  if (lastUserText && lastUserText.trim().length >= 15 && !isMarkdownMemoryBackend(rootDir)) {
-    try {
-      const { recallProfileFacts } = await import("../session/store.ts")
-      recalledProfileFacts = await recallProfileFacts(rootDir, lastUserText, context.profileId ?? "default")
-    } catch (err) {
-      logger.warn(`Failed to semantically recall profile facts: ${err}`)
-    }
-  }
-
   let blockedTools: string[] = []
   if (isSubAgent && lastUserText) {
     try {
@@ -1027,7 +1004,6 @@ export async function* runAgentLoop(
     },
     systemPromptOverride: options?.systemPromptOverride,
     allowedToolNames,
-    recalledProfileFacts,
   })
 
   for (let iteration = 1; iteration <= maxIterations; iteration++) {

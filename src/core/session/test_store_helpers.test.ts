@@ -2,9 +2,9 @@
  * Tests for store.ts session helpers.
  *
  * store.ts is the second-largest file in the codebase (~2400 lines after
- * the worker/delegation removal) and owns all SQLite access. The pure
- * helpers (no DB) are tested here. The DB-backed functions would need
- * an in-memory SQLite and are covered by integration tests.
+ * the worker/delegation removal) and owns all file-backed storage access. The pure
+ * helpers (no I/O) are tested here. Persistence-backed functions use temp dirs
+ * in integration tests.
  */
 
 import test from "node:test"

@@ -3,7 +3,7 @@
  * - Pure JSONL output (one JSON object per line)
  * - AsyncLocalStorage for automatic session_id/agent_id injection
  * - File rotation (size-based and daily)
- * - Separation: conversational history → SQLite, technical audit → JSONL logs
+ * - Separation: conversational history → file JSONL, technical audit → JSONL logs
  */
 
 import { appendFileSync, createWriteStream, existsSync, mkdirSync, statSync, unlinkSync } from "node:fs"

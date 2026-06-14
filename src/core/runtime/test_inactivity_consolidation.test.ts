@@ -21,7 +21,7 @@ const TEST_ROOT = "/tmp/monolito-memoryagent-test"
 
 // Route DB access through the tempdir. Without this, `getPaths()` falls
 // back to the captured MONOLITO_ROOT constant and the 09-jun-2026 runtime
-// guard refuses to open /home/cristian/.monolito/memory/memory.sqlite
+// guard refuses to open production ~/.monolito without MONOLITO_ROOT set
 // from a test process.
 process.env.MONOLITO_ROOT = TEST_ROOT
 

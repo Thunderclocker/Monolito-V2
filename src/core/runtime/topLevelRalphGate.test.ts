@@ -19,7 +19,7 @@ import { evaluateTopLevelRalphGate, isScreenViewingRequest, isSecurityAuditReque
 
 // All tests share a single rootDir because `getPaths` is anchored to
 // MONOLITO_ROOT (a module-level constant) — every test would otherwise
-// write to the same SQLite file. We clean the active_tasks table
+// Tests use isolated temp MONOLITO_ROOT; active_tasks live in state JSON.
 // between tests to keep them isolated.
 const sharedRoot = mkdtempSync(join(tmpdir(), "monolito-topralph-test-"))
 process.env.MONOLITO_ROOT = sharedRoot

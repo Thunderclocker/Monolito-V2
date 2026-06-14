@@ -40,7 +40,6 @@ import {
   getMemoryDrawerCount,
   setSessionVoiceMode,
 } from "../session/store.ts"
-import { isMarkdownMemoryBackend } from "../storage/index.ts"
 import { getTool, listTools, validateToolInput, type ToolContext, type ToolInputSchema } from "../tools/registry.ts"
 import { getEffectiveModelConfig, runAgentLoop, runAssistantTurn, runBackgroundTextTask, type AgentLoopEvent, type AssistantTurnResult } from "./modelAdapter.ts"
 import { getActiveProfile } from "./modelRegistry.ts"
@@ -199,7 +198,7 @@ type SystemStatus = {
     webSearchProvider: WebSearchProvider
     telegramEnabled: boolean
   }
-  sqlite: {
+  storage: {
     sessions: number
     profiles: number
   }
@@ -605,9 +604,7 @@ async function prepareSemanticRagSession(rootDir: string, session: SessionRecord
     // Doble consulta RAG paralela (Historial keyword + Hechos Palace keyword)
     const [historicRows, palaceFacts] = await Promise.all([
       Promise.resolve(getSemanticMessageContext(rootDir, lastUser.text, 12)),
-      isMarkdownMemoryBackend(rootDir)
-        ? Promise.resolve([])
-        : recallMemory(rootDir, undefined, undefined, lastUser.text, profileId),
+      recallMemory(rootDir, undefined, undefined, lastUser.text, profileId),
     ])
 
     const semanticContext = formatSemanticContext(historicRows, session.id, lastUser.text)
@@ -3062,7 +3059,7 @@ Rules:
         webSearchProvider: webSearch.provider,
         telegramEnabled: channels.telegram?.enabled === true,
       },
-      sqlite: {
+      storage: {
         sessions: listSessions(this.rootDir).length,
         profiles: listProfiles(this.rootDir).length,
       },
@@ -3125,14 +3122,14 @@ Rules:
       lines.push("")
     }
 
-    if (status.sqlite || status.workspace) {
+    if (status.storage || status.workspace) {
       lines.push("System & Storage:")
       if (status.workspace) {
         lines.push(`📂 Workspace: ${status.workspace.rootDir}`)
       }
-      if (status.sqlite) {
-        lines.push(`🗃️  Sessions:  ${status.sqlite.sessions}`)
-        lines.push(`👥 Profiles:  ${status.sqlite.profiles}`)
+      if (status.storage) {
+        lines.push(`🗃️  Sessions:  ${status.storage.sessions}`)
+        lines.push(`👥 Profiles:  ${status.storage.profiles}`)
       }
       lines.push("")
     }

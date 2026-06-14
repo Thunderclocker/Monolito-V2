@@ -127,7 +127,7 @@ export function saveModelSettings(settings: ModelSettings) {
  * Bootstrap CONF_MODELS and CONF_SYSTEM wings from process.env on first run.
  *
  * Background: `loadEnvFile` populates process.env from the user's .env file,
- * but the runtime source of truth for model config is the SQLite CONF_MODELS
+ * but the runtime source of truth for model config is CONF_MODELS.json
  * and CONF_SYSTEM wings. Without this bridge, a fresh installation starts
  * with empty wings, and any model call lands on the Anthropic SDK default
  * with an empty apiKey — which produces a 401 from api.anthropic.com.

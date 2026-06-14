@@ -29,7 +29,9 @@ behalf of the same user.
 
 ## How it works
 
-`palace_nodes` has a `profile_scope` column. Lookup order in
+`palace_nodes` no longer exists. Profile-specific BOOT overrides live as
+separate markdown files under `memory/boot/` per profile scope. Lookup order in
+`markdownMemory.ts` is profile file → global file.
 `readLatestPalaceContent` is:
 
 1. The active profile's own row (if any).
@@ -128,15 +130,13 @@ If the agent is acting under a non-default profile and behaves
 the profile has shadowed a wing with an empty row. Run:
 
 ```bash
-sqlite3 ~/.monolito/memory/memory.sqlite \
-  "SELECT wing, profile_scope, length(content)
-   FROM palace_nodes
-   WHERE namespace = 'BOOT_WING' AND superseded_at IS NULL
-   AND wing IN ('BOOT_USER', 'BOOT_SOUL', 'BOOT_IDENTITY')"
+wc -c ~/.monolito/memory/boot/user.md ~/.monolito/memory/boot/soul.md \
+  ~/.monolito/memory/boot/identity.md
+less ~/.monolito/memory/boot/user.md
 ```
 
-If any row has `profile_scope != '__global__'` and a small `content`,
-that profile has an override that shadows the canonical version.
+If a profile-specific boot file is nearly empty, it may shadow the global
+canonical content for that profile.
 
 ---
 

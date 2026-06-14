@@ -7,7 +7,7 @@ Monolito V2 runs one automatic background agent — `MemoryAgent` — triggered 
 Focuses on semantic memory synthesis and organization:
 - Runs directly inside the daemon process under a custom assistant turn.
 - Does not spawn a separate process, worktree, or sub-session.
-- Uses a **cursor checkpoint** (`palace_nodes` wing `MEMORY_CONSOLIDATION`) to track which messages have already been processed. On each run, only **new messages since the last checkpoint** are analyzed — no re-processing, no duplication.
+- Uses a **cursor checkpoint** in `state/processing_cursors.json` (`memoryConsolidation`) to track processed messages. On each run, only **new messages since the last checkpoint** are analyzed.
 - Fits the message batch to ~65% of the active model's input budget. If there are more messages than fit, the remainder is left for the next consolidation cycle.
 - Loads **existing memory context** via `recallMemory` before prompting the LLM, so the model can detect what's already stored and avoid duplicates.
 - Uses `BootWrite` (for identity/soul/user) and `WorkspaceMemoryFiling` (for facts, decisions, tasks) with descriptive `memory_key` values. The storage layer (`upsertMemoryDrawer`) automatically detects:

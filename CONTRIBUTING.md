@@ -64,9 +64,6 @@ npm run daemon
 
 # run the TUI client
 npm run cli
-
-# migrate the SQLite schema (safe to re-run)
-npm run db:migrate
 ```
 
 The CLI auto-spawns the daemon if it is not running, so most of the
@@ -102,11 +99,11 @@ Use Conventional Commits. Scopes in active use:
 - `daemon` — process supervisor, IPC, lifecycle
 - `orchestrator` — multi-agent, Ralph Loop
 - `tools` — tool registry, permissions
-- `memory` — Palace, knowledge graph, embeddings
+- `memory` — boot wings, memory.md, knowledge graph, file storage
 - `context` — Context Engine (compaction, recovery)
 - `stt` / `tts` / `vision` / `websearch` — managed services
 - `channels` — Telegram
-- `db` — schema, migrations, sqlite-vec
+- `storage` — fileStorage, markdownMemory, paths
 - `docs` — documentation only
 - `ci` — CI/CD configuration
 
@@ -125,7 +122,7 @@ docs(memory): add embedding cache lifecycle section
 - The agent that makes the change is responsible for the commit. Do
   not batch unrelated work into a "misc" commit.
 - Do not commit generated artifacts (`Monolito Repomix.txt`,
-  `scratch/vps_memory.sqlite`, `node_modules/`, etc.). The `.gitignore`
+  `scratch/`, `node_modules/`, etc.). The `.gitignore`
   covers most of them; if you find a new one, add it.
 
 ---
@@ -195,9 +192,8 @@ merged, the docs are current.
 ### No hallucinated configuration
 
 The runtime's `tool_manage_config` is the **only** way to read or
-write `CONF_*` wings. Never edit the SQLite file directly to fake a
-configuration change — the agent that did it cannot be audited, and
-the next boot may overwrite the row with the in-memory cache.
+write `CONF_*` JSON config files via `tool_manage_config`. Never hand-edit
+`memory/config/` to fake a configuration change — the agent cannot be audited.
 
 ### Run the typecheck
 

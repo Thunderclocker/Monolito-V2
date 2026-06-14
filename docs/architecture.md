@@ -1,7 +1,7 @@
 # Architecture
 
 This document maps the runtime end-to-end. It is the canonical map of a Monolito
-V2 process: from the binary entry point down to the SQLite row that persists a
+V2 process: from the binary entry point down to the JSONL line that persists a
 single user message. Use it as the entry point for any non-trivial code review,
 debugging session, or onboarding of a new agent.
 
@@ -28,9 +28,8 @@ companion docs are:
 │                            and ownership files; respawns on /update.     │
 ├──────────────────────────────────────────────────────────────────────────┤
 │  src/core/runtime/        MonolitoV2Runtime: session + turn + tool loop │
-│  ├─ runtime.ts            (3545 lines) — the orchestration engine.     │
+│  ├─ runtime.ts            — the orchestration engine.                   │
 │  ├─ modelAdapter.ts       Prompt build, provider recovery, streaming.  │
-│  ├─ orchestrator.ts       Multi-agent lifecycle, Ralph Loop enforcement.│
 │  ├─ providers/            Anthropic SDK, OpenAI-compat, Ollama, Grok.   │
 │  ├─ turnExecutionStack.ts Buffered side-effect tool calls.              │
 │  ├─ sideEffectGuard.ts    LLM-driven side-effect approval.              │
@@ -40,9 +39,9 @@ companion docs are:
 │  src/core/tools/          Tool registry: 60+ tools, Zod-validated input,│
 │  └─ registry.ts           permission tiers, post-tool hooks, redacting. │
 ├──────────────────────────────────────────────────────────────────────────┤
-│  src/core/session/        SQLite persistence layer.                     │
-│  ├─ store.ts              All CRUD; transactions; semantic RAG.         │
-│  └─ embeddings.ts         Ollama embeddings engine + cache.             │
+│  src/core/session/        File-backed persistence layer.                │
+│  ├─ store.ts              CRUD facade over fileStorage + markdownMemory.│
+│  └─ src/core/storage/     Sessions, config, state JSON/JSONL, boot md.  │
 ├──────────────────────────────────────────────────────────────────────────┤
 │  src/core/channels/       Telegram ingestion + delivery.                │
 │  ├─ channelManager.ts     Lifecycle, menus, slash commands.             │
@@ -271,62 +270,41 @@ cascade fires (see [`memory.md`](./memory.md#context-engine)):
 
 ## 4. Persistence
 
-Everything stateful lives in **one SQLite database** at
-`$MONOLITO_ROOT/memory/memory.sqlite`, plus a small set of sibling directories
-under `$MONOLITO_ROOT`.
+Everything stateful lives under `$MONOLITO_ROOT/memory/` as files, plus runtime
+directories for logs, sockets, scratchpad, and profile workspaces.
 
 ```
 ~/.monolito/
 ├── .env                       # bootstrap configuration
-├── memory/memory.sqlite       # the only source of truth
+├── memory/
+│   ├── boot/*.md              # BOOT wings
+│   ├── memory.md              # BOOT_MEMORY + filed facts
+│   ├── config/CONF_*.json     # runtime configuration
+│   ├── sessions/<id>/*.jsonl  # messages, worklog, events
+│   ├── state/*.json|.jsonl    # graph, todos, cursors, telegram queue
+│   └── profiles.json
 ├── logs/                      # daily-rotated daemon log
-│   ├── monolitod.log
-│   └── instances/worker-*.log
-├── run/                       # pid, lock, owner claim, update-restart.json
-├── profiles/                  # profile workspaces (one per ProfileCreate)
-│   └── <profile-id>/workspace/
-├── scratchpad/                # tool output offload (>400KB tool results)
-│                              # 24h TTL, cleaned at startup
-├── grok_oauth.json            # cached Grok tokens (xai-oauth profile)
+├── run/                       # pid, lock, owner claim
+├── profiles/<id>/workspace/
+├── scratchpad/                # tool output offload (>400KB)
+├── grok_oauth.json
 └── snapshots/                 # ContextOverflow trajectory dumps
 ```
 
-Schema highlights ([`src/core/db/schema.ts`](../src/core/db/schema.ts)):
-
-- `palace_nodes` — Memory Palace with `mutable=1` + `superseded_at` for history
-- `vec_drawers`, `vec_messages` — sqlite-vec virtual tables, 1024d
-- `background_tasks` — agent delegation tracking
-- `worker_jobs` — sub-agent job recovery
-- `profiles` — multi-profile with `__global__` fallback
-- `sessions`, `messages`, `events`, `worklog` — turn persistence
-
-See [`memory.md`](./memory.md) for the full schema map and the embedding
-lifecycle.
+See [`memory.md`](./memory.md) and [`memory-files-redesign.md`](./memory-files-redesign.md)
+for the full layout.
 
 ---
 
-## 5. Multi-agent model
+## 5. Background maintenance
 
-The orchestrator ([`src/core/runtime/orchestrator.ts`](../src/core/runtime/orchestrator.ts))
-owns sub-agent lifecycle. Sub-agents are profile-scoped sub-sessions running
-in their **own Git worktree** with a temporary branch, so a worker cannot
-collide with files in the main workspace.
+User-facing sub-agent delegation was removed. The only automatic background work
+is **MemoryAgent** — an in-process turn triggered by inactivity that updates
+BOOT wings and `memory.md` via `BootWrite` / `WorkspaceMemoryFiling`. See
+[`background-agents.md`](./background-agents.md).
 
-| Aspect               | Value                                                |
-|----------------------|------------------------------------------------------|
-| Worker types         | `worker` · `researcher` · `verifier`                 |
-| Modes                | `interactive` (synchronous parent wait) · `background` |
-| Concurrency          | Max 6 active workers                                 |
-| Per-worker budget    | 80k tokens                                           |
-| Timeouts             | 10 min soft, 15 min hard                             |
-| Recovery             | `recoverWorkerJobs()` on daemon restart              |
-| Coordination         | `delegate_background_task` (coordinator-only)        |
-| Profile inheritance  | BOOT wings inherit via `__global__` fallback         |
-
-A sub-agent that is about to finalize must pass the full Ralph Loop
-checklist before the orchestrator accepts its result. The worker
-inherits the parent's `adultMode` flag, allowed-tools list, and profile
-context.
+Profiles inherit BOOT content via global fallback when a profile-specific file
+is absent.
 
 ---
 
@@ -342,7 +320,6 @@ containers (e.g. generic `whisper`) before starting its own.
 | STT          | `onerahmet/openai-whisper-asr-webservice` (Docker)   | 9000  | `faster_whisper`, `base`, `es`, `vad=true`           |
 | TTS          | hosted provider (MiniMax or OpenAI-compatible)       | n/a   | `speech-2.8-hd` (MiniMax) / `tts-1` (OpenAI)         |
 | Vision       | Ollama + `moondream` (Docker)                        | 11435 | fallback CPU vision (heavy, ~60s)                    |
-| Embeddings   | Ollama + `bge-m3` (Docker)                           | 11434 | 1024d vectors                                        |
 | Web search   | hosted API (Brave, Serper, or Tavily)                | n/a   | `default` (none; WebSearch/ImageSearch fail)         |
 
 The previous TTS row (managed local container `travisvn/openai-edge-tts`
@@ -367,8 +344,7 @@ or `moderate`, Serper uses `safe=off|active`, Tavily filters via the
 pub/sub. The bus is **session-scoped**: `runtime.onEvent` subscribes to a
 specific session id or `"*"` for all sessions. Key events:
 
-- `worker:completed` — fires the Telegram push for background sub-agents
-- `message.received` — surfaces in the TUI as soon as the daemon appends the row
+- `message.received` — surfaces in the TUI as soon as the daemon appends a message
 - `turn.completed` — drives the cost tracker and the `/cost` query
 - `tool.start` / `tool.finish` — feed the Ralph Loop and the renderer
 - `permission.request` — pauses the turn and prompts the user
@@ -384,12 +360,12 @@ carries requests and responses.
 Configuration is split between three layers:
 
 1. **`.env` file** — bootstrap values: provider URL, API key, model id.
-2. **`CONF_*` wings in SQLite** — runtime state: active profile, channel
+2. **`CONF_*.json` in `memory/config/`** — runtime state: active profile, channel
    tokens, web search mode, memoryagent, permissions, policy. Mutated via
    `tool_manage_config` (read/write/get/set/activate_model).
 3. **In-memory hot state** — `MONOLITO_ROOT`, registered listeners, MCP
    clients, abort controllers. Lost on restart by design.
 
-Always use `tool_manage_config` for runtime changes; never edit the SQLite
-file directly. The tool enforces Zod schemas on every wing and records
-who-changed-what in the worklog.
+Always use `tool_manage_config` for runtime changes; never hand-edit JSON
+config files to fake a change. The tool enforces Zod schemas on every wing
+and records who-changed-what in the worklog.

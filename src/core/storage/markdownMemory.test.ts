@@ -7,7 +7,6 @@ import { createMarkdownMemoryStore, memoryMdPath } from "./index.ts"
 
 const root = mkdtempSync(join(tmpdir(), "monolito-md-mem-test-"))
 process.env.MONOLITO_ROOT = root
-process.env.MONOLITO_MEMORY_BACKEND = "markdown"
 
 test("markdown memory: seed, read boot, write section, cached block", () => {
   const store = createMarkdownMemoryStore(root)

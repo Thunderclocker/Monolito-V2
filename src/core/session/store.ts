@@ -505,10 +505,6 @@ export function deleteMessages(rootDir: string, messageIds: number[], sessionId?
   fileStore(rootDir).deleteMessages(messageIds, sessionId)
 }
 
-export async function recallProfileFacts(_rootDir: string, _query: string, _profileId = "default"): Promise<string[]> {
-  return []
-}
-
 export async function saveResolvedError(rootDir: string, errorSnippet: string, solutionSnippet: string): Promise<void> {
   fileStore(rootDir).saveResolvedError(errorSnippet, solutionSnippet)
 }

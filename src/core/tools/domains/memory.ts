@@ -91,7 +91,7 @@ export const memoryTools: ToolDefinition[] = [
 {
   name: "BootCreateWing",
   permissionTier: "edit",
-  description: "Create a new empty BOOT wing in SQLite for the active profile. The model MUST call BootListWings first and only use this when the desired alphanumeric/snake_case wing is absent.",
+  description: "Create a new empty BOOT wing markdown file for the active profile. Call BootListWings first and only use this when the desired wing is absent.",
   inputSchema: {
     type: "object",
     properties: {

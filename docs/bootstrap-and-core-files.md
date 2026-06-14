@@ -1,93 +1,57 @@
 # Bootstrap and Memory Layers
 
-Monolito no longer depends on literal workspace files like `SOUL.md`, `MEMORY.md`, `USER.md`, `TOOLS.md`, or similar files for runtime state. Bootstrap and memory live in SQLite.
+Monolito does not use workspace markdown files (`SOUL.md`, `USER.md`, etc.) for runtime state. Bootstrap and durable memory live under `$MONOLITO_ROOT/memory/` as markdown and JSON/JSONL files.
 
-## What BOOT Still Does
+## BOOT wings
 
-`BOOT_*` is the deterministic seed injected at session start. It is loaded structurally from SQLite `memory_drawers`, not from workspace markdown files.
+`BOOT_*` is the deterministic seed injected at session start. Files live in `memory/boot/*.md` plus the curated digest `memory/memory.md` (`BOOT_MEMORY`).
 
 Current BOOT wings:
 
-- `BOOT_AGENTS`
-- `BOOT_SOUL`
-- `BOOT_TOOLS`
-- `BOOT_IDENTITY`
-- `BOOT_USER`
-- `BOOT_BOOTSTRAP`
-- `BOOT_MEMORY`
+- `BOOT_AGENTS` → `boot/agents.md`
+- `BOOT_SOUL` → `boot/soul.md`
+- `BOOT_TOOLS` → `boot/tools.md`
+- `BOOT_IDENTITY` → `boot/identity.md`
+- `BOOT_USER` → `boot/user.md`
+- `BOOT_BOOTSTRAP` → `boot/bootstrap.md`
+- `BOOT_MEMORY` → `memory.md`
 
-These wings are still important, but they are only the first layer of the memory contract.
+These wings are the first layer of the memory contract and are loaded in full on every turn.
 
-## What Changed
+## Memory pyramid
 
-Monolito now uses a memory pyramid:
+- **BOOT_***: deterministic startup seed, stable identity and user profile.
+- **memory.md sections**: curated long-term facts filed via `WorkspaceMemoryFiling` (keyword recall).
+- **Temporal knowledge graph**: `state/knowledge_graph.jsonl` — time-aware triples with validity windows.
+- **Session JSONL**: messages, worklog, events under `sessions/<id>/`.
 
-- `BOOT_*`: deterministic startup seed, stable system bootstrap, and current stable identity and user profile facts.
-- Temporal knowledge graph: time-aware relations and facts with validity windows.
-- Memory Palace: verbatim history plus broader long-lived contextual entries.
+Stable profile facts should be persisted into `BOOT_IDENTITY` or `BOOT_USER`. Open-ended or time-varying facts go to `memory.md` or the knowledge graph.
 
-Stable profile facts should be persisted directly into `BOOT_IDENTITY` or `BOOT_USER`. The runtime uses BOOT as the primary deterministic startup scaffolding for these facts.
+## Temporal knowledge graph
 
-## Temporal Knowledge Graph
+Profile-scoped triples in `state/knowledge_graph.jsonl`:
 
-The temporal graph is also stored in SQLite and keeps profile-scoped triplets:
+- `subject`, `predicate`, `object`
+- `valid_from`, optional `valid_to`
 
-- `subject`
-- `predicate`
-- `object`
-- `valid_from`
-- optional `valid_to`
+Tools: `KgAdd`, `KgInvalidate`, `KgQuery`.
 
-Use it for facts that may change over time:
+## Startup behavior
 
-- who is learning what
-- which project is active
-- when a relationship stopped being valid
-
-The graph is for open-ended time-aware relations that complement the stable BOOT wings.
-
-## Memory Palace
-
-The Memory Palace now lives entirely in SQLite.
-
-It stores:
-
-- `wing`
-- `room`
-- optional `key`
-- `content`
-
-The most important current runtime behavior is verbatim filing of recent turns into `HISTORY / verbatim`. That is the default long-term historical substrate; it is not generated from a synthetic summary markdown file.
-
-## Startup Behavior
-
-At session startup, Monolito reads the current profile's BOOT wings in a fixed order. This provides:
-
-- deterministic bootstrap instructions
-- current stable identity and user profile facts
-
-If `BOOT_BOOTSTRAP` is still unresolved, Monolito enters onboarding mode instead of normal long-form assistance.
+At session startup, Monolito reads BOOT wings in a fixed order. If `BOOT_BOOTSTRAP` is unresolved, onboarding mode runs instead of normal assistance.
 
 ## Onboarding
 
-The onboarding flow should:
+- One short question per turn
+- Persist answers into the relevant `BOOT_*` files via `BootWrite`
+- Mark bootstrap complete in `BOOT_BOOTSTRAP` when done
 
-- ask one short question at a time
-- persist bootstrap-critical answers into the relevant `BOOT_*` wings
-- replace `BOOT_BOOTSTRAP` with a completion note when onboarding is complete
+## Main session memory
 
-In other words, onboarding still writes BOOT state, but it should not treat BOOT as the only durable profile store.
+- BOOT wings + `memory.md` are auto-loaded each turn (prompt caching)
+- Graph facts are queried via tools, not injected wholesale
+- Keyword recall scans `memory.md` and session message JSONL (no embeddings)
 
-## Main Session Memory
+## Legacy workspace files
 
-- main sessions can auto-load `BOOT_MEMORY`
-- sub-agents do not auto-load `BOOT_MEMORY` unless explicitly given it
-- temporal graph facts are queried explicitly through tools, not injected wholesale
-- Memory Palace recall is SQLite-backed and can use embeddings when available
-- bootstrap content is capped so it does not explode the prompt
-
-## Legacy Files
-
-Legacy memory files such as `SOUL.md`, `USER.md`, `MEMORY.md`, and `TOOLS.md` are not part of the runtime contract. If they still exist in the workspace, they are historical references only and do not drive persistence.
-
-`AGENTS.md` is separate: it can still provide operator instructions to the coding agent in this repository, but it is not Monolito's memory backend.
+`SOUL.md`, `USER.md`, `MEMORY.md`, `TOOLS.md` in a workspace are not part of the runtime contract. `AGENTS.md` in this repo is operator documentation only.

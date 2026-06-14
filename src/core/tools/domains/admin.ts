@@ -113,7 +113,7 @@ export const adminTools: ToolDefinition[] = [
   name: "system_status",
   aliases: ["SystemStatus"],
   permissionTier: "read",
-  description: "Return a concurrent JSON audit of Monolito system health, including JIT-managed services, routing, SQLite sessions, workspace state, and daemon memory agent consolidation timing (lastExecutedAt, lastSkippedAt, isRunning). Use this tool when asked about the current state or recent activity of any daemon component.",
+  description: "Return a concurrent JSON audit of Monolito system health, including JIT-managed services, routing, file-backed sessions, workspace state, and daemon memory agent consolidation timing (lastExecutedAt, lastSkippedAt, isRunning). Use this tool when asked about the current state or recent activity of any daemon component.",
   inputSchema: emptyInputSchema,
   concurrencySafe: true,
   async run(_input, context) {

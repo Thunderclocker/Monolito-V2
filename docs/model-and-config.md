@@ -4,12 +4,12 @@ Monolito separates “current effective settings” from the model profile regis
 
 ## Config wings
 
-Runtime configuration is stored in SQLite Memory Palace `CONF_*` wings:
+Runtime configuration is stored as JSON under `memory/config/`:
 
-- `CONF_SYSTEM`: effective system/model settings
-- `CONF_MODELS`: saved model profiles for the interactive model menu
-- `CONF_CHANNELS`: channel, TTS, and STT configuration
-- `CONF_WEBSEARCH`: persisted web search provider + apiKey
+- `CONF_SYSTEM.json` — effective system/model settings
+- `CONF_MODELS.json` — saved model profiles
+- `CONF_CHANNELS.json` — channel, TTS, and STT configuration
+- `CONF_WEBSEARCH.json` — web search provider + apiKey
 
 The previous managed-SearXNG `~/.monolito/searxng/settings.yml` is no
 longer used. Web search runs against hosted provider APIs (Brave,

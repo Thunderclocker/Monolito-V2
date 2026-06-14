@@ -63,16 +63,7 @@ ensure_system_deps() {
     fi
   fi
 
-  # 3. Check build-essential (crucial for better-sqlite3 compilation)
-  if ! dpkg -s build-essential >/dev/null 2>&1; then
-    if command -v apt-get >/dev/null 2>&1; then
-      install_apt build-essential
-    else
-      log "WARNING: build-essential not detected. Native SQLite compilation might fail if not installed."
-    fi
-  fi
-
-  # 4. Check Node.js and version (Node >= 22 required).
+  # 3. Check Node.js and version (Node >= 22 required).
   #
   # IMPORTANT: We intentionally do NOT auto-install Node.js via
   # `curl ... | sudo bash` (e.g. NodeSource's setup_22.x script). The Monolito
@@ -134,7 +125,7 @@ stop_existing_daemon() {
   if systemctl --user is-active monolito.service >/dev/null 2>&1; then
     log "Deteniendo monolito.service previo antes de reinstalar..."
     systemctl --user stop monolito.service 2>&1 | sed 's/^/  /' || true
-    # Give it a moment to flush and release the SQLite WAL
+    # Give the daemon a moment to flush open files before restart
     sleep 2
   fi
 }
@@ -230,7 +221,7 @@ main() {
   mkdir -p "${MONOLITO_DIR}/memory" "${MONOLITO_DIR}/logs" "${MONOLITO_DIR}/logs/instances" "${MONOLITO_DIR}/run" "${MONOLITO_DIR}/agents" "${WORKSPACE_DIR}/scratchpad"
 
   # Stop the previous daemon BEFORE we touch files. This is critical for
-  # re-installs: the old daemon is holding the SQLite database open and
+  # re-installs: the old daemon may still hold memory files open and
   # the unit file in memory. If we re-materialize the unit while it's
   # still running, the old daemon keeps using the OLD code in memory
   # until the next restart, which is exactly the "I rebooted and the
