@@ -6,7 +6,16 @@ import {
 } from "node:path"
 
 import {
+  existsSync,
+} from "node:fs"
+
+import {
+  userInfo,
+} from "node:os"
+
+import {
   emptyInputSchema,
+  execFileAsync,
   formatToolError,
   optionalNumber,
   optionalString,
@@ -199,4 +208,136 @@ export const adminTools: ToolDefinition[] = [
   }
 },
 
+{
+  name: "manage_sudo_mode",
+  permissionTier: "edit",
+  description: "Administra el modo sudo dinámico temporal sin contraseña. Permite activar (requiere entorno gráfico y CLI local para mostrar el diálogo de autenticación nativo pkexec), desactivar (elimina la regla de sudoers) o consultar el estado actual. Al activar, podés opcionalmente restringir la regla a comandos específicos.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["activate", "deactivate", "status"], description: "Acción a realizar." },
+      commands: { 
+        type: "array", 
+        items: { type: "string" }, 
+        description: "Lista de comandos específicos permitidos sin contraseña (ej: ['/usr/bin/systemctl', '/usr/bin/apt-get']). Si se omite o está vacío, se permite ALL (todos los comandos)." 
+      }
+    },
+    required: ["action"],
+    additionalProperties: false,
+  },
+  validate: input => {
+    if (input.action !== "activate" && input.action !== "deactivate" && input.action !== "status") {
+      return "invalid or missing action"
+    }
+    if (input.action === "activate" && input.commands !== undefined) {
+      if (!Array.isArray(input.commands)) return "commands must be an array of strings"
+      for (const cmd of input.commands) {
+        if (typeof cmd !== "string" || cmd.trim().length === 0) return "each command must be a non-empty string"
+      }
+    }
+    return null
+  },
+  async run(input, context) {
+    const action = input.action as "activate" | "deactivate" | "status"
+    const commands = input.commands as string[] | undefined
+
+    const sudoersDir = "/etc/sudoers.d"
+    const sudoersFile = `${sudoersDir}/monolito-temp`
+
+    if (action === "status") {
+      const active = _testExistsSync(sudoersFile)
+      if (!active) {
+        return JSON.stringify({ active: false, message: "Modo sudo dinámico desactivado." })
+      }
+      try {
+        const { stdout } = await _testExecFile("sudo", ["-n", "cat", sudoersFile], { timeout: 5000 })
+        const content = stdout.trim()
+        const match = content.match(/NOPASSWD:\s*(.+)$/)
+        const allowedCommands = match ? match[1]!.trim().split(/,\s*/) : []
+        return JSON.stringify({
+          active: true,
+          commands: allowedCommands,
+          content,
+          message: `Modo sudo dinámico activo. Comandos permitidos: ${allowedCommands.join(", ")}`
+        })
+      } catch (err: any) {
+        return JSON.stringify({
+          active: true,
+          unreadable: true,
+          message: "Modo sudo dinámico activo, pero la regla no se puede leer (requiere contraseña o es inválida)."
+        })
+      }
+    }
+
+    if (action === "deactivate") {
+      if (!_testExistsSync(sudoersFile)) {
+        return "El modo sudo dinámico ya estaba desactivado."
+      }
+      try {
+        await _testExecFile("sudo", ["-n", "rm", "-f", sudoersFile], { timeout: 5000 })
+        return "Modo sudo dinámico desactivado con éxito."
+      } catch (err) {
+        try {
+          await _testExecFile("pkexec", ["rm", "-f", sudoersFile], { timeout: 15000 })
+          return "Modo sudo dinámico desactivado con éxito (vía pkexec)."
+        } catch (pkErr: any) {
+          throw new Error(`No se pudo desactivar el modo sudo: ${pkErr.stderr || pkErr.message}`)
+        }
+      }
+    }
+
+    if (action === "activate") {
+      const username = _testUserInfo().username
+      if (!/^[a-zA-Z0-9_-]+$/.test(username)) {
+        throw new Error(`Nombre de usuario inválido: ${username}`)
+      }
+
+      let ruleLine = ""
+      if (commands && commands.length > 0) {
+        for (const cmd of commands) {
+          if (!cmd.startsWith("/")) {
+            throw new Error(`El comando debe ser una ruta absoluta: ${cmd}`)
+          }
+          if (cmd.includes(",") || cmd.includes("\n") || cmd.includes("'") || cmd.includes('"')) {
+            throw new Error(`Caracteres inválidos en el comando: ${cmd}`)
+          }
+        }
+        ruleLine = `${username} ALL=(ALL) NOPASSWD: ${commands.join(", ")}`
+      } else {
+        ruleLine = `${username} ALL=(ALL) NOPASSWD: ALL`
+      }
+
+      const bashCmd = `echo '${ruleLine}' > ${sudoersFile} && chmod 0440 ${sudoersFile} && chown root:root ${sudoersFile} && (visudo -c -f ${sudoersFile} || (rm -f ${sudoersFile} && exit 1))`
+      try {
+        await _testExecFile("pkexec", ["bash", "-c", bashCmd], { timeout: 30000 })
+        const allowedMsg = commands && commands.length > 0 ? commands.join(", ") : "ALL"
+        return `Modo sudo dinámico activado con éxito. Permisos concedidos para: ${allowedMsg}`
+      } catch (err: any) {
+        throw new Error(`Error al activar el modo sudo (¿se canceló el diálogo o falló visudo?): ${err.stderr || err.message}`)
+      }
+    }
+
+    throw new Error(`Acción desconocida: ${action}`)
+  }
+},
+
 ]
+
+// Test hooks for module stubbing
+export let _testExecFile = execFileAsync
+export function _setTestExecFile(fn: typeof execFileAsync) {
+  _testExecFile = fn
+}
+
+export let _testExistsSync = existsSync
+export function _setTestExistsSync(fn: typeof existsSync) {
+  _testExistsSync = fn
+}
+
+export let _testUserInfo: () => { username: string } = _defaultUserInfo
+function _defaultUserInfo(): { username: string } {
+  return userInfo()
+}
+export function _setTestUserInfo(fn: () => { username: string }) {
+  _testUserInfo = fn
+}

@@ -83,7 +83,8 @@ export function listModelTools(isSubAgent = false, lastUserText?: string | boole
     "SttServiceRemove",
     "SttServiceList",
     "tool_manage_config",
-    "TelegramDownloadFile"
+    "TelegramDownloadFile",
+    "manage_sudo_mode"
   ])
 
   // Note: User-facing media operations (VoiceClone, GenerateSpeech,
