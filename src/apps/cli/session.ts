@@ -492,9 +492,16 @@ class InteractiveTranscriptFormatter {
         }]
       case "tool.start": {
         const line = renderToolStart(event.tool, event.input)
-        const text = renderToolStartText(line, "└─ ")
-        if (!text) return []
-        return [{ type: "event", label: line.label, tone: line.tone, text, toolUseId: event.toolUseId, isMemoryAgent: (event as any).isMemoryAgent }]
+        if (!line.text) return []
+        return [{
+          type: "event",
+          label: line.label,
+          tone: "info",
+          text: line.text,
+          tool: event.tool,
+          toolUseId: event.toolUseId,
+          isMemoryAgent: (event as any).isMemoryAgent,
+        }]
       }
       case "tool.finish": {
         if (event.ok && event.tool !== "GenerateSpeech") {
@@ -502,15 +509,12 @@ class InteractiveTranscriptFormatter {
         }
         const line = renderToolFinish(event.tool, event.ok, event.output, event.input)
         if (line.text) {
-          // Replace the in-flight `tool.start` block (same bullet, only the
-          // text changes) instead of appending a second one with a "done"
-          // label. Keeps a single colored bullet per tool call, like
-          // upstream reference's CLI.
           return [{
             type: "event",
             label: "",
-            tone: event.ok ? "info" : "error",
+            tone: line.tone,
             text: line.text,
+            tool: event.tool,
             replacesLastEvent: true,
             toolUseId: event.toolUseId,
             isMemoryAgent: (event as any).isMemoryAgent,
@@ -697,8 +701,7 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     // Start animation on tool.start
     if (event.type === "tool.start") {
       const line = renderToolStart(event.tool, event.input)
-      const baseText = renderToolStartText(line, "└─ ")
-      composer.toolThinkingText = baseText
+      composer.toolThinkingText = line.text
       composer.toolThinkingFrame = 0
       startThinkingAnimation()
     }
@@ -820,32 +823,45 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       }
     }
 
-    // Load tool execution worklog entries
+    // Load tool execution worklog entries (merge start/finish into one line each)
     const toolTimed: TimedBlock[] = []
+    const openToolStarts: { at: string; tool: string; text: string }[] = []
     if (session.worklog) {
       for (const entry of session.worklog) {
-        if (entry.type === "tool") {
-          const isStart = entry.summary.includes("started:")
-          const isFinish = entry.summary.includes("finished successfully:") || entry.summary.includes("finished:")
-          const isError = entry.summary.includes("failed:") || entry.summary.includes("error:")
-          const tone = isError ? "error" : (isStart ? "info" : "success")
-          
-          let text = entry.summary
-          const prefixMatch = entry.summary.match(/^Tool \w+ (?:started|finished successfully|finished|failed|blocked): ([\s\S]*)$/)
-          if (prefixMatch && prefixMatch[1]) {
-            text = prefixMatch[1]
-          }
-          
-          toolTimed.push({
-            at: entry.at,
-            block: {
-              type: "event",
-              label: "tool",
-              tone,
-              text,
-            },
-          })
+        if (entry.type !== "tool") continue
+        const parsed = entry.summary.match(/^Tool (\S+) (started|finished successfully|finished|failed|blocked): ([\s\S]*)$/)
+        if (!parsed) continue
+        const [, toolName, phase, body] = parsed
+        const text = body.trim()
+        if (phase === "started") {
+          openToolStarts.push({ at: entry.at, tool: toolName, text })
+          continue
         }
+        const isError = phase === "failed" || phase === "blocked"
+        const startIdx = openToolStarts.findLastIndex(s => s.tool === toolName)
+        if (startIdx >= 0) openToolStarts.splice(startIdx, 1)
+        toolTimed.push({
+          at: entry.at,
+          block: {
+            type: "event",
+            label: "",
+            tone: isError ? "error" : "success",
+            text,
+            tool: toolName,
+          },
+        })
+      }
+      for (const start of openToolStarts) {
+        toolTimed.push({
+          at: start.at,
+          block: {
+            type: "event",
+            label: "",
+            tone: "info",
+            text: start.text,
+            tool: start.tool,
+          },
+        })
       }
     }
 

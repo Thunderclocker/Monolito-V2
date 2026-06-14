@@ -349,6 +349,32 @@ export function flattenCopyTranscript(blocks: TranscriptBlock[], width: number, 
   return rows
 }
 
+type EventBlock = Extract<TranscriptBlock, { type: "event" }>
+
+/** Locate the in-flight tool.start row to update when a tool.finish arrives. */
+export function findInFlightToolEventIndex(blocks: TranscriptBlock[], finish: EventBlock): number {
+  if (finish.toolUseId) {
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      const b = blocks[i]
+      if (b?.type === "event" && b.toolUseId === finish.toolUseId) return i
+    }
+  }
+  if (finish.tool) {
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      const b = blocks[i]
+      if (b?.type === "event" && b.tone === "info" && b.tool === finish.tool) return i
+    }
+  }
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i]
+    if (b?.type === "event" && b.tone === "info") return i
+  }
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    if (blocks[i]?.type === "event") return i
+  }
+  return -1
+}
+
 export function appendTranscriptBlocks(viewport: TranscriptViewport, blocks: TranscriptBlock[]) {
   if (blocks.length === 0) return viewport
   let nextBlocks = viewport.blocks
@@ -372,17 +398,10 @@ export function appendTranscriptBlocks(viewport: TranscriptViewport, blocks: Tra
       if (replaced) continue
     }
 
-    if (block.type === "event" && block.toolUseId) {
-      let foundIndex = -1
-      for (let i = nextBlocks.length - 1; i >= 0; i--) {
-        const b = nextBlocks[i]
-        if (b.type === "event" && b.toolUseId === block.toolUseId) {
-          foundIndex = i
-          break
-        }
-      }
+    if (block.type === "event" && block.replacesLastEvent) {
+      const foundIndex = findInFlightToolEventIndex(nextBlocks, block)
+      const { replacesLastEvent: _drop, ...rest } = block
       if (foundIndex !== -1) {
-        const { replacesLastEvent: _drop, ...rest } = block
         const newBlocks = [...nextBlocks]
         newBlocks[foundIndex] = rest as TranscriptBlock
         nextBlocks = newBlocks
@@ -390,13 +409,7 @@ export function appendTranscriptBlocks(viewport: TranscriptViewport, blocks: Tra
       }
     }
 
-    if (block.type === "event" && block.replacesLastEvent && nextBlocks.length > 0) {
-      // In-place mutation of the last event block (fallback)
-      const { replacesLastEvent: _drop, ...rest } = block
-      nextBlocks = [...nextBlocks.slice(0, -1), rest as TranscriptBlock]
-    } else {
-      nextBlocks = [...nextBlocks, block]
-    }
+    nextBlocks = [...nextBlocks, block]
   }
   return {
     blocks: nextBlocks.slice(-MAX_TRANSCRIPT_BLOCKS),
@@ -548,15 +561,15 @@ export function renderScreen(header: HeaderState, transcript: TranscriptViewport
       }]
     : [...transcript.blocks]
 
-  // Animate tool thinking dots: replace trailing '...' with cycling dots on the last event block
+  // Animate tool thinking dots on the in-flight tool row (info tone)
   if (composer.toolThinkingText) {
     const dots = [".", "..", "..."]
     const animDots = dots[composer.toolThinkingFrame % 3] ?? "..."
     const animText = composer.toolThinkingText.replace(/\.{1,3}(?=(\n|$))/, animDots)
-    // Search backwards for the last event block (it may not be the very last block)
     for (let i = displayTranscriptBlocks.length - 1; i >= 0; i--) {
-      if (displayTranscriptBlocks[i]?.type === "event") {
-        displayTranscriptBlocks[i] = { ...displayTranscriptBlocks[i], text: animText } as TranscriptBlock
+      const b = displayTranscriptBlocks[i]
+      if (b?.type === "event" && b.tone === "info") {
+        displayTranscriptBlocks[i] = { ...b, text: animText } as TranscriptBlock
         break
       }
     }

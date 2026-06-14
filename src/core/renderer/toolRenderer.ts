@@ -537,6 +537,22 @@ export function renderToolStart(tool: string, input: unknown): ToolRenderLine {
     }
     case "TodoList":
       return { label: "", tone: "info", text: "Reading task list..." }
+    case "tool_manage_config": {
+      const action = getString(value, "action")
+      const path = getString(value, "path")
+      const wing = getString(value, "wing")
+      const target = path ?? wing ?? "config"
+      if (action === "get" || action === "read") {
+        return { label: "", tone: "info", text: `Reading ${target}...` }
+      }
+      if (action === "set" || action === "write") {
+        return { label: "", tone: "info", text: `Updating ${target}...` }
+      }
+      if (action === "activate_model") {
+        return { label: "", tone: "info", text: "Switching model profile..." }
+      }
+      return { label: "", tone: "info", text: `Config ${action ?? "change"} on ${target}...` }
+    }
     default:
       return { label: "tool", tone: "info", text: `${tool}: ${summarizeInput(tool, input)}` }
   }
@@ -688,6 +704,28 @@ export function renderToolFinish(tool: string, ok: boolean, output: unknown, inp
       const tasks = getArray(value, "tasks")
       const count = tasks?.length ?? 0
       return { label, tone, text: `Task list: ${count} item${count !== 1 ? "s" : ""}` }
+    }
+    case "tool_manage_config": {
+      const path = getString(value, "path")
+      const wing = getString(value, "wing")
+      const effect = getString(value, "effect")
+      const message = getString(value, "message")
+      const bytes = getNumber(value, "bytes")
+      const target = path ?? wing ?? "config"
+      if (message) return { label, tone, text: truncate(message, 180) }
+      if (path && value && "value" in value) {
+        const val = (value as Record<string, unknown>).value
+        const preview = typeof val === "string" ? truncate(val, 80) : truncate(stringify(val), 80)
+        return { label, tone, text: `Read ${path} · ${preview}` }
+      }
+      if (path || wing) {
+        const suffix = [
+          typeof bytes === "number" && bytes > 0 ? `${bytes} bytes` : undefined,
+          effect && effect !== "none" ? effect : undefined,
+        ].filter(Boolean).join(" · ")
+        return { label, tone, text: suffix ? `Updated ${target} · ${suffix}` : `Updated ${target}` }
+      }
+      return { label, tone, text: summarizeGenericRecord(value) ?? `${tool} completed` }
     }
     default:
       return { label, tone, text: `${tool}: ${summarizeOutput(tool, output)}` }
