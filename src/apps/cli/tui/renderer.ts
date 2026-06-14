@@ -96,7 +96,11 @@ export function renderTranscriptBlock(block: TranscriptBlock, width: number, sho
           lines.push(`  ${ANSI.dim}💭 Thinking... (${tokenStr} tokens) ▶${ANSI.reset}`)
         }
       }
-      lines.push(...renderBulletedBlock(block.text, width, ""))
+      if (block.processing) {
+        lines.push(...renderBulletedBlock(`${ANSI.processing}${block.text}${ANSI.reset}`, width, ANSI.processing))
+      } else {
+        lines.push(...renderBulletedBlock(block.text, width, ""))
+      }
       return lines
     }
     return wrapTextWithIndent(block.text, width, `${ANSI.purpleFluor}${ANSI.bold}❯${ANSI.reset} `, "  ")
@@ -557,6 +561,7 @@ export function renderScreen(header: HeaderState, transcript: TranscriptViewport
         type: "message",
         role: "assistant",
         text: getThinkingText(composer.thinkingFrame),
+        processing: true,
         ...(composer.accumulatedThinking ? { thinking: composer.accumulatedThinking } : {})
       }]
     : [...transcript.blocks]

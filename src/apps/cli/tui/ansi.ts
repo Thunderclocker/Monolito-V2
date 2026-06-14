@@ -6,6 +6,7 @@ export const ANSI = {
   yellow: "\u001b[33m",
   cyan: "\u001b[36m",
   purpleFluor: "\u001b[38;2;191;0;255m",
+  processing: "\u001b[38;2;216;119;87m",
   bold: "\u001b[1m",
   hideCursor: "\u001b[?25l",
   showCursor: "\u001b[?25h",

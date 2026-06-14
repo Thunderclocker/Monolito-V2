@@ -91,7 +91,7 @@ export type PromptHistory = {
 }
 
 export type TranscriptBlock =
-  | { type: "message"; role: "user" | "assistant"; text: string }
+  | { type: "message"; role: "user" | "assistant"; text: string; processing?: boolean }
   | { type: "assistant-meta"; text: string }
   | { type: "event"; label: string; tone: "neutral" | "info" | "success" | "error"; text: string; tool?: string; replacesLastEvent?: boolean; toolUseId?: string; isMemoryAgent?: boolean }
   | { type: "todo-list"; completed: number; total: number; items: { status: "pending" | "in_progress" | "completed"; content: string; activeForm?: string }[] }
