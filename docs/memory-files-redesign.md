@@ -39,7 +39,7 @@ memory/
       sent_photos.jsonl
 ```
 
-Por defecto **no se usa `memory.sqlite`** en instalaciones nuevas. Legacy: `MONOLITO_STORAGE_BACKEND=sqlite`.
+Almacenamiento **solo en archivos** bajo `memory/` (sin SQLite).
 
 ## Carga en cada turno
 
@@ -60,19 +60,9 @@ Mantiene `memory.md` como **digest curado** (~12 KB máx.). Debe consolidar, ded
 | `WorkspaceMemoryRecall` | Buscar secciones en `memory.md` |
 | `SearchHistory` | Buscar en historial de chat (keyword scan sobre JSONL) |
 
-## Backend legacy
-
-| Variable | Valores | Default |
-|----------|---------|---------|
-| `MONOLITO_MEMORY_BACKEND` | `markdown` / `sqlite` | `markdown` |
-| `MONOLITO_STORAGE_BACKEND` | `files` / `sqlite` | `files` |
-
-`MONOLITO_MEMORY_BACKEND=sqlite` restaura FTS + palace para memoria.  
-`MONOLITO_STORAGE_BACKEND=sqlite` restaura `memory.sqlite` para config, sesiones y estado.
-
 ## Config hot-reload (Jun 2026)
 
-- `tool_manage_config` writes to `memory/config/CONF_*.json` (not SQLite by default).
+- `tool_manage_config` writes to `memory/config/CONF_*.json`.
 - `CONF_WEBSEARCH` changes apply immediately (`effect: config_stored`) — tools read config on each call.
 - `CONF_CHANNELS` changes trigger in-process `reloadChannels()` (`effect: channels_reload_required`) — Telegram poller restarts without full daemon exit.
 - `get` / unchanged `set` returns `effect: none` — safe to verify `telegram.enabled` without reconfiguring.

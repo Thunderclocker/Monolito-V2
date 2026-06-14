@@ -24,5 +24,4 @@ export {
   sessionsDir,
   sessionDir,
   stateDir,
-  sqlitePath,
 } from "./filePaths.ts"

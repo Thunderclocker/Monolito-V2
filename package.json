@@ -10,7 +10,6 @@
     "daemon": "node --experimental-strip-types src/apps/daemon.ts",
     "cli": "node --experimental-strip-types src/apps/cli.ts",
     "mcp:demo": "node --experimental-strip-types src/core/mcp/devServer.ts",
-    "db:migrate": "node --experimental-strip-types scripts/db-migrate.ts",
     "build": "tsc --noEmit",
     "check": "node bin/monolito.js --help",
     "test": "node --experimental-strip-types --test $(find src -name '*.test.ts')",
@@ -21,13 +20,11 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.1",
-    "better-sqlite3": "^12.8.0",
     "shell-quote": "^1.8.4",
-    "sqlite-vec": "^0.1.9",
     "zod": "^4.4.1"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.15.0",
     "typescript": "^6.0.2"
   }
 }

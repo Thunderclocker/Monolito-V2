@@ -41,6 +41,7 @@ import {
   telegramDir,
   telegramSentPhotosPath,
   telegramUpdatesPath,
+  modelConfigPath,
 } from "./filePaths.ts"
 
 type FileSessionTask = {
@@ -67,9 +68,6 @@ type FileKnowledgeGraphTriple = {
 }
 
 export function isFileStorageBackend(_rootDir?: string): boolean {
-  const env = process.env.MONOLITO_STORAGE_BACKEND?.toLowerCase()
-  if (env === "sqlite") return false
-  if (env === "files" || env === "file") return true
   return true
 }
 
@@ -754,10 +752,10 @@ export class FileStorageBackend {
   }
 
   clearMemoryPalace() {
-    // Markdown memory is handled separately; clear graph + resolved errors
+    const graphRows = readJsonl(graphPath(this.rootDir)).length
     if (existsSync(graphPath(this.rootDir))) writeJsonlAtomic(graphPath(this.rootDir), [])
     writeJsonAtomic(resolvedErrorsPath(this.rootDir), {})
-    return { memoryRowsDeleted: 0, graphRowsDeleted: 0, palaceRowsDeleted: 0 }
+    return { memoryRowsDeleted: 0, graphRowsDeleted: graphRows, palaceRowsDeleted: 0 }
   }
 
   saveResolvedError(errorSnippet: string, solutionSnippet: string) {
@@ -836,6 +834,16 @@ export class FileStorageBackend {
     if (chatId !== null) rows = rows.filter(r => r.chat_id === chatId)
     rows.sort((a, b) => b.sent_at.localeCompare(a.sent_at) || b.id - a.id)
     return rows.slice(0, limit)
+  }
+
+  writeModelConfigNote(content: string) {
+    writeFileSync(modelConfigPath(this.rootDir), content, "utf8")
+  }
+
+  readModelConfigNote(): string | null {
+    const path = modelConfigPath(this.rootDir)
+    if (!existsSync(path)) return null
+    return readFileSync(path, "utf8")
   }
 
   /** Wipe session dir entirely (for tests). */

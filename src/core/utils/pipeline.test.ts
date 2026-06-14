@@ -2,16 +2,18 @@
 
 import test from "node:test"
 import assert from "node:assert/strict"
-import Database from "better-sqlite3"
-import { bindCursorDb, _resetSchemaCacheForTests } from "./cursor.ts"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { _resetSchemaCacheForTests } from "./cursor.ts"
 import { processStream } from "./pipeline.ts"
 import { type Chunk } from "./chunker.ts"
 
-function freshDb(): Database.Database {
+function freshStorage() {
   _resetSchemaCacheForTests()
-  const db = new Database(":memory:")
-  bindCursorDb(db)
-  return db
+  const rootDir = mkdtempSync(join(tmpdir(), "pipeline-test-"))
+  process.env.MONOLITO_ROOT = rootDir
+  return { kind: "files" as const, rootDir }
 }
 
 function fakeChunk(index: number, text = `chunk-${index}`, isLast = false): Chunk {
@@ -26,10 +28,10 @@ function fakeChunk(index: number, text = `chunk-${index}`, isLast = false): Chun
 }
 
 test("pipeline: processes all chunks in a stream", async () => {
-  const db = freshDb()
+  const storage = freshStorage()
   const events: number[] = []
   const source = Array.from({ length: 5 }, (_, i) => fakeChunk(i, `c${i}`, i === 4))
-  const result = await processStream({ kind: "sqlite", db }, {
+  const result = await processStream(storage, {
     streamId: "t:1",
     source,
     processor: async (c) => `out:${c.text}`,
@@ -42,12 +44,12 @@ test("pipeline: processes all chunks in a stream", async () => {
 })
 
 test("pipeline: resumes from cursor after partial run (maxChunks=3)", async () => {
-  const db = freshDb()
+  const storage = freshStorage()
   const events: number[] = []
   const source = Array.from({ length: 10 }, (_, i) => fakeChunk(i, `c${i}`, i === 9))
 
   // First pass: process 3 chunks only.
-  const r1 = await processStream({ kind: "sqlite", db }, {
+  const r1 = await processStream(storage, {
     streamId: "t:resume",
     source,
     processor: async (c) => `out:${c.text}`,
@@ -59,7 +61,7 @@ test("pipeline: resumes from cursor after partial run (maxChunks=3)", async () =
   assert.deepEqual(events, [0, 1, 2])
 
   // Second pass: resume from cursor.
-  const r2 = await processStream({ kind: "sqlite", db }, {
+  const r2 = await processStream(storage, {
     streamId: "t:resume",
     source,
     processor: async (c) => `out:${c.text}`,
@@ -70,10 +72,10 @@ test("pipeline: resumes from cursor after partial run (maxChunks=3)", async () =
 })
 
 test("pipeline: chunk errors don't break the stream, are counted", async () => {
-  const db = freshDb()
+  const storage = freshStorage()
   const events: number[] = []
   const source = ["a", "b", "c", "d"].map((c, i) => fakeChunk(i, c, i === 3))
-  const result = await processStream({ kind: "sqlite", db }, {
+  const result = await processStream(storage, {
     streamId: "t:err",
     source,
     processor: async (c) => {
@@ -88,10 +90,10 @@ test("pipeline: chunk errors don't break the stream, are counted", async () => {
 })
 
 test("pipeline: processor returning null skips silently (no error counted)", async () => {
-  const db = freshDb()
+  const storage = freshStorage()
   const events: number[] = []
   const source = Array.from({ length: 3 }, (_, i) => fakeChunk(i, `c${i}`, i === 2))
-  const result = await processStream({ kind: "sqlite", db }, {
+  const result = await processStream(storage, {
     streamId: "t:null",
     source,
     processor: async (c) => (c.index === 1 ? null : c.text),
@@ -103,7 +105,7 @@ test("pipeline: processor returning null skips silently (no error counted)", asy
 })
 
 test("pipeline: AbortSignal cancels the stream", async () => {
-  const db = freshDb()
+  const storage = freshStorage()
   const events: number[] = []
   const controller = new AbortController()
   const source = Array.from({ length: 100 }, (_, i) => fakeChunk(i, `c${i}`, i === 99))
@@ -113,7 +115,7 @@ test("pipeline: AbortSignal cancels the stream", async () => {
 
   // The processor must respect the abort signal — otherwise 100 sync chunks
   // finish before abort takes effect. Simulate per-chunk I/O with a microtask.
-  const result = await processStream({ kind: "sqlite", db }, {
+  const result = await processStream(storage, {
     streamId: "t:abort",
     source,
     processor: async (c) => {
@@ -132,10 +134,10 @@ test("pipeline: AbortSignal cancels the stream", async () => {
 })
 
 test("pipeline: string source is chunked automatically", async () => {
-  const db = freshDb()
+  const storage = freshStorage()
   const events: number[] = []
   const text = "Hola mundo. ".repeat(1000) // ~13K chars
-  const result = await processStream({ kind: "sqlite", db }, {
+  const result = await processStream(storage, {
     streamId: "t:string",
     source: text,
     chunker: { targetTokens: 200, overlapTokens: 20 },
@@ -147,12 +149,12 @@ test("pipeline: string source is chunked automatically", async () => {
 })
 
 test("pipeline: reset option clears cursor and re-processes from 0", async () => {
-  const db = freshDb()
+  const storage = freshStorage()
   const events: number[] = []
   const source = ["x", "y", "z"].map((t, i) => fakeChunk(i, t, i === 2))
 
   // First pass: process all 3.
-  await processStream({ kind: "sqlite", db }, {
+  await processStream(storage, {
     streamId: "t:reset",
     source,
     processor: async (c) => c.text,
@@ -161,7 +163,7 @@ test("pipeline: reset option clears cursor and re-processes from 0", async () =>
   assert.equal(events.length, 3)
 
   // Reset and re-process.
-  const r2 = await processStream({ kind: "sqlite", db }, {
+  const r2 = await processStream(storage, {
     streamId: "t:reset",
     source,
     reset: true,
@@ -173,10 +175,10 @@ test("pipeline: reset option clears cursor and re-processes from 0", async () =>
 })
 
 test("pipeline: onProgress callback fires per chunk", async () => {
-  const db = freshDb()
+  const storage = freshStorage()
   const progressUpdates: number[] = []
   const source = Array.from({ length: 3 }, (_, i) => fakeChunk(i, `c${i}`, i === 2))
-  await processStream({ kind: "sqlite", db }, {
+  await processStream(storage, {
     streamId: "t:progress",
     source,
     processor: async (c) => c.text,

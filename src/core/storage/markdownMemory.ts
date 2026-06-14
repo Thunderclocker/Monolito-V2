@@ -84,7 +84,6 @@ function readPreamble(markdown: string): string {
 }
 
 export function isMarkdownMemoryBackend(_rootDir: string): boolean {
-  if (process.env.MONOLITO_MEMORY_BACKEND === "sqlite") return false
   return true
 }
 

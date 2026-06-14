@@ -1,5 +1,4 @@
 import { join } from "node:path"
-import { getPaths } from "../ipc/protocol.ts"
 import type { ConfigWingName } from "../config/configWings.ts"
 import { memoryRoot } from "./memoryPaths.ts"
 
@@ -99,7 +98,6 @@ export function telegramSentAudiosPath(rootDir: string): string {
   return join(telegramDir(rootDir), "sent_audios.jsonl")
 }
 
-/** Legacy sqlite path — only opened when MONOLITO_STORAGE_BACKEND=sqlite. */
-export function sqlitePath(rootDir: string): string {
-  return join(getPaths(rootDir).stateDir, "memory.sqlite")
+export function modelConfigPath(rootDir: string): string {
+  return join(stateDir(rootDir), "model_config.txt")
 }

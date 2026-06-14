@@ -10,23 +10,19 @@
 //   1. Iterate messages in the middle zone one at a time.
 //   2. For each message, extract a cheap heuristic summary
 //      (no LLM, O(n) string ops).
-//   3. Persist the summary as a memory_drawer under wing="CHAT" /
-//      room=sessionId. fileMemory handles the embedding (single-vector
-//      or multi-chunk depending on env).
+//   3. Persist the summary as a memory section in memory.md via fileMemory.
 //   4. Track which messages were flushed via processing_cursors (durable
 //      resume across crashes).
 //   5. After flushing, the caller can deleteMessages on the middle zone
-//      and the info is preserved in Memory Palace.
+//      and the info is preserved in curated memory.
 //
 // The flow is gated by env var MONOLITO_CONTEXT_FLUSH_THRESHOLD_CHARS
 // (default 150000). Below the threshold, smartCompactSession (LLM summary)
 // is still used — it's a one-shot that's fine for small zones.
 
-import type Database from "better-sqlite3"
 import { processStream, type PipelineResult } from "../utils/pipeline.ts"
 import { createLogger } from "../logging/logger.ts"
 import { type CursorStorage } from "../utils/cursor.ts"
-import { isFileStorageBackend } from "../storage/fileStorage.ts"
 
 const logger = createLogger("incrementalFlush")
 
@@ -87,16 +83,11 @@ export interface IncrementalFlushResult extends PipelineResult {
  * See modelAdapter.ts for the orchestration glue.
  */
 export async function incrementalFlushSession(
-  storage: CursorStorage | Database.Database,
+  storage: CursorStorage,
   rawMessages: Array<{ id: number; role: string; text: string; at?: string }>,
   opts: IncrementalFlushOptions,
 ): Promise<IncrementalFlushResult> {
-  const cursorStorage: CursorStorage =
-    typeof storage === "object" && storage !== null && "kind" in storage
-      ? storage
-      : isFileStorageBackend(opts.rootDir)
-        ? { kind: "files", rootDir: opts.rootDir }
-        : { kind: "sqlite", db: storage as Database.Database }
+  const cursorStorage = storage
   const streamId = `ctxflush:${opts.sessionId}`
   const wing = opts.wing ?? "CHAT"
   const room = opts.room ?? opts.sessionId
@@ -139,15 +130,11 @@ export async function incrementalFlushSession(
     },
     sink: async (summary, chunk) => {
       const msg = JSON.parse(chunk.text) as { id: number; role: string; text: string; at?: string }
-      // Idempotent key: msg-{id}. fileMemory + memory_drawers already dedup
-      // on (wing, room, key) when key is provided (via appendPalaceNode).
       const key = `msg-${msg.id}`
       try {
         await opts.fileMemory(opts.rootDir, wing, room, summary, profileId, key)
         drawersFiled++
       } catch (e) {
-        // Don't propagate — we still want the cursor to advance so we don't
-        // re-attempt the same failing message every loop.
         logger.warn("incrementalFlush: fileMemory failed for msg, skipping", {
           msgId: msg.id,
           errorName: e instanceof Error ? e.name : "Error",
@@ -167,31 +154,18 @@ export async function incrementalFlushSession(
 
 // --- internal helpers ---
 
-/**
- * Cheap heuristic summary (no LLM). Extracts:
- *   - First 2 sentences (or up to 400 chars).
- *   - Keywords: words > 4 chars, deduplicated, top 8 by frequency.
- *   - Role + timestamp prefix.
- *
- * This is intentionally lossy — the FULL content is still available in
- * memory_drawers.content if the caller wants to surface it. The summary
- * is what the embedding model sees first, and what shows in compact logs.
- */
 function extractHeuristicSummary(text: string, role: string, at: string | undefined): string {
   const header = `[${role}${at ? ` ${at}` : ""}]`
-  // First 2 sentences.
   const sentences = splitSentences(text)
   const firstTwo = sentences.slice(0, 2).join(" ").trim()
   let body = firstTwo
   if (body.length > 400) body = body.slice(0, 400) + "…"
-  // Keywords.
   const keywords = topKeywords(text, 8)
   const kwSuffix = keywords.length > 0 ? `\n\n[Keywords: ${keywords.join(", ")}]` : ""
   return `${header} ${body}${kwSuffix}`
 }
 
 function splitSentences(text: string): string[] {
-  // Simple sentence splitter. Not perfect, but good enough for summary.
   return text
     .split(/(?<=[.!?\n])\s+/)
     .map((s) => s.trim())

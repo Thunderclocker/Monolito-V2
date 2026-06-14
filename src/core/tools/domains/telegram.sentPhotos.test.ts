@@ -1,19 +1,15 @@
 import test, { after, before } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-// Isolated environment root before importing Monolito core modules.
-// Note: getPaths() builds stateDir from MONOLITO_ROOT, so all tests
-// in this file share the same SQLite database. We isolate by
-// truncating the telegram_sent_photos table in `before`.
 const testMonolitoRoot = mkdtempSync(join(tmpdir(), "monolito-sent-photos-test-"))
 process.env.MONOLITO_ROOT = testMonolitoRoot
-process.env.MONOLITO_STORAGE_BACKEND = "sqlite"
 
 const { getTool } = await import("../registry.ts")
-const { getDb, writeConfigWing } = await import("../../session/store.ts")
+const { persistTelegramSentPhoto, writeConfigWing } = await import("../../session/store.ts")
+const { telegramSentPhotosPath } = await import("../../storage/filePaths.ts")
 
 after(() => {
   rmSync(testMonolitoRoot, { recursive: true, force: true })
@@ -30,8 +26,7 @@ before(async () => {
 })
 
 function clearSentPhotos() {
-  const db = getDb(testMonolitoRoot)
-  db.exec("DELETE FROM telegram_sent_photos")
+  writeFileSync(telegramSentPhotosPath(testMonolitoRoot), "", "utf8")
 }
 
 interface SentPhotoRow {
@@ -50,16 +45,27 @@ interface RecentPhotosResult {
 
 test("TelegramGetRecentPhotos returns the most recent sent photos in DESC order", async () => {
   clearSentPhotos()
-  const now = new Date()
-  const minus = (sec: number) => new Date(now.getTime() - sec * 1000).toISOString().slice(0, 19).replace("T", " ")
-  const db = getDb(testMonolitoRoot)
-  const insert = db.prepare(`
-    INSERT INTO telegram_sent_photos (chat_id, message_id, file_id, local_path, caption, sent_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `)
-  insert.run(1515784684, 100, "file_id_old", "/tmp/old.jpg", "old caption", minus(60))
-  insert.run(1515784684, 101, "file_id_mid", "/tmp/mid.jpg", null, minus(30))
-  insert.run(1515784684, 102, "file_id_new", "/tmp/new.jpg", "new caption", minus(5))
+  persistTelegramSentPhoto(testMonolitoRoot, {
+    chatId: 1515784684,
+    messageId: 100,
+    fileId: "file_id_old",
+    localPath: "/tmp/old.jpg",
+    caption: "old caption",
+  })
+  persistTelegramSentPhoto(testMonolitoRoot, {
+    chatId: 1515784684,
+    messageId: 101,
+    fileId: "file_id_mid",
+    localPath: "/tmp/mid.jpg",
+    caption: null,
+  })
+  persistTelegramSentPhoto(testMonolitoRoot, {
+    chatId: 1515784684,
+    messageId: 102,
+    fileId: "file_id_new",
+    localPath: "/tmp/new.jpg",
+    caption: "new caption",
+  })
 
   const tool = getTool("TelegramGetRecentPhotos")
   assert.ok(tool, "TelegramGetRecentPhotos must be registered")
@@ -74,17 +80,12 @@ test("TelegramGetRecentPhotos returns the most recent sent photos in DESC order"
 
 test("TelegramGetRecentPhotos respects limit and filters by chat_id", async () => {
   clearSentPhotos()
-  const db = getDb(testMonolitoRoot)
-  const stmt = db.prepare(`
-    INSERT INTO telegram_sent_photos (chat_id, message_id, file_id, local_path, caption, sent_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `)
-  stmt.run(111, 1, "f1", "/tmp/a1.jpg", null, "2026-06-06 10:00:00")
-  stmt.run(111, 2, "f2", "/tmp/a2.jpg", null, "2026-06-06 10:01:00")
-  stmt.run(111, 3, "f3", "/tmp/a3.jpg", null, "2026-06-06 10:02:00")
-  stmt.run(111, 4, "f4", "/tmp/a4.jpg", null, "2026-06-06 10:03:00")
-  stmt.run(222, 5, "f5", "/tmp/b1.jpg", null, "2026-06-06 10:04:00")
-  stmt.run(222, 6, "f6", "/tmp/b2.jpg", null, "2026-06-06 10:05:00")
+  persistTelegramSentPhoto(testMonolitoRoot, { chatId: 111, messageId: 1, fileId: "f1", localPath: "/tmp/a1.jpg", caption: null })
+  persistTelegramSentPhoto(testMonolitoRoot, { chatId: 111, messageId: 2, fileId: "f2", localPath: "/tmp/a2.jpg", caption: null })
+  persistTelegramSentPhoto(testMonolitoRoot, { chatId: 111, messageId: 3, fileId: "f3", localPath: "/tmp/a3.jpg", caption: null })
+  persistTelegramSentPhoto(testMonolitoRoot, { chatId: 111, messageId: 4, fileId: "f4", localPath: "/tmp/a4.jpg", caption: null })
+  persistTelegramSentPhoto(testMonolitoRoot, { chatId: 222, messageId: 5, fileId: "f5", localPath: "/tmp/b1.jpg", caption: null })
+  persistTelegramSentPhoto(testMonolitoRoot, { chatId: 222, messageId: 6, fileId: "f6", localPath: "/tmp/b2.jpg", caption: null })
 
   const tool = getTool("TelegramGetRecentPhotos")
   assert.ok(tool)
@@ -109,11 +110,13 @@ test("TelegramGetRecentPhotos normalizes limit (clamped to 1..20)", async () => 
 
 test("TelegramGetRecentPhotos normalizes synthetic <remote:...> marker as null local_path", async () => {
   clearSentPhotos()
-  const db = getDb(testMonolitoRoot)
-  db.prepare(`
-    INSERT INTO telegram_sent_photos (chat_id, message_id, file_id, local_path, caption, sent_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(1515784684, 200, "remote_file_id", "<remote:https://example.com/foo.jpg>", null, "2026-06-06 12:00:00")
+  persistTelegramSentPhoto(testMonolitoRoot, {
+    chatId: 1515784684,
+    messageId: 200,
+    fileId: "remote_file_id",
+    localPath: "<remote:https://example.com/foo.jpg>",
+    caption: null,
+  })
 
   const tool = getTool("TelegramGetRecentPhotos")
   assert.ok(tool)

@@ -26,16 +26,13 @@ import {
   updateSessionProfile,
   listProfiles,
   createProfile,
-  getDb,
   getSemanticMessageContext,
   readConfigWing,
   writeConfigWing,
-  reconcileSystemWings,
-  closeMemoryDb,
+  reconcileModelConfigNote,
   recallMemory,
   isMainSession,
   listSessionTasks,
-  upsertMutablePalaceNode,
   upsertMemoryDrawer,
   getMemoryConsolidationCursor,
   getMessagesSinceId,
@@ -43,12 +40,10 @@ import {
   getMemoryDrawerCount,
   setSessionVoiceMode,
 } from "../session/store.ts"
-import { isFileStorageBackend } from "../storage/index.ts"
 import { isMarkdownMemoryBackend } from "../storage/index.ts"
 import { getTool, listTools, validateToolInput, type ToolContext, type ToolInputSchema } from "../tools/registry.ts"
 import { getEffectiveModelConfig, runAgentLoop, runAssistantTurn, runBackgroundTextTask, type AgentLoopEvent, type AssistantTurnResult } from "./modelAdapter.ts"
 import { getActiveProfile } from "./modelRegistry.ts"
-import { PALACE_NAMESPACE } from "../db/schema.ts"
 import {
   applyModelSettingsToEnv,
   draftToSettings,
@@ -1063,10 +1058,6 @@ export class MonolitoV2Runtime {
   constructor(rootDir: string) {
     this.rootDir = rootDir
     ensureConfigWings(this.rootDir)
-    if (!isFileStorageBackend(this.rootDir)) {
-      const db = getDb(this.rootDir)
-      reconcileSystemWings(db, rootDir)
-    }
     // On a brand-new install, copy .env values into CONF_SYSTEM / CONF_MODELS
     // so the model settings have a usable base. Idempotent: skipped if the
     // wings already have content.
@@ -1103,22 +1094,7 @@ export class MonolitoV2Runtime {
         `Last reconciled at runtime boot: ${now}`,
       ].join("\n")
 
-      const db = getDb(this.rootDir)
-      // Supersede any existing non-superseded row, then upsert the new one.
-      db.prepare(
-        `UPDATE palace_nodes SET superseded_at = ?, updated_at = ?
-         WHERE namespace = ? AND wing = ? AND room = ? AND superseded_at IS NULL`,
-      ).run(now, now, PALACE_NAMESPACE.chatHistory, "model_config", "activation")
-      upsertMutablePalaceNode(db, {
-        namespace: PALACE_NAMESPACE.chatHistory,
-        wing: "model_config",
-        room: "activation",
-        nodeKey: "active-profile",
-        profileId: null,
-        contentType: "text/plain",
-        content,
-        now,
-      })
+      reconcileModelConfigNote(this.rootDir, content)
       logger.info(`[boot] Reconciled model_config wing: ${providerName} / ${active.model}`)
     } catch (e) {
       logger.warn(
@@ -2435,8 +2411,7 @@ Rules:
     }
     // Fetch the most recent user-role message so the PreToolUse hooks
     // (especially the intent-mismatch check) can compare the user's
-    // current intent against the tool being invoked. Cheap read; cached
-    // by better-sqlite3.
+    // current intent against the tool being invoked. Cheap read from file storage.
     let lastUserText = ""
     try {
       const session = getSession(this.rootDir, sessionId)
@@ -2701,7 +2676,6 @@ Rules:
     }
     this.mcpClients.clear()
     this.recoverSessions("Recovered after daemon shutdown")
-    closeMemoryDb()
   }
 
   gracefulRestart(reason = "system_reboot tool requested restart") {

@@ -41,7 +41,6 @@ import {
   writeSessionTask,
   listSessionTasks,
   deleteSessionTask,
-  getDb,
   type SessionTask,
   upsertSemanticTool,
   querySemanticTools,

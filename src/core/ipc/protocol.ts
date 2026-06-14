@@ -153,7 +153,7 @@ export function decodeLines(buffer: string): { messages: Envelope[]; rest: strin
 
 export function getPaths(rootDir: string, profileId: string = "default") {
   // Resolve the install base at call time, not at module-import time. Tests
-  // set `process.env.MONOLITO_ROOT` to a tempdir before calling getDb(); if
+  // set `process.env.MONOLITO_ROOT` to a tempdir before calling store APIs; if
   // we read `MONOLITO_ROOT` (the captured constant) instead, the tempdir is
   // ignored and the test writes to the live runtime install. The 09-jun-2026
   // incident: a test run with MONOLITO_ROOT pointing at the live install

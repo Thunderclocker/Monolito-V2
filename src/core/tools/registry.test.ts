@@ -8,10 +8,7 @@ import { join } from "node:path"
 // Set isolated environment root before importing Monolito core modules
 const testMonolitoRoot = mkdtempSync(join(tmpdir(), "monolito-registry-test-root-"))
 process.env.MONOLITO_ROOT = testMonolitoRoot
-process.env.MONOLITO_STORAGE_BACKEND = "sqlite"
-process.env.MONOLITO_MEMORY_BACKEND = "sqlite"
 
-// Dynamically import the core modules so they pick up the environment variable
 const { getTool } = await import("./registry.ts")
 const {
   addGraphTriple,
@@ -20,7 +17,7 @@ const {
   appendWorklog,
   clearMemoryPalace,
   ensureSession,
-  getDb,
+  fileMemory,
   queryGraphEntity,
   readBootWing,
   readConfigWing,
@@ -34,11 +31,14 @@ after(() => {
 })
 
 function createRootDir() {
-  return mkdtempSync(join(tmpdir(), "monolito-tools-test-"))
+  const dir = mkdtempSync(join(tmpdir(), "monolito-tools-test-"))
+  process.env.MONOLITO_ROOT = dir
+  return dir
 }
 
 function cleanupRootDir(rootDir: string) {
   rmSync(rootDir, { recursive: true, force: true })
+  process.env.MONOLITO_ROOT = testMonolitoRoot
 }
 
 test("tool_manage_config writes CONF_CHANNELS when value is a JSON string with valid telegram config", async () => {
@@ -424,14 +424,11 @@ test("clearMemoryPalace removes profile memory while preserving configuration", 
       telegram: { token: "abc", enabled: true, allowedChats: [1515784684] },
     })
     writeBootWing(rootDir, "BOOT_MEMORY", "Cristian vive en Santo Tome.", "default")
-    getDb(rootDir).prepare(`
-      INSERT INTO memory_drawers (id, profile_id, wing, room, memory_key, content, created_at)
-      VALUES (?, 'default', 'PRIVATE', 'notes', NULL, 'dato durable', ?)
-    `).run(randomUUID(), new Date().toISOString())
+    await fileMemory(rootDir, "PRIVATE", "notes", "dato durable", "default")
     addGraphTriple(rootDir, "default", "Cristian", "lives_in", "Santo Tome", new Date().toISOString())
 
-    const before = await recallMemory(rootDir, undefined, undefined, undefined, "default")
-    assert.ok(before.some(row => row.wing === "PRIVATE"))
+    const before = await recallMemory(rootDir, "PRIVATE", "notes", "dato", "default")
+    assert.ok(before.some(row => row.content.includes("dato durable")))
     assert.equal(queryGraphEntity(rootDir, "default", "Cristian").length, 1)
 
     const cleared = clearMemoryPalace(rootDir, "default")
@@ -442,7 +439,7 @@ test("clearMemoryPalace removes profile memory while preserving configuration", 
       telegram: { token: "abc", enabled: true, allowedChats: [1515784684] },
     })
     assert.equal(queryGraphEntity(rootDir, "default", "Cristian").length, 0)
-    assert.equal(await recallMemory(rootDir, undefined, undefined, undefined, "default").then(rows => rows.some(row => row.wing === "PRIVATE")), false)
+    assert.equal(await recallMemory(rootDir, "PRIVATE", "notes", "dato", "default").then(rows => rows.some(row => row.content.includes("dato durable"))), false)
     assert.equal(readBootWing(rootDir, "BOOT_MEMORY", "default"), "# BOOT_MEMORY - Memoria Curada de Largo Plazo\n\nGuarda aqui notas destiladas y durables. No uses esto para logs ruidosos del dia a dia.\n")
   } finally {
     cleanupRootDir(rootDir)

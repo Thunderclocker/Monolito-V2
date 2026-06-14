@@ -10,8 +10,8 @@ import { AbortError, ApiError, ContextOverflowError, HttpError, ProviderOverload
 import { createLogger, type Logger } from "../logging/logger.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider, getDefaultReasoningLevel, type ReasoningLevel } from "./modelRegistry.ts"
-import { compactSession, fileMemory, getSession, getRawMessagesForSession, getDb, readSessionSources, tailEvents, listSessionTasks, appendWorklog, saveResolvedError, querySimilarErrors, deleteMessages, rewriteMessageInPlace, loadCachedMemoryContext } from "../session/store.ts"
-import { isFileStorageBackend, isMarkdownMemoryBackend } from "../storage/index.ts"
+import { compactSession, fileMemory, getSession, getRawMessagesForSession, readSessionSources, tailEvents, listSessionTasks, appendWorklog, saveResolvedError, querySimilarErrors, deleteMessages, rewriteMessageInPlace, loadCachedMemoryContext } from "../session/store.ts"
+import { isMarkdownMemoryBackend } from "../storage/index.ts"
 import type { RecentToolCall } from "./coherenceGuard.ts"
 import { wrapAuditFeedback } from "./auditFeedback.ts"
 import { incrementalFlushSession, getContextFlushThresholdChars } from "../context/incrementalFlush.ts"
@@ -1942,7 +1942,7 @@ export function buildSameErrorNudgeForMain(repeatCount: number, toolName: string
     `You have called '${toolName}' ${repeatCount} times consecutively with the same error signature.`,
     "",
     "STOP and reconsider before the next call. The same retry is producing the same error. Try a SUBSTANTIALLY different approach:",
-    "1. Is the tool fundamentally unable to do what you need? (e.g. you need Bash but it's blocked, or sqlite3 is not installed and you should Read the file directly via better-sqlite3 from node)",
+    "1. Is the tool fundamentally unable to do what you need? (e.g. you need Bash but it's blocked, or you should Read the file directly instead)",
     "2. Is your INPUT wrong? (wrong path, wrong arg, wrong syntax — re-read the tool schema and the actual error message)",
     "3. Is the WORKSPACE state wrong? (missing file, stale state — check `ls`, `pwd`, recent `git status` before retrying)",
     "4. Is the APPROACH wrong? (e.g. you keep editing a file but the bug is in a different file — re-read the task carefully)",
@@ -2130,9 +2130,7 @@ export async function runIncrementalFlush(
     return { flushed: 0, skipped: 0, freedChars: 0 }
   }
   const profileId = session.profileId ?? "default"
-  const storage = isFileStorageBackend(rootDir)
-    ? { kind: "files" as const, rootDir }
-    : { kind: "sqlite" as const, db: getDb(rootDir) }
+  const storage = { kind: "files" as const, rootDir }
   const rawMessages = getRawMessagesForSession(rootDir, sessionId)
   if (rawMessages.length <= 4) {
     return { flushed: 0, skipped: 0, freedChars: 0 }

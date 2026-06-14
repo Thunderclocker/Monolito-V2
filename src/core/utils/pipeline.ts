@@ -18,7 +18,6 @@
 //   is logged and counted, but the chunk is NOT retried — this is a
 //   conscious decision to avoid infinite loops on poisoned data).
 
-import type Database from "better-sqlite3"
 import { createLogger } from "../logging/logger.ts"
 import { type Chunk, chunk, type ChunkOptions } from "./chunker.ts"
 import {
@@ -104,7 +103,7 @@ async function* toAsyncIter(source: string | AsyncIterable<Chunk> | Chunk[], chu
 /**
  * Run the process-and-flush pipeline.
  *
- * @param storage Cursor storage (sqlite db or file rootDir).
+ * @param storage Cursor storage (file rootDir).
  * @param opts Stream config.
  */
 export async function processStream<S>(
