@@ -3,7 +3,7 @@ import { listTools } from "../../../core/tools/registry.ts"
 import type { CompletionMatch } from "./types.ts"
 
 export const INTERACTIVE_COMMANDS = [
-  "/help", "/new", "/reset", "/model", "/channels", "/update", "/dashboard", "/quit", "/exit", "/stop", "/minimax",
+  "/help", "/new", "/clear", "/reset", "/model", "/channels", "/update", "/dashboard", "/quit", "/exit", "/stop", "/minimax",
 ]
 
 export function getTokensForCompletion(line: string) {
@@ -57,6 +57,7 @@ export function createInteractiveCompleter(rootDir: string) {
     switch (command) {
       case "/model":
       case "/new":
+      case "/clear":
       case "/reset":
       case "/channels":
       case "/help":

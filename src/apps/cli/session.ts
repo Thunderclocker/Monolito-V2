@@ -1279,6 +1279,15 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       return
     }
 
+    // /clear wipes the on-screen transcript only; the daemon session is untouched.
+    if (line === "/clear") {
+      composer.input = ""
+      composer.cursor = 0
+      transcript = { blocks: [], scrollOffset: 0 }
+      redraw()
+      return
+    }
+
     // /dashboard opens the Master Configuration Hub
     if (line === "/dashboard") {
       composer.input = ""

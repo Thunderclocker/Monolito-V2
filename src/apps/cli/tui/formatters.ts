@@ -139,6 +139,7 @@ export function formatHelp(): FormattedBlock {
   const commands = [
     ["/help", "Show this help"],
     ["/new", "Start a fresh session"],
+    ["/clear", "Clear the on-screen CLI transcript (session is kept)"],
     ["/reset", "Reset session and clear Memory Palace for this profile"],
     ["/model", "Interactive model configuration menu"],
     ["/channels", "Interactive Telegram channel menu or text command"],

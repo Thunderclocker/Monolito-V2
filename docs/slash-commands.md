@@ -28,6 +28,7 @@ Monolito exposes runtime control commands in the CLI and, where supported, throu
 - `/stt`
 - `/websearch`
 - `/new`
+- `/clear`
 - `/reset`
 
 ## What they do
@@ -44,6 +45,7 @@ Monolito exposes runtime control commands in the CLI and, where supported, throu
 - `/tts`: shows or controls the managed local TTS service lifecycle.
 - `/stt`: shows or controls the managed local speech-to-text service lifecycle.
 - `/websearch`: opens web search configuration controls through menus in the CLI and Telegram.
+- `/clear`: clears the CLI transcript only. The daemon session, messages, and memory are unchanged.
 - `/new`: resets the current session and restarts the agent startup sequence.
 - `/reset`: resets the current session, clears Memory Palace data for the current profile, and restarts the agent startup sequence. It does not clear runtime configuration.
 - `/config set <field> <value>`: configures runtime settings.
@@ -57,6 +59,7 @@ Monolito exposes runtime control commands in the CLI and, where supported, throu
 
 - `/model`, `/channels`, `/config`, and `/websearch` act on runtime-level configuration.
 - `/new` resets only the current session.
+- `/clear` affects only the local CLI display.
 - `/reset` resets the current session and clears profile-scoped Memory Palace data, including regular memory drawers, BOOT memory, and knowledge graph entries.
 - Telegram chat sessions remain isolated by `telegram-<chatId>`.
 

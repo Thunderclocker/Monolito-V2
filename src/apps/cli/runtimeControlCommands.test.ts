@@ -34,6 +34,7 @@ test("isRuntimeControlCommand: read-only commands do NOT match", () => {
   assert.equal(isRuntimeControlCommand("/model"), false)
   assert.equal(isRuntimeControlCommand("/channels"), false)
   assert.equal(isRuntimeControlCommand("/dashboard"), false)
+  assert.equal(isRuntimeControlCommand("/clear"), false)
   assert.equal(isRuntimeControlCommand("/websearch"), false)
 })
 
