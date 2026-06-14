@@ -885,17 +885,6 @@ function resolveDeliveryContext(sessionId: string, delivery?: DeliveryContext): 
   if (delivery) return delivery
   const telegramChatId = getTelegramChatId(sessionId)
   if (telegramChatId) return { channel: "telegram", targetId: telegramChatId }
-
-  if (sessionId === MAIN_SESSION_ID) {
-    try {
-      const config = readChannelsConfig()
-      if (config.telegram?.enabled && config.telegram.allowedChats && config.telegram.allowedChats.length > 0) {
-        return { channel: "telegram", targetId: String(config.telegram.allowedChats[0]) }
-      }
-    } catch {
-      // ignore errors
-    }
-  }
   return undefined
 }
 
@@ -1185,7 +1174,10 @@ export class MonolitoV2Runtime {
   }
 
   private rememberDeliveryContext(sessionId: string, delivery?: DeliveryContext) {
-    if (!delivery) return
+    if (!delivery) {
+      this.sessionDeliveryContexts.delete(sessionId)
+      return
+    }
     const channel = delivery.channel.trim().toLowerCase()
     if (!channel || !delivery.targetId.trim()) return
     this.sessionDeliveryContexts.set(sessionId, { ...delivery, channel })
@@ -1193,7 +1185,7 @@ export class MonolitoV2Runtime {
 
   private async deliverText(sessionId: string, text: string, delivery?: DeliveryContext, logMessage = "Failed to deliver assistant text") {
     if (!text) return
-    const resolved = resolveDeliveryContext(sessionId, delivery ?? this.sessionDeliveryContexts.get(sessionId))
+    const resolved = resolveDeliveryContext(sessionId, delivery)
     if (!resolved) return
     const channel = resolved.channel.trim().toLowerCase()
     const handler = this.deliveryHandlers.get(channel)
