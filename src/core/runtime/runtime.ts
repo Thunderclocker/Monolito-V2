@@ -1324,7 +1324,7 @@ Rules:
         async (tool, input, context, toolUseId) =>
           this.executeTool(sessionId, tool, input, { ...context, abortSignal: abortController.signal, sessionId, runtime: this }, toolUseId, profileId),
         { rootDir: this.rootDir, cwd: this.rootDir, abortSignal: abortController.signal, getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId), profileId },
-        { systemPromptOverride: promptOverride, costState: this.costState, abortSignal: abortController.signal, turnStartedAt, maxTurnDurationMs: 180_000, reasoningLevelOverride: "off" },
+        { systemPromptOverride: promptOverride, costState: this.costState, abortSignal: abortController.signal, turnStartedAt, maxTurnDurationMs: 180_000, reasoningLevelOverride: "off", skipCoherenceGuard: true },
       )
 
       if (turn.usage) {
@@ -1763,6 +1763,13 @@ Rules:
         // not the LLM.
         let ralphAttempt = 1
         const ralphAttemptHistory: Array<{ attempt: number; kind: string; summary: string }> = []
+        // Snapshot task ids at turn start: Ralph only blocks on tasks the user
+        // (or a prior turn) left open — not TodoWrite items created mid-turn.
+        const preExistingTaskIds = new Set(
+          listSessionTasks(this.rootDir, sessionId, profileId)
+            .filter(t => t.status === "pending" || t.status === "in_progress")
+            .map(t => t.id),
+        )
         let turn: AssistantTurnResult | null = null
         let lastAssistantReplyForRalph = ""
         // Ralph feedback is in-memory only: it MUST be visible to the agent
@@ -1876,6 +1883,7 @@ Rules:
             lastAssistantReplyForRalph,
             ralphAttemptHistory,
             turn.steps,
+            preExistingTaskIds,
           )
           if (!gate.blocked) break
 

@@ -119,7 +119,45 @@ if (!DRY_RUN) {
   console.log("    → Dedup ejecutado.")
 }
 
-// ── 4. Purga de LOG_ACTIONS viejos (opcional) ───────────────────────────────
+// ── 4. Supersede active_tasks cognitivas colgadas ───────────────────────────
+
+const staleActiveTasks = db.prepare(`
+  SELECT id, room as session_id, node_key, content
+  FROM palace_nodes
+  WHERE wing = 'active_tasks'
+    AND superseded_at IS NULL
+`).all()
+
+const hungTasks = staleActiveTasks.filter(row => {
+  try {
+    const task = JSON.parse(row.content)
+    if (task.category === "life") return false
+    return task.status === "pending" || task.status === "in_progress"
+  } catch {
+    return false
+  }
+})
+
+console.log(`\n[3] active_tasks cognitivas colgadas (pending/in_progress): ${hungTasks.length}`)
+for (const row of hungTasks.slice(0, 10)) {
+  const task = JSON.parse(row.content)
+  console.log(`    ${row.session_id}/${row.node_key}: [${task.status}] ${task.content?.slice(0, 60)}`)
+}
+if (hungTasks.length > 10) console.log(`    ... y ${hungTasks.length - 10} más`)
+
+if (!DRY_RUN && hungTasks.length > 0) {
+  const now = new Date().toISOString()
+  const supersede = db.prepare(`
+    UPDATE palace_nodes SET superseded_at = ?
+    WHERE id = ? AND superseded_at IS NULL
+  `)
+  for (const row of hungTasks) {
+    supersede.run(now, row.id)
+  }
+  console.log("    → Supersedidas.")
+}
+
+// ── 5. Purga de LOG_ACTIONS viejos (opcional) ───────────────────────────────
 
 if (PRUNE_LOG_DAYS !== null && PRUNE_LOG_DAYS > 0) {
   const cutoff = new Date(Date.now() - PRUNE_LOG_DAYS * 86400_000).toISOString()
@@ -131,7 +169,7 @@ if (PRUNE_LOG_DAYS !== null && PRUNE_LOG_DAYS > 0) {
     SELECT COUNT(*) c FROM palace_nodes
     WHERE wing = 'LOG_ACTIONS' AND created_at < ?
   `).get(cutoff).c
-  console.log(`\n[3] LOG_ACTIONS > ${PRUNE_LOG_DAYS} días: drawers=${logDrawers}  nodes=${logNodes}`)
+  console.log(`\n[4] LOG_ACTIONS > ${PRUNE_LOG_DAYS} días: drawers=${logDrawers}  nodes=${logNodes}`)
   if (!DRY_RUN) {
     db.prepare("DELETE FROM memory_drawers WHERE wing = 'LOG_ACTIONS' AND created_at < ?").run(cutoff)
     db.prepare("DELETE FROM palace_nodes WHERE wing = 'LOG_ACTIONS' AND created_at < ?").run(cutoff)
@@ -139,7 +177,7 @@ if (PRUNE_LOG_DAYS !== null && PRUNE_LOG_DAYS > 0) {
   }
 }
 
-// ── 5. Estado final ─────────────────────────────────────────────────────────
+// ── 6. Estado final ─────────────────────────────────────────────────────────
 
 const finalDrawers = db.prepare("SELECT COUNT(*) c FROM memory_drawers").get().c
 const finalNodes   = db.prepare("SELECT COUNT(*) c FROM palace_nodes").get().c

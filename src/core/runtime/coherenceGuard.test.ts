@@ -75,7 +75,7 @@ test("checkTurnCoherence - autonomous execution validation", async () => {
 // 2026-06-10T20:52:47 had 2 coherence rejections for this exact pattern.
 // -----------------------------------------------------------------------------
 
-import { detectRemoteClaimWithoutRemoteTool } from "./coherenceGuard.ts"
+import { detectRemoteClaimWithoutRemoteTool, isClarifyingExchange } from "./coherenceGuard.ts"
 
 test("Fix C: detectRemoteClaimWithoutRemoteTool - rejects MiniMax claim with only local list", () => {
   const reason = detectRemoteClaimWithoutRemoteTool(
@@ -136,4 +136,24 @@ test("Fix C: detectRemoteClaimWithoutRemoteTool - mixed local+remote calls: pass
     ],
   )
   assert.equal(reason, null, "when list_remote was called alongside list, the remote claim is legitimate")
+})
+
+test("isClarifyingExchange: allows short clarifying Q&A", () => {
+  assert.equal(
+    isClarifyingExchange(
+      [{ role: "user", text: "para los dos o para cual?" }],
+      "Para una sola tarea — la ventana. Te había dado dos opciones de título, no dos pendientes.",
+    ),
+    true,
+  )
+})
+
+test("isClarifyingExchange: rejects delegation disguised as clarification", () => {
+  assert.equal(
+    isClarifyingExchange(
+      [{ role: "user", text: "para los dos o para cual?" }],
+      "Ejecutalo vos en tu consola y decime cuál opción preferís.",
+    ),
+    false,
+  )
 })

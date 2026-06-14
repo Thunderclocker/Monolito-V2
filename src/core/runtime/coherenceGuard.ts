@@ -71,6 +71,40 @@ export const DEFAULT_AVAILABLE_BINS = [
 /**
  * Valida síncronamente si la respuesta propuesta contradice la información de referencia.
  */
+/**
+ * When the user asks a short clarifying question (e.g. "para los dos o para
+ * cuál?"), the assistant may legitimately answer with an explanation that
+ * ends in another clarifying question. The LLM-judge was rejecting these as
+ * "decime cuál" / "awaiting your decision" delegation patterns.
+ */
+export function isClarifyingExchange(
+  recentMessages: Array<{ role: string; text: string }> | undefined,
+  modelText: string,
+): boolean {
+  if (!recentMessages?.length || !modelText?.trim()) return false
+
+  const lastUser = [...recentMessages].reverse().find(m => m.role === "user")
+  if (!lastUser?.text?.includes("?")) return false
+
+  const userText = lastUser.text.trim()
+  const assistantText = modelText.trim()
+
+  const userClarifying =
+    userText.length <= 200 ||
+    /\b(para cu[aá]l|para los dos|cu[aá]l de|cu[aá]les|which one|what do you mean|a qu[eé] te refer|te refer[ií]s|los dos o|o para cu[aá]l)\b/i.test(userText)
+  if (!userClarifying) return false
+
+  const delegatesWork =
+    /\b(ejecutalo vos|run it yourself|en tu consola|en tu terminal|ssh\s+-i|decime cu[aá]l opci[oó]n prefer|awaiting your decision|espero tu decisi[oó]n)\b/i.test(assistantText)
+  if (delegatesWork) return false
+
+  const falseExecution =
+    /\b(envi[eé]|mand[eé]|gener[eé]|descargu[eé]|busqu[eé]|ya (?:lo )?(?:hice|mand[eé]|envi[eé]))\b/i.test(assistantText)
+  if (falseExecution) return false
+
+  return true
+}
+
 export async function checkTurnCoherence(
   rootDir: string,
   modelText: string,
@@ -86,6 +120,10 @@ export async function checkTurnCoherence(
   recentToolCalls?: RecentToolCall[]
 ): Promise<CoherenceCheckResult> {
   if (!modelText || modelText.trim().length < 15) {
+    return { coherent: true }
+  }
+
+  if (isClarifyingExchange(recentMessages, modelText)) {
     return { coherent: true }
   }
 
@@ -151,6 +189,7 @@ export async function checkTurnCoherence(
   FOUNDATIONAL RULE:
 - If the proposed response assumes conditions, procedures, facts, or environments that conflict with the constraints, realities, or explicit information detailed in the reference, the response MUST be considered INCOHERENT.
 - CONTEXT RULE: Conditional directives in the user profile (e.g. "respond only with literal description to photos", "no meta-answers", etc.) MUST only be enforced if the recent conversation in this turn actively meets that condition (e.g. the user actually sent an image). Do not reject responses that discuss memories, rules, or pets in a general memory conversation if the user is asking for it in their chat prompt.
+- CLARIFYING QUESTION EXCEPTION: If the user's last message in CONVERSACIÓN RECIENTE is itself a short clarifying question (e.g. "para los dos o para cuál?", "a qué te referís?", "which one?") and the proposed response explains context or disambiguates without delegating technical work to the user, mark it as COHERENT even if the response ends with a question. This is NOT delegation — it is conversational clarification within an ongoing thread.
 - AUTONOMY AND EXECUTION RULE: The Monolito assistant has access to very powerful local tools (Bash terminal, file read/write tools, background task delegation, web search, vision, etc.). Therefore, it is a direct INCOHERENCE and lack of autonomy if the proposed response delegates, transfers, or asks the user to run commands on their own console, execute test scripts on their personal terminal, or perform technical/manual diagnostic tasks on their local operating system that the assistant itself should be able to orchestrate via its own tools. If the response contains requests of this type, you MUST mark it as INCOHERENT.
 - TOOL EXECUTION GROUND TRUTH: If the proposed response claims that the assistant "envió", "mandó", "generó", "descargó", "buscó" or otherwise performed an action (e.g. "envié las imágenes de Bulma", "mandé la foto", "generé la imagen"), you MUST check the HERRAMIENTAS EJECUTADAS RECIENTEMENTE list. If the corresponding tool (TelegramSendPhoto, GenerateImage, DownloadFile, ImageSearch, WebSearch, etc.) appears with ok=true in that list, the claim is VALID. If the tool does NOT appear, the claim is INCOHERENT (false execution claim).
 

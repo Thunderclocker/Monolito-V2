@@ -76,6 +76,9 @@ test("evaluateTopLevelRalphGate: blocks when there are pending tasks", () => {
     "save identity, preferences, and VPS facts",
     1,
     "ahí va, pará, me mandé una macana",
+    [],
+    [],
+    new Set(["task-2", "task-3"]),
   )
 
   assert.equal(result.blocked, true, "Gate must block when pending/in_progress tasks exist")
@@ -309,6 +312,37 @@ test("evaluateTopLevelRalphGate: ignores tasks with category 'life'", () => {
   )
 
   assert.equal(result.blocked, false, "Gate must not block on life tasks")
+})
+
+test("evaluateTopLevelRalphGate: ignores mid-turn cognitive tasks when preExistingTaskIds is set", () => {
+  const sessionId = "ralph-midturn-tasks"
+  const profileId = "default"
+  clearActiveTasks(sessionId)
+
+  // Task created mid-turn by the agent (not in the turn-start snapshot)
+  writeSessionTask(sharedRoot, sessionId, "task-midturn", {
+    id: "task-midturn",
+    sessionId,
+    content: "Clarify title scope with user",
+    activeForm: "Clarifying title scope",
+    status: "pending",
+    category: "cognitive",
+    createdAt: "2026-06-14T19:41:00.000Z",
+    updatedAt: "2026-06-14T19:41:00.000Z",
+  } as SessionTask, profileId)
+
+  const result = evaluateTopLevelRalphGate(
+    sharedRoot, sessionId, profileId,
+    "para los dos o para cual?",
+    1,
+    "Para una sola tarea — la ventana. Te había dado dos opciones de título.",
+    [],
+    [],
+    new Set(), // no pre-existing tasks at turn start
+  )
+
+  assert.equal(result.blocked, false, "Gate must not block on tasks created mid-turn")
+  assert.equal(result.feedbackPrompt, null)
 })
 
 

@@ -940,6 +940,7 @@ export async function* runAgentLoop(
     contextExtras?: ContextExtras
     turnStartedAt?: number
     reasoningLevelOverride?: ReasoningLevel
+    skipCoherenceGuard?: boolean
   },
 ): AsyncGenerator<AgentLoopEvent, AssistantTurnResult> {
   const logger = getLogger(context, options?.logger)
@@ -1261,6 +1262,7 @@ Considera esta estrategia de solución.`
         }
 
         // --- COHERENCE GUARD VERIFICATION ---
+        if (!options?.skipCoherenceGuard) {
         const profileId = context.profileId || "default";
         // Bug #8 (09-jun-2026): pass the live tool registry snapshot so the
         // coherence-guard judge can validate 'claims of limitation' against
@@ -1375,6 +1377,7 @@ Por favor, corregí este error de inmediato y reescribí tu respuesta respetando
           });
 
           continue;
+        }
         }
         // --- END OF COHERENCE GUARD ---
 
@@ -2018,6 +2021,7 @@ export async function runAssistantTurn(
     contextExtras?: ContextExtras
     turnStartedAt?: number
     reasoningLevelOverride?: ReasoningLevel
+    skipCoherenceGuard?: boolean
   },
 ): Promise<AssistantTurnResult> {
   let finalResult: AssistantTurnResult | null = null

@@ -70,6 +70,10 @@ export function evaluateTopLevelRalphGate(
   assistantReply: string,
   history: Array<{ attempt: number; kind: string; summary: string }> = [],
   turnSteps: any[] = [],
+  /** Task ids that were pending/in_progress when the user turn started.
+   *  Ralph only blocks on these — not on TodoWrite items the agent creates
+   *  mid-turn (which caused 3-minute loops on simple clarifying questions). */
+  preExistingTaskIds?: Set<string>,
 ): TopLevelRalphGateResult {
   const hasAttachedScreenshot = lastUserText.includes('kind="photo"') || lastUserText.includes('attachment kind="photo"')
   const tookScreenshot = turnSteps.some(s => s.type === "tool" && s.tool === "CaptureScreenshot") || hasAttachedScreenshot
@@ -115,23 +119,26 @@ export function evaluateTopLevelRalphGate(
   }
 
   const tasks = listSessionTasks(rootDir, sessionId, profileId)
-  const unfinished = tasks
+  let unfinished = tasks
     .filter(t => (t.status === "pending" || t.status === "in_progress") && t.category !== "life")
-    .map(t => ({ content: t.content, status: t.status }))
+  if (preExistingTaskIds !== undefined) {
+    unfinished = unfinished.filter(t => preExistingTaskIds.has(t.id))
+  }
+  const unfinishedSummary = unfinished.map(t => ({ content: t.content, status: t.status }))
 
-  if (unfinished.length === 0) {
+  if (unfinishedSummary.length === 0) {
     return { blocked: false, shouldRetry: false, feedbackPrompt: null, unfinished: [] }
   }
 
   const feedbackPrompt = buildRalphLoopUnfinishedTasksPrompt(
     lastUserText,
-    unfinished,
+    unfinishedSummary,
     assistantReply,
     history,
     attempt,
     TOP_LEVEL_RALPH_ESCAPE_AT,
   )
-  return { blocked: true, shouldRetry: true, feedbackPrompt, unfinished }
+  return { blocked: true, shouldRetry: true, feedbackPrompt, unfinished: unfinishedSummary }
 }
 
 /**
