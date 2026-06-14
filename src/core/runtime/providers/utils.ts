@@ -88,7 +88,29 @@ export function buildAnthropicMessages(messages: ConversationMessage[]): Message
   return result
 }
 
-export function buildOpenAiMessages(system: string, messages: ConversationMessage[]) {
+export function modelSupportsVision(provider: string, model: string): boolean {
+  const m = model.toLowerCase()
+  const p = provider.toLowerCase()
+  if (p === "anthropic" || p === "anthropic_compatible") {
+    return true
+  }
+  if (p === "openai") {
+    return m.includes("gpt-4") || m.includes("gpt-4o")
+  }
+  if (p === "ollama") {
+    return m.includes("vision") || m.includes("llava") || m.includes("moondream") || m.includes("minicpm")
+  }
+  if (p === "xai" || p === "xai-oauth") {
+    return m.includes("vision")
+  }
+  return false
+}
+
+export function buildOpenAiMessages(
+  system: string,
+  messages: ConversationMessage[],
+  options?: { supportsVision?: boolean }
+) {
   const output: Array<Record<string, unknown>> = [{ role: "system", content: system }]
   const merged = mergeConsecutiveMessages(messages)
   for (const message of merged) {
@@ -116,7 +138,7 @@ export function buildOpenAiMessages(system: string, messages: ConversationMessag
       continue
     }
     // Native multimodal: inject image base64 for user messages with photo attachments
-    if (message.role === "user") {
+    if (message.role === "user" && options?.supportsVision !== false) {
       const attachments = extractPhotoAttachments(message.content)
       const validAttachments = attachments.filter(a => existsSync(a.localPath))
       if (validAttachments.length > 0) {

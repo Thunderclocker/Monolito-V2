@@ -2042,7 +2042,11 @@ export async function runBackgroundTextTask(
 ): Promise<{ text: string; usage?: TurnUsage }> {
   const config = { ...getEffectiveModelConfig() }
   const prompt = { system, bootBlock: "" }
-  const messages: ConversationMessage[] = [{ role: "user", content: userPrompt }]
+  const cleanUserPrompt = userPrompt.replace(
+    /<attachment\s+kind="photo"[^>]*\blocal_path="([^"]+)"[^>]*\/?\s*>/gi,
+    (_, path) => `[Photo Attachment: ${path}]`
+  )
+  const messages: ConversationMessage[] = [{ role: "user", content: cleanUserPrompt }]
   const events = callProviderWithRetry(
     { ...config, model: options?.model?.trim() || config.model },
     prompt,

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import { parseDirective } from "../directiveParser.ts"
 import type { ConversationMessage, ProviderConfig, ProviderResponse } from "./types.ts"
 import { parseStructuredToolCalls } from "./types.ts"
-import { buildOpenAiMessages, buildToolDefinitions, callJsonApi } from "./utils.ts"
+import { buildOpenAiMessages, buildToolDefinitions, callJsonApi, modelSupportsVision } from "./utils.ts"
 
 export async function callOpenAiCompatibleApi(
   config: ProviderConfig,
@@ -31,7 +31,9 @@ export async function callOpenAiCompatibleApi(
     headers,
     body: JSON.stringify({
       model: config.model,
-      messages: buildOpenAiMessages(system, messages),
+      messages: buildOpenAiMessages(system, messages, {
+        supportsVision: modelSupportsVision(config.provider, config.model)
+      }),
       tools: buildToolDefinitions(
         isSubAgent,
         messages.slice().reverse().find(m => m.role === "user")?.content || "",
