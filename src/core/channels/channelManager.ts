@@ -25,7 +25,7 @@ const pendingTelegramInputs = new Map<number, { kind: "channels-token" | "channe
  * is the FAST path — the user can click Allow/Deny in Telegram and the
  * agent unblocks within seconds instead of 60s.
  */
-const pendingTelegramPermissions = new Map<number, { sessionId: string; permissionId: string; tool: string; path: string; reason: string }>()
+const pendingTelegramPermissions = new Map<number, { sessionId: string; permissionId: string; tool: string; path: string; reason: string; messageId?: number }>()
 
 
 const TELEGRAM_BOT_COMMANDS = [
@@ -709,6 +709,31 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
     // before — this only kicks in for sessions whose sessionId starts
     // with "telegram-".
     const unsubscribePermissions = runtime.onEvent((event) => {
+      if (event.type === "permission.resolved") {
+        for (const [chatId, pending] of pendingTelegramPermissions.entries()) {
+          if (pending.permissionId === event.permissionId) {
+            pendingTelegramPermissions.delete(chatId)
+            if (pending.messageId) {
+              const label = event.decision === "allow" ? "✅ Allowed" : (event.decision === "ask" ? "✅ Allowed Once" : "❌ Denied")
+              const isDestructive = pending.reason.includes("contains destructive commands") || pending.tool === "Bash"
+              const confirmation = isDestructive
+                ? `⚠️ **Destructive Action ${label}**\n\nTool: \`${pending.tool}\`\nAction: \`${pending.path}\`\n\nThe agent will ${event.decision === "deny" ? "be denied execution" : "proceed"}.`
+                : `🔐 **Permission ${label}**\n\nTool: \`${pending.tool}\`\nPath: \`${pending.path}\`\n\nThe agent will ${event.decision === "deny" ? "be denied access" : "proceed"}.`
+              
+              void editTelegramMenu(
+                telegram.token!,
+                chatId,
+                pending.messageId,
+                confirmation,
+                [],
+              ).catch(() => {})
+            }
+            break
+          }
+        }
+        return
+      }
+
       if (event.type !== "permission.request" && event.type !== "destructive.confirm") return
       const isDestructive = event.type === "destructive.confirm"
       // event is narrowed to permission.request or destructive.confirm
@@ -756,9 +781,18 @@ export function startChannels(runtime: MonolitoV2Runtime, options?: { onRestartR
           { text: "❌ Deny", callback_data: `perm:${permissionId}:deny` },
         ],
       ]
-      void sendTelegramMenu(telegram.token!, chatId, text, buttons).catch((err) => {
-        logger.warn(`Failed to send Telegram permission prompt: ${err instanceof Error ? err.message : String(err)}`)
-      })
+      void sendTelegramMenu(telegram.token!, chatId, text, buttons)
+        .then((msg: any) => {
+          if (msg && msg.message_id) {
+            const entry = pendingTelegramPermissions.get(chatId)
+            if (entry && entry.permissionId === permissionId) {
+              entry.messageId = msg.message_id
+            }
+          }
+        })
+        .catch((err) => {
+          logger.warn(`Failed to send Telegram permission prompt: ${err instanceof Error ? err.message : String(err)}`)
+        })
     })
     // Store the unsubscribe so stopChannels can clean up.
     const previousUnregister = activeDeliveryUnregister

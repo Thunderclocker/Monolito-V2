@@ -337,7 +337,7 @@ export type ToolContext = {
   runtime?: {
     getSystemStatus?: () => Promise<unknown>
     gracefulRestart?: (reason?: string) => void
-    registerPendingPermission?: (permissionId: string, resolve: (decision: "allow" | "deny" | "ask") => void) => void
+    registerPendingPermission?: (permissionId: string, sessionId: string, resolve: (decision: "allow" | "deny" | "ask") => void) => void
     emit?: (event: any) => void
     hasAdultMode?: (sessionId: string) => boolean
   }

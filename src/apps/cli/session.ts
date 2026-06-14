@@ -665,6 +665,14 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       return
     }
 
+    if (event.type === "permission.resolved") {
+      if (composer.permissionPrompt && composer.permissionPrompt.permissionId === event.permissionId) {
+        composer.permissionPrompt = null
+        redraw()
+      }
+      return
+    }
+
     // Start thinking animation when the LLM starts generating. Without
     // this, Telegram-originated turns (where the user is NOT typing into
     // the CLI directly, so the onInputData path that sets thinkingVisible
@@ -1515,19 +1523,16 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
         
         if (char === "a" || char === "y") {
           composer.permissionPrompt = null
-          composer.busy = false
           void client.respondPermission(activeSessionId, prompt.permissionId, "ask")
           redraw()
           break
         } else if (char === "s") {
           composer.permissionPrompt = null
-          composer.busy = false
           void client.respondPermission(activeSessionId, prompt.permissionId, "allow")
           redraw()
           break
         } else if (char === "d" || char === "n" || char === "\u0003") {
           composer.permissionPrompt = null
-          composer.busy = false
           void client.respondPermission(activeSessionId, prompt.permissionId, "deny")
           redraw()
           break

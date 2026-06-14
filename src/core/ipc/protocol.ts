@@ -47,6 +47,7 @@ export type AgentEvent =
   | { type: "agent.background.completed"; sessionId: string; agentId: string; status: "completed" | "failed" | "killed"; result?: string; error?: string }
   | { type: "permission.request"; sessionId: string; permissionId: string; tool: string; path: string; reason: string }
   | { type: "destructive.confirm"; sessionId: string; confirmId: string; tool: string; command: string; reason: string }
+  | { type: "permission.resolved"; sessionId: string; permissionId: string; decision: "allow" | "deny" | "ask" }
   | {
       type: "todo.updated"
       sessionId: string

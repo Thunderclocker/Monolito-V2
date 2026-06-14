@@ -944,7 +944,7 @@ export class MonolitoV2Runtime {
   private _lastMemoryConsolidationFailureAt = 0
   private costState = createCostState()
   private adultModeDisabledSessions = new Set<string>()
-  private pendingPermissions = new Map<string, { resolve: (decision: "allow" | "deny" | "ask") => void }>()
+  private pendingPermissions = new Map<string, { resolve: (decision: "allow" | "deny" | "ask") => void; sessionId: string }>()
   private bufferedScreenshotPaths = new Map<string, string>()
   private activeAudioProcess: ChildProcess | null = null
 
@@ -952,8 +952,8 @@ export class MonolitoV2Runtime {
     this.bufferedScreenshotPaths.set(sessionId, path)
   }
 
-  public registerPendingPermission(permissionId: string, resolve: (decision: "allow" | "deny" | "ask") => void) {
-    this.pendingPermissions.set(permissionId, { resolve })
+  public registerPendingPermission(permissionId: string, sessionId: string, resolve: (decision: "allow" | "deny" | "ask") => void) {
+    this.pendingPermissions.set(permissionId, { resolve, sessionId })
   }
 
   public resolvePendingPermission(permissionId: string, decision: "allow" | "deny" | "ask") {
@@ -961,6 +961,12 @@ export class MonolitoV2Runtime {
     if (pending) {
       pending.resolve(decision)
       this.pendingPermissions.delete(permissionId)
+      this.emit({
+        type: "permission.resolved",
+        sessionId: pending.sessionId,
+        permissionId,
+        decision,
+      })
       return true
     }
     return false
@@ -2484,7 +2490,7 @@ Rules:
         let timeoutHandle: NodeJS.Timeout | null = null
         const decisionPromise = new Promise<"allow" | "deny" | "ask">((resolvePromise) => {
           resolveDecision = resolvePromise
-          this.registerPendingPermission(confirmId, resolvePromise)
+          this.registerPendingPermission(confirmId, sessionId, resolvePromise)
         })
 
         const commandStr = normalizedInput.command as string || JSON.stringify(normalizedInput)

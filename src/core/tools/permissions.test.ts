@@ -10,7 +10,7 @@ process.env.MONOLITO_ROOT = testMonolitoRoot
 
 // Dynamically import the core modules so they pick up the environment variable
 const { resolveWorkspacePath } = await import("./registry.ts")
-const { checkToolPermission, isDestructiveAction } = await import("../runtime/permissions.ts")
+const { checkToolPermission, isDestructiveAction, _setTestExistsSync } = await import("../runtime/permissions.ts")
 
 after(() => {
   rmSync(testMonolitoRoot, { recursive: true, force: true })
@@ -75,6 +75,7 @@ test("isDestructiveAction allows safe read-only commands", () => {
 
 test("checkToolPermission returns ask for destructive Bash commands when otherwise allowed", async () => {
   const rootDir = mkdtempSync(join(tmpdir(), "monolito-test-policy-"))
+  _setTestExistsSync(() => false)
   try {
     const context = {
       rootDir,
@@ -85,6 +86,55 @@ test("checkToolPermission returns ask for destructive Bash commands when otherwi
     assert.equal(res.behavior, "ask")
     assert.equal(res.source, "destructive_guard")
   } finally {
+    const { existsSync } = await import("node:fs")
+    _setTestExistsSync(existsSync)
     rmSync(rootDir, { recursive: true, force: true })
   }
+})
+
+test("checkToolPermission bypasses destructive guard when Sudo Mode is active", async () => {
+  const rootDir = mkdtempSync(join(tmpdir(), "monolito-test-policy-"))
+  _setTestExistsSync((path: string) => path === "/etc/sudoers.d/monolito-temp")
+  try {
+    const context = {
+      rootDir,
+      sessionId: "test-session-1",
+    }
+    // With Sudo Mode active, destructive command should bypass destructive_guard and return allow
+    const res = await checkToolPermission("Bash", { command: "rm -rf /tmp/foo" }, context)
+    assert.equal(res.behavior, "allow")
+  } finally {
+    const { existsSync } = await import("node:fs")
+    _setTestExistsSync(existsSync)
+    rmSync(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("MonolitoV2Runtime emits permission.resolved event on resolvePendingPermission", async () => {
+  const { MonolitoV2Runtime } = await import("../runtime/runtime.ts")
+  const { ensureSession } = await import("../session/store.ts")
+  
+  // Create the session in the test DB first to satisfy the foreign key constraint on events table
+  ensureSession(testMonolitoRoot, "test-session-id", "Test Session")
+  
+  const runtime = new MonolitoV2Runtime(testMonolitoRoot)
+  
+  let receivedEvent: any = null
+  runtime.onEvent((event) => {
+    receivedEvent = event
+  })
+  
+  let resolvedDecision: any = null
+  runtime.registerPendingPermission("test-perm-id", "test-session-id", (decision) => {
+    resolvedDecision = decision
+  })
+  
+  const resolved = runtime.resolvePendingPermission("test-perm-id", "allow")
+  assert.equal(resolved, true)
+  assert.equal(resolvedDecision, "allow")
+  assert.ok(receivedEvent)
+  assert.equal(receivedEvent.type, "permission.resolved")
+  assert.equal(receivedEvent.permissionId, "test-perm-id")
+  assert.equal(receivedEvent.decision, "allow")
+  assert.equal(receivedEvent.sessionId, "test-session-id")
 })
