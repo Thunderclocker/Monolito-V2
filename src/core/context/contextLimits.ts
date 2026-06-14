@@ -10,6 +10,13 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "grok": 131_072,
   "kimi": 200_000,
   "minimax": 128_000,
+  // Local models (VRAM-safe limits for local runners like Ollama/llama.cpp)
+  "qwen": 16_384,
+  "llama": 16_384,
+  "gemma": 16_384,
+  "mistral": 16_384,
+  "phi": 16_384,
+  "deepseek": 16_384,
   // fallback
   "default": 128_000,
 };

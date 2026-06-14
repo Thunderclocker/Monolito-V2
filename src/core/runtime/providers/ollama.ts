@@ -1,6 +1,7 @@
 import type { ConversationMessage, ProviderConfig, ProviderResponse } from "./types.ts"
 import { parseStructuredToolCalls } from "./types.ts"
 import { buildOpenAiMessages, buildToolDefinitions, callJsonApi } from "./utils.ts"
+import { getContextBudget } from "../../context/contextLimits.ts"
 
 export async function callOllamaApi(
   config: ProviderConfig,
@@ -10,6 +11,7 @@ export async function callOllamaApi(
   isSubAgent: boolean,
   allowedToolNames?: string[],
 ): Promise<ProviderResponse> {
+  const budget = getContextBudget(config.model)
   const data = await callJsonApi(`${config.baseUrl}/api/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -22,6 +24,9 @@ export async function callOllamaApi(
         messages.slice().reverse().find(m => m.role === "user")?.content || "",
         allowedToolNames
       ).map(tool => ({ type: tool.type, function: tool.function })),
+      options: {
+        num_ctx: budget.windowTokens,
+      },
     }),
     signal: abortSignal,
   })
