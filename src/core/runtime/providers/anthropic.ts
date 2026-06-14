@@ -19,6 +19,7 @@ function sanitizeAnthropicBaseUrl(baseUrl: string) {
 export async function callAnthropicApi(
   config: ProviderConfig,
   system: string,
+  memoryBlock: string,
   bootBlock: string,
   messages: ConversationMessage[],
   abortSignal: AbortSignal | undefined,
@@ -50,7 +51,8 @@ export async function callAnthropicApi(
     max_tokens: activeMaxTokens,
     stream: true,
     system: [
-      { type: "text", text: system, cache_control: { type: "ephemeral" } },
+      { type: "text" as const, text: system, cache_control: { type: "ephemeral" as const } },
+      ...(memoryBlock ? [{ type: "text" as const, text: memoryBlock, cache_control: { type: "ephemeral" as const } }] : []),
       ...(bootBlock ? [{ type: "text" as const, text: bootBlock }] : []),
     ],
     messages: buildAnthropicMessages(messages),

@@ -32,6 +32,11 @@ BOOT wings are the deterministic identity and rule set of the runtime.
 They live in the `BOOT_WING` namespace of `palace_nodes` and are the
 first thing the model sees on every turn.
 
+**File backend (default since Jun 2026):** boot content also lives as
+`$MONOLITO_ROOT/memory/boot/*.md` plus `memory.md`. These files are
+full-loaded into the cached system prompt each turn. See
+[`memory-files-redesign.md`](./memory-files-redesign.md).
+
 Allowed wings (enforced at the tool registry layer — see
 [`src/core/bootstrap/bootWings.ts`](../src/core/bootstrap/bootWings.ts)):
 

@@ -15,7 +15,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { listSessionTasks, writeSessionTask, getDb } from "../session/store.ts"
 import type { SessionTask } from "../session/store.ts"
-import { evaluateTopLevelRalphGate, isScreenViewingRequest } from "./topLevelRalphGate.ts"
+import { evaluateTopLevelRalphGate, isScreenViewingRequest, isSecurityAuditRequest } from "./topLevelRalphGate.ts"
 
 // All tests share a single rootDir because `getPaths` is anchored to
 // MONOLITO_ROOT (a module-level constant) — every test would otherwise
@@ -345,4 +345,25 @@ test("evaluateTopLevelRalphGate: ignores mid-turn cognitive tasks when preExisti
   assert.equal(result.feedbackPrompt, null)
 })
 
+test("isSecurityAuditRequest detects PC security questions", () => {
+  assert.equal(isSecurityAuditRequest("che que tan segura es mi pc"), true)
+  assert.equal(isSecurityAuditRequest("auditá mi pc"), true)
+  assert.equal(isSecurityAuditRequest("como estas"), false)
+})
+
+test("evaluateTopLevelRalphGate blocks security audit without tools", () => {
+  const result = evaluateTopLevelRalphGate(
+    sharedRoot,
+    "orchestrator",
+    "default",
+    "che que tan segura es mi pc",
+    1,
+    "¿Querés que la audite?",
+    [],
+    [],
+    new Set(),
+  )
+  assert.equal(result.blocked, true)
+  assert.match(result.feedbackPrompt ?? "", /Bash|system_status/i)
+})
 

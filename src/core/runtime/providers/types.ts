@@ -30,6 +30,8 @@ export type ProviderConfig = {
 
 export type PromptBlocks = {
   system: string
+  /** Cached boot + memory.md block (markdown memory backend). */
+  memoryBlock: string
   bootBlock: string
   allowedToolNames?: string[]
 }

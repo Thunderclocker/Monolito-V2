@@ -34,6 +34,19 @@ export type TopLevelRalphGateResult = {
 export const TOP_LEVEL_RALPH_MAX_ATTEMPTS = 20
 export const TOP_LEVEL_RALPH_ESCAPE_AT = 15
 
+export function isSecurityAuditRequest(text: string): boolean {
+  if (!text) return false
+  const normalized = text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+
+  const pcSecurity =
+    /\b(que tan segura|how secure|seguridad de mi pc|seguridad de la pc|seguridad de mi maquina|seguridad del sistema|audit(a|ar|ame)?\s+(mi\s+)?(pc|maquina|sistema|equipo)|auditoria\s+(de\s+)?(seguridad|sistema|pc|red)|revisa(r)?\s+(la\s+)?seguridad)\b/.test(normalized)
+  const hasPcContext = /\b(pc|maquina|equipo|sistema|servidor local|mi compu)\b/.test(normalized)
+  return pcSecurity || (hasPcContext && /\b(segura|seguro|seguridad|puertos|firewall|ufw|vulnerab)\b/.test(normalized))
+}
+
 export function isScreenViewingRequest(text: string): boolean {
   if (!text) return false
   const normalized = text
@@ -110,6 +123,26 @@ export function evaluateTopLevelRalphGate(
       shouldRetry: true,
       feedbackPrompt,
       unfinished: [{ content: "Analizar la captura de pantalla con VisionAnalyze", status: "pending" }],
+    }
+  }
+
+  // Rule 3: Security / PC audit — must run tools before answering
+  const ranAuditTool = turnSteps.some(
+    s => s.type === "tool" && (s.tool === "Bash" || s.tool === "system_status" || s.tool === "SystemStatus"),
+  )
+  if (isSecurityAuditRequest(lastUserText) && !ranAuditTool) {
+    const feedbackPrompt = wrapAuditFeedback(
+      `[Ralph Loop] ALERTA DE COMPORTAMIENTO\n` +
+      `El usuario pidió una auditoría o evaluación de seguridad de su PC/sistema ("${lastUserText}").\n` +
+      `Por regla del sistema debes ejecutar herramientas (Bash: ss -tulnp, ufw status, apt list --upgradable, etc.; o system_status) ANTES de responder.\n` +
+      `No preguntes si quiere auditar — auditá directamente con evidencia.\n` +
+      `Corrige esto: ejecuta las herramientas de diagnóstico ahora y responde con los resultados.`
+    )
+    return {
+      blocked: true,
+      shouldRetry: true,
+      feedbackPrompt,
+      unfinished: [{ content: "Auditar seguridad del sistema con Bash/system_status", status: "pending" }],
     }
   }
 

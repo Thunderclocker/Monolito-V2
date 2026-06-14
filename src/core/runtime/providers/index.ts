@@ -22,12 +22,14 @@ export async function callProvider(
   }
 
   if (activeConfig.provider === "anthropic_compatible" || activeConfig.provider === "minimax") {
-    return await callAnthropicApi(activeConfig, prompt.system, prompt.bootBlock, messages, abortSignal, maxTokens, isSubAgent, prompt.allowedToolNames, thinkingConfig)
+    return await callAnthropicApi(activeConfig, prompt.system, prompt.memoryBlock, prompt.bootBlock, messages, abortSignal, maxTokens, isSubAgent, prompt.allowedToolNames, thinkingConfig)
   }
   if (activeConfig.provider === "ollama") {
-    return await callOllamaApi(activeConfig, prompt.system, messages, abortSignal, isSubAgent, prompt.allowedToolNames)
+    const mergedSystem = [prompt.system, prompt.memoryBlock].filter(Boolean).join("\n\n")
+    return await callOllamaApi(activeConfig, mergedSystem, messages, abortSignal, isSubAgent, prompt.allowedToolNames)
   }
+  const mergedSystem = [prompt.system, prompt.memoryBlock].filter(Boolean).join("\n\n")
   // Both "xai" and other OpenAI compatible endpoints are routed here
-  return await callOpenAiCompatibleApi(activeConfig, prompt.system, messages, abortSignal, maxTokens, isSubAgent, prompt.allowedToolNames, thinkingConfig)
+  return await callOpenAiCompatibleApi(activeConfig, mergedSystem, messages, abortSignal, maxTokens, isSubAgent, prompt.allowedToolNames, thinkingConfig)
 }
 

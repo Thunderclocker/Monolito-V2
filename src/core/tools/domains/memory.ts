@@ -29,6 +29,7 @@ import {
   queryGraphEntity,
   readBootWing,
   recallMemory,
+  getSemanticMessageContext,
   upsertMemoryDrawer,
   writeBootWing,
 } from "../../session/store.ts"
@@ -44,7 +45,7 @@ export const memoryTools: ToolDefinition[] = [
 {
   name: "BootRead",
   permissionTier: "read",
-  description: "Read a deterministic or dynamically created BOOT wing from SQLite without relying on legacy workspace files.",
+  description: "Read a BOOT wing from memory/boot/*.md (or memory.md for BOOT_MEMORY).",
   inputSchema: {
     type: "object",
     properties: {
@@ -73,7 +74,7 @@ export const memoryTools: ToolDefinition[] = [
 {
   name: "BootListWings",
   permissionTier: "read",
-  description: "List BOOT wings currently registered in SQLite for the active profile. Run this before BootCreateWing or BootWrite when choosing a wing.",
+  description: "List BOOT wings registered in memory/boot/*.md for the active profile.",
   inputSchema: emptyInputSchema,
   concurrencySafe: true,
   async run(_input, context) {
@@ -130,7 +131,7 @@ export const memoryTools: ToolDefinition[] = [
 {
   name: "BootWrite",
   permissionTier: "edit",
-  description: "Replace or append to the content of an existing BOOT wing in SQLite. Use BootListWings first; if the wing does not exist, create it with BootCreateWing before writing. WARNING: Use ONLY for core, permanent identity rules. For episodic memories, temporary data, or conversational facts, use WorkspaceMemoryFiling instead.",
+  description: "Replace or append to a BOOT wing in memory/boot/*.md (or memory.md for BOOT_MEMORY). Use BootListWings first.",
   inputSchema: {
     type: "object",
     properties: {
@@ -163,7 +164,7 @@ export const memoryTools: ToolDefinition[] = [
 {
   name: "WorkspaceMemoryFiling",
   permissionTier: "edit",
-  description: "Store facts, decisions, or snippets in the SQLite Memory Palace. Use wing='SHARED' for team-wide memory visible to every profile. Use wing='session_preferences' with room=sessionId and key='pref_silent_research' (content='true'/'false') to dynamically toggle silent background updates for this session.",
+  description: "Store facts in memory.md as a ## section (curated digest). Use wing='SHARED' for team-wide memory. Sections are always loaded for the main agent.",
   inputSchema: {
     type: "object",
     properties: {
@@ -191,7 +192,7 @@ export const memoryTools: ToolDefinition[] = [
 {
   name: "WorkspaceMemoryRecall",
   permissionTier: "read",
-  description: "Recall memories from the SQLite Memory Palace. Results are limited to the current profile plus global SHARED memories. Calls without filters still respect that isolation.",
+  description: "Search memory.md sections by keyword. Main agent already has memory.md loaded; use this for targeted section lookup or archive search.",
   inputSchema: {
     type: "object",
     properties: {
@@ -325,6 +326,42 @@ export const memoryTools: ToolDefinition[] = [
       profileId,
       entity,
       facts,
+    }
+  },
+},
+
+{
+  name: "SearchHistory",
+  aliases: ["search_history"],
+  permissionTier: "read",
+  description: "Search prior chat messages by keyword (FTS over session history). Returns matching turns with context. Use when the user asks about something from an older conversation not in memory.md.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "Keywords to search in message history." },
+      limit: { type: "number", description: "Max results (default 8)." },
+    },
+    required: ["query"],
+    additionalProperties: false,
+  },
+  concurrencySafe: true,
+  async run(input, context) {
+    const query = requireString(input, "query")
+    const limit = typeof input.limit === "number" ? Math.min(20, Math.max(1, input.limit)) : 8
+    try {
+      const rows = getSemanticMessageContext(context.rootDir, query, limit)
+      return {
+        query,
+        count: rows.length,
+        matches: rows.map(r => ({
+          session_id: r.session_id,
+          role: r.role,
+          at: r.at,
+          text: r.text.length > 1200 ? `${r.text.slice(0, 1200)}...` : r.text,
+        })),
+      }
+    } catch (error) {
+      return formatToolError(error)
     }
   },
 },

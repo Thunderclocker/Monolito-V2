@@ -10,7 +10,8 @@ import { AbortError, ApiError, ContextOverflowError, HttpError, ProviderOverload
 import { createLogger, type Logger } from "../logging/logger.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider, getDefaultReasoningLevel, type ReasoningLevel } from "./modelRegistry.ts"
-import { compactSession, fileMemory, getSession, getRawMessagesForSession, getDb, readSessionSources, tailEvents, listSessionTasks, appendWorklog, saveResolvedError, querySimilarErrors, deleteMessages, rewriteMessageInPlace } from "../session/store.ts"
+import { compactSession, fileMemory, getSession, getRawMessagesForSession, getDb, readSessionSources, tailEvents, listSessionTasks, appendWorklog, saveResolvedError, querySimilarErrors, deleteMessages, rewriteMessageInPlace, loadCachedMemoryContext } from "../session/store.ts"
+import { isMarkdownMemoryBackend } from "../storage/index.ts"
 import type { RecentToolCall } from "./coherenceGuard.ts"
 import { wrapAuditFeedback } from "./auditFeedback.ts"
 import { incrementalFlushSession, getContextFlushThresholdChars } from "../context/incrementalFlush.ts"
@@ -532,7 +533,7 @@ function buildSystemPrompt(args: {
   allowedToolNames?: string[]
   recalledProfileFacts?: string[]
 }) {
-  if (args.systemPromptOverride?.trim()) return { system: args.systemPromptOverride.trim(), bootBlock: "" }
+  if (args.systemPromptOverride?.trim()) return { system: args.systemPromptOverride.trim(), memoryBlock: "", bootBlock: "" }
   const bootstrap = args.bootstrap ?? args.extras?.workspaceContext
   const lastUserMessage = getLastUserMessage(args.session)
   const isSubAgent = args.session.id.startsWith("agent-")
@@ -640,7 +641,7 @@ function buildSystemPrompt(args: {
         ].join("\n"),
     "Available tools:",
     buildToolSummary(isSubAgent, blockedTools, args.allowedToolNames, args.rootDir, exposeTelegramDownload),
-    bootstrap ? describeBootEntries(bootstrap.entries) : "",
+    bootstrap && !isMarkdownMemoryBackend(args.rootDir) ? describeBootEntries(bootstrap.entries) : "",
     isSubAgent ? "" : [
       "<JERARQUIA_DE_DIRECTIVAS>",
       "In case of conflicting instructions, you MUST respect this priority order:",
@@ -777,7 +778,7 @@ function buildSystemPrompt(args: {
     // Silent fail
   }
 
-  if (args.recalledProfileFacts && args.recalledProfileFacts.length > 0) {
+  if (args.recalledProfileFacts && args.recalledProfileFacts.length > 0 && !isMarkdownMemoryBackend(args.rootDir)) {
     dynamicContext.push([
       "### Relevant Personal Profile Facts (Retrieved Semantically)",
       "The following facts from your long-term profile memory are highly relevant to the current user's request:",
@@ -785,8 +786,13 @@ function buildSystemPrompt(args: {
     ].join("\n"))
   }
 
+  const memoryBlock = isMarkdownMemoryBackend(args.rootDir)
+    ? (loadCachedMemoryContext(args.rootDir) ?? "")
+    : ""
+
   return {
     system: staticSystem,
+    memoryBlock,
     bootBlock: dynamicContext.join("\n\n"),
     allowedToolNames: args.allowedToolNames,
   }
@@ -989,7 +995,7 @@ export async function* runAgentLoop(
 
 
   let recalledProfileFacts: string[] = []
-  if (lastUserText && lastUserText.trim().length >= 15) {
+  if (lastUserText && lastUserText.trim().length >= 15 && !isMarkdownMemoryBackend(rootDir)) {
     try {
       const { recallProfileFacts } = await import("../session/store.ts")
       recalledProfileFacts = await recallProfileFacts(rootDir, lastUserText, context.profileId ?? "default")
@@ -2045,7 +2051,7 @@ export async function runBackgroundTextTask(
   options?: { model?: string; maxTokens?: number; abortSignal?: AbortSignal; logger?: Logger },
 ): Promise<{ text: string; usage?: TurnUsage }> {
   const config = { ...getEffectiveModelConfig() }
-  const prompt = { system, bootBlock: "" }
+  const prompt = { system, memoryBlock: "", bootBlock: "" }
   const cleanUserPrompt = userPrompt.replace(
     /<attachment\s+kind="photo"[^>]*\blocal_path="([^"]+)"[^>]*\/?\s*>/gi,
     (_, path) => `[Photo Attachment: ${path}]`

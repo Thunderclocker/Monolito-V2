@@ -38,6 +38,7 @@ import {
   upsertMutablePalaceNode,
   upsertMemoryDrawer,
 } from "../session/store.ts"
+import { isMarkdownMemoryBackend } from "../storage/index.ts"
 import { getTool, listTools, validateToolInput, type ToolContext, type ToolInputSchema } from "../tools/registry.ts"
 import { getEffectiveModelConfig, runAgentLoop, runAssistantTurn, runBackgroundTextTask, type AgentLoopEvent, type AssistantTurnResult } from "./modelAdapter.ts"
 import { getActiveProfile } from "./modelRegistry.ts"
@@ -603,7 +604,9 @@ async function prepareSemanticRagSession(rootDir: string, session: SessionRecord
     // Doble consulta RAG paralela (Historial keyword + Hechos Palace keyword)
     const [historicRows, palaceFacts] = await Promise.all([
       Promise.resolve(getSemanticMessageContext(rootDir, lastUser.text, 12)),
-      recallMemory(rootDir, undefined, undefined, lastUser.text, profileId)
+      isMarkdownMemoryBackend(rootDir)
+        ? Promise.resolve([])
+        : recallMemory(rootDir, undefined, undefined, lastUser.text, profileId),
     ])
 
     const semanticContext = formatSemanticContext(historicRows, session.id, lastUser.text)
@@ -1297,26 +1300,24 @@ export class MonolitoV2Runtime {
 
       const promptOverride = `You are MemoryAgent, the automatic memory consolidation agent of Monolito V2.
 
-Your ONLY mission: read the conversation and existing memory, then update the curated memory store with NEW or CHANGED facts.
+Your ONLY mission: read the conversation and existing memory, then maintain a curated digest in markdown files.
 
 Rules:
-1. READ the existing memory context at the top of the conversation first.
+1. READ boot/*.md and memory.md first (they are always loaded for the main agent).
 2. Identify only GENUINELY NEW or CHANGED information from the conversation — facts, preferences, tasks, decisions, identity data.
 3. If NOTHING new or changed: reply immediately with "CONSOLIDATION_OK: 0 inserts, 0 updates, 0 skips" — NO tool calls, NO new entries, NO markers.
-4. NEVER write entries that describe the consolidation run itself (e.g. "consolidation_2026_06_14_no_new_content"). That is noise.
-5. NEVER create entries like "no new content", "memory is current", "routine consolidation", etc.
-6. Tool routing for real new/changed content:
-   - User identity, timezone, pronouns, permanent preferences → BootWrite BOOT_USER (append or overwrite the relevant section)
-   - Durable facts, pending tasks, important decisions → BootWrite BOOT_MEMORY (append or overwrite)
+4. NEVER write entries that describe the consolidation run itself. That is noise.
+5. Tool routing for real new/changed content:
+   - User identity, timezone, OS, pronouns, permanent preferences → BootWrite BOOT_USER
+   - Durable system/PC facts, pending tasks, important decisions → edit memory.md (BootWrite BOOT_MEMORY or WorkspaceMemoryFiling section)
    - Behavioral rules, tone → BootWrite BOOT_SOUL
    - Agent identity → BootWrite BOOT_IDENTITY
-   - One-off session facts → WorkspaceMemoryFiling with a stable descriptive key
-7. When updating an existing BOOT wing: read it first with BootRead, then write only the updated/added section.
-8. Prefer updating BOOT_MEMORY and BOOT_USER (always-loaded, visible to the agent) over creating new drawers.
-9. One canonical entry per fact/task — if the same task exists under different keys, consolidate to ONE key and skip/delete the rest.
+6. memory.md is a DIGEST kept under ~12KB. Consolidate, deduplicate, and prune — do not only append.
+7. Use ## section headings and tags: lines in memory.md for topical organization.
+8. When updating: read first with BootRead, then write the merged result.
+9. One canonical entry per fact — consolidate duplicates into one section.
 10. Never write to BOOT_PERSONALITY.
-11. NEVER record rules as "absolute", "cannot be overridden", "non-overridable".
-12. When done, respond ONLY with: CONSOLIDATION_OK: N inserts, M updates, S skips`
+11. When done, respond ONLY with: CONSOLIDATION_OK: N inserts, M updates, S skips`
 
       const turn = await runAssistantTurn(
         syntheticSession,

@@ -23,6 +23,10 @@ import {
 } from "../config/configWings.ts"
 import { createLogger } from "../logging/logger.ts"
 import { PALACE_NAMESPACE, PALACE_SCHEMA_SQL, type PalaceContentType, type PalaceNamespace } from "../db/schema.ts"
+import {
+  createMarkdownMemoryStore,
+  isMarkdownMemoryBackend,
+} from "../storage/index.ts"
 
 let dbInstance: Database.Database | null = null
 let dbPathCache: string | null = null
@@ -781,10 +785,24 @@ export function ensureKernelSeeded(rootDir: string, profileId = "default") {
   }
 }
 
+function markdownStore(rootDir: string) {
+  return createMarkdownMemoryStore(rootDir)
+}
+
 export function ensureBootWings(rootDir: string, _profileId = "default") {
+  if (isMarkdownMemoryBackend(rootDir)) {
+    markdownStore(rootDir).ensureSeeded()
+    return
+  }
   const db = getDb(rootDir)
   // Always seed under "default" — other profiles use global fallback
   ensureKernelSeededDb(db, "default")
+}
+
+/** Full boot + memory.md block for prompt caching (markdown backend only). */
+export function loadCachedMemoryContext(rootDir: string): string | null {
+  if (!isMarkdownMemoryBackend(rootDir)) return null
+  return markdownStore(rootDir).buildCachedContextBlock()
 }
 
 export function ensureConfigWings(rootDir: string) {
@@ -922,6 +940,9 @@ export function appendActionLog(rootDir: string, action: string, details?: Recor
 
 export function listBootWings(rootDir: string, profileId = "default"): string[] {
   ensureBootWings(rootDir, profileId)
+  if (isMarkdownMemoryBackend(rootDir)) {
+    return markdownStore(rootDir).listBootWings()
+  }
   const db = getDb(rootDir)
   const profileScope = palaceProfileScope(profileId)
   const rows = db.prepare(`
@@ -945,6 +966,9 @@ export function listBootWings(rootDir: string, profileId = "default"): string[] 
 
 export function bootWingExists(rootDir: string, wing: string, profileId = "default"): boolean {
   ensureBootWings(rootDir, profileId)
+  if (isMarkdownMemoryBackend(rootDir)) {
+    return markdownStore(rootDir).bootWingExists(wing)
+  }
   const db = getDb(rootDir)
   const profileScope = palaceProfileScope(profileId)
   const row = db.prepare(`
@@ -967,6 +991,11 @@ export function createBootWing(rootDir: string, wing: string, profileId = "defau
     return { created: false, wing: normalizedWing, profile: profileId }
   }
 
+  if (isMarkdownMemoryBackend(rootDir)) {
+    markdownStore(rootDir).writeBootWing(normalizedWing, content || "")
+    return { created: true, wing: normalizedWing, profile: profileId }
+  }
+
   const db = getDb(rootDir)
   const now = new Date().toISOString()
   const result = upsertMutablePalaceNode(db, {
@@ -986,6 +1015,9 @@ export function createBootWing(rootDir: string, wing: string, profileId = "defau
 
 export function readBootWing(rootDir: string, wing: string, profileId = "default"): string | null {
   ensureBootWings(rootDir, profileId)
+  if (isMarkdownMemoryBackend(rootDir)) {
+    return markdownStore(rootDir).readBootWing(wing)
+  }
   const db = getDb(rootDir)
   const palaceContent = readLatestPalaceContent(db, {
     namespace: PALACE_NAMESPACE.boot,
@@ -1003,6 +1035,10 @@ export function writeBootWing(rootDir: string, wing: string, content: string, pr
   ensureBootWings(rootDir, profileId)
   if (!bootWingExists(rootDir, wing, profileId)) {
     throw new Error(`BOOT wing ${wing} does not exist in profile ${profileId}. Use BootCreateWing after BootListWings if you need a new wing.`)
+  }
+  if (isMarkdownMemoryBackend(rootDir)) {
+    markdownStore(rootDir).writeBootWing(wing, content, append)
+    return { changed: true, bytes: Buffer.byteLength(content, "utf8") }
   }
   const db = getDb(rootDir)
   const now = new Date().toISOString()
@@ -1581,9 +1617,6 @@ export function getSessionStats(rootDir: string, sessionId: string) {
 // --- MemPalace Memory Storage ---
 
 export async function fileMemory(rootDir: string, wing: string, room: string, content: string, profileId = "default", key?: string) {
-  const db = getDb(rootDir)
-  const id = randomUUID()
-  const now = new Date().toISOString()
   const rawWing = wing.trim()
   if (rawWing.toUpperCase().startsWith("BOOT_")) {
     throw new Error("BOOT_* wings are reserved for deterministic bootstrap state. Use BootWrite instead.")
@@ -1591,6 +1624,16 @@ export async function fileMemory(rootDir: string, wing: string, room: string, co
   if (rawWing.toUpperCase().startsWith("CONF_")) {
     throw new Error("CONF_* wings are reserved for technical configuration state. Use ConfigWrite/tool_manage_config instead.")
   }
+  if (isMarkdownMemoryBackend(rootDir)) {
+    const normalizedRoom = room.trim() || "general"
+    const sectionTitle = key?.trim() ? `${normalizedRoom} — ${key.trim()}` : normalizedRoom
+    const tags = [rawWing || "SHARED", normalizedRoom].filter(Boolean)
+    markdownStore(rootDir).upsertMemorySection(sectionTitle, content, tags)
+    return randomUUID()
+  }
+  const db = getDb(rootDir)
+  const id = randomUUID()
+  const now = new Date().toISOString()
   const normalizedWing = rawWing.length === 0 ? "PRIVATE" : rawWing.toUpperCase() === "SHARED" ? "SHARED" : rawWing
   const normalizedRoom = room.trim() || "general"
   const normalizedKey = key?.trim() || null
@@ -1628,7 +1671,6 @@ export async function upsertMemoryDrawer(
   profileId: string = "default",
   key: string | undefined,
 ): Promise<{ id: string; action: "inserted" | "updated" | "skipped" }> {
-  const db = getDb(rootDir)
   const rawWing = wing.trim()
   if (rawWing.toUpperCase().startsWith("BOOT_")) {
     throw new Error("BOOT_* wings are reserved for deterministic bootstrap state. Use BootWrite instead.")
@@ -1640,6 +1682,15 @@ export async function upsertMemoryDrawer(
   const normalizedRoom = room.trim() || "general"
   const normalizedKey = key?.trim() || null
   const storedProfileId = normalizedWing.toUpperCase() === "SHARED" ? null : profileId
+
+  if (isMarkdownMemoryBackend(rootDir)) {
+    const sectionTitle = normalizedKey ? `${normalizedRoom} — ${normalizedKey}` : normalizedRoom
+    const tags = [normalizedWing, normalizedRoom].filter(Boolean)
+    const result = markdownStore(rootDir).upsertMemorySection(sectionTitle, content, tags)
+    return { id: randomUUID(), action: result.action }
+  }
+
+  const db = getDb(rootDir)
 
   if (normalizedKey) {
     const existing = db.prepare(`
@@ -1695,6 +1746,24 @@ export async function upsertMemoryDrawer(
 }
 
 export async function recallMemory(rootDir: string, wing?: string, room?: string, query?: string, profileId?: string, key?: string) {
+  if (isMarkdownMemoryBackend(rootDir)) {
+    const store = markdownStore(rootDir)
+    const md = store.loadMemoryMd()
+    const sections = md.split(/\n(?=## )/).filter(s => s.trim().startsWith("## "))
+    const tokens = (query ?? room ?? key ?? "")
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(t => t.length >= 2)
+    const scored = sections.map(raw => {
+      const lower = raw.toLowerCase()
+      const score = tokens.length === 0 ? 1 : tokens.filter(t => lower.includes(t)).length
+      const titleMatch = raw.match(/^##\s+(.+)/)
+      const title = titleMatch?.[1]?.trim() ?? "section"
+      return { score, wing: wing ?? "SHARED", room: room ?? title, memory_key: key ?? title, content: raw.trim(), created_at: new Date().toISOString(), distance: -score }
+    }).filter(r => tokens.length === 0 || r.score > 0)
+    scored.sort((a, b) => b.score - a.score)
+    return scored.slice(0, 15)
+  }
   const db = getDb(rootDir)
   const params: any[] = []
   const conditions: string[] = [
@@ -1770,6 +1839,9 @@ export function createProfile(rootDir: string, id: string, name: string, descrip
 }
 
 export function listWings(rootDir: string, profileId?: string): string[] {
+  if (isMarkdownMemoryBackend(rootDir)) {
+    return ["SHARED", "memory"]
+  }
   const db = getDb(rootDir)
   let sql = `SELECT DISTINCT wing FROM memory_drawers WHERE wing NOT LIKE 'BOOT\\_%' ESCAPE '\\' AND wing NOT LIKE 'CONF\\_%' ESCAPE '\\'`
   if (profileId) {
@@ -1783,6 +1855,14 @@ export function listWings(rootDir: string, profileId?: string): string[] {
 }
 
 export function listRooms(rootDir: string, wing: string, profileId?: string): string[] {
+  if (isMarkdownMemoryBackend(rootDir)) {
+    const md = markdownStore(rootDir).loadMemoryMd()
+    return md
+      .split(/\n(?=## )/)
+      .filter(s => s.trim().startsWith("## "))
+      .map(s => (s.match(/^##\s+(.+)/)?.[1]?.trim() ?? ""))
+      .filter(Boolean)
+  }
   const db = getDb(rootDir)
   if (wing.trim().toUpperCase().startsWith("BOOT_")) return []
   if (wing.trim().toUpperCase().startsWith("CONF_")) return []
@@ -2044,6 +2124,8 @@ export function deleteMessages(rootDir: string, messageIds: number[]) {
  * El argumento `query` se mantiene por compatibilidad con el caller en modelAdapter.ts.
  */
 export async function recallProfileFacts(rootDir: string, _query: string, profileId = "default"): Promise<string[]> {
+  // Markdown backend: boot + memory.md are full-loaded in the cached memory block.
+  if (isMarkdownMemoryBackend(rootDir)) return []
   try {
     const results: string[] = []
     for (const wing of ["BOOT_USER", "BOOT_MEMORY", "BOOT_IDENTITY"] as const) {
