@@ -26,6 +26,8 @@ import {
   getCursor,
   incrementCounters,
   type CursorState,
+  type CursorStorage,
+  resetCursor,
 } from "./cursor.ts"
 
 const logger = createLogger("pipeline")
@@ -102,11 +104,11 @@ async function* toAsyncIter(source: string | AsyncIterable<Chunk> | Chunk[], chu
 /**
  * Run the process-and-flush pipeline.
  *
- * @param db SQLite DB instance (used for the cursor table).
+ * @param storage Cursor storage (sqlite db or file rootDir).
  * @param opts Stream config.
  */
 export async function processStream<S>(
-  db: Database.Database,
+  storage: CursorStorage,
   opts: ProcessStreamOptions<S>,
 ): Promise<PipelineResult> {
   const streamId = opts.streamId
@@ -116,12 +118,11 @@ export async function processStream<S>(
 
   // Reset if requested.
   if (opts.reset) {
-    const { resetCursor } = await import("./cursor.ts")
-    resetCursor(db, streamId)
+    resetCursor(storage, streamId)
   }
 
   // Load current cursor.
-  let cursor = getCursor(db, streamId)
+  let cursor = getCursor(storage, streamId)
   const startPosition = cursor.position
 
   let totalProcessed = 0
@@ -152,7 +153,7 @@ export async function processStream<S>(
         const result = await opts.processor(c, ctx)
         if (result === null || result === undefined) {
           // Skip silently: advance cursor, no error counted.
-          cursor = advanceCursor(db, streamId, c.index + 1)
+          cursor = advanceCursor(storage, streamId, c.index + 1)
           lastSeenPosition = cursor.position
           if (opts.onProgress) {
             opts.onProgress({
@@ -167,8 +168,8 @@ export async function processStream<S>(
           continue
         }
         await opts.sink(result, c, ctx)
-        cursor = advanceCursor(db, streamId, c.index + 1)
-        incrementCounters(db, streamId, "processed")
+        cursor = advanceCursor(storage, streamId, c.index + 1)
+        incrementCounters(storage, streamId, "processed")
         totalProcessed++
         lastSeenPosition = cursor.position
         if (opts.onProgress) {
@@ -189,8 +190,8 @@ export async function processStream<S>(
           errorName: e instanceof Error ? e.name : "Error",
           errorMessage: e instanceof Error ? e.message : String(e),
         })
-        cursor = advanceCursor(db, streamId, c.index + 1)
-        incrementCounters(db, streamId, "errors")
+        cursor = advanceCursor(storage, streamId, c.index + 1)
+        incrementCounters(storage, streamId, "errors")
         totalErrors++
         lastSeenPosition = cursor.position
       }

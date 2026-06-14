@@ -26,7 +26,13 @@ import { PALACE_NAMESPACE, PALACE_SCHEMA_SQL, type PalaceContentType, type Palac
 import {
   createMarkdownMemoryStore,
   isMarkdownMemoryBackend,
+  isFileStorageBackend,
+  getFileStorage,
 } from "../storage/index.ts"
+
+function fileStore(rootDir: string) {
+  return getFileStorage(rootDir)
+}
 
 let dbInstance: Database.Database | null = null
 let dbPathCache: string | null = null
@@ -320,6 +326,10 @@ export function writeSessionSource(
   content: string,
   profileId: string = "default",
 ) {
+  if (isFileStorageBackend(rootDir)) {
+    fileStore(rootDir).writeSessionSource(sessionId, sourceKey, content)
+    return
+  }
   const db = getDb(rootDir)
   const now = new Date().toISOString()
   upsertMutablePalaceNode(db, {
@@ -339,6 +349,9 @@ export function readSessionSources(
   sessionId: string,
   profileId: string = "default",
 ): Array<{ key: string; content: string }> {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).readSessionSources(sessionId)
+  }
   const db = getDb(rootDir)
   const profileScope = palaceProfileScope(profileId)
   return db
@@ -382,6 +395,10 @@ export function writeSessionTask(
   task: SessionTask,
   profileId: string = "default",
 ) {
+  if (isFileStorageBackend(rootDir)) {
+    fileStore(rootDir).writeSessionTask(sessionId, taskId, task)
+    return
+  }
   const db = getDb(rootDir)
   const now = new Date().toISOString()
   upsertMutablePalaceNode(db, {
@@ -401,6 +418,9 @@ export function listSessionTasks(
   sessionId: string,
   profileId: string = "default",
 ): SessionTask[] {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).listSessionTasks(sessionId)
+  }
   const db = getDb(rootDir)
   const profileScope = palaceProfileScope(profileId)
   const rows = db
@@ -433,6 +453,10 @@ export function deleteSessionTask(
   taskId: string,
   profileId: string = "default",
 ) {
+  if (isFileStorageBackend(rootDir)) {
+    fileStore(rootDir).deleteSessionTask(sessionId, taskId)
+    return
+  }
   const db = getDb(rootDir)
   const now = new Date().toISOString()
   const profileScope = palaceProfileScope(profileId)
@@ -448,6 +472,22 @@ export function deleteSessionTask(
       AND superseded_at IS NULL
   `,
   ).run(now, PALACE_NAMESPACE.chatHistory, "active_tasks", sessionId, taskId, profileScope)
+}
+
+export function supersedeAllSessionTasks(
+  rootDir: string,
+  sessionId: string,
+  _profileId: string = "default",
+) {
+  if (isFileStorageBackend(rootDir)) {
+    fileStore(rootDir).supersedeAllSessionTasks(sessionId)
+    return
+  }
+  const db = getDb(rootDir)
+  const now = new Date().toISOString()
+  db.prepare(
+    `UPDATE palace_nodes SET superseded_at = ? WHERE wing = 'active_tasks' AND room = ? AND superseded_at IS NULL`,
+  ).run(now, sessionId)
 }
 
 function ensureKernelSeededDb(db: Database.Database, _profileId = "default") {
@@ -515,6 +555,12 @@ function hardCrashKernel(error: unknown): never {
 }
 
 export function getDb(rootDir: string): Database.Database {
+  if (isFileStorageBackend(rootDir)) {
+    throw new Error(
+      "SQLite is disabled (MONOLITO_STORAGE_BACKEND=files). Use store APIs instead, " +
+        "or set MONOLITO_STORAGE_BACKEND=sqlite for legacy mode.",
+    )
+  }
   const path = join(getPaths(rootDir).stateDir, "memory.sqlite")
   if (dbInstance && dbPathCache === path) return dbInstance
 
@@ -777,6 +823,11 @@ export function closeMemoryDb() {
 }
 
 export function ensureKernelSeeded(rootDir: string, profileId = "default") {
+  if (isFileStorageBackend(rootDir)) {
+    fileStore(rootDir).ensureKernelSeeded()
+    ensureBootWings(rootDir, profileId)
+    return
+  }
   const db = getDb(rootDir)
   try {
     ensureKernelSeededDb(db, profileId)
@@ -806,6 +857,10 @@ export function loadCachedMemoryContext(rootDir: string): string | null {
 }
 
 export function ensureConfigWings(rootDir: string) {
+  if (isFileStorageBackend(rootDir)) {
+    fileStore(rootDir).ensureKernelSeeded()
+    return
+  }
   const db = getDb(rootDir)
   ensureKernelSeededDb(db, "default")
 }
@@ -857,6 +912,9 @@ export function reconcileSystemWings(db: Database.Database, rootDir: string) {
 }
 
 export function readConfigWing<T extends ConfigWingName>(rootDir: string, wing: T): ConfigWingValueMap[T] {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).readConfigWing(wing)
+  }
   ensureConfigWings(rootDir)
   const db = getDb(rootDir)
   const palaceContent = readLatestPalaceContent(db, {
@@ -875,6 +933,9 @@ export function readConfigWing<T extends ConfigWingName>(rootDir: string, wing: 
 }
 
 export function writeConfigWing<T extends ConfigWingName>(rootDir: string, wing: T, value: ConfigWingValueMap[T]) {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).writeConfigWing(wing, value)
+  }
   ensureConfigWings(rootDir)
   const db = getDb(rootDir)
   const now = new Date().toISOString()
@@ -913,6 +974,10 @@ export function writeConfigWing<T extends ConfigWingName>(rootDir: string, wing:
 }
 
 export function appendActionLog(rootDir: string, action: string, details?: Record<string, unknown>) {
+  if (isFileStorageBackend(rootDir)) {
+    fileStore(rootDir).appendActionLog(action, details)
+    return
+  }
   const db = getDb(rootDir)
   const now = new Date().toISOString()
   const payload = {
@@ -1114,6 +1179,9 @@ function buildMessageSummary(role: "user" | "assistant" | "system", text: string
 }
 
 export function createSession(rootDir: string, title = "Monolito v2 Session", sessionId?: string, profileId = "default"): SessionRecord {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).createSession(title, sessionId, profileId)
+  }
   const db = getDb(rootDir)
   const now = new Date().toISOString()
   const id = sessionId ?? randomUUID()
@@ -1135,12 +1203,20 @@ export function createSession(rootDir: string, title = "Monolito v2 Session", se
 }
 
 export function updateSessionProfile(rootDir: string, sessionId: string, profileId: string) {
+  if (isFileStorageBackend(rootDir)) {
+    fileStore(rootDir).updateSessionProfile(sessionId, profileId)
+    return
+  }
   const db = getDb(rootDir)
   const stmt = db.prepare(`UPDATE sessions SET profile_id = ?, updated_at = ? WHERE id = ?`)
   stmt.run(profileId, new Date().toISOString(), sessionId)
 }
 
 export function saveSession(rootDir: string, session: SessionRecord) {
+  if (isFileStorageBackend(rootDir)) {
+    fileStore(rootDir).saveSession(session)
+    return
+  }
   // This function is less needed in SQL world, but to maintain the IPC API behavior,
   // we update the metadata.
   const db = getDb(rootDir)
@@ -1150,6 +1226,9 @@ export function saveSession(rootDir: string, session: SessionRecord) {
 }
 
 export function getSession(rootDir: string, sessionId: string): SessionRecord | null {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).getSession(sessionId)
+  }
   const db = getDb(rootDir)
 
   const stmtSession = db.prepare(`SELECT id, profile_id, title, state, created_at, updated_at, voice_mode FROM sessions WHERE id = ?`)
@@ -1188,6 +1267,9 @@ export function ensureSession(rootDir: string, sessionId?: string, title?: strin
 }
 
 export function listSessions(rootDir: string, profileId?: string): SessionSummary[] {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).listSessions(profileId)
+  }
   const db = getDb(rootDir)
   let sql = `SELECT id, profile_id, title, state, created_at, updated_at, voice_mode FROM sessions`
   const params: any[] = []
@@ -1229,6 +1311,9 @@ function sanitizeFtsQuery(q: string): string | null {
 }
 
 export function getSemanticMessageContext(rootDir: string, query: string, limit = 10) {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).searchMessages(query, limit)
+  }
   const db = getDb(rootDir)
   const sanitized = sanitizeFtsQuery(query)
   if (!sanitized) return []
@@ -1272,6 +1357,10 @@ export function appendMessage(
   text: string,
   options: AppendMessageOptions = {},
 ) {
+  if (isFileStorageBackend(rootDir)) {
+    fileStore(rootDir).appendMessage(sessionId, role, text, options)
+    return
+  }
   const db = getDb(rootDir)
   const now = new Date().toISOString()
   const hiddenFromUser = options.hiddenFromUser === true ? 1 : 0
@@ -1319,6 +1408,10 @@ export function appendMessage(
 }
 
 export function appendWorklog(rootDir: string, sessionId: string, entry: Omit<SessionWorklogEntry, "at"> & { at?: string }) {
+  if (isFileStorageBackend(rootDir)) {
+    fileStore(rootDir).appendWorklog(sessionId, entry)
+    return
+  }
   const db = getDb(rootDir)
   const at = entry.at ?? new Date().toISOString()
   const summary = truncateSummary(entry.summary, 220)
@@ -1338,6 +1431,10 @@ export function appendWorklog(rootDir: string, sessionId: string, entry: Omit<Se
 }
 
 export function resetSession(rootDir: string, sessionId: string, options?: { summary?: string }) {
+  if (isFileStorageBackend(rootDir)) {
+    fileStore(rootDir).resetSession(sessionId, options?.summary)
+    return
+  }
   const db = getDb(rootDir)
   const now = new Date().toISOString()
   const summary = options?.summary ?? "Session reset via /new"
@@ -1360,6 +1457,11 @@ export function resetSession(rootDir: string, sessionId: string, options?: { sum
 }
 
 export function clearMemoryPalace(rootDir: string, profileId = "default") {
+  if (isFileStorageBackend(rootDir)) {
+    const result = fileStore(rootDir).clearMemoryPalace()
+    ensureBootWings(rootDir, profileId)
+    return result
+  }
   const db = getDb(rootDir)
   const now = new Date().toISOString()
   const rows = db.prepare(`
@@ -1422,12 +1524,19 @@ export function clearMemoryPalace(rootDir: string, profileId = "default") {
 }
 
 export function setSessionState(rootDir: string, sessionId: string, state: SessionRecord["state"]) {
+  if (isFileStorageBackend(rootDir)) {
+    fileStore(rootDir).setSessionState(sessionId, state)
+    return
+  }
   const db = getDb(rootDir)
   const stmt = db.prepare(`UPDATE sessions SET state = ?, updated_at = ? WHERE id = ?`)
   stmt.run(state, new Date().toISOString(), sessionId)
 }
 
 export function recoverRunningSessions(rootDir: string, summary = "Recovered after daemon restart") {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).recoverRunningSessions(summary)
+  }
   const db = getDb(rootDir)
   const stmt = db.prepare(`SELECT id FROM sessions WHERE state = 'running'`)
   const rows = stmt.all() as { id: string }[]
@@ -1454,6 +1563,9 @@ export function recoverRunningSessions(rootDir: string, summary = "Recovered aft
 }
 
 export function tailEvents(rootDir: string, sessionId: string, lines = 40): AgentEvent[] {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).tailEvents(sessionId, lines)
+  }
   const db = getDb(rootDir)
   const stmt = db.prepare(`SELECT event_data FROM events WHERE session_id = ? ORDER BY id DESC LIMIT ?`)
   const rows = stmt.all(sessionId, lines) as { event_data: string }[]
@@ -1463,6 +1575,10 @@ export function tailEvents(rootDir: string, sessionId: string, lines = 40): Agen
 }
 
 export function appendEvent(rootDir: string, event: AgentEvent) {
+  if (isFileStorageBackend(rootDir)) {
+    fileStore(rootDir).appendEvent(event)
+    return
+  }
   const db = getDb(rootDir)
   const stmt = db.prepare(`INSERT INTO events (session_id, event_data) VALUES (?, ?)`)
   stmt.run(event.sessionId, JSON.stringify(event))
@@ -1485,6 +1601,9 @@ function buildCompactMarker(count: number, role: "user" | "assistant"): string {
 }
 
 export function compactSession(rootDir: string, sessionId: string, options: CompactOptions = {}): { compacted: number; remaining: number } {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).compactSession(sessionId, options)
+  }
   const db = getDb(rootDir)
   const maxMessages = options.maxMessages ?? DEFAULT_COMPACT_MESSAGE_LIMIT
   
@@ -1825,12 +1944,18 @@ export async function recallMemory(rootDir: string, wing?: string, room?: string
 }
 
 export function listProfiles(rootDir: string) {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).listProfiles()
+  }
   const db = getDb(rootDir)
   const stmt = db.prepare(`SELECT id, name, description, created_at FROM profiles ORDER BY name ASC`)
   return stmt.all() as Array<{ id: string; name: string; description: string | null; created_at: string }>
 }
 
 export function createProfile(rootDir: string, id: string, name: string, description?: string) {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).createProfile(id, name, description)
+  }
   const db = getDb(rootDir)
   const now = new Date().toISOString()
   const stmt = db.prepare(`INSERT INTO profiles (id, name, description, created_at) VALUES (?, ?, ?, ?)`)
@@ -1902,6 +2027,9 @@ export function addGraphTriple(
   object: string,
   validFrom: string,
 ) {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).addGraphTriple(profileId, subject, predicate, object, validFrom)
+  }
   const db = getDb(rootDir)
   const id = randomUUID()
   const now = new Date().toISOString()
@@ -1928,6 +2056,9 @@ export function invalidateGraphTriple(
   object: string,
   validTo: string,
 ) {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).invalidateGraphTriple(profileId, subject, predicate, object, validTo)
+  }
   const db = getDb(rootDir)
   const result = db.prepare(`
     UPDATE knowledge_graph
@@ -1952,6 +2083,9 @@ export function queryGraphEntity(
   profileId: string,
   entity: string,
 ): KnowledgeGraphTriple[] {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).queryGraphEntity(profileId, entity)
+  }
   const db = getDb(rootDir)
   return db.prepare(`
     SELECT
@@ -1978,6 +2112,10 @@ export function queryGraphEntity(
 
 
 export async function upsertSemanticTool(rootDir: string, name: string, description: string): Promise<void> {
+  if (isFileStorageBackend(rootDir)) {
+    fileStore(rootDir).upsertSemanticTool(name, description)
+    return
+  }
   const db = getDb(rootDir)
   const wing = "CONF_TOOLS"
   const room = "registry"
@@ -2003,6 +2141,15 @@ export async function upsertSemanticTool(rootDir: string, name: string, descript
 }
 
 export async function querySemanticTools(rootDir: string, prompt: string, limit = 5): Promise<string[]> {
+  if (!rootDir || typeof rootDir !== "string") return []
+  if (isFileStorageBackend(rootDir)) {
+    try {
+      return fileStore(rootDir).querySemanticTools(prompt, limit)
+    } catch (error) {
+      logger.error(`Error querying tools for prompt: ${error}`)
+      return []
+    }
+  }
   const wing = "CONF_TOOLS"
   const room = "registry"
   try {
@@ -2033,6 +2180,10 @@ export async function querySemanticTools(rootDir: string, prompt: string, limit 
 }
 
 export function upsertRalphRule(rootDir: string, key: string, ruleJson: string): void {
+  if (isFileStorageBackend(rootDir)) {
+    fileStore(rootDir).upsertRalphRule(key, ruleJson)
+    return
+  }
   const db = getDb(rootDir)
   const wing = "CONF_RALPH_RULES"
   const room = "rules"
@@ -2064,6 +2215,9 @@ export function upsertRalphRule(rootDir: string, key: string, ruleJson: string):
 }
 
 export function listRalphRules(rootDir: string): Array<{ key: string; content: string }> {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).listRalphRules()
+  }
   const db = getDb(rootDir)
   const wing = "CONF_RALPH_RULES"
   const room = "rules"
@@ -2076,6 +2230,9 @@ export function listRalphRules(rootDir: string): Array<{ key: string; content: s
 }
 
 export function isSessionResearchSilent(rootDir: string, sessionId: string, profileId = "default"): boolean {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).isSessionResearchSilent(sessionId)
+  }
   const db = getDb(rootDir)
   const profileScope = palaceProfileScope(profileId)
   const row = db.prepare(`
@@ -2095,17 +2252,28 @@ export function isSessionResearchSilent(rootDir: string, sessionId: string, prof
 }
 
 export function getRawMessagesForSession(rootDir: string, sessionId: string): Array<{ id: number; role: string; text: string; at: string; is_compacted: number }> {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).getRawMessagesForSession(sessionId)
+  }
   const db = getDb(rootDir)
   return db.prepare(`SELECT id, role, text, at, is_compacted FROM messages WHERE session_id = ? ORDER BY id ASC`).all(sessionId) as Array<{ id: number; role: string; text: string; at: string; is_compacted: number }>
 }
 
-export function rewriteMessageInPlace(rootDir: string, messageId: number, text: string, isCompacted: number = 1) {
+export function rewriteMessageInPlace(rootDir: string, messageId: number, text: string, isCompacted: number = 1, sessionId?: string) {
+  if (isFileStorageBackend(rootDir)) {
+    fileStore(rootDir).rewriteMessageInPlace(messageId, text, isCompacted, sessionId)
+    return
+  }
   const db = getDb(rootDir)
   db.prepare(`UPDATE messages SET text = ?, is_compacted = ? WHERE id = ?`).run(text, isCompacted, messageId)
 }
 
-export function deleteMessages(rootDir: string, messageIds: number[]) {
+export function deleteMessages(rootDir: string, messageIds: number[], sessionId?: string) {
   if (messageIds.length === 0) return
+  if (isFileStorageBackend(rootDir)) {
+    fileStore(rootDir).deleteMessages(messageIds, sessionId)
+    return
+  }
   const db = getDb(rootDir)
   db.exec("BEGIN TRANSACTION")
   try {
@@ -2146,6 +2314,10 @@ export async function saveResolvedError(
   errorSnippet: string,
   solutionSnippet: string
 ): Promise<void> {
+  if (isFileStorageBackend(rootDir)) {
+    fileStore(rootDir).saveResolvedError(errorSnippet, solutionSnippet)
+    return
+  }
   const db = getDb(rootDir)
   const wing = "CONF_ERRORS"
   const room = "resolved_errors"
@@ -2179,6 +2351,10 @@ export async function querySimilarErrors(
   errorSnippet: string,
   limit = 1
 ): Promise<{ error: string; solution: string } | null> {
+  if (isFileStorageBackend(rootDir)) {
+    const solution = fileStore(rootDir).findSimilarResolvedError(errorSnippet)
+    return solution ? { error: errorSnippet, solution } : null
+  }
   const db = getDb(rootDir)
   const wing = "CONF_ERRORS"
   const room = "resolved_errors"
@@ -2218,6 +2394,9 @@ export function persistTelegramUpdate(
   chatId: number | null,
   rawJson: string,
 ): { ok: boolean; error?: string } {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).persistTelegramUpdate(updateId, chatId, rawJson)
+  }
   try {
     const db = getDb(rootDir)
     const now = new Date().toISOString()
@@ -2239,6 +2418,10 @@ export function persistTelegramUpdate(
  * will re-deliver) or replay it from the table.
  */
 export function markTelegramUpdateProcessed(rootDir: string, updateId: number): void {
+  if (isFileStorageBackend(rootDir)) {
+    fileStore(rootDir).markTelegramUpdateProcessed(updateId)
+    return
+  }
   try {
     const db = getDb(rootDir)
     db.prepare(
@@ -2255,6 +2438,9 @@ export function markTelegramUpdateProcessed(rootDir: string, updateId: number): 
  * crash mid-process" and to surface that to the user.
  */
 export function countUnprocessedTelegramUpdates(rootDir: string): number {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).countUnprocessedTelegramUpdates()
+  }
   try {
     const db = getDb(rootDir)
     const row = db.prepare(
@@ -2264,5 +2450,113 @@ export function countUnprocessedTelegramUpdates(rootDir: string): number {
   } catch {
     return 0
   }
+}
+
+export function getMemoryConsolidationCursor(rootDir: string): number {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).getMemoryConsolidationCursor()
+  }
+  const db = getDb(rootDir)
+  const cursorRow = db.prepare(`
+    SELECT content FROM palace_nodes
+    WHERE namespace = ? AND wing = 'MEMORY_CONSOLIDATION'
+      AND room = 'checkpoint' AND node_key = 'last_message_id'
+      AND superseded_at IS NULL
+    ORDER BY updated_at DESC LIMIT 1
+  `).get(PALACE_NAMESPACE.projectFacts) as { content: string } | undefined
+  return cursorRow ? parseInt(cursorRow.content, 10) || 0 : 0
+}
+
+export function setMemoryConsolidationCursor(rootDir: string, messageId: number, profileId = "default"): void {
+  if (isFileStorageBackend(rootDir)) {
+    fileStore(rootDir).setMemoryConsolidationCursor(messageId)
+    return
+  }
+  const db = getDb(rootDir)
+  upsertMutablePalaceNode(db, {
+    namespace: PALACE_NAMESPACE.projectFacts,
+    wing: "MEMORY_CONSOLIDATION",
+    room: "checkpoint",
+    nodeKey: "last_message_id",
+    profileId,
+    contentType: "text/plain",
+    content: String(messageId),
+    now: new Date().toISOString(),
+  })
+}
+
+export function getMessagesSinceId(
+  rootDir: string,
+  sessionId: string,
+  afterId: number,
+): Array<{ id: number; role: string; text: string; at: string }> {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).getMessagesSinceId(sessionId, afterId)
+  }
+  const db = getDb(rootDir)
+  return db.prepare(`
+    SELECT id, role, text, at FROM messages
+    WHERE session_id = ? AND id > ?
+    ORDER BY id ASC
+  `).all(sessionId, afterId) as Array<{ id: number; role: string; text: string; at: string }>
+}
+
+export function getMemoryDrawerCount(rootDir: string): number {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).getMemoryDrawerCount()
+  }
+  const db = getDb(rootDir)
+  return (db.prepare("SELECT COUNT(*) c FROM memory_drawers").get() as { c: number }).c
+}
+
+export function setSessionVoiceMode(rootDir: string, sessionId: string, enabled: boolean): void {
+  if (isFileStorageBackend(rootDir)) {
+    fileStore(rootDir).setVoiceMode(sessionId, enabled)
+    return
+  }
+  const db = getDb(rootDir)
+  const now = new Date().toISOString()
+  db.prepare(`UPDATE sessions SET voice_mode = ?, updated_at = ? WHERE id = ?`).run(enabled ? 1 : 0, now, sessionId)
+}
+
+export function persistTelegramSentPhoto(
+  rootDir: string,
+  row: { chatId: number; messageId: number; fileId: string | null; localPath: string; caption: string | null },
+): void {
+  if (isFileStorageBackend(rootDir)) {
+    fileStore(rootDir).persistTelegramSentPhoto(row)
+    return
+  }
+  const db = getDb(rootDir)
+  db.prepare(`
+    INSERT INTO telegram_sent_photos (chat_id, message_id, file_id, local_path, caption)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(row.chatId, row.messageId, row.fileId, row.localPath, row.caption)
+}
+
+export function listTelegramSentPhotos(
+  rootDir: string,
+  chatId: number | null,
+  limit: number,
+): Array<{ id: number; chat_id: number; message_id: number; file_id: string | null; local_path: string; caption: string | null; sent_at: string }> {
+  if (isFileStorageBackend(rootDir)) {
+    return fileStore(rootDir).listTelegramSentPhotos(chatId, limit)
+  }
+  const db = getDb(rootDir)
+  if (chatId !== null) {
+    return db.prepare(`
+      SELECT id, chat_id, message_id, file_id, local_path, caption, sent_at
+      FROM telegram_sent_photos
+      WHERE chat_id = ?
+      ORDER BY sent_at DESC, id DESC
+      LIMIT ?
+    `).all(chatId, limit) as Array<{ id: number; chat_id: number; message_id: number; file_id: string | null; local_path: string; caption: string | null; sent_at: string }>
+  }
+  return db.prepare(`
+    SELECT id, chat_id, message_id, file_id, local_path, caption, sent_at
+    FROM telegram_sent_photos
+    ORDER BY sent_at DESC, id DESC
+    LIMIT ?
+  `).all(limit) as Array<{ id: number; chat_id: number; message_id: number; file_id: string | null; local_path: string; caption: string | null; sent_at: string }>
 }
 

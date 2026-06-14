@@ -13,7 +13,7 @@ import assert from "node:assert/strict"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { listSessionTasks, writeSessionTask, getDb } from "../session/store.ts"
+import { listSessionTasks, writeSessionTask, supersedeAllSessionTasks, deleteSessionTask } from "../session/store.ts"
 import type { SessionTask } from "../session/store.ts"
 import { evaluateTopLevelRalphGate, isScreenViewingRequest, isSecurityAuditRequest } from "./topLevelRalphGate.ts"
 
@@ -25,10 +25,7 @@ const sharedRoot = mkdtempSync(join(tmpdir(), "monolito-topralph-test-"))
 process.env.MONOLITO_ROOT = sharedRoot
 
 function clearActiveTasks(sessionId: string) {
-  const db = getDb(sharedRoot)
-  db.prepare(
-    `UPDATE palace_nodes SET superseded_at = ? WHERE wing = 'active_tasks' AND room = ? AND superseded_at IS NULL`,
-  ).run(new Date().toISOString(), sessionId)
+  supersedeAllSessionTasks(sharedRoot, sessionId)
 }
 
 test.after(() => {
@@ -159,10 +156,7 @@ test("evaluateTopLevelRalphGate: ignores superseded tasks", () => {
     updatedAt: "2026-06-05T12:00:00.000Z",
   } as SessionTask, profileId)
   // Manually mark superseded
-  const db = getDb(sharedRoot)
-  db.prepare(
-    `UPDATE palace_nodes SET superseded_at = ? WHERE wing = 'active_tasks' AND room = ? AND node_key = ? AND superseded_at IS NULL`,
-  ).run("2026-06-05T13:00:00.000Z", sessionId, "task-old")
+  deleteSessionTask(sharedRoot, sessionId, "task-old", profileId)
 
   // Confirm it's filtered at the SQL level
   const visible = listSessionTasks(sharedRoot, sessionId, profileId)

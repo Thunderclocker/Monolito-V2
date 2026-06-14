@@ -23,6 +23,7 @@ import { join } from "node:path"
 // we are NOT opening the live runtime DB. The follow-up is to migrate
 // the test to the import-after-env-set pattern that the guard expects.
 process.env.MONOLITO_DB_GUARD = "0"
+process.env.MONOLITO_STORAGE_BACKEND = "sqlite"
 
 function freshRootDir(): string {
   return mkdtempSync(join(tmpdir(), "monolito-hidden-msg-test-"))

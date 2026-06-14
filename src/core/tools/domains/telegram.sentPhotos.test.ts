@@ -10,6 +10,7 @@ import { join } from "node:path"
 // truncating the telegram_sent_photos table in `before`.
 const testMonolitoRoot = mkdtempSync(join(tmpdir(), "monolito-sent-photos-test-"))
 process.env.MONOLITO_ROOT = testMonolitoRoot
+process.env.MONOLITO_STORAGE_BACKEND = "sqlite"
 
 const { getTool } = await import("../registry.ts")
 const { getDb, writeConfigWing } = await import("../../session/store.ts")

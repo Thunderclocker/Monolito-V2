@@ -1,15 +1,13 @@
 // Durable processing cursor for process-and-flush pipelines.
 //
-// Mirrors the pattern of telegram_raw_updates: PK natural + last_processed_at
-// + counters + opaque meta JSON. The cursor survives crashes, so a process-
-// and-flush pipeline can resume from the last successful chunk instead of
-// restarting from zero.
-//
-// Schema is created lazily on first call (idempotent CREATE TABLE IF NOT EXISTS).
-// No external migration runner needed.
+// Supports SQLite (legacy) or JSON file storage when MONOLITO_STORAGE_BACKEND=files.
 
 import type Database from "better-sqlite3"
+import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "node:fs"
+import { dirname } from "node:path"
 import { createLogger } from "../logging/logger.ts"
+import { isFileStorageBackend } from "../storage/fileStorage.ts"
+import { processingCursorsPath } from "../storage/filePaths.ts"
 
 const logger = createLogger("cursor")
 
@@ -36,8 +34,17 @@ export interface CursorState {
   meta: Record<string, unknown>
 }
 
+export type CursorStorage =
+  | { kind: "sqlite"; db: Database.Database }
+  | { kind: "files"; rootDir: string }
+
 let _schemaEnsured = false
 let _schemaDb: Database.Database | null = null
+
+export function cursorStorageFromRoot(rootDir: string): CursorStorage {
+  if (isFileStorageBackend(rootDir)) return { kind: "files", rootDir }
+  return { kind: "sqlite", db: null as unknown as Database.Database }
+}
 
 /** Ensure the processing_cursors table exists. Idempotent. */
 export function bindCursorDb(db: Database.Database): void {
@@ -47,9 +54,19 @@ export function bindCursorDb(db: Database.Database): void {
   _schemaDb = db
 }
 
-/** Internal: ensure schema once per (db instance). */
 function ensureSchema(db: Database.Database): void {
   bindCursorDb(db)
+}
+
+function zeroState(streamId: string): CursorState {
+  return {
+    streamId,
+    position: 0,
+    lastProcessedAt: null,
+    totalProcessed: 0,
+    totalErrors: 0,
+    meta: {},
+  }
 }
 
 function rowToState(row: Record<string, unknown>): CursorState {
@@ -74,8 +91,31 @@ function rowToState(row: Record<string, unknown>): CursorState {
   }
 }
 
+function readFileCursors(rootDir: string): Record<string, CursorState> {
+  const path = processingCursorsPath(rootDir)
+  if (!existsSync(path)) return {}
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as Record<string, CursorState>
+  } catch {
+    return {}
+  }
+}
+
+function writeFileCursors(rootDir: string, data: Record<string, CursorState>) {
+  const path = processingCursorsPath(rootDir)
+  mkdirSync(dirname(path), { recursive: true })
+  const tmp = `${path}.tmp.${process.pid}`
+  writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8")
+  renameSync(tmp, path)
+}
+
 /** Read the current cursor. Returns zero state if the stream has never been seen. */
-export function getCursor(db: Database.Database, streamId: string): CursorState {
+export function getCursor(storage: CursorStorage, streamId: string): CursorState {
+  if (storage.kind === "files") {
+    const all = readFileCursors(storage.rootDir)
+    return all[streamId] ?? zeroState(streamId)
+  }
+  const db = storage.db
   ensureSchema(db)
   const row = db
     .prepare(
@@ -83,42 +123,36 @@ export function getCursor(db: Database.Database, streamId: string): CursorState 
        FROM processing_cursors WHERE stream_id = ?`,
     )
     .get(streamId) as Record<string, unknown> | undefined
-  if (!row) {
-    return {
-      streamId,
-      position: 0,
-      lastProcessedAt: null,
-      totalProcessed: 0,
-      totalErrors: 0,
-      meta: {},
-    }
-  }
+  if (!row) return zeroState(streamId)
   return rowToState(row)
 }
 
-/**
- * Advance the cursor. Upsert: creates the row if missing.
- *
- * Semantics:
- * - `newPosition` MUST be > current position (monotonic). If not, the call is
- *   a no-op and the existing state is returned unchanged.
- * - If `meta` is provided, it REPLACES the stored meta entirely. Pass the
- *   full merged object if you want to preserve prior keys.
- * - `totalProcessed` and `totalErrors` are NOT modified by this call — they
- *   are managed by `incrementCounters` after a successful sink / failed chunk.
- */
 export function advanceCursor(
-  db: Database.Database,
+  storage: CursorStorage,
   streamId: string,
   newPosition: number,
   meta?: Record<string, unknown>,
   now: string = new Date().toISOString(),
 ): CursorState {
-  ensureSchema(db)
-  const current = getCursor(db, streamId)
-  if (newPosition <= current.position) {
-    return current
+  if (storage.kind === "files") {
+    const all = readFileCursors(storage.rootDir)
+    const current = all[streamId] ?? zeroState(streamId)
+    if (newPosition <= current.position) return current
+    const next: CursorState = {
+      ...current,
+      position: newPosition,
+      lastProcessedAt: now,
+      meta: meta !== undefined ? meta : current.meta,
+    }
+    all[streamId] = next
+    writeFileCursors(storage.rootDir, all)
+    return next
   }
+
+  const db = storage.db
+  ensureSchema(db)
+  const current = getCursor(storage, streamId)
+  if (newPosition <= current.position) return current
   const metaJson = meta !== undefined ? JSON.stringify(meta) : current.meta ? JSON.stringify(current.meta) : "{}"
   db.prepare(
     `INSERT INTO processing_cursors
@@ -129,32 +163,52 @@ export function advanceCursor(
        last_processed_at = excluded.last_processed_at,
        meta = excluded.meta`,
   ).run(streamId, newPosition, now, current.totalProcessed, current.totalErrors, metaJson)
-  return getCursor(db, streamId)
+  return getCursor(storage, streamId)
 }
 
-/** Increment total_processed (or total_errors) by 1 for a given stream. */
 export function incrementCounters(
-  db: Database.Database,
+  storage: CursorStorage,
   streamId: string,
   which: "processed" | "errors",
   now: string = new Date().toISOString(),
 ): CursorState {
+  if (storage.kind === "files") {
+    const all = readFileCursors(storage.rootDir)
+    const current = all[streamId] ?? zeroState(streamId)
+    const next: CursorState = {
+      ...current,
+      lastProcessedAt: now,
+      totalProcessed: which === "processed" ? current.totalProcessed + 1 : current.totalProcessed,
+      totalErrors: which === "errors" ? current.totalErrors + 1 : current.totalErrors,
+    }
+    all[streamId] = next
+    writeFileCursors(storage.rootDir, all)
+    return next
+  }
+
+  const db = storage.db
   ensureSchema(db)
-  // Make sure the row exists before UPDATE.
-  getCursor(db, streamId)
+  getCursor(storage, streamId)
   const col = which === "processed" ? "total_processed" : "total_errors"
   db.prepare(
     `UPDATE processing_cursors SET ${col} = ${col} + 1, last_processed_at = ? WHERE stream_id = ?`,
   ).run(now, streamId)
-  return getCursor(db, streamId)
+  return getCursor(storage, streamId)
 }
 
-/** Reset the cursor to position 0 and zero the counters. Keeps the row. */
 export function resetCursor(
-  db: Database.Database,
+  storage: CursorStorage,
   streamId: string,
   now: string = new Date().toISOString(),
 ): CursorState {
+  if (storage.kind === "files") {
+    const all = readFileCursors(storage.rootDir)
+    all[streamId] = { ...zeroState(streamId), lastProcessedAt: now }
+    writeFileCursors(storage.rootDir, all)
+    return all[streamId]!
+  }
+
+  const db = storage.db
   ensureSchema(db)
   db.prepare(
     `INSERT INTO processing_cursors
@@ -167,11 +221,14 @@ export function resetCursor(
        total_errors = 0,
        meta = '{}'`,
   ).run(streamId, now)
-  return getCursor(db, streamId)
+  return getCursor(storage, streamId)
 }
 
-/** List all cursors. Useful for debug/recovery tooling. */
-export function listCursors(db: Database.Database): CursorState[] {
+export function listCursors(storage: CursorStorage): CursorState[] {
+  if (storage.kind === "files") {
+    return Object.values(readFileCursors(storage.rootDir))
+  }
+  const db = storage.db
   ensureSchema(db)
   const rows = db
     .prepare(
@@ -186,4 +243,32 @@ export function listCursors(db: Database.Database): CursorState[] {
 export function _resetSchemaCacheForTests(): void {
   _schemaEnsured = false
   _schemaDb = null
+}
+
+/** Back-compat shim: getCursor with raw sqlite db. */
+export function getCursorDb(db: Database.Database, streamId: string): CursorState {
+  return getCursor({ kind: "sqlite", db }, streamId)
+}
+
+export function advanceCursorDb(
+  db: Database.Database,
+  streamId: string,
+  newPosition: number,
+  meta?: Record<string, unknown>,
+  now?: string,
+): CursorState {
+  return advanceCursor({ kind: "sqlite", db }, streamId, newPosition, meta, now)
+}
+
+export function incrementCountersDb(
+  db: Database.Database,
+  streamId: string,
+  which: "processed" | "errors",
+  now?: string,
+): CursorState {
+  return incrementCounters({ kind: "sqlite", db }, streamId, which, now)
+}
+
+export function resetCursorDb(db: Database.Database, streamId: string, now?: string): CursorState {
+  return resetCursor({ kind: "sqlite", db }, streamId, now)
 }

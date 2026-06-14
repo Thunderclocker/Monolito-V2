@@ -11,7 +11,7 @@ import { createLogger, type Logger } from "../logging/logger.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider, getDefaultReasoningLevel, type ReasoningLevel } from "./modelRegistry.ts"
 import { compactSession, fileMemory, getSession, getRawMessagesForSession, getDb, readSessionSources, tailEvents, listSessionTasks, appendWorklog, saveResolvedError, querySimilarErrors, deleteMessages, rewriteMessageInPlace, loadCachedMemoryContext } from "../session/store.ts"
-import { isMarkdownMemoryBackend } from "../storage/index.ts"
+import { isFileStorageBackend, isMarkdownMemoryBackend } from "../storage/index.ts"
 import type { RecentToolCall } from "./coherenceGuard.ts"
 import { wrapAuditFeedback } from "./auditFeedback.ts"
 import { incrementalFlushSession, getContextFlushThresholdChars } from "../context/incrementalFlush.ts"
@@ -2123,12 +2123,14 @@ export async function runIncrementalFlush(
   sessionId: string,
   _regionChars: number,
 ): Promise<{ flushed: number; skipped: number; freedChars: number }> {
-  const db = getDb(rootDir)
   const session = getSession(rootDir, sessionId)
   if (!session) {
     return { flushed: 0, skipped: 0, freedChars: 0 }
   }
   const profileId = session.profileId ?? "default"
+  const storage = isFileStorageBackend(rootDir)
+    ? { kind: "files" as const, rootDir }
+    : { kind: "sqlite" as const, db: getDb(rootDir) }
   const rawMessages = getRawMessagesForSession(rootDir, sessionId)
   if (rawMessages.length <= 4) {
     return { flushed: 0, skipped: 0, freedChars: 0 }
@@ -2172,7 +2174,7 @@ export async function runIncrementalFlush(
   }
   const totalChars = compressible.reduce((s, m) => s + m.text.length, 0)
 
-  const flushResult = await incrementalFlushSession(db, compressible, {
+  const flushResult = await incrementalFlushSession(storage, compressible, {
     rootDir,
     sessionId,
     fileMemory: (rd, wing, room, content, pid, key) => fileMemory(rd, wing, room, content, pid, key),
@@ -2184,9 +2186,9 @@ export async function runIncrementalFlush(
   if (flushResult.totalProcessed > 0) {
     const firstMsg = compressible[0]!
     const pointer = `[CONTEXT FLUSHED — ${flushResult.totalProcessed} messages filed in CHAT/${sessionId}]`
-    rewriteMessageInPlace(rootDir, firstMsg.id, pointer, 1)
+    rewriteMessageInPlace(rootDir, firstMsg.id, pointer, 1, sessionId)
     const restIds = compressible.slice(1).map((m) => m.id)
-    deleteMessages(rootDir, restIds)
+    deleteMessages(rootDir, restIds, sessionId)
     appendWorklog(rootDir, sessionId, {
       type: "note",
       summary: `Context engine incremental-flush: ${flushResult.totalProcessed} messages → drawers, freed ~${totalChars} chars`,

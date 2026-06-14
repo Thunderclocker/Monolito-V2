@@ -15,7 +15,7 @@ import {
 } from "../internal.ts"
 
 import {
-  getDb,
+  supersedeAllSessionTasks,
   listSessionTasks,
   writeSessionTask,
 } from "../../session/store.ts"
@@ -131,13 +131,7 @@ export const todoTools: ToolDefinition[] = [
     // superseded, then write the new ones. This is the entire state, not
     // a diff — the runtime generates fresh ids.
     const now = new Date().toISOString()
-    const existing = listSessionTasks(context.rootDir, sessionId, profileId)
-    const db = getDb(context.rootDir)
-    for (const t of existing) {
-      db.prepare(
-        `UPDATE palace_nodes SET superseded_at = ? WHERE wing = 'active_tasks' AND room = ? AND node_key = ? AND superseded_at IS NULL`,
-      ).run(now, sessionId, t.id)
-    }
+    supersedeAllSessionTasks(context.rootDir, sessionId, profileId)
 
     const persisted: SessionTask[] = []
     for (const t of todos) {

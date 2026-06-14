@@ -37,7 +37,13 @@ import {
   listSessionTasks,
   upsertMutablePalaceNode,
   upsertMemoryDrawer,
+  getMemoryConsolidationCursor,
+  getMessagesSinceId,
+  setMemoryConsolidationCursor,
+  getMemoryDrawerCount,
+  setSessionVoiceMode,
 } from "../session/store.ts"
+import { isFileStorageBackend } from "../storage/index.ts"
 import { isMarkdownMemoryBackend } from "../storage/index.ts"
 import { getTool, listTools, validateToolInput, type ToolContext, type ToolInputSchema } from "../tools/registry.ts"
 import { getEffectiveModelConfig, runAgentLoop, runAssistantTurn, runBackgroundTextTask, type AgentLoopEvent, type AssistantTurnResult } from "./modelAdapter.ts"
@@ -1066,9 +1072,11 @@ export class MonolitoV2Runtime {
 
   constructor(rootDir: string) {
     this.rootDir = rootDir
-    const db = getDb(this.rootDir)
     ensureConfigWings(this.rootDir)
-    reconcileSystemWings(db, rootDir)
+    if (!isFileStorageBackend(this.rootDir)) {
+      const db = getDb(this.rootDir)
+      reconcileSystemWings(db, rootDir)
+    }
     // On a brand-new install, copy .env values into CONF_SYSTEM / CONF_MODELS
     // so the model settings have a usable base. Idempotent: skipped if the
     // wings already have content.
@@ -1234,26 +1242,12 @@ export class MonolitoV2Runtime {
       logger.info(`[MemoryAgent] Starting memory consolidation for session ${sessionId}...`)
       await this.transitionState(sessionId, "running")
 
-      const db = getDb(this.rootDir)
       const session = getSession(this.rootDir, sessionId)
       if (!session) return
 
-      // Read cursor: last consolidated message id
-      const cursorRow = db.prepare(`
-        SELECT content FROM palace_nodes
-        WHERE namespace = ? AND wing = 'MEMORY_CONSOLIDATION'
-          AND room = 'checkpoint' AND node_key = 'last_message_id'
-          AND superseded_at IS NULL
-        ORDER BY updated_at DESC LIMIT 1
-      `).get(PALACE_NAMESPACE.projectFacts) as { content: string } | undefined
-      const lastConsolidatedId = cursorRow ? parseInt(cursorRow.content, 10) || 0 : 0
+      const lastConsolidatedId = getMemoryConsolidationCursor(this.rootDir)
 
-      // Load new messages since cursor
-      const newMessages = db.prepare(`
-        SELECT id, role, text, at FROM messages
-        WHERE session_id = ? AND id > ?
-        ORDER BY id ASC
-      `).all(sessionId, lastConsolidatedId) as Array<{ id: number; role: string; text: string; at: string }>
+      const newMessages = getMessagesSinceId(this.rootDir, sessionId, lastConsolidatedId)
 
       if (newMessages.length === 0) {
         logger.info("[MemoryAgent] No new messages since last consolidation.")
@@ -1342,16 +1336,7 @@ Rules:
         this._memoryConsolidationFailures = 0
         this._lastMemoryConsolidationFailureAt = 0
         // Save cursor checkpoint
-        upsertMutablePalaceNode(db, {
-          namespace: PALACE_NAMESPACE.projectFacts,
-          wing: "MEMORY_CONSOLIDATION",
-          room: "checkpoint",
-          nodeKey: "last_message_id",
-          profileId,
-          contentType: "text/plain",
-          content: String(lastProcessedId),
-          now: new Date().toISOString(),
-        })
+        setMemoryConsolidationCursor(this.rootDir, lastProcessedId, profileId)
         logger.info(`[MemoryAgent] Consolidation done. ${finalText} | ${timingSummary}`)
         emitSystemMessage(`✅ MemoryAgent — ${finalText}`)
         appendWorklog(this.rootDir, sessionId, { type: "note", summary: `MemoryAgent: ${finalText}\n${timingSummary}` })
@@ -3022,8 +3007,7 @@ Rules:
     const stt = normalizeSttConfig(channels.stt)
     const tts = normalizeTtsConfig(channels.tts)
     const workspace = getWorkspaceContext(this.rootDir, "default")
-    const db = getDb(this.rootDir)
-    const memDrawers = (db.prepare("SELECT COUNT(*) c FROM memory_drawers").get() as { c: number }).c
+    const memDrawers = getMemoryDrawerCount(this.rootDir)
     const memory = { drawers: memDrawers }
 
     const [sttContainer] = await Promise.all([
@@ -3646,9 +3630,7 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
    * Persiste en la base de datos.
    */
   private async setVoiceMode(sessionId: string, enabled: boolean): Promise<void> {
-    const db = getDb(this.rootDir)
-    const now = new Date().toISOString()
-    db.prepare(`UPDATE sessions SET voice_mode = ?, updated_at = ? WHERE id = ?`).run(enabled ? 1 : 0, now, sessionId)
+    setSessionVoiceMode(this.rootDir, sessionId, enabled)
   }
 
   /**

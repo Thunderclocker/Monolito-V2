@@ -15,8 +15,31 @@ memory/
     bootstrap.md  ← BOOT_BOOTSTRAP
   memory.md       ← BOOT_MEMORY + hechos curados (digest)
   archive/        ← (opcional) memoria vieja, solo búsqueda
-  memory.sqlite   ← sesiones, eventos, config (SQLite, por ahora)
+  config/
+    CONF_MODELS.json
+    CONF_SYSTEM.json
+    CONF_CHANNELS.json
+    ...
+  profiles.json
+  sessions/
+    <sessionId>/
+      meta.json
+      messages.jsonl
+      worklog.jsonl
+      events.jsonl
+      tasks.json
+      sources.json
+  state/
+    knowledge_graph.jsonl
+    ralph_rules.json
+    semantic_tools.json
+    processing_cursors.json
+    telegram/
+      raw_updates.jsonl
+      sent_photos.jsonl
 ```
+
+Por defecto **no se usa `memory.sqlite`** en instalaciones nuevas. Legacy: `MONOLITO_STORAGE_BACKEND=sqlite`.
 
 ## Carga en cada turno
 
@@ -35,13 +58,17 @@ Mantiene `memory.md` como **digest curado** (~12 KB máx.). Debe consolidar, ded
 | `BootRead` / `BootWrite` | Editar `boot/*.md` o `memory.md` |
 | `WorkspaceMemoryFiling` | Nueva/actualizada sección `##` en `memory.md` |
 | `WorkspaceMemoryRecall` | Buscar secciones en `memory.md` |
-| `SearchHistory` | Buscar en historial de chat (FTS) |
+| `SearchHistory` | Buscar en historial de chat (keyword scan sobre JSONL) |
 
 ## Backend legacy
 
-`MONOLITO_MEMORY_BACKEND=sqlite` restaura el backend SQLite + FTS para memoria (tests / migración manual).
+| Variable | Valores | Default |
+|----------|---------|---------|
+| `MONOLITO_MEMORY_BACKEND` | `markdown` / `sqlite` | `markdown` |
+| `MONOLITO_STORAGE_BACKEND` | `files` / `sqlite` | `files` |
 
-Por defecto: **markdown**.
+`MONOLITO_MEMORY_BACKEND=sqlite` restaura FTS + palace para memoria.  
+`MONOLITO_STORAGE_BACKEND=sqlite` restaura `memory.sqlite` para config, sesiones y estado.
 
 ## Git
 

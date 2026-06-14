@@ -38,7 +38,8 @@ import {
 } from "../../channels/config.ts"
 
 import {
-  getDb,
+  persistTelegramSentPhoto,
+  listTelegramSentPhotos,
 } from "../../session/store.ts"
 
 import type { ToolDefinition } from "../registry.ts"
@@ -92,11 +93,7 @@ function extractTelegramPhotoFields(data: TelegramPhotoResult): { messageId: num
 
 function persistSentPhoto(rootDir: string, row: { chatId: number; messageId: number; fileId: string | null; localPath: string; caption: string | null }) {
   try {
-    const db = getDb(rootDir)
-    db.prepare(`
-      INSERT INTO telegram_sent_photos (chat_id, message_id, file_id, local_path, caption)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(row.chatId, row.messageId, row.fileId, row.localPath, row.caption)
+    persistTelegramSentPhoto(rootDir, row)
   } catch (err) {
     // Persistence is best-effort: a DB hiccup must not make the tool
     // report the photo as unsent when Telegram already accepted it.
@@ -418,37 +415,7 @@ export const telegramTools: ToolDefinition[] = [
     const requestedLimit = optionalNumber(input, "limit") ?? 5
     const limit = Math.min(Math.max(requestedLimit, 1), 20)
     try {
-      const db = getDb(context.rootDir)
-      const rows = chatId !== null
-        ? db.prepare(`
-            SELECT id, chat_id, message_id, file_id, local_path, caption, sent_at
-            FROM telegram_sent_photos
-            WHERE chat_id = ?
-            ORDER BY sent_at DESC, id DESC
-            LIMIT ?
-          `).all(chatId, limit) as Array<{
-            id: number
-            chat_id: number
-            message_id: number
-            file_id: string | null
-            local_path: string
-            caption: string | null
-            sent_at: string
-          }>
-        : db.prepare(`
-            SELECT id, chat_id, message_id, file_id, local_path, caption, sent_at
-            FROM telegram_sent_photos
-            ORDER BY sent_at DESC, id DESC
-            LIMIT ?
-          `).all(limit) as Array<{
-            id: number
-            chat_id: number
-            message_id: number
-            file_id: string | null
-            local_path: string
-            caption: string | null
-            sent_at: string
-          }>
+      const rows = listTelegramSentPhotos(context.rootDir, chatId, limit)
       return {
         ok: true,
         count: rows.length,

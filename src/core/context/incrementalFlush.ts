@@ -25,6 +25,8 @@
 import type Database from "better-sqlite3"
 import { processStream, type PipelineResult } from "../utils/pipeline.ts"
 import { createLogger } from "../logging/logger.ts"
+import { type CursorStorage } from "../utils/cursor.ts"
+import { isFileStorageBackend } from "../storage/fileStorage.ts"
 
 const logger = createLogger("incrementalFlush")
 
@@ -85,10 +87,16 @@ export interface IncrementalFlushResult extends PipelineResult {
  * See modelAdapter.ts for the orchestration glue.
  */
 export async function incrementalFlushSession(
-  db: Database.Database,
+  storage: CursorStorage | Database.Database,
   rawMessages: Array<{ id: number; role: string; text: string; at?: string }>,
   opts: IncrementalFlushOptions,
 ): Promise<IncrementalFlushResult> {
+  const cursorStorage: CursorStorage =
+    typeof storage === "object" && storage !== null && "kind" in storage
+      ? storage
+      : isFileStorageBackend(opts.rootDir)
+        ? { kind: "files", rootDir: opts.rootDir }
+        : { kind: "sqlite", db: storage as Database.Database }
   const streamId = `ctxflush:${opts.sessionId}`
   const wing = opts.wing ?? "CHAT"
   const room = opts.room ?? opts.sessionId
@@ -108,7 +116,7 @@ export async function incrementalFlushSession(
   let drawersFiled = 0
   let drawersSkipped = 0
 
-  const result = await processStream<string>(db, {
+  const result = await processStream<string>(cursorStorage, {
     streamId,
     source,
     abortSignal: opts.abortSignal,

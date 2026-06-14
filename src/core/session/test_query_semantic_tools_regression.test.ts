@@ -13,9 +13,10 @@
 
 import test, { after } from "node:test"
 import assert from "node:assert/strict"
-import { rmSync, mkdtempSync } from "node:fs"
+import { rmSync, mkdtempSync, writeFileSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, dirname } from "node:path"
+import { semanticToolsPath } from "../storage/filePaths.ts"
 
 // Set isolated environment root before importing Monolito core modules
 const testMonolitoRoot = mkdtempSync(join(tmpdir(), "monolito-regression-semantic-root-"))
@@ -36,16 +37,19 @@ const { ensureDirs } = await import("../ipc/protocol.ts")
 
 const TEST_ROOT = testMonolitoRoot
 
+function clearSemanticTools(rootDir: string) {
+  const path = semanticToolsPath(rootDir)
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, "{}", "utf8")
+}
+
 after(() => {
   rmSync(testMonolitoRoot, { recursive: true, force: true })
 })
 
 test("upsertSemanticTool + querySemanticTools: returns string[] not object[]", async () => {
   await ensureDirs(TEST_ROOT)
-  // Clean slate
-  const { getDb } = await import("./store.ts")
-  const db = getDb(TEST_ROOT)
-  db.exec(`DELETE FROM memory_drawers WHERE wing = 'CONF_TOOLS' AND room = 'registry'`)
+  clearSemanticTools(TEST_ROOT)
 
   // Insert known tools
   await upsertSemanticTool(TEST_ROOT, "Read", "Read a file from disk")
@@ -71,9 +75,7 @@ test("querySemanticTools: returns empty array on errors (not throws)", async () 
 })
 
 test("querySemanticTools: respects limit parameter", async () => {
-  const { getDb } = await import("./store.ts")
-  const db = getDb(TEST_ROOT)
-  db.exec(`DELETE FROM memory_drawers WHERE wing = 'CONF_TOOLS' AND room = 'registry'`)
+  clearSemanticTools(TEST_ROOT)
 
   for (let i = 0; i < 5; i++) {
     await upsertSemanticTool(TEST_ROOT, `Tool${i}`, `Description for tool ${i}`)

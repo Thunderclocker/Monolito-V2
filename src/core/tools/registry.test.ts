@@ -8,6 +8,8 @@ import { join } from "node:path"
 // Set isolated environment root before importing Monolito core modules
 const testMonolitoRoot = mkdtempSync(join(tmpdir(), "monolito-registry-test-root-"))
 process.env.MONOLITO_ROOT = testMonolitoRoot
+process.env.MONOLITO_STORAGE_BACKEND = "sqlite"
+process.env.MONOLITO_MEMORY_BACKEND = "sqlite"
 
 // Dynamically import the core modules so they pick up the environment variable
 const { getTool } = await import("./registry.ts")
