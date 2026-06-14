@@ -127,6 +127,14 @@ Supported provider labels are:
 
 The first created profile becomes active automatically.
 
+### Ollama Context Window Management
+
+For the `ollama` provider, Monolito automatically configures the context window size (`num_ctx`) on every chat completion call. 
+
+- Known local model families (such as `qwen`, `llama`, `gemma`, `mistral`, `phi`, and `deepseek`) have VRAM-safe context limits configured by default in `src/core/context/contextLimits.ts` (typically **16,384 tokens**).
+- This window size is passed directly to Ollama's API options (`options.num_ctx`), ensuring the model allocates enough memory without exceeding GPU VRAM capacities.
+- Monolito's context engine respects these limits and proactively triggers database-level smart context compaction before the active conversation history can saturate the configured window.
+
 `GenerateImage` auto-detecta el proveedor de imagen siguiendo este orden:
 
 1. `provider` explícito en el input del tool.
