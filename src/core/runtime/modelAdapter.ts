@@ -238,7 +238,7 @@ function isConversationRole(role: SessionRecord["messages"][number]["role"]): ro
 export function sessionToMessages(session: SessionRecord): ConversationMessage[] {
   const filtered = session.messages
     .filter((message): message is SessionRecord["messages"][number] & { role: "user" | "assistant" } =>
-      isConversationRole(message.role) && !shouldSkipMessage(message.text),
+      isConversationRole(message.role) && !shouldSkipMessage(message.text) && !message.hiddenFromModel,
     )
     .map(message => {
       let content = message.text
@@ -705,6 +705,7 @@ function buildSystemPrompt(args: {
     )
   }
   if (args.extras?.webSearchProvider) dynamicContext.push(`Web search provider: ${args.extras.webSearchProvider}`)
+  if (args.session.voiceMode) dynamicContext.push("Session: voice_mode=active")
   if (args.extras?.systemDirective) {
     dynamicContext.push(`=== SYSTEM DIRECTIVE ===\n${args.extras.systemDirective}`)
   }

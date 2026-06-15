@@ -247,6 +247,8 @@ export function getSemanticMessageContext(rootDir: string, query: string, limit 
 
 export interface AppendMessageOptions {
   hiddenFromUser?: boolean
+  /** Visible to the user/TUI but excluded from model context (runtime boilerplate). */
+  hiddenFromModel?: boolean
   thinking?: string
 }
 

@@ -1,8 +1,8 @@
 /**
  * Global Push-to-Talk Hotkey Listener
  *
- * Listens for a configurable X11 keycode (default 49 = º / ordmasculine) via
- * `xinput test-xi2 --root`.  When the key is held down it records audio with
+ * Listens for a configurable X11 key combo (default Shift + Super / Windows) via
+ * `xinput test-xi2 --root`.  When the combo is held down it records audio with
  * `arecord` and plays indicator beeps. On release it transcribes the recording
  * and submits it as a user message to the orchestrator session.
  *
@@ -25,8 +25,8 @@ import type { MonolitoV2Runtime } from "./runtime.ts"
 const execFileAsync = promisify(execFile)
 const logger = createLogger("globalHotkey")
 
-/** Default X11 raw keycode for the º (ordmasculine) key on ES/ES-LA layouts. */
-const DEFAULT_KEYCODE = 49
+/** Default voice hotkey: Shift (50) + Left Super / Windows key (133). */
+const DEFAULT_VOICE_KEYCODES = [50, 133] as const
 
 /** System sounds to use as push-to-talk indicators (start / stop recording). */
 const SOUND_START = "/usr/share/sounds/LinuxMint/stereo/button-toggle-on.ogg"
@@ -422,7 +422,7 @@ export async function createGlobalHotkeyService(
       }
     }
     if (voiceKeycodes.length === 0) {
-      voiceKeycodes.push(DEFAULT_KEYCODE)
+      voiceKeycodes.push(...DEFAULT_VOICE_KEYCODES)
     }
   } else {
     logger.warn("[GlobalHotkey] `arecord` not found in PATH — voice recording hotkey disabled.")

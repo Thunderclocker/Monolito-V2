@@ -87,6 +87,7 @@ export type SessionRecord = SessionSummary & {
     role: "user" | "assistant" | "system"
     text: string
     thinking?: string
+    hiddenFromModel?: boolean
   }>
   worklog: SessionWorklogEntry[]
 }

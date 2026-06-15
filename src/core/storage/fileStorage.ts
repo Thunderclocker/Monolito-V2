@@ -122,6 +122,7 @@ export type FileMessageRow = {
   at: string
   is_compacted?: number
   hidden_from_user?: number
+  hidden_from_model?: number
 }
 
 export type FileSessionMeta = {
@@ -278,6 +279,7 @@ export class FileStorageBackend {
         role: m.role as "user" | "assistant" | "system",
         text: m.text,
         thinking: m.thinking ?? undefined,
+        hiddenFromModel: m.hidden_from_model === 1,
       }))
     const worklog = readJsonl<FileWorklogRow>(sessionWorklogPath(this.rootDir, sessionId))
     return {
@@ -343,7 +345,7 @@ export class FileStorageBackend {
     sessionId: string,
     role: "user" | "assistant" | "system",
     text: string,
-    options: { hiddenFromUser?: boolean; thinking?: string } = {},
+    options: { hiddenFromUser?: boolean; hiddenFromModel?: boolean; thinking?: string } = {},
   ): number {
     const meta = this.readSessionMeta(sessionId)
     if (!meta) throw new Error(`Session not found: ${sessionId}`)
@@ -360,6 +362,7 @@ export class FileStorageBackend {
       at: now,
       is_compacted: 0,
       hidden_from_user: options.hiddenFromUser ? 1 : 0,
+      hidden_from_model: options.hiddenFromModel ? 1 : 0,
     }
     appendJsonl(sessionMessagesPath(this.rootDir, sessionId), row)
     this.appendWorklog(sessionId, { type: "message", summary: `${role === "user" ? "User" : role === "assistant" ? "Assistant" : "System"}: ${text.replace(/\s+/g, " ").trim().slice(0, 160)}` })

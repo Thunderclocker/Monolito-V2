@@ -43,7 +43,7 @@ export type SttConfig = {
 export type HotkeyConfig = {
   /** Enable the global push-to-talk listener (requires X11 / `xinput`). */
   enabled: boolean
-  /** X11 raw keycode(s) to watch. Can be a single number or an array of numbers. Defaults to 49 (º / ordmasculine on ES-layout). */
+  /** X11 raw keycode(s) for push-to-talk. Single key or combo (all must be held). Defaults to Shift+Super [50, 133]. */
   keycode: number | number[]
   /** Enable the screenshot hotkey listener. Defaults to true if hotkeys are enabled. */
   screenshotEnabled?: boolean

@@ -60,6 +60,34 @@ test("appendMessage: hiddenFromUser=true persists but is filtered from getSessio
   }
 })
 
+test("appendMessage: hiddenFromModel persists for UI but is excluded from getSession model fields", async () => {
+  const root = freshRootDir()
+  process.env.MONOLITO_ROOT = root
+  const { appendMessage, getSession, createSession, getRawMessagesForSession } = await import("./store.ts")
+  const { sessionToMessages } = await import("../runtime/modelAdapter.ts")
+
+  try {
+    createSession(root, "test", "test-session-3")
+    appendMessage(root, "test-session-3", "user", "activa el modo voz")
+    appendMessage(root, "test-session-3", "assistant", "Modo voz activado.", { hiddenFromModel: true })
+
+    const session = getSession(root, "test-session-3")
+    assert.ok(session)
+    assert.equal(session.messages.length, 2, "hiddenFromModel messages remain visible to the user")
+    assert.equal(session.messages[1]?.hiddenFromModel, true)
+
+    const modelMessages = sessionToMessages(session)
+    assert.equal(modelMessages.length, 1, "hiddenFromModel must be excluded from model context")
+    assert.equal(modelMessages[0]?.content, "activa el modo voz")
+
+    const raw = getRawMessagesForSession(root, "test-session-3")
+    assert.equal(raw.length, 2)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    delete process.env.MONOLITO_ROOT
+  }
+})
+
 test("appendMessage: idempotent on options object (no options arg works)", async () => {
   const root = freshRootDir()
   process.env.MONOLITO_ROOT = root

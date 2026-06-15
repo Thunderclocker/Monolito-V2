@@ -91,7 +91,7 @@ export function buildAnthropicMessages(messages: ConversationMessage[]): Message
 export function modelSupportsVision(provider: string, model: string): boolean {
   const m = model.toLowerCase()
   const p = provider.toLowerCase()
-  if (p === "anthropic" || p === "anthropic_compatible") {
+  if (p === "anthropic" || p === "anthropic_compatible" || p === "minimax") {
     return true
   }
   if (p === "openai") {

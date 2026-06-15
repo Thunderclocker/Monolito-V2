@@ -63,6 +63,8 @@ import { getDateContext, getGitContext } from "../context/gitContext.ts"
 import { getWorkspaceContext } from "../context/workspaceContext.ts"
 import { normalizeToolInputPayload } from "./toolInput.ts"
 import { evaluateTopLevelRalphGate, TOP_LEVEL_RALPH_MAX_ATTEMPTS, isScreenViewingRequest } from "./topLevelRalphGate.ts"
+import { extractPhotoAttachments } from "./providers/utils.ts"
+import { prepareTextForTts } from "./voiceTtsText.ts"
 import { renderToolFinish, renderToolStart, renderToolStartText } from "../renderer/toolRenderer.ts"
 import { checkToolPermission, runLifecycleHooks, runPostToolHooks } from "./permissions.ts"
 
@@ -930,6 +932,45 @@ export class MonolitoV2Runtime {
     this.bufferedScreenshotPaths.set(sessionId, path)
   }
 
+  /** Hotkey captures land under scratchpad/screenshots — pre-analyze before the model turn. */
+  private async enrichHotkeyScreenshotVision(
+    sessionId: string,
+    userText: string,
+    profileId: string,
+  ): Promise<string> {
+    const attachments = extractPhotoAttachments(userText).filter(
+      a => a.localPath.includes("/scratchpad/screenshots/") && existsSync(a.localPath),
+    )
+    if (attachments.length === 0) return userText
+
+    let enriched = userText
+    for (const shot of attachments) {
+      try {
+        const result = await this.executeTool(
+          sessionId,
+          "VisionAnalyze",
+          { path: shot.localPath },
+          {
+            rootDir: this.rootDir,
+            cwd: this.rootDir,
+            abortSignal: new AbortController().signal,
+            sessionId,
+            runtime: this,
+          },
+          undefined,
+          profileId,
+        ) as { description?: string }
+        if (typeof result?.description === "string" && result.description.trim()) {
+          enriched += `\n\n<runtime_vision source="VisionAnalyze" path="${shot.localPath}">\n${result.description.trim()}\n</runtime_vision>`
+          logger.info(`[screenshot] Pre-analyzed hotkey capture: ${shot.localPath}`)
+        }
+      } catch (err) {
+        logger.warn(`[screenshot] Hotkey pre-analysis failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    return enriched
+  }
+
   public registerPendingPermission(permissionId: string, sessionId: string, resolve: (decision: "allow" | "deny" | "ask") => void) {
     this.pendingPermissions.set(permissionId, { resolve, sessionId })
   }
@@ -1473,6 +1514,8 @@ Rules:
         }
       }
 
+      userText = await this.enrichHotkeyScreenshotVision(sessionId, userText, profileId)
+
       appendMessage(this.rootDir, sessionId, "user", userText)
       this.emit({ type: "message.received", sessionId, role: "user", text: userText })
 
@@ -1603,7 +1646,7 @@ Rules:
           if (intent === "on") {
             await this.setVoiceMode(sessionId, true)
             const msg = "Modo voz activado. A partir de ahora respondo solo con audio."
-            appendMessage(this.rootDir, sessionId, "assistant", msg)
+            appendMessage(this.rootDir, sessionId, "assistant", msg, { hiddenFromModel: true })
             this.emit({ type: "message.received", sessionId, role: "assistant", text: msg })
             await this.deliverText(sessionId, msg, options?.delivery, "Failed to deliver voice mode activation")
             await this.transitionState(sessionId, "idle")
@@ -1622,7 +1665,7 @@ Rules:
           if (intent === "off") {
             await this.setVoiceMode(sessionId, false)
             const msg = "Modo voz desactivado. Volvemos a texto."
-            appendMessage(this.rootDir, sessionId, "assistant", msg)
+            appendMessage(this.rootDir, sessionId, "assistant", msg, { hiddenFromModel: true })
             this.emit({ type: "message.received", sessionId, role: "assistant", text: msg })
             await this.deliverText(sessionId, msg, options?.delivery, "Failed to deliver voice mode deactivation")
             await this.transitionState(sessionId, "idle")
@@ -1680,18 +1723,7 @@ Rules:
             : session
         const ragSession = await prepareKeywordMemoryContext(this.rootDir, preparedSession, profileId)
 
-        // Inyectar system prompt de modo voz si está activo
         let effectiveRagSession = ragSession
-        if (session.voiceMode) {
-          const voiceModePrompt = "\n\n=== MODO VOZ ACTIVO ===\n- Estás en modo voz estricto. Tu respuesta será convertida a audio y entregada al usuario.\n- El usuario NO verá tu respuesta en texto.\n- Responde de forma natural y conversacional, como si hablaras.\n- Evita: formato markdown, listas con bullets, código, URLs largas, referencias visuales.\n- Usa: oraciones completas, pausas naturales, tono conversacional.\n- Máximo ~120 palabras por respuesta (≈ 1 min de audio)."
-          effectiveRagSession = {
-            ...ragSession,
-            messages: [
-              ...ragSession.messages,
-              { role: "system", text: voiceModePrompt, at: new Date().toISOString() },
-            ],
-          }
-        }
 
         const apiStartedAt = Date.now()
         const isMainSession = !session.id.startsWith("agent-") && !session.id.startsWith("telegram-")
@@ -3621,7 +3653,7 @@ Idioma: el usuario puede escribir en cualquier idioma. Clasifica por significado
     if (!session?.voiceMode) return false
 
     // Solo procesar si hay texto para convertir
-    const textToSpeak = turn.finalText?.trim()
+    const textToSpeak = prepareTextForTts(turn.finalText?.trim() ?? "")
     if (!textToSpeak) return false
 
     // No procesar si es solo una confirmación de activación/desactivación
