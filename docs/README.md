@@ -25,6 +25,8 @@ the operational map.
 - [`troubleshooting.md`](./troubleshooting.md) — symptom → diagnosis →
   fix for the recurring operational issues (daemon lifecycle, Ollama,
   provider errors, tools, STT, vision, multi-agent, updates).
+- [`performance.md`](./performance.md) — turn latency markers, streaming
+  pipeline, caches, and the bench script.
 
 ## Repository layout
 

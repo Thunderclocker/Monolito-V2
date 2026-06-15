@@ -555,8 +555,16 @@ export function renderScreen(header: HeaderState, transcript: TranscriptViewport
   const transcriptRows = Math.max(1, rows - headerLines.length - composerRows)
   // Always create a mutable copy to avoid mutating transcript.blocks
   // Don't show "Pensando..." while a tool is actively running — the tool animation replaces it
-  const showThinking = composer.busy && composer.thinkingVisible && !composer.toolThinkingText
-  const displayTranscriptBlocks: TranscriptBlock[] = showThinking
+  const showThinking = composer.busy && composer.thinkingVisible && !composer.toolThinkingText && !composer.streamingText
+  const displayTranscriptBlocks: TranscriptBlock[] = composer.streamingText
+    ? [...transcript.blocks, {
+        type: "message",
+        role: "assistant",
+        text: composer.streamingText,
+        processing: true,
+        ...(composer.accumulatedThinking ? { thinking: composer.accumulatedThinking } : {}),
+      }]
+    : showThinking
     ? [...transcript.blocks, {
         type: "message",
         role: "assistant",

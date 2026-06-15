@@ -60,7 +60,10 @@ import { createCostState, recordApiCall, recordToolCall, formatCostSummary } fro
 import { readChannelsConfig, writeChannelsConfig } from "../channels/config.ts"
 import { readWebSearchConfig, writeWebSearchConfig, type WebSearchProvider } from "../websearch/config.ts"
 import { getContextBudget } from "../context/contextLimits.ts"
-import { getDateContext, getGitContext } from "../context/gitContext.ts"
+import { getDateContext, getGitContextCached, scheduleGitContextPrefetch } from "../context/gitContext.ts"
+import { scheduleBootBlockPrefetch } from "./turnPrepCache.ts"
+import { logTurnPrepTiming } from "./turnTiming.ts"
+import { TelegramStreamDelivery, createTelegramStreamDelivery } from "../channels/telegramStreamDelivery.ts"
 import { getWorkspaceContext } from "../context/workspaceContext.ts"
 import { normalizeToolInputPayload } from "./toolInput.ts"
 import { evaluateTopLevelRalphGate, TOP_LEVEL_RALPH_MAX_ATTEMPTS, isScreenViewingRequest } from "./topLevelRalphGate.ts"
@@ -457,7 +460,7 @@ import { acquireUpdateLock } from "./updateLock.ts"
 /**
  * Inspect the live runtime config for known-broken values that survived an
  * /update. Returns a multi-line warning string if anything is suspect, or
- * null if everything looks healthy. Designed to be cheap (one config wing
+ * null if everything looks healthy. Designed to be cheap (one config block
  * read, no network) so it can run on every /update.
  *
  * Currently checks:
@@ -935,6 +938,7 @@ export class MonolitoV2Runtime {
   private activeAudioProcess: ChildProcess | null = null
   private activeTaskItemTimer: TaskItemTimerController | null = null
   private activeTurnTimingContext: ActiveTurnTimingContext | null = null
+  private telegramStreamDeliveries = new Map<string, TelegramStreamDelivery>()
 
   public bufferScreenshot(sessionId: string, path: string) {
     this.bufferedScreenshotPaths.set(sessionId, path)
@@ -1065,7 +1069,7 @@ export class MonolitoV2Runtime {
     ensureConfigWings(this.rootDir)
     // On a brand-new install, copy .env values into CONF_SYSTEM / CONF_MODELS
     // so the model settings have a usable base. Idempotent: skipped if the
-    // wings already have content.
+    // boot files already have content.
     bootstrapConfigFromEnv(process.env).catch(err => {
       console.error(`bootstrapConfigFromEnv failed:`, err)
     })
@@ -1169,6 +1173,20 @@ export class MonolitoV2Runtime {
     const resolved = resolveDeliveryContext(sessionId, delivery)
     if (!resolved) return
     const channel = resolved.channel.trim().toLowerCase()
+    if (channel === "telegram") {
+      const streamKey = `${resolved.targetId}`
+      const streamDelivery = this.telegramStreamDeliveries.get(streamKey)
+      if (streamDelivery?.isActive()) {
+        try {
+          await streamDelivery.finish(text)
+        } catch (error) {
+          logger.error(logMessage, error)
+        } finally {
+          this.telegramStreamDeliveries.delete(streamKey)
+        }
+        return
+      }
+    }
     const handler = this.deliveryHandlers.get(channel)
     if (!handler) {
       logger.warn(`No delivery handler registered for channel ${channel}`)
@@ -1697,15 +1715,29 @@ Rules:
         let effectiveRagSession = ragSession
 
         const apiStartedAt = Date.now()
+        const turnPrepStartedAt = Date.now()
         const isMainSession = !session.id.startsWith("agent-") && !session.id.startsWith("telegram-")
         const [gitContext, dateContext, workspaceContext] = await Promise.all([
-          getGitContext(this.rootDir),
+          getGitContextCached(this.rootDir),
           Promise.resolve(getDateContext()),
           Promise.resolve(getWorkspaceContext(this.rootDir, profileId, { isMainSession })),
         ])
+        logTurnPrepTiming(this.rootDir, sessionId, Date.now() - turnPrepStartedAt, {
+          git: Date.now() - turnPrepStartedAt,
+        })
 
 
         const webSearchConfig = readWebSearchConfig()
+        const resolvedDelivery = resolveDeliveryContext(sessionId, options?.delivery)
+        let telegramStreamDelivery: TelegramStreamDelivery | null = null
+        if (resolvedDelivery?.channel === "telegram") {
+          const channelsConfig = readChannelsConfig()
+          const chatId = Number(resolvedDelivery.targetId)
+          if (channelsConfig.telegram?.enabled && channelsConfig.telegram.token && Number.isFinite(chatId) && chatId !== 0) {
+            telegramStreamDelivery = createTelegramStreamDelivery(channelsConfig.telegram.token, chatId)
+            this.telegramStreamDeliveries.set(resolvedDelivery.targetId, telegramStreamDelivery)
+          }
+        }
 
         if (!isAgentSession) {
           const initialTasks = listSessionTasks(this.rootDir, sessionId, profileId)
@@ -1838,6 +1870,7 @@ Rules:
               if (event.type === "model_thinking") {
                 this.emit({ type: "model.thinking", sessionId, text: event.text })
               } else if (event.type === "model_stream") {
+                telegramStreamDelivery?.onDelta(event.text)
                 this.emit({ type: "model.stream", sessionId, text: event.text })
               }
             },
@@ -2093,6 +2126,10 @@ Rules:
 
           await this.deliverText(sessionId, userFacingText, options?.delivery, "Failed to deliver assistant reply")
         }
+        if (!turn.error) {
+          scheduleBootBlockPrefetch(this.rootDir)
+          scheduleGitContextPrefetch(this.rootDir)
+        }
         await this.transitionState(sessionId, turn.error ? "error" : "idle")
         return turn
       }
@@ -2154,6 +2191,10 @@ Rules:
       this.activeTaskItemTimer = null
       this.activeTurnTimingContext = null
       telegramTyping?.stop()
+      const resolvedDelivery = resolveDeliveryContext(sessionId, options?.delivery)
+      if (resolvedDelivery?.channel === "telegram") {
+        this.telegramStreamDeliveries.delete(resolvedDelivery.targetId)
+      }
       this.releaseSessionLock(sessionId)
       this.abortControllers.delete(sessionId)
     }
@@ -2186,7 +2227,7 @@ Rules:
       const ragSession = await prepareKeywordMemoryContext(this.rootDir, syntheticSession, profileId)
       const isMainSession = !session.id.startsWith("agent-") && !session.id.startsWith("telegram-")
       const [gitContext, dateContext, workspaceContext] = await Promise.all([
-        getGitContext(this.rootDir),
+        getGitContextCached(this.rootDir),
         Promise.resolve(getDateContext()),
         Promise.resolve(getWorkspaceContext(this.rootDir, profileId, { isMainSession })),
       ])

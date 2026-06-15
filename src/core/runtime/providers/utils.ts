@@ -4,6 +4,35 @@ import { ContextOverflowError, ProviderOverloadedError, RateLimitError } from ".
 import { listModelTools } from "../../tools/registry.ts"
 import { normalizeToolInputPayload } from "../toolInput.ts"
 import type { ConversationMessage } from "./types.ts"
+import { pooledFetch } from "./httpClient.ts"
+
+let cachedToolDefinitions: { key: string; defs: ReturnType<typeof buildToolDefinitionsUncached> } | null = null
+
+function buildToolDefinitionsUncached(isSubAgent: boolean, lastUserText?: string, allowedToolNames?: string[]) {
+  return listModelTools(isSubAgent, lastUserText, allowedToolNames).map(tool => ({
+    name: tool.name,
+    description: tool.description,
+    input_schema: tool.inputSchema,
+    type: "function" as const,
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.inputSchema,
+    },
+  }))
+}
+
+export function invalidateToolDefinitionsCache() {
+  cachedToolDefinitions = null
+}
+
+export function buildToolDefinitions(isSubAgent: boolean, lastUserText?: string, allowedToolNames?: string[]) {
+  const key = `${isSubAgent}:${(allowedToolNames ?? []).slice().sort().join(",")}:${lastUserText ?? ""}`
+  if (cachedToolDefinitions?.key === key) return cachedToolDefinitions.defs
+  const defs = buildToolDefinitionsUncached(isSubAgent, lastUserText, allowedToolNames)
+  cachedToolDefinitions = { key, defs }
+  return defs
+}
 
 /**
  * Extracts all photo attachment local_path values from a message content string.
@@ -173,22 +202,7 @@ export function buildOpenAiMessages(
   return output
 }
 
-export function buildToolDefinitions(isSubAgent: boolean, lastUserText?: string, allowedToolNames?: string[]) {
-  return listModelTools(isSubAgent, lastUserText, allowedToolNames).map(tool => ({
-    name: tool.name,
-    description: tool.description,
-    input_schema: tool.inputSchema,
-    type: "function",
-    function: {
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.inputSchema,
-    },
-  }))
-}
-
-
-async function parseError(response: Response) {
+async function parseProviderErrorResponse(response: Response) {
   const text = await response.text()
   const lowered = text.toLowerCase()
   if (response.status === 429 || lowered.includes("rate limit")) throw new RateLimitError(`Rate limit: ${text}`, { statusCode: response.status, responseBody: text, headers: response.headers })
@@ -199,9 +213,11 @@ async function parseError(response: Response) {
   throw new Error(`Model request failed (${response.status}): ${text}`)
 }
 
+export { parseProviderErrorResponse }
+
 export async function callJsonApi(url: string, init: RequestInit) {
-  const response = await fetch(url, init)
-  if (!response.ok) await parseError(response)
+  const response = await pooledFetch(url, init)
+  if (!response.ok) await parseProviderErrorResponse(response)
   return await response.json() as Record<string, any>
 }
 
@@ -240,7 +256,7 @@ const REGISTERED_TOOL_NAMES = [
   "TelegramSendDocument", "TelegramGetRecentPhotos", "TelegramGetFile", "DownloadFile",
   "TelegramDownloadFile", "GenerateSpeech", "VoiceClone", "VisionAnalyze", "GenerateImage",
   "TranscribeAudio", "SttServiceStatus", "SttServiceDeploy", "SttServiceStop", "SttServiceRemove",
-  "SttServiceList", "BootRead", "BootWrite", "BootListWings", "BootCreateWing", "WorkspaceMemoryFiling",
+  "SttServiceList", "BootRead", "BootWrite", "BootListFiles", "BootCreateFile", "WorkspaceMemoryFiling",
   "WorkspaceMemoryRecall", "KgAdd", "KgInvalidate", "KgQuery", "SessionForensics",
   "AgentSpawn", "AgentSendMessage", "AgentStop", "list_active_workers",
   "delegate_background_task", "TriggerBackgroundStudy", "AgentList", "ProfileCreate",

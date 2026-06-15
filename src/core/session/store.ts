@@ -9,6 +9,7 @@ import { type BootWingEntry, DEFAULT_BOOT_WING_CONTENT } from "../bootstrap/boot
 import { type ConfigWingName, type ConfigWingValueMap } from "../config/configWings.ts"
 import { createLogger } from "../logging/logger.ts"
 import { createMarkdownMemoryStore, getFileStorage } from "../storage/index.ts"
+import { getCachedBootBlock } from "../runtime/turnPrepCache.ts"
 
 function fileStore(rootDir: string) {
   return getFileStorage(rootDir)
@@ -133,7 +134,7 @@ export function ensureBootWings(rootDir: string, _profileId = "default") {
 }
 
 export function loadCachedMemoryContext(rootDir: string): string | null {
-  return markdownStore(rootDir).buildCachedContextBlock()
+  return getCachedBootBlock(rootDir)
 }
 
 export function ensureConfigWings(rootDir: string) {
@@ -165,7 +166,7 @@ export function bootWingExists(rootDir: string, wing: string, profileId = "defau
 export function createBootWing(rootDir: string, wing: string, profileId = "default", content = "") {
   ensureBootWings(rootDir, profileId)
   const normalizedWing = wing.trim()
-  if (!normalizedWing) throw new Error("BOOT wing must be a non-empty string")
+  if (!normalizedWing) throw new Error("Boot file key must be a non-empty string")
   if (bootWingExists(rootDir, normalizedWing, profileId)) {
     return { created: false, wing: normalizedWing, profile: profileId }
   }
@@ -181,7 +182,7 @@ export function readBootWing(rootDir: string, wing: string, profileId = "default
 export function writeBootWing(rootDir: string, wing: string, content: string, profileId = "default", append = false) {
   ensureBootWings(rootDir, profileId)
   if (!bootWingExists(rootDir, wing, profileId)) {
-    throw new Error(`BOOT wing ${wing} does not exist in profile ${profileId}. Use BootCreateWing after BootListWings if you need a new wing.`)
+    throw new Error(`Boot file ${wing} does not exist in profile ${profileId}. Use BootCreateFile after BootListFiles if you need a new file.`)
   }
   markdownStore(rootDir).writeBootWing(wing, content, append)
   return { changed: true, bytes: Buffer.byteLength(content, "utf8") }
@@ -362,10 +363,10 @@ export async function fileMemory(
 ) {
   const rawNamespace = namespace.trim()
   if (rawNamespace.toUpperCase().startsWith("BOOT_")) {
-    throw new Error("BOOT_* wings are reserved for deterministic bootstrap state. Use BootWrite instead.")
+    throw new Error("BOOT_* keys are reserved for boot context files under memory/boot/. Use BootWrite instead.")
   }
   if (rawNamespace.toUpperCase().startsWith("CONF_")) {
-    throw new Error("CONF_* wings are reserved for technical configuration state. Use ConfigWrite/tool_manage_config instead.")
+    throw new Error("CONF_* keys are reserved for config JSON under memory/config/. Use tool_manage_config instead.")
   }
   const normalizedSection = section.trim() || "general"
   const sectionTitle = key?.trim() ? `${normalizedSection} — ${key.trim()}` : normalizedSection
@@ -384,10 +385,10 @@ export async function upsertCuratedMemory(
 ): Promise<{ id: string; action: "inserted" | "updated" | "skipped" }> {
   const rawNamespace = namespace.trim()
   if (rawNamespace.toUpperCase().startsWith("BOOT_")) {
-    throw new Error("BOOT_* wings are reserved for deterministic bootstrap state. Use BootWrite instead.")
+    throw new Error("BOOT_* keys are reserved for boot context files under memory/boot/. Use BootWrite instead.")
   }
   if (rawNamespace.toUpperCase().startsWith("CONF_")) {
-    throw new Error("CONF_* wings are reserved for technical configuration state. Use ConfigWrite/tool_manage_config instead.")
+    throw new Error("CONF_* keys are reserved for config JSON under memory/config/. Use tool_manage_config instead.")
   }
   const normalizedNamespace = rawNamespace.length === 0 ? "PRIVATE" : rawNamespace.toUpperCase() === "SHARED" ? "SHARED" : rawNamespace
   const normalizedSection = section.trim() || "general"

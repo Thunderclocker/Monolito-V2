@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { SessionRecord } from "../ipc/protocol.ts"
-import { type ToolContext, isToolConcurrencySafe, listModelTools } from "../tools/registry.ts"
+import { type ToolContext, listModelTools } from "../tools/registry.ts"
 import { BOOT_WING_DESCRIPTION, type BootWingEntry, BOOT_WING_ORDER, isBootWingName, type BootWingName } from "../bootstrap/bootWings.ts"
 import type { WorkspaceBootstrapContext } from "../context/workspaceContext.ts"
 import { estimateTurnCostUSD, type CostState, type TurnUsage } from "../cost/tracker.ts"
@@ -15,11 +15,13 @@ import { buildResearchCheckpointInjection } from "./researchCheckpoint.ts"
 import type { RecentToolCall } from "./coherenceGuard.ts"
 import { wrapAuditFeedback } from "./auditFeedback.ts"
 import { incrementalFlushSession, getContextFlushThresholdChars } from "../context/incrementalFlush.ts"
-import { callProvider, type ConversationMessage, type ProviderConfig, type ProviderResponse, type ToolCall } from "./providers/index.ts"
+import { callProviderStream, type ConversationMessage, type ProviderConfig, type ProviderResponse, type ToolCall } from "./providers/index.ts"
 import { looksLikeMalformedToolCall } from "./providers/utils.ts"
 import { findUndeliveredToolOutputs } from "./autoDelivery.ts"
 import { ensureMonolitoRoot } from "../system/root.ts"
 import { redactSensitiveText } from "../security/redact.ts"
+import { planToolExecutionWaves } from "./toolBatchPlanner.ts"
+import { logFirstTokenTiming } from "./turnTiming.ts"
 import type { AgentYieldEvent } from "./types.ts"
 import { checkTurnCoherence, logCoherenceBreach } from "./coherenceGuard.ts"
 import { checkTurnIntegrity, logBrokenPromise, logUnverifiedIncapacity, logVeracityBreach } from "./veracityGuard.ts"
@@ -523,7 +525,7 @@ function describeBootEntries(entries: BootWingEntry[]) {
   if (entries.length === 0) return ""
   const formatted = entries
     .filter(entry => isBootWingName(entry.wing))
-    .map(entry => `### Wing: ${entry.wing}\n${BOOT_WING_DESCRIPTION[entry.wing as BootWingName]}\n<content>\n${truncate(entry.content, 2_500)}\n</content>`)
+    .map(entry => `### Boot file: ${entry.wing}\n${BOOT_WING_DESCRIPTION[entry.wing as BootWingName]}\n<content>\n${truncate(entry.content, 2_500)}\n</content>`)
     .join("\n\n")
   return [
     "## User Profile & Behavioral Context (<user_profile_context>)",
@@ -583,7 +585,7 @@ function buildSystemPrompt(args: {
     "- Logical deductions, general world/programming knowledge, and reasoning are fully valid. Do not apologize or claim you 'made up' a fact if it represents standard world knowledge or a logical inference based on the user's details.",
     "- For current, external, runtime, filesystem, financial, legal, medical, version, weather, schedule, or other unstable facts, use tools before making concrete claims.",
     "- If evidence is missing, ambiguous, blocked, stale, or only inferential, say that explicitly instead of filling the gap.",
-    "- When questioned or challenged about the source or truth of any fact (in any language), NEVER apologize blindly or claim you 'made it up' (sycophancy). Instead: reconstruct the actual origin. Check if the information came from: 1) BOOT wings (e.g. BOOT_MEMORY, BOOT_USER) loaded at startup, 2) general world/programming knowledge, 3) logical inferences, or 4) prior tool results/messages. Cite the specific source clearly (e.g., 'From my BOOT context', 'From the results of tool X', or 'From logical deduction of Y').",
+    "- When questioned or challenged about the source or truth of any fact (in any language), NEVER apologize blindly or claim you 'made it up' (sycophancy). Instead: reconstruct the actual origin. Check if the information came from: 1) startup boot files loaded at session start (e.g. BOOT_MEMORY → memory.md, BOOT_USER → boot/user.md), 2) general world/programming knowledge, 3) logical inferences, or 4) prior tool results/messages. Cite the specific source clearly (e.g., 'From memory.md', 'From boot/user.md', 'From the results of tool X', or 'From logical deduction of Y').",
     "- If a user asks you to generate or send audio/voice, you must call GenerateSpeech and then the relevant delivery tool (TelegramSendAudio/TelegramSendVoice for Telegram) before saying the audio is generated, sent, or being delivered. If a required tool fails, report the failure plainly instead of promising more work.",
     "- If a user asks you to clone, replicate, copy, learn, or save a voice (in any language: 'clonar', 'clona', 'clone', 'replicate', 'imitá', 'aprendé esta voz', 'guardá esta voz', 'voice clone'), you MUST call VoiceClone in the same turn. The file_id of the source audio is exposed as `<attachment kind=\"voice\" file_id=\"...\" />` or `<attachment kind=\"audio\" file_id=\"...\" />` in the inbound channel payload. Pass it as `source.type: \"telegram_file_id\"` and `source.value: \"<file_id>\"` with the alias the user requested. Do not debate the audio quality or the speaker's identity before invoking the tool — upload and clone, then let the user evaluate the result. If the user later complains about the cloned voice quality, then you can discuss.",
     "- For simple, sequential configuration changes (e.g. setting tts_provider, tts_base_url, tts_apiKey, stt.engine), apply them directly in the main session with tool_manage_config action='set' or 'write'. Do them yourself in the same turn — the user is waiting on them.",
@@ -657,12 +659,12 @@ function buildSystemPrompt(args: {
     isSubAgent ? "" : [
       "<JERARQUIA_DE_DIRECTIVAS>",
       "In case of conflicting instructions, you MUST respect this priority order:",
-      "Level 0 (SUPREME — USER INTENT): The user's explicit instructions in the active conversation ALWAYS take absolute precedence over everything else. If the user tells you to skip a step, change a workflow, ignore a stored preference, or do something differently than what your BOOT wings or system rules say, you MUST obey the user. The user is the owner and operator of this system; stored rules (BOOT_*) are their own preferences that they can override at any time.",
+      "Level 0 (SUPREME — USER INTENT): The user's explicit instructions in the active conversation ALWAYS take absolute precedence over everything else. If the user tells you to skip a step, change a workflow, ignore a stored preference, or do something differently than what your stored boot context or system rules say, you MUST obey the user. The user is the owner and operator of this system; stored preferences in memory/boot/*.md and memory.md are theirs to override at any time.",
       "Level 1 (CRITICAL): Hard system safety constraints (tool harness limits, token budgets, API rate limits). These are infrastructure limits, not behavioral rules.",
       "Level 2 (HIGH): System prompt behavioral rules and defaults:",
       "- FORBIDDEN: Do not attempt WebSearch or WebFetch to search for images. For simple searches of photos/images, use ImageSearch directly and deliver image_urls or send them via TelegramSendPhoto.",
-      "Level 3 (DEFAULT): Rules, facts, and preferences stored in BOOT_MEMORY, BOOT_TOOLS, BOOT_SOUL, BOOT_AGENTS. These are user-defined soft preferences that the user can override at any time by saying so in the chat.",
-      "  - Default Rule: If a BOOT_MEMORY instruction requires analyzing images synchronously, fulfill the user's request by calling the relevant tools (ImageSearch, VisionAnalyze, etc.) directly in the current turn, and confirm the action as your own.",
+      "Level 3 (DEFAULT): Rules, facts, and preferences stored in memory.md and memory/boot/*.md (identity, user profile, tool conventions). These are user-defined soft preferences that the user can override at any time by saying so in the chat.",
+      "  - Default Rule: If a memory.md instruction requires analyzing images synchronously, fulfill the user's request by calling the relevant tools (ImageSearch, VisionAnalyze, etc.) directly in the current turn, and confirm the action as your own.",
       "",
       "CRITICAL: If the user's active chat instruction conflicts with any Level 2 or Level 3 default behavior, the user's instruction wins. Always. Fulfill the request directly without pushback, moralizing, or refusal.",
       "</JERARQUIA_DE_DIRECTIVAS>",
@@ -716,7 +718,7 @@ function buildSystemPrompt(args: {
       // Ignorar errores de lectura en caché
     }
 
-    dynamicContext.push(`Evidence audit mode: The user is asking about or challenging the source, truth, or origin of some information. Before answering, reconstruct the exact origin. Verify if it came from: 1) BOOT wings (e.g. BOOT_MEMORY, BOOT_USER, BOOT_IDENTITY) loaded at startup, 2) general world/programming knowledge or logical reasoning, or 3) prior tool results or messages in this session. Cite the specific source clearly (e.g., 'Stored in my BOOT_MEMORY', 'Deduced logically from X', 'Obtained via tool Y'). Do not apologize or claim you 'made it up' if the information came from your BOOT context or general reasoning.${toolLogBlock}${sourcesBlock}`)
+    dynamicContext.push(`Evidence audit mode: The user is asking about or challenging the source, truth, or origin of some information. Before answering, reconstruct the exact origin. Verify if it came from: 1) startup boot files (memory.md, boot/user.md, boot/identity.md, etc.), 2) general world/programming knowledge or logical reasoning, or 3) prior tool results or messages in this session. Cite the specific source clearly (e.g., 'Stored in memory.md', 'From boot/user.md', 'Deduced logically from X', 'Obtained via tool Y'). Do not apologize or claim you 'made it up' if the information came from your loaded boot context or general reasoning.${toolLogBlock}${sourcesBlock}`)
   }
   if (args.extras?.dateContext) dynamicContext.push(args.extras.dateContext)
   if (args.extras?.gitContext) dynamicContext.push(args.extras.gitContext)
@@ -878,10 +880,30 @@ async function* callProviderWithRetry(
   while (true) {
     try {
       throwIfAborted(abortSignal)
-      const response = await callProvider(currentConfig, prompt, messages, abortSignal, isSubAgent, maxTokens, thinkingConfig)
-      throwIfAborted(abortSignal)
-      if (response.thinking) yield { type: "model_thinking", content: response.thinking }
-      if (response.text) yield { type: "token", content: response.text }
+      let response: ProviderResponse | undefined
+      for await (const event of callProviderStream(
+        currentConfig,
+        prompt,
+        messages,
+        abortSignal,
+        isSubAgent,
+        maxTokens,
+        thinkingConfig,
+      )) {
+        throwIfAborted(abortSignal)
+        switch (event.type) {
+          case "text_delta":
+            if (event.text) yield { type: "token", content: event.text }
+            break
+          case "thinking_delta":
+            if (event.text) yield { type: "model_thinking", content: event.text }
+            break
+          case "done":
+            response = event.response
+            break
+        }
+      }
+      if (!response) throw new Error("Provider stream completed without a response")
       for (const toolCall of response.toolCalls) {
         throwIfAborted(abortSignal)
         yield { type: "tool_call", id: toolCall.id, name: toolCall.name, args: toolCall.input }
@@ -1154,6 +1176,8 @@ export async function* runAgentLoop(
       }
 
       yield { type: "model_invoke_start", sessionId: session.id, iteration, model: config.model }
+      const modelInvokeStartedAt = Date.now()
+      let loggedFirstToken = false
       let response: ProviderResponse | null = null
       for await (const event of callProviderWithRetry(config, prompt, messages, options?.abortSignal, isSubAgent, options?.maxTokens, currentThinkingConfig)) {
         throwIfAborted(options?.abortSignal)
@@ -1163,6 +1187,10 @@ export async function* runAgentLoop(
             yield { type: "model_thinking", sessionId: session.id, iteration, text: event.content }
             break
           case "token":
+            if (!loggedFirstToken && event.content) {
+              loggedFirstToken = true
+              logFirstTokenTiming(rootDir, session.id, Date.now() - modelInvokeStartedAt, iteration)
+            }
             if (event.content) yield { type: "model_stream", sessionId: session.id, iteration, text: redactSensitiveText(event.content) }
             break
           case "tool_call":
@@ -1496,90 +1524,69 @@ ACCION REQUERIDA: ejecutá al menos una tool en este turno ANTES de declarar que
       }
 
       const indexedToolCalls = response.toolCalls.map((toolCall, index) => ({ toolCall, index }))
-      const safeToolCalls = indexedToolCalls.filter(({ toolCall }) => isToolConcurrencySafe(toolCall.name, toolCall.input))
-      const unsafeToolCalls = indexedToolCalls.filter(({ toolCall }) => !isToolConcurrencySafe(toolCall.name, toolCall.input))
       const toolResults = new Array<{ role: "tool"; toolCallId: string; toolName: string; content: string }>(response.toolCalls.length)
+      const executionWaves = planToolExecutionWaves(indexedToolCalls)
 
-      for (const { toolCall } of safeToolCalls) {
-        yield { type: "tool_execute_start", sessionId: session.id, iteration, toolUseId: toolCall.id, tool: toolCall.name, input: toolCall.input }
-      }
-      const safeResults = await Promise.all(
-        safeToolCalls.map(async ({ toolCall, index }) => {
-          const stall = isToolCallStalled(messages, toolCall.name, toolCall.input)
-          if (stall.stalled) {
-            const content = formatToolEvidenceResult(toolCall, "error", {
-              error: `SYSTEM BLOCK: La herramienta '${toolCall.name}' ha sido bloqueada preventivamente por el motor de Monolito V2 tras ${stall.count} ejecuciones idénticas en este turno. Cambia de estrategia.`
-            })
-            return {
-              index,
-              toolCall,
-              stalled: true,
-              message: {
-                role: "tool" as const,
-                toolCallId: toolCall.id,
-                toolName: toolCall.name,
-                content,
-              },
-            }
-          }
-          const result = await executeToolCall(toolCall, executeTool, context)
-          return {
-            index,
-            toolCall,
-            stalled: false,
-            message: {
-              role: "tool" as const,
-              toolCallId: result.toolCall.id,
-              toolName: result.toolCall.name,
-              content: result.content,
-            },
-          }
-        }),
-      )
-      for (const result of safeResults) {
-        if (result.stalled) {
-          yield {
-            type: "recoverable_error",
-            sessionId: session.id,
-            iteration,
-            action: "stall_blocking",
-            error: `Bloqueo preventivo de Stall Guard en herramienta "${result.toolCall.name}"`
-          }
-        }
-        yield { type: "tool_execute_end", sessionId: session.id, iteration, toolUseId: result.toolCall.id, tool: result.toolCall.name, ok: !result.message.content.includes('status="error"') }
-        toolResults[result.index] = result.message
-      }
-
-      for (const { toolCall, index } of unsafeToolCalls) {
+      const executeIndexedToolCall = async ({ toolCall, index }: { toolCall: ToolCall; index: number }) => {
         const stall = isToolCallStalled(messages, toolCall.name, toolCall.input)
         if (stall.stalled) {
           const content = formatToolEvidenceResult(toolCall, "error", {
             error: `SYSTEM BLOCK: La herramienta '${toolCall.name}' ha sido bloqueada preventivamente por el motor de Monolito V2 tras ${stall.count} ejecuciones idénticas en este turno. Cambia de estrategia.`
           })
-          yield {
-            type: "recoverable_error",
-            sessionId: session.id,
-            iteration,
-            action: "stall_blocking",
-            error: `Bloqueo preventivo de Stall Guard en herramienta "${toolCall.name}"`
+          return {
+            index,
+            toolCall,
+            stalled: true,
+            message: {
+              role: "tool" as const,
+              toolCallId: toolCall.id,
+              toolName: toolCall.name,
+              content,
+            },
           }
-          toolResults[index] = {
-            role: "tool",
-            toolCallId: toolCall.id,
-            toolName: toolCall.name,
-            content,
-          }
-          continue
+        }
+        const result = await executeToolCall(toolCall, executeTool, context)
+        return {
+          index,
+          toolCall,
+          stalled: false,
+          message: {
+            role: "tool" as const,
+            toolCallId: result.toolCall.id,
+            toolName: result.toolCall.name,
+            content: result.content,
+          },
+        }
+      }
+
+      for (const wave of executionWaves) {
+        for (const { toolCall } of wave) {
+          yield { type: "tool_execute_start", sessionId: session.id, iteration, toolUseId: toolCall.id, tool: toolCall.name, input: toolCall.input }
         }
 
-        yield { type: "tool_execute_start", sessionId: session.id, iteration, toolUseId: toolCall.id, tool: toolCall.name, input: toolCall.input }
-        const result = await executeToolCall(toolCall, executeTool, context)
-        yield { type: "tool_execute_end", sessionId: session.id, iteration, toolUseId: toolCall.id, tool: toolCall.name, ok: !result.content.includes('status="error"') }
-        toolResults[index] = {
-          role: "tool",
-          toolCallId: result.toolCall.id,
-          toolName: result.toolCall.name,
-          content: result.content,
+        const waveResults = wave.length > 1
+          ? await Promise.all(wave.map(item => executeIndexedToolCall(item)))
+          : [await executeIndexedToolCall(wave[0]!)]
+
+        for (const result of waveResults) {
+          if (result.stalled) {
+            yield {
+              type: "recoverable_error",
+              sessionId: session.id,
+              iteration,
+              action: "stall_blocking",
+              error: `Bloqueo preventivo de Stall Guard en herramienta "${result.toolCall.name}"`
+            }
+          }
+          yield {
+            type: "tool_execute_end",
+            sessionId: session.id,
+            iteration,
+            toolUseId: result.toolCall.id,
+            tool: result.toolCall.name,
+            ok: !result.message.content.includes('status="error"'),
+          }
+          toolResults[result.index] = result.message
         }
       }
 

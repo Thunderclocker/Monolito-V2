@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk"
-import type { RawMessageStreamEvent, ToolUseBlock } from "@anthropic-ai/sdk/resources/messages"
+import type { ToolUseBlock } from "@anthropic-ai/sdk/resources/messages"
 import type { ConversationMessage, ProviderConfig, ProviderResponse } from "./types.ts"
+import type { ProviderStreamEvent } from "./streamTypes.ts"
 import { buildAnthropicMessages, buildToolDefinitions, normalizeAnthropicToolInput } from "./utils.ts"
 
 function parsePartialJson(value: string): Record<string, unknown> {
@@ -16,7 +17,25 @@ function sanitizeAnthropicBaseUrl(baseUrl: string) {
   return baseUrl.trim().replace(/\/v1\/messages\/?$/, "")
 }
 
-export async function callAnthropicApi(
+const anthropicClients = new Map<string, Anthropic>()
+
+function getAnthropicClient(config: ProviderConfig): Anthropic {
+  const cleanBaseUrl = config.baseUrl ? sanitizeAnthropicBaseUrl(config.baseUrl) : ""
+  const key = `${cleanBaseUrl}|${config.apiKey}`
+  let client = anthropicClients.get(key)
+  if (!client) {
+    client = new Anthropic({
+      apiKey: config.apiKey || "not-needed",
+      baseURL: cleanBaseUrl || undefined,
+      timeout: 600_000,
+      dangerouslyAllowBrowser: true,
+    })
+    anthropicClients.set(key, client)
+  }
+  return client
+}
+
+export async function* callAnthropicApiStream(
   config: ProviderConfig,
   system: string,
   memoryBlock: string,
@@ -27,14 +46,8 @@ export async function callAnthropicApi(
   isSubAgent: boolean,
   allowedToolNames?: string[],
   thinkingConfig?: { enabled: boolean; budgetTokens?: number },
-): Promise<ProviderResponse> {
-  const cleanBaseUrl = config.baseUrl ? sanitizeAnthropicBaseUrl(config.baseUrl) : undefined
-  const client = new Anthropic({
-    apiKey: config.apiKey || "not-needed",
-    baseURL: cleanBaseUrl || undefined,
-    timeout: 600_000,
-    dangerouslyAllowBrowser: true,
-  })
+): AsyncGenerator<ProviderStreamEvent, ProviderResponse> {
+  const client = getAnthropicClient(config)
   const lastUserText = messages.slice().reverse().find(m => m.role === "user")?.content || ""
   const anthropicTools = buildToolDefinitions(isSubAgent, lastUserText, allowedToolNames).map(tool => ({
     name: tool.name,
@@ -53,12 +66,12 @@ export async function callAnthropicApi(
     system: [
       { type: "text" as const, text: system, cache_control: { type: "ephemeral" as const } },
       ...(memoryBlock ? [{ type: "text" as const, text: memoryBlock, cache_control: { type: "ephemeral" as const } }] : []),
-      ...(bootBlock ? [{ type: "text" as const, text: bootBlock }] : []),
+      ...(bootBlock ? [{ type: "text" as const, text: bootBlock, cache_control: { type: "ephemeral" as const } }] : []),
     ],
     messages: buildAnthropicMessages(messages),
     tools: anthropicTools,
     ...(thinkingEnabled ? {
-      thinking: { type: "enabled", budget_tokens: thinkingBudget }
+      thinking: { type: "enabled", budget_tokens: thinkingBudget },
     } : {}),
   }, {
     signal: abortSignal,
@@ -96,10 +109,12 @@ export async function callAnthropicApi(
     if (event.type === "content_block_delta") {
       if (event.delta.type === "text_delta") {
         textParts.push(event.delta.text)
+        yield { type: "text_delta", text: event.delta.text }
         continue
       }
       if (event.delta.type === "thinking_delta") {
         thinkingParts.push(event.delta.thinking)
+        yield { type: "thinking_delta", text: event.delta.thinking }
         continue
       }
       if (event.delta.type === "input_json_delta") {
@@ -107,14 +122,6 @@ export async function callAnthropicApi(
         if (toolBlock) toolBlock.inputBuffer = `${toolBlock.inputBuffer ?? ""}${event.delta.partial_json}`
       }
       continue
-    }
-
-    if (event.type === "content_block_stop") {
-      const toolBlock = toolBlocks.get(event.index)
-      if (toolBlock) {
-        stream.controller.abort()
-        break
-      }
     }
   }
 
@@ -124,10 +131,35 @@ export async function callAnthropicApi(
     input: parsePartialJson(block.inputBuffer?.trim() ? block.inputBuffer : JSON.stringify(block.input ?? {})),
   }))
 
-  return {
+  const response: ProviderResponse = {
     text: textParts.join("").trim(),
     toolCalls,
     thinking: thinkingParts.length > 0 ? thinkingParts.join("") : undefined,
     usage,
   }
+  yield { type: "done", response }
+  return response
+}
+
+export async function callAnthropicApi(
+  config: ProviderConfig,
+  system: string,
+  memoryBlock: string,
+  bootBlock: string,
+  messages: ConversationMessage[],
+  abortSignal: AbortSignal | undefined,
+  maxTokens: number | undefined,
+  isSubAgent: boolean,
+  allowedToolNames?: string[],
+  thinkingConfig?: { enabled: boolean; budgetTokens?: number },
+): Promise<ProviderResponse> {
+  const stream = callAnthropicApiStream(
+    config, system, memoryBlock, bootBlock, messages, abortSignal, maxTokens, isSubAgent, allowedToolNames, thinkingConfig,
+  )
+  let response: ProviderResponse | undefined
+  for await (const event of stream) {
+    if (event.type === "done") response = event.response
+  }
+  if (!response) throw new Error("Anthropic stream completed without a response")
+  return response
 }

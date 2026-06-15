@@ -5,7 +5,8 @@
 
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import { existsSync } from "node:fs"
+import { existsSync, statSync } from "node:fs"
+import { join } from "node:path"
 
 const execFileAsync = promisify(execFile)
 const MAX_STATUS_CHARS = 2000
@@ -60,6 +61,59 @@ export async function getGitContext(rootDir: string): Promise<string | null> {
   if (log) lines.push(`Recent commits:\n${log}`)
 
   return lines.join("\n")
+}
+
+type GitContextCacheEntry = {
+  headMtime: number
+  indexMtime: number
+  context: string | null
+}
+
+const gitContextCache = new Map<string, GitContextCacheEntry>()
+
+function gitCacheFingerprint(rootDir: string): { headMtime: number; indexMtime: number } {
+  const gitDir = join(rootDir, ".git")
+  return {
+    headMtime: readMtime(join(gitDir, "HEAD")),
+    indexMtime: readMtime(join(gitDir, "index")),
+  }
+}
+
+function readMtime(path: string): number {
+  try {
+    return statSync(path).mtimeMs
+  } catch {
+    return 0
+  }
+}
+
+/** Session-scoped git snapshot with mtime invalidation (free-code parity). */
+export async function getGitContextCached(rootDir: string): Promise<string | null> {
+  if (!existsSync(join(rootDir, ".git"))) {
+    return getGitContext(rootDir)
+  }
+  const fingerprint = gitCacheFingerprint(rootDir)
+  const cached = gitContextCache.get(rootDir)
+  if (cached && cached.headMtime === fingerprint.headMtime && cached.indexMtime === fingerprint.indexMtime) {
+    return cached.context
+  }
+  const context = await getGitContext(rootDir)
+  gitContextCache.set(rootDir, { ...fingerprint, context })
+  return context
+}
+
+export function invalidateGitContextCache(rootDir?: string) {
+  if (rootDir) {
+    gitContextCache.delete(rootDir)
+    return
+  }
+  gitContextCache.clear()
+}
+
+export function scheduleGitContextPrefetch(rootDir: string) {
+  setImmediate(() => {
+    void getGitContextCached(rootDir).catch(() => {})
+  })
 }
 
 export function getLocalISODate(): string {

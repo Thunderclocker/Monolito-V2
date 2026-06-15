@@ -593,7 +593,9 @@ export async function ensureCliSession(client: DaemonClient, sessionId?: string)
 
 export async function openInteractiveSession(client: DaemonClient, sessionId?: string) {
   const rootDir = process.cwd()
-  const composer: ComposerState = { input: "", cursor: 0, busy: false, thinkingFrame: 0, thinkingVisible: false, suggestions: [], toolThinkingFrame: 0, toolThinkingText: "", menuState: null, channelMenuState: null, websearchMenuState: null, masterMenuState: null, masterMenuEphemeral: false, permissionPrompt: null, accumulatedThinking: "", showThinkingContent: false }
+  const composer: ComposerState = { input: "", cursor: 0, busy: false, thinkingFrame: 0, thinkingVisible: false, suggestions: [], toolThinkingFrame: 0, toolThinkingText: "", menuState: null, channelMenuState: null, websearchMenuState: null, masterMenuState: null, masterMenuEphemeral: false, permissionPrompt: null, accumulatedThinking: "", streamingText: "", showThinkingContent: false }
+  let lastStreamRedrawAt = 0
+  const STREAM_REDRAW_MS = 50
   const history = createPromptHistory(rootDir)
   const completer = createInteractiveCompleter(rootDir)
   const formatter = new InteractiveTranscriptFormatter()
@@ -740,6 +742,14 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       return
     }
     if (event.type === "model.stream") {
+      composer.streamingText = (composer.streamingText ?? "") + event.text
+      composer.thinkingVisible = false
+      composer.busy = true
+      const now = Date.now()
+      if (now - lastStreamRedrawAt >= STREAM_REDRAW_MS) {
+        lastStreamRedrawAt = now
+        redraw()
+      }
       return
     }
 
@@ -768,6 +778,7 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     if (event.type === "message.received" && event.role === "assistant") {
       composer.thinkingVisible = false
       composer.accumulatedThinking = ""
+      composer.streamingText = ""
       if (composer.masterMenuEphemeral) {
         composer.masterMenuState = null
         composer.masterMenuEphemeral = false
@@ -787,6 +798,7 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       composer.toolThinkingText = ""
       composer.toolThinkingFrame = 0
       composer.accumulatedThinking = ""
+      composer.streamingText = ""
       stopThinkingAnimation()
     }
     transcript = appendTranscriptBlocks(transcript, blocks)
