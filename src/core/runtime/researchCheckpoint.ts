@@ -35,18 +35,25 @@ export function filterSourceKeysForTurn(
   sources: Array<{ key: string; content: string }>,
   turnStartedAtMs: number,
 ): string[] {
+  return filterSourceKeysSince(sources, turnStartedAtMs)
+}
+
+export function filterSourceKeysSince(
+  sources: Array<{ key: string; content: string }>,
+  sinceMs: number,
+): string[] {
   const bufferMs = 5_000
   return sources
     .filter(({ key }) => {
       const prefix = key.split(":")[0]
       if (!prefix || !RESEARCH_CHECKPOINT_TOOLS.has(prefix)) return false
       const ts = sourceKeyTimestamp(key)
-      return ts === null || ts >= turnStartedAtMs - bufferMs
+      return ts === null || ts >= sinceMs - bufferMs
     })
     .map(s => s.key)
 }
 
-function buildEvidenceIndex(steps: AssistantTurnStep[]): ResearchCheckpointFile["evidenceIndex"] {
+function buildEvidenceIndexFromSteps(steps: AssistantTurnStep[]): ResearchCheckpointFile["evidenceIndex"] {
   const index: ResearchCheckpointFile["evidenceIndex"] = []
   for (const step of steps) {
     if (step.type !== "tool" || !RESEARCH_CHECKPOINT_TOOLS.has(step.tool)) continue
@@ -65,6 +72,69 @@ function buildEvidenceIndex(steps: AssistantTurnStep[]): ResearchCheckpointFile[
   return index
 }
 
+function buildEvidenceIndex(steps: AssistantTurnStep[]): ResearchCheckpointFile["evidenceIndex"] {
+  return buildEvidenceIndexFromSteps(steps)
+}
+
+function sliceResearchSteps(steps: AssistantTurnStep[], fromIndex: number): AssistantTurnStep[] {
+  const toolSteps = (steps ?? []).filter(
+    (step): step is Extract<AssistantTurnStep, { type: "tool" }> => step.type === "tool",
+  )
+  return toolSteps.slice(fromIndex)
+}
+
+export function commitCompletedTaskItem(args: {
+  rootDir: string
+  sessionId: string
+  profileId: string
+  userRequest: string
+  turnStartedAtMs: number
+  task: { id: string; content: string }
+  itemStartedAtMs: number
+  steps: AssistantTurnStep[]
+  stepsFromIndex: number
+}): ResearchCheckpointFile | null {
+  const itemSteps = sliceResearchSteps(args.steps, args.stepsFromIndex)
+  if (!hasResearchToolSteps(itemSteps)) return null
+
+  const sources = readSessionSources(args.rootDir, args.sessionId, args.profileId)
+  const sourceKeys = filterSourceKeysSince(sources, args.itemStartedAtMs)
+  const completedItem = {
+    taskId: args.task.id,
+    content: args.task.content,
+    completedAt: new Date().toISOString(),
+    toolsRun: listResearchToolsRun(itemSteps),
+    sourceKeys,
+    evidenceIndex: buildEvidenceIndexFromSteps(itemSteps),
+    itemStartedAt: new Date(args.itemStartedAtMs).toISOString(),
+  }
+
+  const existing = readResearchCheckpoint(args.rootDir, args.sessionId)
+  const completedItems = [...(existing?.completedItems ?? []), completedItem]
+  const mergedSourceKeys = [...new Set([...(existing?.sourceKeys ?? []), ...sourceKeys])]
+  const mergedTools = [...new Set([...(existing?.toolsRun ?? []), ...completedItem.toolsRun])]
+  const mergedEvidence = [
+    ...(existing?.evidenceIndex ?? []),
+    ...completedItem.evidenceIndex,
+  ]
+
+  const checkpoint: ResearchCheckpointFile = {
+    createdAt: existing?.createdAt ?? new Date().toISOString(),
+    userRequest: (existing?.userRequest ?? args.userRequest).slice(0, 2_000),
+    reason: existing?.reason ?? "turn_aborted",
+    turnStartedAt: existing?.turnStartedAt ?? new Date(args.turnStartedAtMs).toISOString(),
+    toolsRun: mergedTools,
+    sourceKeys: mergedSourceKeys,
+    evidenceIndex: mergedEvidence,
+    tasksCompleted: completedItems.length,
+    consumed: false,
+    completedItems,
+  }
+
+  writeResearchCheckpoint(args.rootDir, args.sessionId, checkpoint)
+  return checkpoint
+}
+
 export function saveResearchCheckpointFromTurn(args: {
   rootDir: string
   sessionId: string
@@ -78,19 +148,25 @@ export function saveResearchCheckpointFromTurn(args: {
 
   const sources = readSessionSources(args.rootDir, args.sessionId, args.profileId)
   const sourceKeys = filterSourceKeysForTurn(sources, args.turnStartedAtMs)
+  const existing = readResearchCheckpoint(args.rootDir, args.sessionId)
   const tasks = listSessionTasks(args.rootDir, args.sessionId, args.profileId)
-  const tasksCompleted = tasks.filter(t => t.status === "completed").length
+  const tasksCompleted = Math.max(
+    existing?.completedItems?.length ?? 0,
+    tasks.filter(t => t.status === "completed").length,
+  )
 
   const checkpoint: ResearchCheckpointFile = {
-    createdAt: new Date().toISOString(),
+    createdAt: existing?.createdAt ?? new Date().toISOString(),
     userRequest: args.userRequest.slice(0, 2_000),
     reason: args.reason,
     turnStartedAt: new Date(args.turnStartedAtMs).toISOString(),
-    toolsRun: listResearchToolsRun(args.steps),
-    sourceKeys,
-    evidenceIndex: buildEvidenceIndex(args.steps ?? []),
+    toolsRun: [...new Set([...(existing?.toolsRun ?? []), ...listResearchToolsRun(args.steps)])],
+    sourceKeys: [...new Set([...(existing?.sourceKeys ?? []), ...sourceKeys])],
+    evidenceIndex: [...(existing?.evidenceIndex ?? []), ...buildEvidenceIndex(args.steps ?? [])],
     tasksCompleted,
     consumed: false,
+    completedItems: existing?.completedItems,
+    failedItemLabel: existing?.failedItemLabel,
   }
 
   writeResearchCheckpoint(args.rootDir, args.sessionId, checkpoint)
@@ -166,6 +242,9 @@ export function formatResearchCheckpointPromptBlock(
 
   const perSourceBudget = keys.length > 0 ? Math.max(800, Math.floor(budgetChars / keys.length)) : budgetChars
   const evidenceLines = checkpoint.evidenceIndex.map(e => `- ${e.summary}`).join("\n")
+  const completedLines = (checkpoint.completedItems ?? []).map(
+    item => `- [COMPLETED] ${item.content} (${item.toolsRun.join(", ") || "tools"})`,
+  ).join("\n")
 
   const excerpts: string[] = []
   let used = 0
@@ -185,6 +264,7 @@ export function formatResearchCheckpointPromptBlock(
     "",
     "Evidence already collected in the interrupted turn (index):",
     evidenceLines || "- (no index entries)",
+    completedLines ? "\nTask items already completed in this turn:\n" + completedLines : "",
     "",
     "Cached source excerpts (use as primary evidence; do NOT re-run WebSearch/WebFetch unless a concrete gap remains):",
     excerpts.length > 0 ? excerpts.join("\n\n") : "(no cached excerpts available)",
@@ -208,6 +288,19 @@ export function buildResearchCheckpointInjection(
 }
 
 export function formatAbortedResearchUserMessage(checkpoint: ResearchCheckpointFile): string {
+  const completed = checkpoint.completedItems ?? []
+  if (completed.length > 0) {
+    const doneList = completed.map(item => item.content).slice(0, 3).join("; ")
+    const failed = checkpoint.failedItemLabel
+      ? ` Me quedé sin tiempo en: ${checkpoint.failedItemLabel}.`
+      : " Me quedé sin tiempo antes del reporte final."
+    return [
+      `Completé ${completed.length} ítem(s) de la lista (${doneList}).${failed}`,
+      "La evidencia de lo hecho quedó guardada.",
+      'Decime "seguí" o "contame con lo que buscaste" para sintetizar el resto sin re-buscar.',
+    ].join(" ")
+  }
+
   const toolList = checkpoint.toolsRun.join(", ") || "herramientas de investigación"
   const indexPreview = checkpoint.evidenceIndex
     .slice(0, 3)
@@ -220,4 +313,49 @@ export function formatAbortedResearchUserMessage(checkpoint: ResearchCheckpointF
     "La evidencia quedó guardada.",
     'Decime "seguí", "reintentá" o "contame con lo que buscaste" y lo sintetizo sin volver a buscar.',
   ].join(" ")
+}
+
+export function mergeResearchCheckpointOnAbort(args: {
+  rootDir: string
+  sessionId: string
+  profileId: string
+  userRequest: string
+  reason: ResearchCheckpointFile["reason"]
+  turnStartedAtMs: number
+  steps: AssistantTurnStep[] | undefined
+  failedItemLabel?: string
+}): ResearchCheckpointFile | null {
+  const hasResearch = hasResearchToolSteps(args.steps)
+  const existing = readResearchCheckpoint(args.rootDir, args.sessionId)
+  if (!hasResearch && !existing?.completedItems?.length) return null
+
+  const checkpoint = saveResearchCheckpointFromTurn({
+    rootDir: args.rootDir,
+    sessionId: args.sessionId,
+    profileId: args.profileId,
+    userRequest: args.userRequest,
+    reason: args.reason,
+    turnStartedAtMs: args.turnStartedAtMs,
+    steps: args.steps,
+  })
+
+  if (!checkpoint && existing) {
+    writeResearchCheckpoint(args.rootDir, args.sessionId, {
+      ...existing,
+      reason: args.reason,
+      failedItemLabel: args.failedItemLabel ?? existing.failedItemLabel,
+      consumed: false,
+    })
+    return readResearchCheckpoint(args.rootDir, args.sessionId)
+  }
+
+  if (checkpoint && args.failedItemLabel) {
+    writeResearchCheckpoint(args.rootDir, args.sessionId, {
+      ...checkpoint,
+      failedItemLabel: args.failedItemLabel,
+    })
+    return { ...checkpoint, failedItemLabel: args.failedItemLabel }
+  }
+
+  return checkpoint
 }

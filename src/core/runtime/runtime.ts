@@ -41,7 +41,7 @@ import {
   consumeResearchCheckpoint,
 } from "../session/store.ts"
 import { getTool, listTools, validateToolInput, type ToolContext, type ToolInputSchema } from "../tools/registry.ts"
-import { getEffectiveModelConfig, runAgentLoop, runAssistantTurn, runBackgroundTextTask, type AgentLoopEvent, type AssistantTurnResult } from "./modelAdapter.ts"
+import { getEffectiveModelConfig, runAgentLoop, runAssistantTurn, runBackgroundTextTask, type AgentLoopEvent, type AssistantTurnResult, type AssistantTurnStep } from "./modelAdapter.ts"
 import { getActiveProfile } from "./modelRegistry.ts"
 import {
   applyModelSettingsToEnv,
@@ -65,10 +65,11 @@ import { getWorkspaceContext } from "../context/workspaceContext.ts"
 import { normalizeToolInputPayload } from "./toolInput.ts"
 import { evaluateTopLevelRalphGate, TOP_LEVEL_RALPH_MAX_ATTEMPTS, isScreenViewingRequest } from "./topLevelRalphGate.ts"
 import {
+  commitCompletedTaskItem,
   formatAbortedResearchUserMessage,
-  hasResearchToolSteps,
-  saveResearchCheckpointFromTurn,
+  mergeResearchCheckpointOnAbort,
 } from "./researchCheckpoint.ts"
+import { TaskItemTimerController, TURN_ABSOLUTE_MAX_MS, TURN_FALLBACK_TIMEOUT_MS } from "./taskItemTimer.ts"
 import { prepareTextForTts } from "./voiceTtsText.ts"
 import { renderToolFinish, renderToolStart, renderToolStartText } from "../renderer/toolRenderer.ts"
 import { checkToolPermission, runLifecycleHooks, runPostToolHooks } from "./permissions.ts"
@@ -88,7 +89,7 @@ import {
   stopManagedSttContainer,
 } from "../stt/managed.ts"
 import { MONOLITO_ROOT } from "../system/root.ts"
-import { ToolExecutionError } from "../errors.ts"
+import { ToolExecutionError, TurnTimeoutError } from "../errors.ts"
 import { redactSensitiveText, redactSensitiveValue } from "../security/redact.ts"
 import { ANSI } from "../../apps/cli/tui/ansi.ts"
 import type { DeliveryContext, DeliveryHandler } from "./types.ts"
@@ -166,17 +167,17 @@ const execFileAsync = promisify(execFile)
 // provider APIs only (Brave, Serper, Tavily). The local Docker backend
 // and its associated constants/settings are gone.
 const TELEGRAM_TYPING_REFRESH_MS = 4_000
-const TURN_HARD_TIMEOUT_MS = 180_000
 const COMMAND_REPAIR_MAX_ATTEMPTS = 3
 
 const STALL_ALERT_MESSAGE = "SYSTEM ALERT: STALL DETECTED. You have hit the exact same tool execution error twice. Evaluate your remaining viable strategies. If you have a logically distinct path, execute it now. If you have EXHAUSTED ALL viable paths, you MUST format your response to yield control back to the user, summarizing what you tried and why it failed."
 const UPDATE_RESTART_STATE_FILE = "update-restart.json"
 
-class TurnTimeoutError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = "TurnTimeoutError"
-  }
+type ActiveTurnTimingContext = {
+  sessionId: string
+  profileId: string
+  userRequest: string
+  turnStartedAt: number
+  steps: AssistantTurnStep[]
 }
 
 type ActiveServiceStatus = "online" | "degraded" | "offline"
@@ -932,6 +933,8 @@ export class MonolitoV2Runtime {
   private pendingPermissions = new Map<string, { resolve: (decision: "allow" | "deny" | "ask") => void; sessionId: string }>()
   private bufferedScreenshotPaths = new Map<string, string>()
   private activeAudioProcess: ChildProcess | null = null
+  private activeTaskItemTimer: TaskItemTimerController | null = null
+  private activeTurnTimingContext: ActiveTurnTimingContext | null = null
 
   public bufferScreenshot(sessionId: string, path: string) {
     this.bufferedScreenshotPaths.set(sessionId, path)
@@ -1558,14 +1561,18 @@ Rules:
     const abortController = new AbortController()
     const telegramTyping = startTelegramTypingIndicator(sessionId)
     this.abortControllers.set(sessionId, abortController)
-    const timeoutMs = sessionId.startsWith("agent-") ? 600_000 : TURN_HARD_TIMEOUT_MS
-    const turnTimeout = setTimeout(() => {
-      appendWorklog(this.rootDir, sessionId, {
-        type: "note",
-        summary: `Hard turn timeout reached after ${timeoutMs}ms; aborting active work`,
-      })
-      abortController.abort(new TurnTimeoutError(`Turn exceeded hard timeout of ${timeoutMs}ms`))
-    }, timeoutMs)
+    const isAgentSession = sessionId.startsWith("agent-")
+    let turnTimeout: ReturnType<typeof setTimeout> | null = null
+    if (isAgentSession) {
+      const timeoutMs = 600_000
+      turnTimeout = setTimeout(() => {
+        appendWorklog(this.rootDir, sessionId, {
+          type: "note",
+          summary: `Hard turn timeout reached after ${timeoutMs}ms; aborting active work`,
+        })
+        abortController.abort(new TurnTimeoutError(`Turn exceeded hard timeout of ${timeoutMs}ms`))
+      }, timeoutMs)
+    }
     
     try {
       if (lastUserText.startsWith("/")) {
@@ -1700,6 +1707,43 @@ Rules:
 
         const webSearchConfig = readWebSearchConfig()
 
+        if (!isAgentSession) {
+          const initialTasks = listSessionTasks(this.rootDir, sessionId, profileId)
+          this.activeTaskItemTimer = new TaskItemTimerController({
+            onAbort: (err) => abortController.abort(err),
+            onLog: (summary) => {
+              appendWorklog(this.rootDir, sessionId, { type: "note", summary })
+            },
+            onItemCompleted: (args) => {
+              const committed = commitCompletedTaskItem({
+                rootDir: this.rootDir,
+                sessionId,
+                profileId,
+                userRequest: preparedUserText,
+                turnStartedAtMs: turnStartedAt,
+                task: args.task,
+                itemStartedAtMs: args.itemStartedAtMs,
+                steps: this.activeTurnTimingContext?.steps ?? [],
+                stepsFromIndex: args.stepsFromIndex,
+              })
+              if (committed) {
+                appendWorklog(this.rootDir, sessionId, {
+                  type: "note",
+                  summary: `TASK_ITEM_COMMITTED: ${clipForWorklog(args.task.content)}`,
+                })
+              }
+            },
+          })
+          this.activeTaskItemTimer.beginTurn(initialTasks, turnStartedAt)
+          this.activeTurnTimingContext = {
+            sessionId,
+            profileId,
+            userRequest: preparedUserText,
+            turnStartedAt,
+            steps: [],
+          }
+        }
+
         // Top-level Ralph loop (Stop-hook analog). If the session has
         // unfinished TodoWrite items (pending or in_progress) after the
         // model turn, the runtime refuses to deliver the assistant reply
@@ -1784,7 +1828,7 @@ Rules:
                 abortSignal: abortController.signal,
                 maxTokens: options?.maxTokens,
                 turnStartedAt,
-                maxTurnDurationMs: timeoutMs - 5_000,
+                maxTurnDurationMs: isAgentSession ? 595_000 : TURN_ABSOLUTE_MAX_MS - 5_000,
               },
             ),
             (event) => {
@@ -1798,6 +1842,10 @@ Rules:
               }
             },
           )
+          if (this.activeTurnTimingContext && turn?.steps) {
+            this.activeTurnTimingContext.steps = turn.steps
+            this.activeTaskItemTimer?.updateStepCount(turn.steps.length)
+          }
           if (turn.usage) {
             recordApiCall(
               this.costState,
@@ -1956,16 +2004,21 @@ Rules:
 
             await this.deliverText(sessionId, userFacingText, options?.delivery, "Failed to deliver assistant reply")
           } else if (wasAborted) {
+            const abortReason = abortController.signal.reason
+            const failedItemMatch =
+              abortReason instanceof TurnTimeoutError
+                ? abortReason.message.match(/^Task "(.+)" exceeded item limit/)
+                : null
             const checkpointReason =
               turn.meta?.stopReason === "max_duration"
                 ? "max_duration" as const
-                : abortController.signal.reason instanceof TurnTimeoutError
-                  ? "turn_aborted" as const
+                : abortReason instanceof TurnTimeoutError
+                  ? (failedItemMatch ? "task_item_timeout" as const : "turn_aborted" as const)
                   : null
 
             let checkpointSaved = false
-            if (checkpointReason && hasResearchToolSteps(turn.steps)) {
-              const checkpoint = saveResearchCheckpointFromTurn({
+            if (checkpointReason) {
+              const checkpoint = mergeResearchCheckpointOnAbort({
                 rootDir: this.rootDir,
                 sessionId,
                 profileId,
@@ -1973,13 +2026,14 @@ Rules:
                 reason: checkpointReason,
                 turnStartedAtMs: turnStartedAt,
                 steps: turn.steps,
+                failedItemLabel: failedItemMatch?.[1],
               })
               if (checkpoint) {
                 checkpointSaved = true
                 userFacingText = formatAbortedResearchUserMessage(checkpoint)
                 appendWorklog(this.rootDir, sessionId, {
                   type: "note",
-                  summary: `RESEARCH_CHECKPOINT_SAVED: tools=[${checkpoint.toolsRun.join(", ")}] sourceKeys=${checkpoint.sourceKeys.length}`,
+                  summary: `RESEARCH_CHECKPOINT_SAVED: tools=[${checkpoint.toolsRun.join(", ")}] sourceKeys=${checkpoint.sourceKeys.length} completedItems=${checkpoint.completedItems?.length ?? 0}`,
                 })
               }
             }
@@ -2045,7 +2099,9 @@ Rules:
     } catch (error) {
       const timeoutReason = abortController.signal.reason
       if (timeoutReason instanceof TurnTimeoutError) {
-        const message = `I could not finish this turn within the hard limit of ${Math.floor(timeoutMs / 1000)}s. Retry with a narrower request or split it into steps.`
+        const message = timeoutReason.message.includes("Task \"")
+          ? `${timeoutReason.message} Retry with "seguí" to continue from saved evidence.`
+          : `I could not finish this turn within the time limit. ${timeoutReason.message} Retry with a narrower request or split it into steps.`
         appendWorklog(this.rootDir, sessionId, {
           type: "session",
           summary: `Turn failed: ${clipForWorklog(message)}`,
@@ -2093,7 +2149,10 @@ Rules:
         usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
       }
     } finally {
-      clearTimeout(turnTimeout)
+      if (turnTimeout) clearTimeout(turnTimeout)
+      this.activeTaskItemTimer?.dispose()
+      this.activeTaskItemTimer = null
+      this.activeTurnTimingContext = null
       telegramTyping?.stop()
       this.releaseSessionLock(sessionId)
       this.abortControllers.delete(sessionId)
@@ -2104,7 +2163,7 @@ Rules:
     const turnStartedAt = turnStartedAtIso ? Date.parse(turnStartedAtIso) : Date.now()
     const abortController = new AbortController()
     this.abortControllers.set(sessionId, abortController)
-    const timeoutMs = sessionId.startsWith("agent-") ? 600_000 : TURN_HARD_TIMEOUT_MS
+    const timeoutMs = sessionId.startsWith("agent-") ? 600_000 : TURN_ABSOLUTE_MAX_MS
     const turnTimeout = setTimeout(() => {
       appendWorklog(this.rootDir, sessionId, {
         type: "note",
@@ -2620,6 +2679,9 @@ Rules:
     }
 
     try {
+      if (tool.name !== "TodoList") {
+        this.activeTaskItemTimer?.onWorkActivity()
+      }
       let output = await tool.run(normalizedInput, toolContext)
       await runPostToolHooks(tool.name, normalizedInput, {
         rootDir: this.rootDir,
@@ -2656,6 +2718,9 @@ Rules:
           const session = getSession(this.rootDir, sessionId)
           const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
           const tasks = listSessionTasks(this.rootDir, sessionId, profileId)
+          if (tool.name === "TodoWrite") {
+            this.activeTaskItemTimer?.syncAfterTodoWrite(tasks)
+          }
           this.emit({
             type: "todo.updated",
             sessionId,

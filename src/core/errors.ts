@@ -182,6 +182,13 @@ export class TimeoutError extends MonolitoError {
   }
 }
 
+export class TurnTimeoutError extends MonolitoError {
+  constructor(message: string) {
+    super(message)
+    this.name = "TurnTimeoutError"
+  }
+}
+
 // --- Utility functions ---
 
 /** Normalize unknown value into an Error instance. */

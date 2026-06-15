@@ -72,7 +72,7 @@ type FileKnowledgeGraphTriple = {
 export type ResearchCheckpointFile = {
   createdAt: string
   userRequest: string
-  reason: "turn_aborted" | "max_duration"
+  reason: "turn_aborted" | "max_duration" | "task_item_timeout"
   turnStartedAt: string
   toolsRun: string[]
   sourceKeys: string[]
@@ -80,6 +80,16 @@ export type ResearchCheckpointFile = {
   tasksCompleted: number
   consumed: boolean
   consumedAt?: string
+  completedItems?: Array<{
+    taskId: string
+    content: string
+    completedAt: string
+    toolsRun: string[]
+    sourceKeys: string[]
+    evidenceIndex: Array<{ tool: string; summary: string; url?: string }>
+    itemStartedAt: string
+  }>
+  failedItemLabel?: string
 }
 
 // --- low-level helpers ---
