@@ -99,7 +99,7 @@ export function renderTranscriptBlock(block: TranscriptBlock, width: number, sho
       if (block.processing) {
         lines.push(...renderBulletedBlock(`${ANSI.processing}${block.text}${ANSI.reset}`, width, ANSI.processing))
       } else {
-        lines.push(...renderBulletedBlock(block.text, width, ""))
+        lines.push(...renderBulletedBlock(`${ANSI.reset}${block.text}`, width, ""))
       }
       return lines
     }
@@ -561,7 +561,6 @@ export function renderScreen(header: HeaderState, transcript: TranscriptViewport
         type: "message",
         role: "assistant",
         text: composer.streamingText,
-        processing: true,
         ...(composer.accumulatedThinking ? { thinking: composer.accumulatedThinking } : {}),
       }]
     : showThinking
@@ -619,7 +618,7 @@ export function renderScreen(header: HeaderState, transcript: TranscriptViewport
     let buf = `${ANSI.bsu}${ANSI.hideCursor}`
     for (let i = 0; i < rows; i++) {
       const line = screenLines[i] ?? ""
-      buf += `\u001b[${i + 1};1H${padLine(line, cols)}${ANSI.el}`
+      buf += `\u001b[${i + 1};1H${ANSI.reset}${padLine(line, cols)}${ANSI.el}`
     }
     frame = buf
   }

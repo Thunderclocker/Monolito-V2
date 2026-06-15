@@ -803,9 +803,11 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     }
     if (event.type === "message.received" && event.role === "assistant") {
       flushStreamRedraw()
-      composer.thinkingVisible = false
+      stopThinkingAnimation()
+      composer.busy = false
       composer.accumulatedThinking = ""
       composer.streamingText = ""
+      needsClear = true
       if (composer.masterMenuEphemeral) {
         composer.masterMenuState = null
         composer.masterMenuEphemeral = false
@@ -821,13 +823,13 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     // the assistant reply.
     if (event.type === "state.changed" && (event.state === "idle" || event.state === "error")) {
       flushStreamRedraw()
+      stopThinkingAnimation()
       composer.busy = false
-      composer.thinkingVisible = false
       composer.toolThinkingText = ""
       composer.toolThinkingFrame = 0
       composer.accumulatedThinking = ""
       composer.streamingText = ""
-      stopThinkingAnimation()
+      needsClear = true
     }
     transcript = appendTranscriptBlocks(transcript, blocks)
     if (pinnedToBottom) transcript.scrollOffset = 0
