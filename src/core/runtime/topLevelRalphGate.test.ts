@@ -52,8 +52,8 @@ test("evaluateTopLevelRalphGate: blocks when there are pending tasks", () => {
   writeSessionTask(sharedRoot, sessionId, "task-2", {
     id: "task-2",
     sessionId,
-    content: "Save preferences and tasks to Memory Palace rooms",
-    activeForm: "Saving preferences and tasks to Memory Palace rooms",
+    content: "Save preferences and tasks to memory.md sections",
+    activeForm: "Saving preferences and tasks to memory.md sections",
     status: "pending",
     createdAt: "2026-06-05T13:13:05.372Z",
     updatedAt: "2026-06-05T13:13:05.372Z",
@@ -61,8 +61,8 @@ test("evaluateTopLevelRalphGate: blocks when there are pending tasks", () => {
   writeSessionTask(sharedRoot, sessionId, "task-3", {
     id: "task-3",
     sessionId,
-    content: "Save VPS access facts and DB locations to Memory Palace",
-    activeForm: "Saving VPS access facts and DB locations to Memory Palace",
+    content: "Save VPS access facts and DB locations to curated memory",
+    activeForm: "Saving VPS access facts and DB locations to curated memory",
     status: "in_progress",
     createdAt: "2026-06-05T13:13:05.372Z",
     updatedAt: "2026-06-05T13:13:05.372Z",
@@ -91,11 +91,11 @@ test("evaluateTopLevelRalphGate: blocks when there are pending tasks", () => {
     "Feedback prompt must reference the unfinished tasks list",
   )
   assert.ok(
-    result.feedbackPrompt.includes("Save preferences and tasks to Memory Palace rooms"),
+    result.feedbackPrompt.includes("Save preferences and tasks to memory.md sections"),
     "Feedback prompt must list the pending task by content",
   )
   assert.ok(
-    result.feedbackPrompt.includes("Save VPS access facts and DB locations to Memory Palace"),
+    result.feedbackPrompt.includes("Save VPS access facts and DB locations to curated memory"),
     "Feedback prompt must list the in_progress task by content",
   )
   assert.equal(result.unfinished.length, 2, "Gate must report both unfinished items")

@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 /**
+ * OBSOLETE — pre-file-backend SQLite maintenance script.
+ *
+ * Monolito V2 no longer uses memory.sqlite, palace_nodes, or memory_drawers.
+ * Keep this file only as historical reference for old deployments.
+ *
  * cleanup_memory_noise.mjs
  *
  * Limpia ruido acumulado en memory.sqlite:

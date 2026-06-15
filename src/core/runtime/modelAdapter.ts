@@ -709,7 +709,7 @@ function buildSystemPrompt(args: {
     dynamicContext.push(`=== SYSTEM DIRECTIVE ===\n${args.extras.systemDirective}`)
   }
 
-  // Inject session cognitive tasks (Memory Palace) to drive proactivity.
+  // Inject session cognitive tasks to drive proactivity.
   // Shows ALL tasks (pending + in_progress + completed) so the agent keeps
   // an accurate mental model of where it is in multi-step work. Uses the
   // activeForm for in_progress tasks when present, content otherwise.
@@ -1045,7 +1045,7 @@ export async function* runAgentLoop(
           // Step 2: Proactive Tier 2 — branch by zone size.
           //   - Region > threshold (default 150K chars / ~43K tokens):
           //     use incrementalFlushSession (process-and-flush, no LLM call).
-          //     Persists each message as a memory_drawer with a cheap
+          //     Persists each message as a memory.md section with a cheap
           //     heuristic summary, then deletes them from `messages`.
           //   - Region ≤ threshold: use smartCompactSession (LLM summary).
           //     One LLM call is fine for small zones; the LLM produces a
@@ -1659,7 +1659,7 @@ No intentes ejecutarla más en este turno. Por favor, detén la ejecución en es
           `[tdd-react] Execution failure detected on tool "${failedToolName}". ` +
           `Session=${session.id} Iteration=${iteration}. ` +
           `Snippet: ${failureSnippet.slice(0, 500)}. ` +
-          `Querying Memory Palace...`
+          `Querying curated memory...`
         )
 
         // Bug #4 (09-jun-2026): aggregated alert when the same tool fails
@@ -1980,7 +1980,7 @@ async function detectAndSaveLearning(rootDir: string, messages: ConversationMess
 
     if (firstFailedError && hasEdits && lastSuccessCmd) {
       const solutionSummary = `Se solucionó aplicando: ${editSummaries.join(", ")}. Verificado con: ${lastSuccessCmd}.`
-      logger.info(`[tdd-react] Learning loop detected a resolved issue! Saving to Memory Palace...`)
+      logger.info(`[tdd-react] Learning loop detected a resolved issue! Saving to curated memory...`)
       await saveResolvedError(rootDir, firstFailedError, solutionSummary)
     }
   } catch (err) {
@@ -2087,7 +2087,7 @@ Respond ONLY with a valid JSON object in this format:
  * Run an incremental context flush (process-and-flush variant of the
  * legacy LLM-summary compaction). For each message in the middle zone:
  *   1. Extract a cheap heuristic summary (no LLM call).
- *   2. Persist it as a memory_drawer under wing="CHAT" / room=sessionId
+ *   2. Persist it as a memory.md section under namespace="CHAT" / section=sessionId
  *      via fileMemory (which handles single- or multi-chunk embedding
  *      depending on env).
  *   3. Mark the message as compacted in DB.
@@ -2153,7 +2153,7 @@ export async function runIncrementalFlush(
   const flushResult = await incrementalFlushSession(storage, compressible, {
     rootDir,
     sessionId,
-    fileMemory: (rd, wing, room, content, pid, key) => fileMemory(rd, wing, room, content, pid, key),
+    fileMemory: (rd, namespace, section, content, pid, key) => fileMemory(rd, namespace, section, content, pid, key),
     profileId,
   })
 
@@ -2167,7 +2167,7 @@ export async function runIncrementalFlush(
     deleteMessages(rootDir, restIds, sessionId)
     appendWorklog(rootDir, sessionId, {
       type: "note",
-      summary: `Context engine incremental-flush: ${flushResult.totalProcessed} messages → drawers, freed ~${totalChars} chars`,
+      summary: `Context engine incremental-flush: ${flushResult.totalProcessed} messages → memory sections, freed ~${totalChars} chars`,
     })
   }
   return {

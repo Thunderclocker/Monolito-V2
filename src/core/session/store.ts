@@ -272,8 +272,8 @@ export function resetSession(rootDir: string, sessionId: string, options?: { sum
   fileStore(rootDir).resetSession(sessionId, options?.summary)
 }
 
-export function clearMemoryPalace(rootDir: string, profileId = "default") {
-  const result = fileStore(rootDir).clearMemoryPalace()
+export function clearProfileMemory(rootDir: string, profileId = "default") {
+  const result = fileStore(rootDir).clearProfileMemory()
   const md = markdownStore(rootDir)
   md.ensureSeeded()
   const sectionsBefore = md.loadMemoryMd().split(/\n(?=## )/).filter(s => s.trim().startsWith("## ")).length
@@ -281,8 +281,7 @@ export function clearMemoryPalace(rootDir: string, profileId = "default") {
   ensureBootWings(rootDir, profileId)
   return {
     ...result,
-    memoryRowsDeleted: result.memoryRowsDeleted + sectionsBefore,
-    palaceRowsDeleted: result.palaceRowsDeleted + sectionsBefore,
+    memorySectionsCleared: result.memorySectionsCleared + sectionsBefore,
   }
 }
 
@@ -331,54 +330,54 @@ export function getSessionStats(rootDir: string, sessionId: string) {
 
 export async function fileMemory(
   rootDir: string,
-  wing: string,
-  room: string,
+  namespace: string,
+  section: string,
   content: string,
   profileId = "default",
   key?: string,
 ) {
-  const rawWing = wing.trim()
-  if (rawWing.toUpperCase().startsWith("BOOT_")) {
+  const rawNamespace = namespace.trim()
+  if (rawNamespace.toUpperCase().startsWith("BOOT_")) {
     throw new Error("BOOT_* wings are reserved for deterministic bootstrap state. Use BootWrite instead.")
   }
-  if (rawWing.toUpperCase().startsWith("CONF_")) {
+  if (rawNamespace.toUpperCase().startsWith("CONF_")) {
     throw new Error("CONF_* wings are reserved for technical configuration state. Use ConfigWrite/tool_manage_config instead.")
   }
-  const normalizedRoom = room.trim() || "general"
-  const sectionTitle = key?.trim() ? `${normalizedRoom} — ${key.trim()}` : normalizedRoom
-  const tags = [rawWing || "SHARED", normalizedRoom].filter(Boolean)
+  const normalizedSection = section.trim() || "general"
+  const sectionTitle = key?.trim() ? `${normalizedSection} — ${key.trim()}` : normalizedSection
+  const tags = [rawNamespace || "SHARED", normalizedSection].filter(Boolean)
   markdownStore(rootDir).upsertMemorySection(sectionTitle, content, tags)
   return randomUUID()
 }
 
-export async function upsertMemoryDrawer(
+export async function upsertCuratedMemory(
   rootDir: string,
-  wing: string,
-  room: string,
+  namespace: string,
+  section: string,
   content: string,
   profileId: string = "default",
   key: string | undefined,
 ): Promise<{ id: string; action: "inserted" | "updated" | "skipped" }> {
-  const rawWing = wing.trim()
-  if (rawWing.toUpperCase().startsWith("BOOT_")) {
+  const rawNamespace = namespace.trim()
+  if (rawNamespace.toUpperCase().startsWith("BOOT_")) {
     throw new Error("BOOT_* wings are reserved for deterministic bootstrap state. Use BootWrite instead.")
   }
-  if (rawWing.toUpperCase().startsWith("CONF_")) {
+  if (rawNamespace.toUpperCase().startsWith("CONF_")) {
     throw new Error("CONF_* wings are reserved for technical configuration state. Use ConfigWrite/tool_manage_config instead.")
   }
-  const normalizedWing = rawWing.length === 0 ? "PRIVATE" : rawWing.toUpperCase() === "SHARED" ? "SHARED" : rawWing
-  const normalizedRoom = room.trim() || "general"
+  const normalizedNamespace = rawNamespace.length === 0 ? "PRIVATE" : rawNamespace.toUpperCase() === "SHARED" ? "SHARED" : rawNamespace
+  const normalizedSection = section.trim() || "general"
   const normalizedKey = key?.trim() || null
-  const sectionTitle = normalizedKey ? `${normalizedRoom} — ${normalizedKey}` : normalizedRoom
-  const tags = [normalizedWing, normalizedRoom].filter(Boolean)
+  const sectionTitle = normalizedKey ? `${normalizedSection} — ${normalizedKey}` : normalizedSection
+  const tags = [normalizedNamespace, normalizedSection].filter(Boolean)
   const result = markdownStore(rootDir).upsertMemorySection(sectionTitle, content, tags)
   return { id: randomUUID(), action: result.action }
 }
 
 export async function recallMemory(
   rootDir: string,
-  wing?: string,
-  room?: string,
+  namespace?: string,
+  section?: string,
   query?: string,
   _profileId?: string,
   key?: string,
@@ -386,7 +385,7 @@ export async function recallMemory(
   const store = markdownStore(rootDir)
   const md = store.loadMemoryMd()
   const sections = md.split(/\n(?=## )/).filter(s => s.trim().startsWith("## "))
-  const tokens = (query ?? room ?? key ?? "")
+  const tokens = (query ?? section ?? key ?? "")
     .toLowerCase()
     .split(/\s+/)
     .filter(t => t.length >= 2)
@@ -398,12 +397,12 @@ export async function recallMemory(
       const title = titleMatch?.[1]?.trim() ?? "section"
       return {
         score,
-        wing: wing ?? "SHARED",
-        room: room ?? title,
-        memory_key: key ?? title,
+        namespace: namespace ?? "SHARED",
+        section: section ?? title,
+        key: key ?? title,
         content: raw.trim(),
         created_at: new Date().toISOString(),
-        distance: -score,
+        rank: score,
       }
     })
     .filter(r => tokens.length === 0 || r.score > 0)
@@ -419,11 +418,11 @@ export function createProfile(rootDir: string, id: string, name: string, descrip
   return fileStore(rootDir).createProfile(id, name, description)
 }
 
-export function listWings(rootDir: string, _profileId?: string): string[] {
+export function listMemoryNamespaces(rootDir: string, _profileId?: string): string[] {
   return ["SHARED", "memory"]
 }
 
-export function listRooms(rootDir: string, _wing: string, _profileId?: string): string[] {
+export function listMemorySections(rootDir: string, _namespace: string, _profileId?: string): string[] {
   const md = markdownStore(rootDir).loadMemoryMd()
   return md
     .split(/\n(?=## )/)
@@ -551,8 +550,8 @@ export function getMessagesSinceId(
   return fileStore(rootDir).getMessagesSinceId(sessionId, afterId)
 }
 
-export function getMemoryDrawerCount(rootDir: string): number {
-  return fileStore(rootDir).getMemoryDrawerCount()
+export function getMemorySectionCount(rootDir: string): number {
+  return fileStore(rootDir).getMemorySectionCount()
 }
 
 export function setSessionVoiceMode(rootDir: string, sessionId: string, enabled: boolean): void {

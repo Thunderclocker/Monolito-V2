@@ -29,20 +29,19 @@ behalf of the same user.
 
 ## How it works
 
-`palace_nodes` no longer exists. Profile-specific BOOT overrides live as
-separate markdown files under `memory/boot/` per profile scope. Lookup order in
-`markdownMemory.ts` is profile file → global file.
-`readLatestPalaceContent` is:
+Profile-specific BOOT overrides live as separate markdown files under
+`memory/boot/` per profile scope. Lookup order in `markdownMemory.ts` is
+profile file → global file:
 
-1. The active profile's own row (if any).
-2. The `__global__` fallback row (the `default` profile's write).
+1. The active profile's own file (if any).
+2. The `__global__` fallback file (the `default` profile's write).
 
 This means a profile called `Amanda` writing to `BOOT_USER` is the
 only thing that gets a custom `BOOT_USER`. Reading `BOOT_USER` from
 any profile returns Amanda's row if it exists, else the default.
 
 In practice, agents never write to the `default` wings. They write
-their own ephemeral memory into their own profile's palace nodes
+their own ephemeral memory into their own profile-scoped files
 (`identity`, `project_facts`, custom wings) and inherit the canonical
 user/identity/agent wings from the global fallback.
 
@@ -70,7 +69,7 @@ Only seven BOOT wings exist. The tool registry (`BootCreateWing`,
 | `BOOT_IDENTITY`  | Visual / external identity metadata              |
 | `BOOT_USER`      | User profile (preferences, language, name)       |
 | `BOOT_BOOTSTRAP` | First-run onboarding state                       |
-| `BOOT_MEMORY`    | Index of durable memory (Palace summary)         |
+| `BOOT_MEMORY`    | Curated long-term digest (`memory.md`)           |
 
 Attempts to create `BOOT_PERSONALITY`, `BOOT_AI_NAME`, `BOOT_MOOD`, or
 any other custom wing are rejected at the tool registry layer. The
@@ -117,7 +116,7 @@ profile actually sees at prompt time, run the session with
 When the runtime builds the prompt for a session, the active profile
 determines:
 
-- Which palace nodes are read first (own → global)
+- Which BOOT files are read first (profile → global)
 - Which `BOOT_USER` row to enforce coherence against
 - Which `BOOT_TOOLS` rules apply to the tool registry
 - Which tool allowlist is in effect

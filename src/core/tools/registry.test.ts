@@ -15,7 +15,7 @@ const {
   appendEvent,
   appendMessage,
   appendWorklog,
-  clearMemoryPalace,
+  clearProfileMemory,
   ensureSession,
   fileMemory,
   queryGraphEntity,
@@ -417,7 +417,7 @@ test("SessionForensics falls back to the current session when sessionId is empty
   }
 })
 
-test("clearMemoryPalace removes profile memory while preserving configuration", async () => {
+test("clearProfileMemory removes profile memory while preserving configuration", async () => {
   const rootDir = createRootDir()
   try {
     writeConfigWing(rootDir, "CONF_CHANNELS", {
@@ -431,9 +431,9 @@ test("clearMemoryPalace removes profile memory while preserving configuration", 
     assert.ok(before.some(row => row.content.includes("dato durable")))
     assert.equal(queryGraphEntity(rootDir, "default", "Cristian").length, 1)
 
-    const cleared = clearMemoryPalace(rootDir, "default")
+    const cleared = clearProfileMemory(rootDir, "default")
 
-    assert.ok(cleared.memoryRowsDeleted >= 1)
+    assert.ok(cleared.memorySectionsCleared >= 1)
     assert.equal(cleared.graphRowsDeleted, 1)
     assert.deepEqual(readConfigWing(rootDir, "CONF_CHANNELS"), {
       telegram: { token: "abc", enabled: true, allowedChats: [1515784684] },

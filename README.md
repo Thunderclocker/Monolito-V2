@@ -29,7 +29,7 @@ Further documentation lives in [`docs/`](./docs/README.md).
 - Long-term memory in `memory.md` (sections) plus a temporal knowledge graph in `state/knowledge_graph.jsonl`
 - First-run bootstrap ritual that persists bootstrap state into BOOT wings and the knowledge graph
 - Multi-agent orchestration with worker spawning, follow-up messaging, stop controls, and real filesystem isolation via Git Worktrees
-- Tool harness for shell execution, web fetches, workspace file access, BOOT access, Memory Palace filing/recall, knowledge-graph tools, MCP calls, Telegram send, and task tracking
+- Tool harness for shell execution, web fetches, workspace file access, BOOT access, curated memory filing/recall, knowledge-graph tools, MCP calls, Telegram send, and task tracking
 - OpenAI-compatible text-to-speech generation into local audio files, with Telegram audio/voice delivery tools
 - Managed speech-to-text ingestion for Telegram audio and voice notes
 - Slash-command interface for runtime inspection and control
@@ -161,7 +161,7 @@ Operational state lives under `~/.monolito/memory/` (JSON, JSONL, markdown) plus
 - `/new`
 - `/reset`
 
-`/new` starts a fresh session without clearing Memory Palace. `/reset` starts over and clears profile-scoped Memory Palace data while preserving runtime configuration.
+`/new` starts a fresh session without clearing profile memory. `/reset` starts over and clears profile-scoped memory data while preserving runtime configuration.
 
 `/update` fetches from `origin`, applies a fast-forward pull on the current branch, and restarts the daemon automatically. If the working tree has local changes, Monolito backs them up to a git stash automatically before updating.
 

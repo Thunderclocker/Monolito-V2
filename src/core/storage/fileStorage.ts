@@ -43,6 +43,7 @@ import {
   telegramUpdatesPath,
   modelConfigPath,
 } from "./filePaths.ts"
+import { memoryMdPath } from "./memoryPaths.ts"
 
 type FileSessionTask = {
   id: string
@@ -728,8 +729,11 @@ export class FileStorageBackend {
     return scored.filter(s => s.score > 0).slice(0, limit).map(s => s.name)
   }
 
-  getMemoryDrawerCount(): number {
-    return 0
+  getMemorySectionCount(): number {
+    const path = memoryMdPath(this.rootDir)
+    if (!existsSync(path)) return 0
+    const md = readFileSync(path, "utf8")
+    return md.split(/\n(?=## )/).filter(s => s.trim().startsWith("## ")).length
   }
 
   getMemoryConsolidationCursor(): number {
@@ -747,11 +751,11 @@ export class FileStorageBackend {
       .map(m => ({ id: m.id, role: m.role, text: m.text, at: m.at }))
   }
 
-  clearMemoryPalace() {
+  clearProfileMemory() {
     const graphRows = readJsonl(graphPath(this.rootDir)).length
     if (existsSync(graphPath(this.rootDir))) writeJsonlAtomic(graphPath(this.rootDir), [])
     writeJsonAtomic(resolvedErrorsPath(this.rootDir), {})
-    return { memoryRowsDeleted: 0, graphRowsDeleted: graphRows, palaceRowsDeleted: 0 }
+    return { memorySectionsCleared: 0, graphRowsDeleted: graphRows }
   }
 
   saveResolvedError(errorSnippet: string, solutionSnippet: string) {

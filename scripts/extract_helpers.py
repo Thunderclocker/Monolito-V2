@@ -133,7 +133,7 @@ def find_used_identifiers_in_domain(domain_file: Path) -> set:
         "normalizeChannelsConfigForWrite", "readChannelsConfig", "writeChannelsConfig",
         # Session store
         "appendActionLog", "addGraphTriple", "fileMemory", "invalidateGraphTriple",
-        "queryGraphEntity", "recallMemory", "listWings", "listRooms", "listProfiles",
+        "queryGraphEntity", "recallMemory", "listMemoryNamespaces", "listMemorySections", "listProfiles",
         "createProfile", "readBootWing", "writeBootWing", "listBootWings",
         "createBootWing", "bootWingExists", "ensureBootWings", "readConfigWing",
         "writeConfigWing", "getSession", "listSessions", "tailEvents",

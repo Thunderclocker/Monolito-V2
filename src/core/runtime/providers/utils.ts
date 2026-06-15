@@ -240,7 +240,7 @@ const REGISTERED_TOOL_NAMES = [
   "TelegramSendDocument", "TelegramGetRecentPhotos", "TelegramGetFile", "DownloadFile",
   "TelegramDownloadFile", "GenerateSpeech", "VoiceClone", "VisionAnalyze", "GenerateImage",
   "TranscribeAudio", "SttServiceStatus", "SttServiceDeploy", "SttServiceStop", "SttServiceRemove",
-  "SttServiceList", "BootRead", "BootWrite", "ListWings", "CreateWing", "WorkspaceMemoryFiling",
+  "SttServiceList", "BootRead", "BootWrite", "BootListWings", "BootCreateWing", "WorkspaceMemoryFiling",
   "WorkspaceMemoryRecall", "KgAdd", "KgInvalidate", "KgQuery", "SessionForensics",
   "AgentSpawn", "AgentSendMessage", "AgentStop", "list_active_workers",
   "delegate_background_task", "TriggerBackgroundStudy", "AgentList", "ProfileCreate",

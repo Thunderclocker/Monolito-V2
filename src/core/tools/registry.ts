@@ -184,7 +184,7 @@ export function isToolSideEffect(name: string): boolean {
   return tool?.sideEffect === true
 }
 
-export async function indexToolsInPalace(rootDir: string) {
+export async function indexSemanticTools(rootDir: string) {
   const summaries: Array<{ name: string; description: string; tier: string; tags: string[] }> = []
   for (const tool of tools) {
     summaries.push({
@@ -211,7 +211,7 @@ export async function indexToolsInPalace(rootDir: string) {
   }
 }
 
-export async function indexRalphRulesInPalace(rootDir: string) {
+export async function indexRalphRules(rootDir: string) {
   // The previous "image_verification" rule has been removed.
   //
   // Rationale: it forced VisionAnalyze on every image task that matched
@@ -223,7 +223,7 @@ export async function indexRalphRulesInPalace(rootDir: string) {
   // consolidated guidance lives in BOOT_TOOLS and in the main
   // system prompt's "Visual & Media Processing Protocol" section.
   //
-  // Legacy palace_nodes Ralph rules are no longer seeded here.
+  // Ralph rule metadata is stored in state/ralph_rules.json.
 
   // The enumerate_dynamic_state rule is enforced semantically via the
   // EVIDENCE-FIRST RULE in the orchestrator system prompt. The orchestrator's
@@ -247,6 +247,6 @@ export async function indexRalphRulesInPalace(rootDir: string) {
   try {
     upsertRalphRule(rootDir, "enumerate_dynamic_state", JSON.stringify(enumerateDynamicStateRule, null, 2))
   } catch (err) {
-    logger.error("[indexRalphRulesInPalace] Failed to index enumerate_dynamic_state rule:", { errorMessage: String(err), errorStack: (err instanceof Error ? err.stack : undefined) })
+    logger.error("[indexRalphRules] Failed to index enumerate_dynamic_state rule:", { errorMessage: String(err), errorStack: (err instanceof Error ? err.stack : undefined) })
   }
 }

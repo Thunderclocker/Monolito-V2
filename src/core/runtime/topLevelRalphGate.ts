@@ -2,7 +2,7 @@
 // Top-level Ralph Gate
 //
 // Stop-hook analog for the main (orchestrator) session: when the model tries
-// to close a turn with unfinished TodoWrite items still in the Memory Palace
+// to close a turn with unfinished TodoWrite items still in active_tasks.json
 // `active_tasks` wing, this gate re-feeds a structured retry prompt so the
 // model either completes, restructures, or returns TASK_FAILED:<reason>.
 //

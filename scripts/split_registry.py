@@ -7,7 +7,7 @@ Strategy:
 - Lines 1081-4829: the rawTools array. Each tool object (77 total) is extracted
   to a domain file based on its name.
 - Lines 4830-end: the public API (getTool, listTools, listModelTools,
-  indexToolsInPalace, indexRalphRulesInPalace) → stays in registry.ts.
+  indexSemanticTools, indexRalphRules) → stays in registry.ts.
 
 Domain groups (in order of file naming):
 - shell      : schedule_task, Bash

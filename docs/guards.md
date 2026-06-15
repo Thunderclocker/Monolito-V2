@@ -52,7 +52,7 @@ This rule is implemented in two places:
 
 The reason for this rule is operational: if the user knows what they want,
 no amount of saved memory should override them. Profile preferences and
-Palace memories are advisory; the current turn's user message is supreme.
+Curated memory facts are advisory; the current turn's user message is supreme.
 
 ---
 
@@ -97,7 +97,7 @@ No podes cerrar la tarea todavía. …
 
 ### 2.2. Unfinished tasks
 
-The agent's `active_tasks` row in the Palace must have no pending or
+The agent's `active_tasks.json` todos must have no pending or
 in-progress items. Pending tasks are queried via `listSessionTasks`.
 
 ### 2.3. Failing bash command
@@ -128,7 +128,7 @@ system alert.
 ### 2.5. Dynamic Ralph rules
 
 Beyond the five hardcoded rules, the runtime supports a table of
-**dynamic rules** stored as `RalphRule` rows in the Palace. Each rule has:
+**dynamic rules** stored in `state/ralph_rules.json`. Each rule has:
 
 - `name` — human-readable label
 - `description` — natural-language intent of the rule
@@ -178,7 +178,7 @@ tool calls until the orchestrator has approved them.
    - Applies the **hard override regex** (instant approval on
      `enviá de todos modos`, `forzá`, `ignorá`, `skip`, `salteá`).
    - Reads `BOOT_USER` for the active profile.
-   - Recalls up to 3 semantically related Palace memories.
+   - Recalls up to 3 keyword-matched `memory.md` sections.
    - Asks an LLM judge with strict JSON `{approved, reason}` whether the
      pending calls are coherent with the user's profile + memories + the
      last message and whether any required prerequisite (e.g.
@@ -260,12 +260,12 @@ the original (rejected) reply with the guard note attached.
 
 The Coherence Guard is the only guard that **rejects answers outright**,
 not just appends notes. It runs as a last-stage auditor and asks: *does
-the agent's reply contradict the user's profile or stored Palace facts?*
+the agent's reply contradict the user's profile or stored curated memory facts?*
 
 The LLM judge receives:
 
 - `BOOT_USER` for the active profile (the deterministic filter)
-- Up to 3 semantically related Palace memories (the dynamic filter)
+- Up to 3 keyword-matched `memory.md` sections (dynamic filter)
 - The last few turns of recent chat (for context-window awareness)
 - The model's final reply
 
@@ -355,7 +355,7 @@ The rule explicitly lists which resources it covers:
 
 ### 7.2. Memory is for context, not for live state
 
-Memory (Palace facts, BOOT wings, prior turn context) is still the right
+Memory (`memory.md` facts, BOOT wings, prior turn context) is still the right
 place for *preferences, history, conversation continuity, and reasoning*.
 It is the wrong place for the *live state* of any system resource that has
 a tool to query it.
@@ -365,7 +365,7 @@ a tool to query it.
 The Ralph Loop can fire a corrective message if the rule is violated. The
 rule is registered in
 [`src/core/tools/registry.ts`](../src/core/tools/registry.ts) under
-`indexRalphRulesInPalace`. **It is registered with an empty
+`indexRalphRules`. **It is registered with an empty
 `requiredTools` array** because the rule covers many resources, each
 mapping to a different tool — a hardcoded list would either be too narrow
 (causing false positives on legitimate `Read`/`Glob` calls) or too broad

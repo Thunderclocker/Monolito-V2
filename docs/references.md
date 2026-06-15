@@ -23,7 +23,7 @@ side-by-side.
 | `free-code/`         | A fork of OpenClaude used as a starting point           | Base architecture, tool harness ideas                 |
 | `gemini-cli/`        | Google Gemini CLI                                       | TUI conventions, command routing                      |
 | `legacy runtime/`      | Prior Monolito-V2 lineage (`.hermes/` runtime)          | Multi-agent patterns, channel management              |
-| `mempalace/`         | Memory Palace concept reference                         | Schema design, recall semantics                       |
+| `mempalace/`         | Historical memory-system design reference (pre-file-backend) | Legacy schema ideas only; not used at runtime |
 | `upstream framework/`          | upstream framework agent framework                                | Agent profiles, OAuth flows                           |
 | `symphony/`          | Elixir-based agent orchestrator (read-only)             | Multi-agent coordination patterns                     |
 

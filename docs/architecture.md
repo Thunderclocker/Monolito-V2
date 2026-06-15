@@ -58,7 +58,7 @@ companion docs are:
 │                            against hosted providers (MiniMax, OpenAI,   │
 │                            Brave/Serper/Tavily).                         │
 ├──────────────────────────────────────────────────────────────────────────┤
-│  src/core/db/schema.ts    Palace + vector + background_tasks + workers. │
+│  memory/ + state/*.json   File-backed sessions, memory, graph, rules.   │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -124,7 +124,7 @@ the pipeline.
                    │  • 12 semantically similar    │
                    │    past messages (Ollama)     │
                    │  • 3 semantically similar      │
-                   │    Palace facts               │
+                   │    curated memory.md facts    │
                    │  (degrades gracefully if      │
                    │   embeddings unavailable)     │
                    └───────────────┬───────────────┘
@@ -227,7 +227,7 @@ the pipeline.
         ┌──────────────────────────────────────┐
         │ Coherence Guard (post-finalization)  │
         │ LLM check: response vs BOOT_USER +   │
-        │ Palace memories + recent chat.       │
+        │ memory.md facts + recent chat.       │
         │ Reject if contradicts user profile.  │
         │ Also rejects "please run X in your   │
         │ terminal" → must use own tools.      │

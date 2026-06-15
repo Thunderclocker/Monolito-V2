@@ -10,7 +10,7 @@ Focuses on semantic memory synthesis and organization:
 - Uses a **cursor checkpoint** in `state/processing_cursors.json` (`memoryConsolidation`) to track processed messages. On each run, only **new messages since the last checkpoint** are analyzed.
 - Fits the message batch to ~65% of the active model's input budget. If there are more messages than fit, the remainder is left for the next consolidation cycle.
 - Loads **existing memory context** via `recallMemory` before prompting the LLM, so the model can detect what's already stored and avoid duplicates.
-- Uses `BootWrite` (for identity/soul/user) and `WorkspaceMemoryFiling` (for facts, decisions, tasks) with descriptive `memory_key` values. The storage layer (`upsertMemoryDrawer`) automatically detects:
+- Uses `BootWrite` (for identity/soul/user) and `WorkspaceMemoryFiling` (for facts, decisions, tasks) with descriptive `key` values. The storage layer (`upsertCuratedMemory`) automatically detects:
   - Same key + same content → **skip** (no duplication)
   - Same key + different content → **update** (obsolete info replaced)
   - New key → **insert**

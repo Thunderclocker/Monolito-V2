@@ -99,17 +99,16 @@ docker run -d --name monolito-v2-ollama-embeddings \
   ollama/ollama
 ```
 
-The runtime will retry the warmup on the next daemon restart. Background
-embeddings sync (`syncMissingEmbeddings`) catches up on any messages or
-Palace writes that landed while Ollama was down.
+The runtime no longer uses embedding services. Memory recall is keyword-based
+over session JSONL and `memory.md`. If curated memory writes failed while the
+daemon was down, MemoryAgent catches up on the next consolidation cycle.
 
-### Symptom: `Embeddings unavailable` warnings every turn
+### Symptom: agent forgets context quickly on long sessions
 
-Embeddings are intentionally **non-fatal**. The runtime degrades to
-non-semantic memory recall (last 12 messages, no RAG). The session still
-works, but the agent forgets faster across long contexts.
-
-This is a degraded mode, not a bug. The warning is for awareness.
+Keyword recall is intentionally lightweight. The runtime injects matched
+history snippets and `memory.md` sections when relevant; otherwise it relies
+on BOOT wings, recent turns, and compaction. This is expected behavior, not
+a missing embeddings service.
 
 ---
 
@@ -385,14 +384,14 @@ Commit `2193ea9` prepends the Node binary directory to PATH inside
 
 ### Symptom: `/cost` reports high token usage on simple prompts
 
-The RAG context (12 semantically similar messages + 3 Palace facts) is
-appended to the dynamic context on every turn. On sessions with very
-long histories and high-similarity churn, RAG can dominate the prompt.
+Keyword memory context (up to 12 matched history snippets + 3 `memory.md`
+sections) is appended on eligible turns. On sessions with very long histories,
+this extra context can dominate the prompt.
 
 **Mitigations:**
 
-- Lower the RAG budget. Search `runtime.ts` for `getSemanticMessageContext`
-  and reduce the `12` and `3` literals.
+- Lower the recall budget. Search `runtime.ts` for `getSemanticMessageContext`
+  and `formatCuratedMemoryFacts`, then reduce the `12` and `3` limits.
 - Force compaction more aggressively with `/compact 5`.
 - Use a smaller model for low-stakes sessions.
 

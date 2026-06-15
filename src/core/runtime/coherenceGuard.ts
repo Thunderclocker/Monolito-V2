@@ -144,18 +144,18 @@ export async function checkTurnCoherence(
     // 1. Cargar perfil del usuario fijo (Filtro Determinista)
     const bootUser = readBootWing(rootDir, "BOOT_USER", profileId) ?? ""
 
-    // 2. Cargar memorias del Palace afines semánticamente (Filtro Dinámico)
+    // 2. Cargar memorias curadas afines por keyword (filtro dinámico)
     let semanticMemories = ""
     try {
       const recalled = await recallMemory(rootDir, undefined, undefined, modelText, profileId)
       if (recalled && recalled.length > 0) {
         semanticMemories = recalled
           .slice(0, 3)
-          .map((m: any) => `- [Memoria: ${m.room}/${m.key ?? ""}] ${m.content}`)
+          .map((m: any) => `- [Memoria: ${m.section}/${m.key ?? ""}] ${m.content}`)
           .join("\n")
       }
     } catch (e) {
-      // Fallback silencioso si RAG semántico no está listo
+      // Fallback silencioso si el recall por keyword no está listo
     }
 
     let recentChatContext = ""

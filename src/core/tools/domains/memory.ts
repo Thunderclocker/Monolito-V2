@@ -24,13 +24,13 @@ import {
   fileMemory,
   invalidateGraphTriple,
   listBootWings,
-  listRooms,
-  listWings,
+  listMemoryNamespaces,
+  listMemorySections,
   queryGraphEntity,
   readBootWing,
   recallMemory,
   getSemanticMessageContext,
-  upsertMemoryDrawer,
+  upsertCuratedMemory,
   writeBootWing,
 } from "../../session/store.ts"
 
@@ -40,6 +40,12 @@ import {
 } from "../../bootstrap/bootWings.ts"
 
 import type { ToolDefinition } from "../registry.ts"
+
+function resolveCuratedMemoryLocation(input: Record<string, unknown>) {
+  const namespace = optionalString(input, "namespace") ?? optionalString(input, "wing")
+  const section = optionalString(input, "section") ?? optionalString(input, "room")
+  return { namespace, section }
+}
 
 export const memoryTools: ToolDefinition[] = [
 {
@@ -164,28 +170,35 @@ export const memoryTools: ToolDefinition[] = [
 {
   name: "WorkspaceMemoryFiling",
   permissionTier: "edit",
-  description: "Store facts in memory.md as a ## section (curated digest). Use wing='SHARED' for team-wide memory. Sections are always loaded for the main agent.",
+  description: "Store facts in memory.md as a ## section (curated digest). Use namespace='SHARED' for profile-wide memory.",
   inputSchema: {
     type: "object",
     properties: {
-      wing: { type: "string", description: "Wing name. Use 'SHARED' for global memory, or 'session_preferences' to toggle session-scoped preferences (with room=sessionId)." },
-      room: { type: "string", description: "Topical room within the wing (e.g. 'architecture', 'auth')." },
+      namespace: { type: "string", description: "Memory namespace. Use 'SHARED' for global memory, or 'session_preferences' with section=sessionId for session-scoped preferences." },
+      section: { type: "string", description: "Topical section heading (e.g. 'architecture', 'auth')." },
       key: { type: "string", description: "Optional stable key to group or retrieve a specific memory later." },
       content: { type: "string", description: "The raw verbatim detail or decision to save." },
     },
-    required: ["wing", "room", "content"],
+    required: ["namespace", "section", "content"],
     additionalProperties: false,
   },
   concurrencySafe: false,
+  validate: input => {
+    const { namespace, section } = resolveCuratedMemoryLocation(input)
+    if (!namespace) return "namespace is required"
+    if (!section) return "section is required"
+    if (typeof input.content !== "string" || input.content.trim().length === 0) return "content is required"
+    return null
+  },
   async run(input, context) {
-    const wing = requireString(input, "wing")
-    const room = requireString(input, "room")
+    const { namespace, section } = resolveCuratedMemoryLocation(input)
+    if (!namespace || !section) return formatToolError("namespace and section are required")
     const key = optionalString(input, "key")
     const content = requireString(input, "content")
     const result = key
-      ? await upsertMemoryDrawer(context.rootDir, wing, room, content, context.profileId, key)
-      : { id: await fileMemory(context.rootDir, wing, room, content, context.profileId), action: "inserted" as const }
-    return { ok: true, id: result.id, action: result.action, wing, room, key: key ?? null, shared: wing.trim().toUpperCase() === "SHARED" }
+      ? await upsertCuratedMemory(context.rootDir, namespace, section, content, context.profileId, key)
+      : { id: await fileMemory(context.rootDir, namespace, section, content, context.profileId), action: "inserted" as const }
+    return { ok: true, id: result.id, action: result.action, namespace, section, key: key ?? null, shared: namespace.trim().toUpperCase() === "SHARED" }
   },
 },
 
@@ -196,44 +209,44 @@ export const memoryTools: ToolDefinition[] = [
   inputSchema: {
     type: "object",
     properties: {
-      wing: { type: "string", description: "Optional filter for a specific wing." },
-      room: { type: "string", description: "Optional filter for a specific room to narrow down." },
+      namespace: { type: "string", description: "Optional filter for a specific namespace." },
+      section: { type: "string", description: "Optional filter for a specific section heading." },
       key: { type: "string", description: "Optional stable key filter for an exact memory group." },
-      query: { type: "string", description: "Optional keyword query for full-text search (FTS5/BM25) over memory content." }
+      query: { type: "string", description: "Optional keyword query over memory.md section content." }
     },
     additionalProperties: false,
   },
   concurrencySafe: true,
   async run(input, context) {
-    const wing = optionalString(input, "wing")
-    const room = optionalString(input, "room")
+    const namespace = optionalString(input, "namespace") ?? optionalString(input, "wing")
+    const section = optionalString(input, "section") ?? optionalString(input, "room")
     const key = optionalString(input, "key")
     const query = optionalString(input, "query")
 
     let results: any[] = []
     const keywordSearchActive = !!query
     try {
-      results = await recallMemory(context.rootDir, wing, room, query, context.profileId, key)
+      results = await recallMemory(context.rootDir, namespace, section, query, context.profileId, key)
     } catch (error) {
       return formatToolError(error)
     }
     
-    if (!wing && !room && !key && !query) {
+    if (!namespace && !section && !key && !query) {
       return {
-        wings: listWings(context.rootDir, context.profileId),
+        namespaces: listMemoryNamespaces(context.rootDir, context.profileId),
         recentMemories: results,
       }
     }
-    if (wing && !room && !key && !query) {
+    if (namespace && !section && !key && !query) {
       return {
-        wing,
-        rooms: listRooms(context.rootDir, wing, context.profileId),
+        namespace,
+        sections: listMemorySections(context.rootDir, namespace, context.profileId),
         memories: results,
       }
     }
     return {
-      wing,
-      room,
+      namespace,
+      section,
       key,
       query,
       keywordSearchActive,
@@ -334,7 +347,7 @@ export const memoryTools: ToolDefinition[] = [
   name: "SearchHistory",
   aliases: ["search_history"],
   permissionTier: "read",
-  description: "Search prior chat messages by keyword (FTS over session history). Returns matching turns with context. Use when the user asks about something from an older conversation not in memory.md.",
+  description: "Search prior chat messages by keyword over session history JSONL. Returns matching turns with context. Use when the user asks about something from an older conversation not in memory.md.",
   inputSchema: {
     type: "object",
     properties: {

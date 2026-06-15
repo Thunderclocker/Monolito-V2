@@ -504,13 +504,13 @@ export class MonolitoV2Daemon {
   }
 
   private startToolIndexing() {
-    import("../tools/registry.ts").then(({ indexToolsInPalace, indexRalphRulesInPalace }) => {
-      indexToolsInPalace(this.rootDir).then(() => {
+    import("../tools/registry.ts").then(({ indexSemanticTools, indexRalphRules }) => {
+      indexSemanticTools(this.rootDir).then(() => {
         this.writeDaemonLog("Tool indexing completed")
       }).catch(err => {
         this.writeDaemonLog(`Tool indexing failed: ${err}`)
       })
-      indexRalphRulesInPalace(this.rootDir).then(() => {
+      indexRalphRules(this.rootDir).then(() => {
         this.writeDaemonLog("Ralph rules indexing completed")
       }).catch(err => {
         this.writeDaemonLog(`Ralph rules indexing failed: ${err}`)

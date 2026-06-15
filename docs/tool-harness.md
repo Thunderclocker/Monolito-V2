@@ -18,7 +18,7 @@ The registry includes tools for:
 - shell execution
 - workspace file read/write
 - BOOT wing read/write
-- Memory Palace filing and recall
+- curated memory filing and recall (`WorkspaceMemoryFiling` / `WorkspaceMemoryRecall`)
 - temporal knowledge graph reads and writes
 - MCP listing, reading, and tool calls
 - Telegram send and file handling
@@ -87,15 +87,15 @@ Behavior:
 - `KgInvalidate` sets `valid_to` on matching active triples
 - `KgQuery` returns triples where the entity appears as `subject` or `object`, including whether each fact is still active
 
-Use these tools for time-aware facts that should not be flattened into free-form Memory Palace text.
+Use these tools for time-aware facts that should not be flattened into free-form `memory.md` text.
 
-## BOOT vs Graph vs Memory Palace
+## BOOT vs graph vs curated memory
 
 Use the layers differently:
 
 - BOOT tools: bootstrap seed, onboarding, identity, stable user profile, and system instructions
 - graph tools: time-aware relations and facts with lifecycle
-- Memory Palace tools: verbatim history, broader durable memory, notes, patterns, and semantic recall
+- curated memory tools: durable facts in `memory.md`, keyword recall, and session history search
 
 ## MCP
 

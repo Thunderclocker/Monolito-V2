@@ -15,9 +15,8 @@ the operational map.
 - [`guards.md`](./guards.md) — the four enforcement guards (Stall /
   ReAct, Ralph Loop, Side-Effect Guard, Turn Integrity) and the
   Turn Execution Stack.
-- [`memory.md`](./memory.md) — the three-layer memory architecture
-  (BOOT wings, Memory Palace, knowledge graph) plus embeddings and
-  the Context Engine.
+- [`memory.md`](./memory.md) — the file-backed memory architecture
+  (BOOT wings, curated `memory.md`, knowledge graph) and the Context Engine.
 - [`single-user-boot.md`](./single-user-boot.md) — why BOOT state is
   single-user and how the `__global__` profile fallback works.
 
@@ -40,7 +39,7 @@ the operational map.
   background agent (`MemoryAgent`) that runs during inactivity periods for
   memory consolidation. (SkillsAgent and the entire dynamic skill system were removed.)
 - [`tool-harness.md`](./tool-harness.md) — tool execution model,
-  permission gating, BOOT tools, and Memory Palace behavior.
+  permission gating, BOOT tools, and curated memory behavior.
 - [`channels-and-telegram.md`](./channels-and-telegram.md) — Telegram
   session mapping, channel config, and reply flow.
 - [`tts.md`](./tts.md) — managed TTS lifecycle, speech generation,

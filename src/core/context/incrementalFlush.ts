@@ -2,7 +2,6 @@
 //
 // The legacy smartCompactSession takes the middle zone of a long session,
 // concatenates it into a single big string, and asks an LLM to summarize it.
-// That single LLM call is the same antipattern as the embedding 500 / memory
 // consolidation 100K-token bug: a giant input to a single model call is
 // fragile, slow, and prone to timeouts.
 //
@@ -38,34 +37,34 @@ export function getContextFlushThresholdChars(): number {
 export interface IncrementalFlushOptions {
   rootDir: string
   sessionId: string
-  /** Wing for the flushed drawers. Default: "CHAT". */
-  wing?: string
-  /** Room for the flushed drawers. Default: sessionId. */
-  room?: string
+  /** Namespace for flushed memory sections. Default: "CHAT". */
+  namespace?: string
+  /** Section heading for flushed memory sections. Default: sessionId. */
+  section?: string
   /** Max messages to flush per call. Default: 30. */
   batchSize?: number
   /** External AbortSignal. */
   abortSignal?: AbortSignal
   /**
    * fileMemory function (injected to avoid circular imports). Receives
-   * (rootDir, wing, room, content, profileId, key). Returns the new
-   * drawer id.
+   * (rootDir, namespace, section, content, profileId, key). Returns the new
+   * section entry id.
    */
   fileMemory: (
     rootDir: string,
-    wing: string,
-    room: string,
+    namespace: string,
+    section: string,
     content: string,
     profileId: string,
     key?: string,
   ) => Promise<string>
-  /** Profile id to attribute the flushed drawers to. Default: "default". */
+  /** Profile id to attribute the flushed sections to. Default: "default". */
   profileId?: string
 }
 
 export interface IncrementalFlushResult extends PipelineResult {
-  drawersFiled: number
-  drawersSkipped: number
+  sectionsFiled: number
+  sectionsSkipped: number
 }
 
 /**
@@ -89,8 +88,8 @@ export async function incrementalFlushSession(
 ): Promise<IncrementalFlushResult> {
   const cursorStorage = storage
   const streamId = `ctxflush:${opts.sessionId}`
-  const wing = opts.wing ?? "CHAT"
-  const room = opts.room ?? opts.sessionId
+  const namespace = opts.namespace ?? "CHAT"
+  const section = opts.section ?? opts.sessionId
   const profileId = opts.profileId ?? "default"
   const batchSize = opts.batchSize ?? 30
 
@@ -104,8 +103,8 @@ export async function incrementalFlushSession(
     isLast: i === rawMessages.length - 1,
   }))
 
-  let drawersFiled = 0
-  let drawersSkipped = 0
+  let sectionsFiled = 0
+  let sectionsSkipped = 0
 
   const result = await processStream<string>(cursorStorage, {
     streamId,
@@ -117,13 +116,13 @@ export async function incrementalFlushSession(
       try {
         msg = JSON.parse(chunk.text) as typeof msg
       } catch {
-        drawersSkipped++
+        sectionsSkipped++
         return null
       }
       // Skip empty / system-only messages.
       const trimmed = msg.text.trim()
       if (trimmed.length === 0) {
-        drawersSkipped++
+        sectionsSkipped++
         return null
       }
       return extractHeuristicSummary(trimmed, msg.role, msg.at)
@@ -132,23 +131,23 @@ export async function incrementalFlushSession(
       const msg = JSON.parse(chunk.text) as { id: number; role: string; text: string; at?: string }
       const key = `msg-${msg.id}`
       try {
-        await opts.fileMemory(opts.rootDir, wing, room, summary, profileId, key)
-        drawersFiled++
+        await opts.fileMemory(opts.rootDir, namespace, section, summary, profileId, key)
+        sectionsFiled++
       } catch (e) {
         logger.warn("incrementalFlush: fileMemory failed for msg, skipping", {
           msgId: msg.id,
           errorName: e instanceof Error ? e.name : "Error",
           errorMessage: e instanceof Error ? e.message : String(e),
         })
-        drawersSkipped++
+        sectionsSkipped++
       }
     },
   })
 
   return {
     ...result,
-    drawersFiled,
-    drawersSkipped,
+    sectionsFiled,
+    sectionsSkipped,
   }
 }
 
