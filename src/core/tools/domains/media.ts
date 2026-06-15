@@ -966,6 +966,7 @@ export const mediaTools: ToolDefinition[] = [
       url: { type: "string", description: "URL de la imagen a descargar y analizar." },
       path: { type: "string", description: "Ruta local del archivo de imagen a analizar." },
       file_id: { type: "string", description: "Telegram file_id. Si se proporciona, descarga la imagen desde los servidores de Telegram (útil si la URL de origen bloquea descargas directas)." },
+      question: { type: "string", description: "Pregunta concreta del usuario sobre la imagen. Si se omite, se pide una descripción general." },
     },
     additionalProperties: false,
   },
@@ -980,6 +981,10 @@ export const mediaTools: ToolDefinition[] = [
     const url = optionalString(input, "url")
     const pathArg = optionalString(input, "path")
     const fileId = optionalString(input, "file_id")
+    const question = optionalString(input, "question")
+    const visionPrompt = question?.trim()
+      ? question.trim()
+      : "Describe exactly what is in this image in detail."
     
     let buffer: Buffer
     let mediaType = "image/jpeg"
@@ -1094,7 +1099,7 @@ export const mediaTools: ToolDefinition[] = [
                 },
                 {
                   type: "text",
-                  text: "Describe exactly what is in this image in detail."
+                  text: visionPrompt
                 }
               ]
             }
@@ -1138,7 +1143,7 @@ export const mediaTools: ToolDefinition[] = [
                 },
                 {
                   type: "text",
-                  text: "Describe exactly what is in this image in detail."
+                  text: visionPrompt
                 }
               ]
             }

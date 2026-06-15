@@ -276,6 +276,17 @@ function getLastUserMessage(session: SessionRecord) {
   return session.messages.filter(message => message.role === "user" && !shouldSkipMessage(message.text)).at(-1)?.text ?? ""
 }
 
+function stripPhotoAttachmentTags(text: string): string {
+  return text.replace(/<attachment\s+kind="photo"[^>]*\/?\s*>/gi, "").replace(/\s+/g, " ").trim()
+}
+
+function formatCurrentUserRequest(text: string): string {
+  const hasPhoto = text.includes('kind="photo"') || text.includes('attachment kind="photo"')
+  if (!hasPhoto) return text
+  const stripped = stripPhotoAttachmentTags(text)
+  return stripped.length > 0 ? stripped : text
+}
+
 function isEvidenceAuditRequest(text: string) {
   const normalized = compactWhitespace(text).toLowerCase()
   return /\b(de donde|de dónde|fuente|fuentes|origen|source|sources|evidencia|evidence|sacaste|salio|salió|herramienta|tool|tools)\b/.test(normalized)
@@ -660,7 +671,12 @@ function buildSystemPrompt(args: {
 
   const dynamicContext = ["=== DYNAMIC CONTEXT ==="]
   dynamicContext.push(`Workspace root: ${args.rootDir}`)
-  if (lastUserMessage) dynamicContext.push(`Current user request: ${lastUserMessage}`)
+  if (lastUserMessage) {
+    dynamicContext.push(`Current user request: ${formatCurrentUserRequest(lastUserMessage)}`)
+    if (lastUserMessage.includes('kind="photo"') || lastUserMessage.includes('attachment kind="photo"')) {
+      dynamicContext.push("attached_photo: true")
+    }
+  }
   if (lastUserMessage && isEvidenceAuditRequest(lastUserMessage)) {
     const toolLogs = args.session.worklog
       ? args.session.worklog
