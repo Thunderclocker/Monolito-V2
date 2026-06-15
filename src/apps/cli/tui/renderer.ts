@@ -617,11 +617,9 @@ export function renderScreen(header: HeaderState, transcript: TranscriptViewport
     frame = `${ANSI.bsu}${ANSI.hideCursor}${ANSI.home}${ANSI.clearScreen}${screenLines.join("\n")}`
   } else {
     let buf = `${ANSI.bsu}${ANSI.hideCursor}`
-    for (let i = 0; i < screenLines.length; i++) {
-      buf += `\u001b[${i + 1};1H${screenLines[i]}${ANSI.el}`
-    }
-    if (screenLines.length < rows) {
-      buf += `\u001b[${screenLines.length + 1};1H${ANSI.ed}`
+    for (let i = 0; i < rows; i++) {
+      const line = screenLines[i] ?? ""
+      buf += `\u001b[${i + 1};1H${padLine(line, cols)}${ANSI.el}`
     }
     frame = buf
   }

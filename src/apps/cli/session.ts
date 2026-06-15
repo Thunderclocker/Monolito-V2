@@ -620,6 +620,8 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
   let relaunchMessage: string | undefined
   let loadedRevision = ""
   let revisionCheckInFlight = false
+  let streamRedrawTimer: ReturnType<typeof setTimeout> | null = null
+  let streamRedrawPending = false
 
   const refreshHeader = () => {
     header = getHeaderState(rootDir, activeSessionId, connectionHealthy)
@@ -629,11 +631,38 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     const visibleRows = getTranscriptVisibleRows(header, composer)
     return appendTranscriptBlocksAligned(viewport, blocks, cols, visibleRows)
   }
-  const redraw = () => {
+  const redraw = (force = false) => {
     refreshHeader()
-    const clear = needsClear
+    const clear = force || needsClear || Boolean(composer.streamingText?.length)
     needsClear = false
+    streamRedrawPending = false
     renderScreen(header, transcript, composer, clear)
+  }
+  const scheduleStreamRedraw = () => {
+    streamRedrawPending = true
+    const now = Date.now()
+    if (now - lastStreamRedrawAt >= STREAM_REDRAW_MS) {
+      lastStreamRedrawAt = now
+      redraw(true)
+      return
+    }
+    if (streamRedrawTimer) return
+    streamRedrawTimer = setTimeout(() => {
+      streamRedrawTimer = null
+      if (streamRedrawPending) {
+        lastStreamRedrawAt = Date.now()
+        redraw(true)
+      }
+    }, STREAM_REDRAW_MS)
+  }
+  const flushStreamRedraw = () => {
+    if (streamRedrawTimer) {
+      clearTimeout(streamRedrawTimer)
+      streamRedrawTimer = null
+    }
+    if (streamRedrawPending || composer.streamingText) {
+      redraw(true)
+    }
   }
   const startThinkingAnimation = () => {
     if (thinkingTimer) return
@@ -742,14 +771,11 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       return
     }
     if (event.type === "model.stream") {
+      if (thinkingTimer) stopThinkingAnimation()
       composer.streamingText = (composer.streamingText ?? "") + event.text
       composer.thinkingVisible = false
       composer.busy = true
-      const now = Date.now()
-      if (now - lastStreamRedrawAt >= STREAM_REDRAW_MS) {
-        lastStreamRedrawAt = now
-        redraw()
-      }
+      scheduleStreamRedraw()
       return
     }
 
@@ -776,6 +802,7 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       }
     }
     if (event.type === "message.received" && event.role === "assistant") {
+      flushStreamRedraw()
       composer.thinkingVisible = false
       composer.accumulatedThinking = ""
       composer.streamingText = ""
@@ -793,6 +820,7 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     // the Ralph Gate exhausted 20 attempts and the runtime suppressed
     // the assistant reply.
     if (event.type === "state.changed" && (event.state === "idle" || event.state === "error")) {
+      flushStreamRedraw()
       composer.busy = false
       composer.thinkingVisible = false
       composer.toolThinkingText = ""
