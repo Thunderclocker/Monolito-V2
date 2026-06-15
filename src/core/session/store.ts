@@ -55,6 +55,28 @@ export function readSessionSources(
   return fileStore(rootDir).readSessionSources(sessionId)
 }
 
+export type { ResearchCheckpointFile } from "../storage/fileStorage.ts"
+
+export function readResearchCheckpoint(rootDir: string, sessionId: string) {
+  return fileStore(rootDir).readResearchCheckpoint(sessionId)
+}
+
+export function writeResearchCheckpoint(
+  rootDir: string,
+  sessionId: string,
+  checkpoint: import("../storage/fileStorage.ts").ResearchCheckpointFile,
+) {
+  fileStore(rootDir).writeResearchCheckpoint(sessionId, checkpoint)
+}
+
+export function consumeResearchCheckpoint(rootDir: string, sessionId: string) {
+  fileStore(rootDir).consumeResearchCheckpoint(sessionId)
+}
+
+export function clearResearchCheckpoint(rootDir: string, sessionId: string) {
+  fileStore(rootDir).clearResearchCheckpoint(sessionId)
+}
+
 export interface SessionTask {
   id: string
   content: string

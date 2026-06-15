@@ -46,6 +46,10 @@ export function sessionSourcesPath(rootDir: string, sessionId: string): string {
   return join(sessionDir(rootDir, sessionId), "sources.json")
 }
 
+export function sessionResearchCheckpointPath(rootDir: string, sessionId: string): string {
+  return join(sessionDir(rootDir, sessionId), "research_checkpoint.json")
+}
+
 export function sessionPrefsPath(rootDir: string, sessionId: string): string {
   return join(sessionDir(rootDir, sessionId), "prefs.json")
 }

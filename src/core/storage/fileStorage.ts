@@ -33,6 +33,7 @@ import {
   sessionMessagesPath,
   sessionMetaPath,
   sessionPrefsPath,
+  sessionResearchCheckpointPath,
   sessionSourcesPath,
   sessionTasksPath,
   sessionWorklogPath,
@@ -66,6 +67,19 @@ type FileKnowledgeGraphTriple = {
   valid_to: string | null
   created_at: string
   is_active: boolean
+}
+
+export type ResearchCheckpointFile = {
+  createdAt: string
+  userRequest: string
+  reason: "turn_aborted" | "max_duration"
+  turnStartedAt: string
+  toolsRun: string[]
+  sourceKeys: string[]
+  evidenceIndex: Array<{ tool: string; summary: string; url?: string }>
+  tasksCompleted: number
+  consumed: boolean
+  consumedAt?: string
 }
 
 // --- low-level helpers ---
@@ -391,6 +405,9 @@ export class FileStorageBackend {
     writeJsonlAtomic(sessionEventsPath(this.rootDir, sessionId), [])
     writeJsonAtomic(sessionTasksPath(this.rootDir, sessionId), { tasks: [] })
     writeJsonAtomic(sessionSourcesPath(this.rootDir, sessionId), { sources: {} })
+    try {
+      rmSync(sessionResearchCheckpointPath(this.rootDir, sessionId), { force: true })
+    } catch { /* ignore */ }
     meta.next_message_id = 1
     meta.updated_at = now
     this.writeSessionMeta(meta)
@@ -630,6 +647,33 @@ export class FileStorageBackend {
     const path = sessionSourcesPath(this.rootDir, sessionId)
     const data = readJsonFile<{ sources: Record<string, string> }>(path, { sources: {} })
     return Object.entries(data.sources).map(([key, content]) => ({ key, content }))
+  }
+
+  readResearchCheckpoint(sessionId: string): ResearchCheckpointFile | null {
+    const path = sessionResearchCheckpointPath(this.rootDir, sessionId)
+    if (!existsSync(path)) return null
+    const data = readJsonFile<ResearchCheckpointFile | null>(path, null)
+    if (!data || data.consumed) return null
+    return data
+  }
+
+  writeResearchCheckpoint(sessionId: string, checkpoint: ResearchCheckpointFile) {
+    this.ensureSessionDir(sessionId)
+    writeJsonAtomic(sessionResearchCheckpointPath(this.rootDir, sessionId), checkpoint)
+  }
+
+  consumeResearchCheckpoint(sessionId: string) {
+    const path = sessionResearchCheckpointPath(this.rootDir, sessionId)
+    if (!existsSync(path)) return
+    const data = readJsonFile<ResearchCheckpointFile | null>(path, null)
+    if (!data) return
+    writeJsonAtomic(path, { ...data, consumed: true, consumedAt: new Date().toISOString() })
+  }
+
+  clearResearchCheckpoint(sessionId: string) {
+    try {
+      rmSync(sessionResearchCheckpointPath(this.rootDir, sessionId), { force: true })
+    } catch { /* ignore */ }
   }
 
   isSessionResearchSilent(sessionId: string): boolean {

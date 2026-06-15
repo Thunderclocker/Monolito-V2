@@ -11,6 +11,7 @@ import { createLogger, type Logger } from "../logging/logger.ts"
 import { loadAndApplyModelSettings, readModelSettings } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider, getDefaultReasoningLevel, type ReasoningLevel } from "./modelRegistry.ts"
 import { compactSession, fileMemory, getSession, getRawMessagesForSession, readSessionSources, tailEvents, listSessionTasks, appendWorklog, saveResolvedError, querySimilarErrors, deleteMessages, rewriteMessageInPlace, loadCachedMemoryContext } from "../session/store.ts"
+import { buildResearchCheckpointInjection } from "./researchCheckpoint.ts"
 import type { RecentToolCall } from "./coherenceGuard.ts"
 import { wrapAuditFeedback } from "./auditFeedback.ts"
 import { incrementalFlushSession, getContextFlushThresholdChars } from "../context/incrementalFlush.ts"
@@ -675,6 +676,20 @@ function buildSystemPrompt(args: {
     dynamicContext.push(`Current user request: ${formatCurrentUserRequest(lastUserMessage)}`)
     if (lastUserMessage.includes('kind="photo"') || lastUserMessage.includes('attachment kind="photo"')) {
       dynamicContext.push("attached_photo: true")
+    }
+    try {
+      const profileId = (args.session as SessionRecord & { profileId?: string }).profileId ?? "default"
+      const checkpointBlock = buildResearchCheckpointInjection(
+        args.rootDir,
+        args.session.id,
+        profileId,
+        lastUserMessage,
+      )
+      if (checkpointBlock) {
+        dynamicContext.push(checkpointBlock)
+      }
+    } catch {
+      // ignore checkpoint injection failures
     }
   }
   if (lastUserMessage && isEvidenceAuditRequest(lastUserMessage)) {

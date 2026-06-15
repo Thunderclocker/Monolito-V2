@@ -38,6 +38,7 @@ import {
   setMemoryConsolidationCursor,
   getMemorySectionCount,
   setSessionVoiceMode,
+  consumeResearchCheckpoint,
 } from "../session/store.ts"
 import { getTool, listTools, validateToolInput, type ToolContext, type ToolInputSchema } from "../tools/registry.ts"
 import { getEffectiveModelConfig, runAgentLoop, runAssistantTurn, runBackgroundTextTask, type AgentLoopEvent, type AssistantTurnResult } from "./modelAdapter.ts"
@@ -63,6 +64,11 @@ import { getDateContext, getGitContext } from "../context/gitContext.ts"
 import { getWorkspaceContext } from "../context/workspaceContext.ts"
 import { normalizeToolInputPayload } from "./toolInput.ts"
 import { evaluateTopLevelRalphGate, TOP_LEVEL_RALPH_MAX_ATTEMPTS, isScreenViewingRequest } from "./topLevelRalphGate.ts"
+import {
+  formatAbortedResearchUserMessage,
+  hasResearchToolSteps,
+  saveResearchCheckpointFromTurn,
+} from "./researchCheckpoint.ts"
 import { prepareTextForTts } from "./voiceTtsText.ts"
 import { renderToolFinish, renderToolStart, renderToolStartText } from "../renderer/toolRenderer.ts"
 import { checkToolPermission, runLifecycleHooks, runPostToolHooks } from "./permissions.ts"
@@ -1950,15 +1956,38 @@ Rules:
 
             await this.deliverText(sessionId, userFacingText, options?.delivery, "Failed to deliver assistant reply")
           } else if (wasAborted) {
-            // Fix 2 (2026-06-10): no fabricar éxito cuando el turno terminó
-            // con error/timeout. Caso típico: el modelo entró en loop de
-            // veracity/coherence corrections, saltó el hard timeout, y el
-            // runtime iba a inyectar la frase hardcodeada mintiendo que se
-            // habían enviado archivos a Telegram. Ahora devuelve un error
-            // honesto y registra FABRICATED_SUCCESS_PREVENTED en el worklog
-            // para que quede audit trail.
-            const reason = turn.error ?? `turn ${turn.meta?.stopReason ?? "aborted"}`
-            userFacingText = `No pude completar la acción: ${reason}. ¿Querés que lo intente de nuevo?`
+            const checkpointReason =
+              turn.meta?.stopReason === "max_duration"
+                ? "max_duration" as const
+                : abortController.signal.reason instanceof TurnTimeoutError
+                  ? "turn_aborted" as const
+                  : null
+
+            let checkpointSaved = false
+            if (checkpointReason && hasResearchToolSteps(turn.steps)) {
+              const checkpoint = saveResearchCheckpointFromTurn({
+                rootDir: this.rootDir,
+                sessionId,
+                profileId,
+                userRequest: preparedUserText,
+                reason: checkpointReason,
+                turnStartedAtMs: turnStartedAt,
+                steps: turn.steps,
+              })
+              if (checkpoint) {
+                checkpointSaved = true
+                userFacingText = formatAbortedResearchUserMessage(checkpoint)
+                appendWorklog(this.rootDir, sessionId, {
+                  type: "note",
+                  summary: `RESEARCH_CHECKPOINT_SAVED: tools=[${checkpoint.toolsRun.join(", ")}] sourceKeys=${checkpoint.sourceKeys.length}`,
+                })
+              }
+            }
+
+            if (!checkpointSaved) {
+              const reason = turn.error ?? `turn ${turn.meta?.stopReason ?? "aborted"}`
+              userFacingText = `No pude completar la acción: ${reason}. ¿Querés que lo intente de nuevo?`
+            }
             const stepsSummary = turn.steps
               ?.filter(s => s.type === "tool")
               .map(s => (s as { tool: string }).tool)
@@ -1966,7 +1995,7 @@ Rules:
             appendMessage(this.rootDir, sessionId, "assistant", userFacingText, { thinking: turn.thinking })
             appendWorklog(this.rootDir, sessionId, {
               type: "note",
-              summary: `FABRICATED_SUCCESS_PREVENTED: tools=[${stepsSummary}] | reason=${reason}`,
+              summary: `FABRICATED_SUCCESS_PREVENTED: tools=[${stepsSummary}] | reason=${turn.error ?? turn.meta?.stopReason ?? "aborted"}${checkpointSaved ? " | research_checkpoint_saved" : ""}`,
             })
             this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText, thinking: turn.thinking })
             this.emit({
@@ -1991,6 +2020,9 @@ Rules:
             })
           }
         } else {
+          if (!turn.error && !shouldSuppressEmit(userFacingText)) {
+            consumeResearchCheckpoint(this.rootDir, sessionId)
+          }
           appendMessage(this.rootDir, sessionId, "assistant", userFacingText, { thinking: turn.thinking })
           appendWorklog(this.rootDir, sessionId, {
             type: "session",
