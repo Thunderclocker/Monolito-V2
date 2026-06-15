@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { DEFAULT_BOOT_WING_CONTENT } from "../bootstrap/bootWings.ts"
 
 // Set isolated environment root before importing Monolito core modules
 const testMonolitoRoot = mkdtempSync(join(tmpdir(), "monolito-registry-test-root-"))
@@ -440,7 +441,7 @@ test("clearProfileMemory removes profile memory while preserving configuration",
     })
     assert.equal(queryGraphEntity(rootDir, "default", "Cristian").length, 0)
     assert.equal(await recallMemory(rootDir, "PRIVATE", "notes", "dato", "default").then(rows => rows.some(row => row.content.includes("dato durable"))), false)
-    assert.equal(readBootWing(rootDir, "BOOT_MEMORY", "default"), "# BOOT_MEMORY - Memoria Curada de Largo Plazo\n\nGuarda aqui notas destiladas y durables. No uses esto para logs ruidosos del dia a dia.\n")
+    assert.equal(readBootWing(rootDir, "BOOT_MEMORY", "default"), DEFAULT_BOOT_WING_CONTENT.BOOT_MEMORY)
   } finally {
     cleanupRootDir(rootDir)
   }

@@ -75,8 +75,8 @@ test("Glob finds files matching pattern", { skip: !RG_AVAILABLE }, async () => {
       makeToolContext(root),
     ) as { numFiles: number; filenames: string[]; truncated: boolean }
 
-    assert.equal(result.numFiles, 2)
-    assert.deepEqual(result.filenames.sort(), ["bar.ts", "foo.ts"])
+    assert.equal(result.numFiles, 3)
+    assert.deepEqual(result.filenames.sort(), ["./bar.ts", "./foo.ts", "./sub/qux.ts"])
   } finally {
     cleanupRootDir(root)
   }

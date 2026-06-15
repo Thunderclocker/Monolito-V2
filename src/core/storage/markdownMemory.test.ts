@@ -14,7 +14,7 @@ test("markdown memory: seed, read boot, write section, cached block", () => {
   assert.ok(existsSync(memoryMdPath(root)))
   assert.ok(store.bootWingExists("BOOT_USER"))
   const user = store.readBootWing("BOOT_USER")
-  assert.ok(user?.includes("BOOT_USER"))
+  assert.ok(user?.includes("# User Profile"))
 
   store.upsertMemorySection("PC local — seguridad", "- Puerto 22 cerrado", ["pc", "seguridad"])
   const md = store.loadMemoryMd()
