@@ -56,7 +56,7 @@ test("tool_manage_config writes CONF_CHANNELS when value is a JSON string with v
       cwd: rootDir,
     })
 
-    assert.equal((result as { wing: string }).wing, "CONF_CHANNELS")
+    assert.equal((result as { config: string }).config, "CONF_CHANNELS")
     assert.equal((result as { ok: boolean }).ok, true)
     assert.equal((result as { effect: string }).effect, "channels_reload_required")
     assert.deepEqual(readConfigWing(rootDir, "CONF_CHANNELS"), {
@@ -82,7 +82,7 @@ test("tool_manage_config normalizes legacy CONF_CHANNELS telegram aliases", asyn
       cwd: rootDir,
     })
 
-    assert.equal((result as { wing: string }).wing, "CONF_CHANNELS")
+    assert.equal((result as { config: string }).config, "CONF_CHANNELS")
     assert.equal((result as { ok: boolean }).ok, true)
     assert.deepEqual(readConfigWing(rootDir, "CONF_CHANNELS"), {
       telegram: {
@@ -507,9 +507,9 @@ test("tool_manage_config action 'get' reads nested configuration path", async ()
       action: "get",
       wing: "CONF_CHANNELS",
       path: "telegram.enabled",
-    }, { rootDir, cwd: rootDir }) as { wing: string, path: string, value: unknown }
+    }, { rootDir, cwd: rootDir }) as { config: string, path: string, value: unknown }
 
-    assert.equal(result.wing, "CONF_CHANNELS")
+    assert.equal(result.config, "CONF_CHANNELS")
     assert.equal(result.path, "telegram.enabled")
     assert.equal(result.value, true)
 
@@ -542,9 +542,9 @@ test("tool_manage_config action 'set' updates nested configuration path", async 
       wing: "CONF_CHANNELS",
       path: "telegram.enabled",
       value: "true",
-    }, { rootDir, cwd: rootDir }) as { wing: string, path: string, ok: boolean }
+    }, { rootDir, cwd: rootDir }) as { config: string, path: string, ok: boolean }
 
-    assert.equal(result.wing, "CONF_CHANNELS")
+    assert.equal(result.config, "CONF_CHANNELS")
     assert.equal(result.path, "telegram.enabled")
     assert.equal(result.ok, true)
 

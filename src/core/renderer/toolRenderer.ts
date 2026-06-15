@@ -206,8 +206,8 @@ function summarizeGenericRecord(value: Record<string, unknown> | null) {
   const id = getString(value, "id") ?? getString(value, "agentId")
   const path = getString(value, "path") ?? getString(value, "file")
   const server = getString(value, "server")
-  const room = getString(value, "room")
-  const wing = getString(value, "wing")
+  const namespace = getString(value, "namespace") ?? getString(value, "wing")
+  const section = getString(value, "section") ?? getString(value, "room")
   const key = getString(value, "key")
   const bytes = getNumber(value, "bytes")
   const pid = getNumber(value, "pid")
@@ -218,8 +218,8 @@ function summarizeGenericRecord(value: Record<string, unknown> | null) {
     ["files", getArray(value, "filenames")],
     ["memories", getArray(value, "memories")],
     ["recent memories", getArray(value, "recentMemories")],
-    ["wings", getArray(value, "wings")],
-    ["rooms", getArray(value, "rooms")],
+    ["boot files", getArray(value, "files") ?? getArray(value, "wings")],
+    ["sections", getArray(value, "sections") ?? getArray(value, "rooms")],
     ["resources", getArray(value, "resources")],
     ["tools", getArray(value, "tools")],
   ]
@@ -232,7 +232,7 @@ function summarizeGenericRecord(value: Record<string, unknown> | null) {
     id ? `id ${id}` : undefined,
     path ? humanizePath(path) : undefined,
     server,
-    wing && room ? `${wing}/${room}${key ? ` · ${key}` : ""}` : undefined,
+    namespace && section ? `${namespace}/${section}${key ? ` · ${key}` : ""}` : undefined,
     typeof bytes === "number" ? `${bytes} bytes` : undefined,
     typeof pid === "number" ? `pid ${pid}` : undefined,
     ...arrayCounts,
@@ -416,20 +416,30 @@ export function renderToolStart(tool: string, input: unknown): ToolRenderLine {
       return {
         label: "",
         tone: "info",
-        text: `Reading ${getString(value, "wing") ?? "BOOT wing"}...`,
+        text: `Reading ${getString(value, "file") ?? getString(value, "wing") ?? "boot file"}...`,
       }
     case "BootWrite":
       return {
         label: "",
         tone: "info",
-        text: `Updating ${getString(value, "wing") ?? "BOOT wing"}...`,
+        text: `Updating ${getString(value, "file") ?? getString(value, "wing") ?? "boot file"}...`,
+      }
+    case "BootListFiles":
+    case "BootListWings":
+      return { label: "", tone: "info", text: "Listing boot files..." }
+    case "BootCreateFile":
+    case "BootCreateWing":
+      return {
+        label: "",
+        tone: "info",
+        text: `Creating boot file ${getString(value, "file") ?? getString(value, "wing") ?? ""}...`.trim(),
       }
 
     case "WorkspaceMemoryFiling":
       return {
         label: "",
         tone: "info",
-        text: `Saving memory in ${(getString(value, "wing") ?? "PRIVATE").toUpperCase()}/${getString(value, "room") ?? "general"}...`,
+        text: `Saving memory in ${(getString(value, "namespace") ?? getString(value, "wing") ?? "PRIVATE").toUpperCase()}/${getString(value, "section") ?? getString(value, "room") ?? "general"}...`,
         detail: getString(value, "key") ?? undefined,
       }
     case "WorkspaceMemoryRecall":
@@ -438,8 +448,8 @@ export function renderToolStart(tool: string, input: unknown): ToolRenderLine {
         tone: "info",
         text: "Recalling workspace memory...",
         detail: [
-          getString(value, "wing"),
-          getString(value, "room"),
+          getString(value, "namespace") ?? getString(value, "wing"),
+          getString(value, "section") ?? getString(value, "room"),
           getString(value, "key"),
           getString(value, "query"),
         ].filter(Boolean).join(" · ") || undefined,
@@ -540,8 +550,8 @@ export function renderToolStart(tool: string, input: unknown): ToolRenderLine {
     case "tool_manage_config": {
       const action = getString(value, "action")
       const path = getString(value, "path")
-      const wing = getString(value, "wing")
-      const target = path ?? wing ?? "config"
+      const configBlock = getString(value, "config") ?? getString(value, "wing")
+      const target = path ?? configBlock ?? "config"
       if (action === "get" || action === "read") {
         return { label: "", tone: "info", text: `Reading ${target}...` }
       }
@@ -632,22 +642,28 @@ export function renderToolFinish(tool: string, ok: boolean, output: unknown, inp
     case "ProfileCreate":
       return { label, tone, text: `Profile ${getString(value, "id") ?? "profile"} created` }
     case "BootRead":
-      return { label, tone, text: `Read ${getString(value, "wing") ?? "BOOT wing"}` }
+      return { label, tone, text: `Read ${getString(value, "file") ?? getString(value, "wing") ?? "boot file"}` }
     case "BootWrite":
-      return { label, tone, text: `Updated ${getString(value, "wing") ?? "BOOT wing"}` }
+      return { label, tone, text: `Updated ${getString(value, "file") ?? getString(value, "wing") ?? "boot file"}` }
+    case "BootListFiles":
+    case "BootListWings":
+      return { label, tone, text: "Listed boot files" }
+    case "BootCreateFile":
+    case "BootCreateWing":
+      return { label, tone, text: `Created boot file ${getString(value, "file") ?? getString(value, "wing") ?? ""}`.trim() }
     case "WorkspaceMemoryFiling": {
       const shared = getBoolean(value, "shared") === true
-      const wing = getString(value, "wing") ?? (shared ? "SHARED" : "PRIVATE")
-      const room = getString(value, "room") ?? "general"
+      const namespace = getString(value, "namespace") ?? getString(value, "wing") ?? (shared ? "SHARED" : "PRIVATE")
+      const section = getString(value, "section") ?? getString(value, "room") ?? "general"
       const key = getString(value, "key")
-      return { label, tone, text: `Memory saved in ${wing}/${room}${key ? ` · ${key}` : ""}` }
+      return { label, tone, text: `Memory saved in ${namespace}/${section}${key ? ` · ${key}` : ""}` }
     }
     case "WorkspaceMemoryRecall": {
       const memories = Array.isArray(value?.memories) ? value.memories.length : undefined
       const recent = Array.isArray(value?.recentMemories) ? value.recentMemories.length : undefined
-      const wings = Array.isArray(value?.wings) ? value.wings.length : undefined
+      const namespaces = Array.isArray(value?.namespaces) ? value.namespaces.length : undefined
       if (typeof memories === "number") return { label, tone, text: `Memory recall: ${memories} result${memories === 1 ? "" : "s"}` }
-      if (typeof recent === "number") return { label, tone, text: `Memory recall: ${recent} recent item${recent === 1 ? "" : "s"}${typeof wings === "number" ? ` across ${wings} wing${wings === 1 ? "" : "s"}` : ""}` }
+      if (typeof recent === "number") return { label, tone, text: `Memory recall: ${recent} recent item${recent === 1 ? "" : "s"}${typeof namespaces === "number" ? ` across ${namespaces} namespace${namespaces === 1 ? "" : "s"}` : ""}` }
       return { label, tone, text: "Memory recall completed" }
     }
     case "GenerateSpeech":

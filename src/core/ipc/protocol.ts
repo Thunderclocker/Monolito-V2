@@ -167,7 +167,7 @@ export function getPaths(rootDir: string, profileId: string = "default") {
   const agentsDir = join(baseDir, "agents")
   // Workspace del agente: escritorio libre en la raíz de MONOLITO_ROOT.
   // No depende de profileId (single-user); el profileId se mantiene solo
-  // para BOOT wings, memoria y sub-agentes.
+  // para archivos boot, memoria y sub-agentes.
   const workspaceDir = join(baseDir, "workspace")
   // Scratchpad vive adentro del workspace (es donde el agente trabaja).
   const scratchpadDir = join(workspaceDir, "scratchpad")

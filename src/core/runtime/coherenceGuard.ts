@@ -222,7 +222,7 @@ Respond strictly in JSON format:
   "reason": "Brief, objective explanation of the contradiction detected (in the same language as the response). Empty if coherent is true."
 }`;
 
-    const userPrompt = `${recentChatContext}${recentToolsContext}=== PERFIL DEL USUARIO (BOOT_USER) ===
+    const userPrompt = `${recentChatContext}${recentToolsContext}=== USER PROFILE (boot/user.md) ===
  ${bootUser}
 
  === MEMORIAS SEMÁNTICAS RELACIONADAS ===

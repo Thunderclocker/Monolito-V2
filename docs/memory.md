@@ -1,69 +1,45 @@
-# Memory system
+# Memory Architecture (file-only)
 
-Monolito stores **all** durable state as files under `$MONOLITO_ROOT/memory/`.
-There is no SQLite database and no embedding service.
+Monolito V2 stores all durable memory as markdown and JSON/JSONL under `$MONOLITO_ROOT/memory/`. There is **no SQLite**, no embeddings, and no vector recall.
 
-| Layer | Path | Purpose |
-|-------|------|---------|
-| BOOT wings | `boot/*.md`, `memory.md` | Identity + curated long-term digest (full-loaded each turn) |
+## Layers
+
+| Layer | Path | Role |
+|-------|------|------|
+| Boot files | `boot/*.md`, `memory.md` | Identity + curated long-term digest (full-loaded each turn) |
+| Curated sections | `memory.md` `##` headings | Durable facts via `WorkspaceMemoryFiling` |
+| Config | `config/CONF_*.json` | Runtime configuration blocks |
 | Sessions | `sessions/<id>/*.jsonl` | Messages, worklog, events |
-| Config | `config/CONF_*.json` | Runtime configuration wings |
-| State | `state/*.json`, `state/*.jsonl` | Graph, ralph rules, semantic tools, telegram queue, cursors |
-| Profiles | `profiles.json` | Profile registry |
+| State | `state/*.json` | Active tasks, semantic tool index, etc. |
+| Graph | `state/knowledge_graph.jsonl` | Temporal triples |
 
-See [`memory-files-redesign.md`](./memory-files-redesign.md) for the full layout.
+## Boot context files
 
-## Recall
+Allowed keys (enforced in [`src/core/bootstrap/bootWings.ts`](../src/core/bootstrap/bootWings.ts)):
 
-- **BOOT + memory.md**: injected in full on every turn (prompt caching).
-- **History**: keyword scan over `sessions/*/messages.jsonl` via `getSemanticMessageContext`.
-- **Curated facts**: keyword scan over `memory.md` sections via `recallMemory` / `WorkspaceMemoryRecall`.
+| Key | File |
+|-----|------|
+| `BOOT_AGENTS` | `boot/agents.md` |
+| `BOOT_SOUL` | `boot/soul.md` |
+| `BOOT_TOOLS` | `boot/tools.md` |
+| `BOOT_IDENTITY` | `boot/identity.md` |
+| `BOOT_USER` | `boot/user.md` |
+| `BOOT_BOOTSTRAP` | `boot/bootstrap.md` |
+| `BOOT_MEMORY` | `memory.md` |
 
-No FTS5 tables, no `memory.sqlite`, no Ollama embeddings.
+Custom `BOOT_*` keys beyond this set are blocked at the tool registry.
 
-## BOOT wings
+Tools: `BootRead` / `BootWrite` / `BootListFiles` / `BootCreateFile` (aliases: `BootListWings`, `BootCreateWing`).
 
-Allowed wings (enforced in [`src/core/bootstrap/bootWings.ts`](../src/core/bootstrap/bootWings.ts)):
+## Curated memory (`memory.md`)
 
-| Wing | File | Purpose |
-|------|------|---------|
-| `BOOT_AGENTS` | `boot/agents.md` | Agent rules, delegation |
-| `BOOT_SOUL` | `boot/soul.md` | Identity, principles |
-| `BOOT_TOOLS` | `boot/tools.md` | Tool usage rules |
-| `BOOT_IDENTITY` | `boot/identity.md` | External identity metadata |
-| `BOOT_USER` | `boot/user.md` | User profile |
-| `BOOT_BOOTSTRAP` | `boot/bootstrap.md` | First-run onboarding |
-| `BOOT_MEMORY` | `memory.md` | Long-term curated digest |
+Sections are `## Heading` blocks. File via `WorkspaceMemoryFiling` with `namespace` + `section`. Recall via keyword scan with `WorkspaceMemoryRecall`.
 
-Custom `BOOT_*` wings beyond this set are blocked at the tool registry.
+## Recall paths
 
-### Tools
+1. **Boot files always loaded** — injected in full each turn.
+2. **Keyword recall** — `getSemanticMessageContext` and `recallMemory` scan message JSONL and `memory.md`.
 
-- `BootRead` / `BootWrite` / `BootListWings` / `BootCreateWing`
-- `WorkspaceMemoryFiling` / `WorkspaceMemoryRecall` → sections in `memory.md`
-- `SearchHistory` → keyword scan over session JSONL
+## MemoryAgent
 
-## Knowledge graph
-
-Temporal triples (`subject`, `predicate`, `object`, validity window) in
-`state/knowledge_graph.jsonl`. Tools: graph add/query/invalidate (see
-[`src/core/tools/domains/memory.ts`](../src/core/tools/domains/memory.ts)).
-
-## Context engine (long sessions)
-
-Compaction and incremental flush file summarized chunks into `memory.md`
-sections and compact message JSONL in place. See [`guards.md`](./guards.md)
-and [`architecture.md`](./architecture.md).
-
-## Inspection (no sqlite3)
-
-```bash
-# Active session messages (last 5)
-tail -5 ~/.monolito/memory/sessions/orchestrator/messages.jsonl
-
-# Config
-cat ~/.monolito/memory/config/CONF_CHANNELS.json
-
-# Curated memory
-less ~/.monolito/memory/memory.md
-```
+Background consolidation turn (in-process, not a worker). Uses `BootWrite` and `WorkspaceMemoryFiling` to deduplicate and update `memory.md` and boot files.

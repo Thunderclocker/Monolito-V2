@@ -2,30 +2,30 @@
 
 Monolito does not use workspace markdown files (`SOUL.md`, `USER.md`, etc.) for runtime state. Bootstrap and durable memory live under `$MONOLITO_ROOT/memory/` as markdown and JSON/JSONL files.
 
-## BOOT wings
+## Boot context files
 
-`BOOT_*` is the deterministic seed injected at session start. Files live in `memory/boot/*.md` plus the curated digest `memory/memory.md` (`BOOT_MEMORY`).
+`BOOT_*` keys identify deterministic startup context injected at session start. Files live in `memory/boot/*.md` plus the curated digest `memory/memory.md` (`BOOT_MEMORY`).
 
-Current BOOT wings:
+| Key | File |
+|-----|------|
+| `BOOT_AGENTS` | `boot/agents.md` |
+| `BOOT_SOUL` | `boot/soul.md` |
+| `BOOT_TOOLS` | `boot/tools.md` |
+| `BOOT_IDENTITY` | `boot/identity.md` |
+| `BOOT_USER` | `boot/user.md` |
+| `BOOT_BOOTSTRAP` | `boot/bootstrap.md` |
+| `BOOT_MEMORY` | `memory.md` |
 
-- `BOOT_AGENTS` → `boot/agents.md`
-- `BOOT_SOUL` → `boot/soul.md`
-- `BOOT_TOOLS` → `boot/tools.md`
-- `BOOT_IDENTITY` → `boot/identity.md`
-- `BOOT_USER` → `boot/user.md`
-- `BOOT_BOOTSTRAP` → `boot/bootstrap.md`
-- `BOOT_MEMORY` → `memory.md`
-
-These wings are the first layer of the memory contract and are loaded in full on every turn.
+These files are the first layer of the memory contract and are loaded in full on every turn.
 
 ## Memory pyramid
 
-- **BOOT_***: deterministic startup seed, stable identity and user profile.
+- **Boot files (`memory/boot/*.md`)**: deterministic startup seed, stable identity and user profile.
 - **memory.md sections**: curated long-term facts filed via `WorkspaceMemoryFiling` (keyword recall).
 - **Temporal knowledge graph**: `state/knowledge_graph.jsonl` — time-aware triples with validity windows.
 - **Session JSONL**: messages, worklog, events under `sessions/<id>/`.
 
-Stable profile facts should be persisted into `BOOT_IDENTITY` or `BOOT_USER`. Open-ended or time-varying facts go to `memory.md` or the knowledge graph.
+Stable profile facts should be persisted into `BOOT_IDENTITY` or `BOOT_USER` via `BootWrite`. Open-ended or time-varying facts go to `memory.md` or the knowledge graph.
 
 ## Temporal knowledge graph
 
@@ -38,17 +38,17 @@ Tools: `KgAdd`, `KgInvalidate`, `KgQuery`.
 
 ## Startup behavior
 
-At session startup, Monolito reads BOOT wings in a fixed order. If `BOOT_BOOTSTRAP` is unresolved, onboarding mode runs instead of normal assistance.
+At session startup, Monolito reads boot files in a fixed order. If `BOOT_BOOTSTRAP` is unresolved, onboarding mode runs instead of normal assistance.
 
 ## Onboarding
 
 - One short question per turn
-- Persist answers into the relevant `BOOT_*` files via `BootWrite`
+- Persist answers into the relevant boot files via `BootWrite`
 - Mark bootstrap complete in `BOOT_BOOTSTRAP` when done
 
 ## Main session memory
 
-- BOOT wings + `memory.md` are auto-loaded each turn (prompt caching)
+- Boot files + `memory.md` are auto-loaded each turn (prompt caching)
 - Graph facts are queried via tools, not injected wholesale
 - Keyword recall scans `memory.md` and session message JSONL (no embeddings)
 

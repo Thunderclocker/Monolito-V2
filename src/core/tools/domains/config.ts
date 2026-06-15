@@ -100,14 +100,14 @@ export const configTools: ToolDefinition[] = [
     "Read or update technical configuration stored as JSON under memory/config/ (CONF_*.json). " +
     "Do NOT read or write those JSON files manually. " +
     "If Telegram is already enabled with a token and allowedChats, do NOT call set/write again unless the user explicitly asks to reconfigure.\n\n" +
-    "Schemas for wings:\n" +
+    "Schemas for config blocks (CONF_*.json):\n" +
     "- CONF_WEBSEARCH: { provider: 'default' | 'brave' | 'serper' | 'tavily', apiKey?: string }\n" +
     "- CONF_CHANNELS: { telegram: { enabled: boolean, token?: string, allowedChats: number[] }, ... }\n" +
     "- CONF_SYSTEM, CONF_MODELS: model and environment settings\n\n" +
     "EXAMPLES:\n" +
-    "- Set websearch provider: { action: 'set', wing: 'CONF_WEBSEARCH', path: 'provider', value: 'brave' }\n" +
-    "- Enable telegram: { action: 'set', wing: 'CONF_CHANNELS', path: 'telegram.enabled', value: true }\n" +
-    "- Allowed chat: { action: 'set', wing: 'CONF_CHANNELS', path: 'telegram.allowedChats', value: [1515784684] }\n" +
+    "- Set websearch provider: { action: 'set', config: 'CONF_WEBSEARCH', path: 'provider', value: 'brave' }\n" +
+    "- Enable telegram: { action: 'set', config: 'CONF_CHANNELS', path: 'telegram.enabled', value: true }\n" +
+    "- Allowed chat: { action: 'set', config: 'CONF_CHANNELS', path: 'telegram.allowedChats', value: [1515784684] }\n" +
     "Use allowedChats (not chatId). action 'get' never changes config.",
   inputSchema: {
     type: "object",
@@ -116,12 +116,17 @@ export const configTools: ToolDefinition[] = [
         type: "string",
         enum: ["read", "write", "get", "set", "activate_model"],
         description:
-          "read/write/get/set on a wing, or activate_model to switch the active model profile.",
+          "read/write/get/set on a config block, or activate_model to switch the active model profile.",
+      },
+      config: {
+        type: "string",
+        enum: [...CONFIG_WING_ORDER],
+        description: "Configuration block name (CONF_MODELS, CONF_CHANNELS, etc.). Required for read, write, get, set.",
       },
       wing: {
         type: "string",
         enum: [...CONFIG_WING_ORDER],
-        description: "Configuration wing (required for read, write, get, set).",
+        description: "Deprecated alias for config.",
       },
       path: {
         type: "string",
@@ -137,14 +142,18 @@ export const configTools: ToolDefinition[] = [
   concurrencySafe: false,
   validate: input => validateZod(manageConfigInputZod, input),
   async run(input, context) {
-    const parsed = parseZod(manageConfigInputZod, input, "tool_manage_config input")
+    const parsed = parseZod(
+      manageConfigInputZod,
+      { ...input, wing: (input as Record<string, unknown>).wing ?? (input as Record<string, unknown>).config },
+      "tool_manage_config input",
+    )
     const action = parsed.action
-    const wing = parsed.wing
+    const configBlock = parsed.wing
 
     if (typeof input === "object" && input !== null && !("action" in input) && Object.keys(input).length === 1) {
       const loneKey = Object.keys(input)[0]
       if (["provider", "apiKey", "token", "enabled"].includes(loneKey)) {
-        return { ok: false, error: `Wrong invocation. Use: { action: 'set', wing: 'CONF_WEBSEARCH' (or CONF_CHANNELS), path: '${loneKey}', value: '...' }` }
+        return { ok: false, error: `Wrong invocation. Use: { action: 'set', config: 'CONF_WEBSEARCH' (or CONF_CHANNELS), path: '${loneKey}', value: '...' }` }
       }
     }
 
@@ -159,20 +168,20 @@ export const configTools: ToolDefinition[] = [
       }
     }
 
-    if (!wing) {
-      return formatToolError("wing is required")
+    if (!configBlock) {
+      return formatToolError("config is required (CONF_MODELS, CONF_CHANNELS, etc.)")
     }
 
     if (action === "read") {
-      return { wing, value: redactSensitiveValue(readConfigWing(context.rootDir, wing)) }
+      return { config: configBlock, value: redactSensitiveValue(readConfigWing(context.rootDir, configBlock)) }
     }
 
     if (action === "get") {
       const path = parsed.path || ""
-      const config = readConfigWing(context.rootDir, wing)
+      const config = readConfigWing(context.rootDir, configBlock)
       const redactedConfig = redactSensitiveValue(config)
       const val = getPathValue(redactedConfig, path)
-      return { wing, path, value: val, effect: "none" }
+      return { config: configBlock, path, value: val, effect: "none" }
     }
 
     let valueToSave: unknown
@@ -185,17 +194,17 @@ export const configTools: ToolDefinition[] = [
     } else if (action === "set") {
       let path = parsed.path || ""
       let val = parseJsonStringValue(parsed.value)
-      if (wing === "CONF_CHANNELS") {
+      if (configBlock === "CONF_CHANNELS") {
         const normalized = normalizeTelegramSetPath(path, val)
         path = normalized.path
         val = normalized.value
       }
       effectivePath = path
-      const currentConfig = JSON.parse(JSON.stringify(readConfigWing(context.rootDir, wing))) as Record<string, unknown>
+      const currentConfig = JSON.parse(JSON.stringify(readConfigWing(context.rootDir, configBlock))) as Record<string, unknown>
       const currentAtPath = getPathValue(currentConfig, path)
       if (valuesEqual(currentAtPath, val)) {
         return {
-          wing,
+          config: configBlock,
           path,
           ok: true,
           changed: false,
@@ -209,19 +218,19 @@ export const configTools: ToolDefinition[] = [
       return formatToolError(`Unsupported action: ${action}`)
     }
 
-    const normalizedValue = normalizeConfigWingValue(wing, valueToSave)
-    const result = writeConfigWing(context.rootDir, wing, normalizedValue as never)
-    if (wing === "CONF_SYSTEM" || wing === "CONF_MODELS") {
+    const normalizedValue = normalizeConfigWingValue(configBlock, valueToSave)
+    const result = writeConfigWing(context.rootDir, configBlock, normalizedValue as never)
+    if (configBlock === "CONF_SYSTEM" || configBlock === "CONF_MODELS") {
       loadAndApplyModelSettings(process.env)
     }
     appendActionLog(context.rootDir, "Configuracion tecnica modificada", {
-      wing,
+      config: configBlock,
       changed: result.changed,
       path: action === "set" ? effectivePath : undefined,
     })
-    const effect = resolveConfigWriteEffect(wing, result.changed)
+    const effect = resolveConfigWriteEffect(configBlock, result.changed)
     return {
-      wing,
+      config: configBlock,
       path: action === "set" ? effectivePath : undefined,
       ok: true,
       changed: result.changed,

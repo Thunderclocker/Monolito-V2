@@ -149,15 +149,17 @@ export const bootCreateWingInputZod = z.object({
 }).strict()
 export const manageConfigInputZod = z.object({
   action: z.enum(["read", "write", "get", "set", "activate_model"]),
+  config: configWingZod.optional(),
   wing: configWingZod.optional(),
   path: z.string().optional(),
   value: z.unknown().optional(),
 }).strict().superRefine((input, ctx) => {
-  if (input.action !== "activate_model" && !input.wing) {
+  const block = input.wing ?? input.config
+  if (input.action !== "activate_model" && !block) {
     ctx.addIssue({
       code: "custom",
-      path: ["wing"],
-      message: "wing is required for actions other than activate_model",
+      path: ["config"],
+      message: "config is required for actions other than activate_model",
     })
   }
   if (input.action === "write" && input.value === undefined) {

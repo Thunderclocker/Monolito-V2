@@ -3,7 +3,7 @@
 //
 // Stop-hook analog for the main (orchestrator) session: when the model tries
 // to close a turn with unfinished TodoWrite items still in active_tasks.json
-// `active_tasks` wing, this gate re-feeds a structured retry prompt so the
+// `active_tasks` file, this gate re-feeds a structured retry prompt so the
 // model either completes, restructures, or returns TASK_FAILED:<reason>.
 //
 // Bug history: the top-level path previously delivered the reply without

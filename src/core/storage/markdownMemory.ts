@@ -135,7 +135,7 @@ export function createMarkdownMemoryStore(rootDir: string): MemoryStore {
     writeBootWing(wing: string, content: string, append = false) {
       this.ensureSeeded()
       const path = bootWingFilePath(rootDir, wing)
-      if (!path) throw new Error(`Unknown BOOT wing: ${wing}`)
+      if (!path) throw new Error(`Unknown boot file key: ${wing}`)
       let finalContent = content
       if (append) {
         const current = readFile(path)
@@ -209,7 +209,7 @@ export function createMarkdownMemoryStore(rootDir: string): MemoryStore {
   }
 }
 
-/** List boot/*.md wings discovered on disk (for diagnostics). */
+/** List boot/*.md files discovered on disk (for diagnostics). */
 export function listBootFilesOnDisk(rootDir: string): string[] {
   const dir = bootDir(rootDir)
   if (!existsSync(dir)) return []

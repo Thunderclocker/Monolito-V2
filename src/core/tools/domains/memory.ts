@@ -47,30 +47,35 @@ function resolveCuratedMemoryLocation(input: Record<string, unknown>) {
   return { namespace, section }
 }
 
+function resolveBootFileKey(input: Record<string, unknown>) {
+  return optionalString(input, "file") ?? optionalString(input, "wing")
+}
+
 export const memoryTools: ToolDefinition[] = [
 {
   name: "BootRead",
   permissionTier: "read",
-  description: "Read a BOOT wing from memory/boot/*.md (or memory.md for BOOT_MEMORY).",
+  description: "Read a boot context file. Keys map to disk: BOOT_USER→boot/user.md, BOOT_MEMORY→memory.md, etc. Use BootListFiles to list available keys.",
   inputSchema: {
     type: "object",
     properties: {
-      wing: { type: "string" },
+      file: { type: "string", description: "Boot file key (e.g. BOOT_USER, BOOT_IDENTITY, BOOT_MEMORY)." },
+      wing: { type: "string", description: "Deprecated alias for file." },
     },
-    required: ["wing"],
     additionalProperties: false,
   },
   concurrencySafe: true,
   async run(input, context) {
     try {
-      const wing = requireString(input, "wing")
+      const file = resolveBootFileKey(input)
+      if (!file) return formatToolError("file is required (boot file key, e.g. BOOT_USER)")
       ensureBootWings(context.rootDir, context.profileId ?? "default")
-      if (!bootWingExists(context.rootDir, wing, context.profileId ?? "default")) {
-        return formatToolError(`BOOT wing ${wing} not found in profile ${context.profileId ?? "default"}. Use BootListWings to inspect available wings.`)
+      if (!bootWingExists(context.rootDir, file, context.profileId ?? "default")) {
+        return formatToolError(`Boot file ${file} not found in profile ${context.profileId ?? "default"}. Use BootListFiles to inspect available files.`)
       }
-      const content = readBootWing(context.rootDir, wing, context.profileId ?? "default")
-      if (content == null) return formatToolError(`BOOT wing ${wing} not found in profile ${context.profileId ?? "default"}`)
-      return { wing, content, profile: context.profileId ?? "default" }
+      const content = readBootWing(context.rootDir, file, context.profileId ?? "default")
+      if (content == null) return formatToolError(`Boot file ${file} not found in profile ${context.profileId ?? "default"}`)
+      return { file, content, profile: context.profileId ?? "default" }
     } catch (error) {
       return formatToolError(error)
     }
@@ -78,16 +83,17 @@ export const memoryTools: ToolDefinition[] = [
 },
 
 {
-  name: "BootListWings",
+  name: "BootListFiles",
+  aliases: ["BootListWings"],
   permissionTier: "read",
-  description: "List BOOT wings registered in memory/boot/*.md for the active profile.",
+  description: "List boot context files under memory/boot/*.md (and memory.md) for the active profile.",
   inputSchema: emptyInputSchema,
   concurrencySafe: true,
   async run(_input, context) {
     try {
       const profile = context.profileId ?? "default"
-      const wings = listBootWings(context.rootDir, profile)
-      return JSON.stringify({ profile, wings })
+      const files = listBootWings(context.rootDir, profile)
+      return JSON.stringify({ profile, files })
     } catch (error) {
       return formatToolError(error)
     }
@@ -95,39 +101,45 @@ export const memoryTools: ToolDefinition[] = [
 },
 
 {
-  name: "BootCreateWing",
+  name: "BootCreateFile",
+  aliases: ["BootCreateWing"],
   permissionTier: "edit",
-  description: "Create a new empty BOOT wing markdown file for the active profile. Call BootListWings first and only use this when the desired wing is absent.",
+  description: "Create a missing standard boot markdown file for the active profile. Call BootListFiles first; only use when the desired file is absent.",
   inputSchema: {
     type: "object",
     properties: {
-      wing: {
+      file: {
         type: "string",
-        description: "New BOOT wing name. Use alphanumeric/snake_case only, starting with a letter.",
+        description: "Boot file key (BOOT_USER, BOOT_IDENTITY, etc.). Only standard keys are allowed.",
         pattern: "^[A-Za-z][A-Za-z0-9_]*$",
       },
+      wing: { type: "string", description: "Deprecated alias for file." },
     },
-    required: ["wing"],
     additionalProperties: false,
   },
   concurrencySafe: false,
-  validate: input => validateZod(bootCreateWingInputZod, input),
+  validate: input => {
+    const file = resolveBootFileKey(input)
+    if (!file) return "file is required"
+    return validateZod(bootCreateWingInputZod, { wing: file })
+  },
   async run(input, context) {
     try {
-      const parsed = parseZod(bootCreateWingInputZod, input, "BootCreateWing input")
-      const wing = parsed.wing.trim()
+      const file = resolveBootFileKey(input)
+      if (!file) return formatToolError("file is required")
+      const wing = file.trim()
       if (!isBootWingName(wing)) {
         return formatToolError(
-          `Cannot create custom BOOT wing "${wing}". Only standard wings are allowed: ${BOOT_WING_ORDER.join(", ")}. ` +
+          `Cannot create custom boot file "${wing}". Only standard files are allowed: ${BOOT_WING_ORDER.join(", ")}. ` +
           `For custom episodic data, use WorkspaceMemoryFiling instead.`
         )
       }
       const profile = context.profileId ?? "default"
       if (bootWingExists(context.rootDir, wing, profile)) {
-        return formatToolError(`BOOT wing ${wing} already exists in profile ${profile}. Use BootWrite to update it.`)
+        return formatToolError(`Boot file ${wing} already exists in profile ${profile}. Use BootWrite to update it.`)
       }
       const result = createBootWing(context.rootDir, wing, profile, "")
-      return { ok: true, wing, created: result.created, profile }
+      return { ok: true, file: wing, created: result.created, profile }
     } catch (error) {
       return formatToolError(error)
     }
@@ -137,30 +149,37 @@ export const memoryTools: ToolDefinition[] = [
 {
   name: "BootWrite",
   permissionTier: "edit",
-  description: "Replace or append to a BOOT wing in memory/boot/*.md (or memory.md for BOOT_MEMORY). Use BootListWings first.",
+  description: "Replace or append to a boot context file (memory/boot/*.md or memory.md for BOOT_MEMORY). Use BootListFiles first.",
   inputSchema: {
     type: "object",
     properties: {
-      wing: { type: "string" },
+      file: { type: "string", description: "Boot file key (e.g. BOOT_USER, BOOT_MEMORY)." },
+      wing: { type: "string", description: "Deprecated alias for file." },
       content: { type: "string" },
       action: { type: "string", enum: ["overwrite", "append"], description: "Action to perform. Default is 'overwrite'." },
     },
-    required: ["wing", "content"],
+    required: ["content"],
     additionalProperties: false,
   },
   concurrencySafe: false,
-  validate: input => validateZod(bootWriteInputZod, input),
+  validate: input => {
+    const file = resolveBootFileKey(input)
+    if (!file) return "file is required"
+    return validateZod(bootWriteInputZod, { ...input, wing: file })
+  },
   async run(input, context) {
     try {
-      const parsed = parseZod(bootWriteInputZod, input, "BootWrite input")
+      const file = resolveBootFileKey(input)
+      if (!file) return formatToolError("file is required")
+      const parsed = parseZod(bootWriteInputZod, { ...input, wing: file }, "BootWrite input")
       const wing = parsed.wing
       const profileId = context.profileId ?? "default"
       if (!bootWingExists(context.rootDir, wing, profileId)) {
-        return formatToolError(`BOOT wing ${wing} does not exist in profile ${profileId}. Use BootListWings, then BootCreateWing if you need a new wing.`)
+        return formatToolError(`Boot file ${wing} does not exist in profile ${profileId}. Use BootListFiles, then BootCreateFile if you need a new file.`)
       }
       const append = parsed.action === "append"
       const result = writeBootWing(context.rootDir, wing, parsed.content, profileId, append)
-      return { wing, ok: true, changed: result.changed, bytes: result.bytes, profile: profileId }
+      return { file: wing, ok: true, changed: result.changed, bytes: result.bytes, profile: profileId }
     } catch (error) {
       return formatToolError(error)
     }

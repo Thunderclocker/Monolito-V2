@@ -24,10 +24,10 @@ Further documentation lives in [`docs/`](./docs/README.md).
 ## Core capabilities
 
 - Daemon + CLI client with resumable local sessions
-- File-backed runtime: sessions, worklog, events, BOOT wings (`memory/boot/*.md`), curated memory (`memory.md`), config JSON, and state JSONL
-- Profile-based workspaces with deterministic `BOOT_*` wings as markdown files
+- File-backed runtime: sessions, worklog, events, boot context files (`memory/boot/*.md`), curated memory (`memory.md`), config JSON, and state JSONL
+- Profile-based workspaces with deterministic `BOOT_*` keys mapped to markdown files
 - Long-term memory in `memory.md` (sections) plus a temporal knowledge graph in `state/knowledge_graph.jsonl`
-- First-run bootstrap ritual that persists bootstrap state into BOOT wings and the knowledge graph
+- First-run bootstrap ritual that persists bootstrap state into boot files and the knowledge graph
 - Multi-agent orchestration with worker spawning, follow-up messaging, stop controls, and real filesystem isolation via Git Worktrees
 - Tool harness for shell execution, web fetches, workspace file access, BOOT access, curated memory filing/recall, knowledge-graph tools, MCP calls, Telegram send, and task tracking
 - OpenAI-compatible text-to-speech generation into local audio files, with Telegram audio/voice delivery tools
@@ -48,7 +48,7 @@ Monolito is split into a few main layers:
 - daemon/runtime: owns sessions, orchestration, slash commands, background work, channels, and logging
 - model adapter: builds the prompt, injects BOOT/config, applies prompt-caching boundaries, and handles provider recovery state
 - tool registry: exposes structured tools with permission checks and renderer metadata
-- session store: persists messages, worklog, events, tasks, BOOT wings, memory sections, and the knowledge graph under `memory/`
+- session store: persists messages, worklog, events, tasks, boot files, memory sections, and the knowledge graph under `memory/`
 - channels: Telegram ingestion/reply flow plus media handling
 - managed services: optional local TTS, STT, and SearxNG lifecycle helpers
 

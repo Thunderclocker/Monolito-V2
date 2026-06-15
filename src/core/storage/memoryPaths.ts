@@ -3,7 +3,7 @@ import { getPaths } from "../ipc/protocol.ts"
 import type { BootWingName } from "../bootstrap/bootWings.ts"
 import { BOOT_WING_ORDER } from "../bootstrap/bootWings.ts"
 
-/** Wings stored under memory/boot/*.md (BOOT_MEMORY lives at memory/memory.md). */
+/** Boot context files under memory/boot/*.md (BOOT_MEMORY lives at memory/memory.md). */
 export const BOOT_WING_FILENAME: Record<Exclude<BootWingName, "BOOT_MEMORY">, string> = {
   BOOT_AGENTS: "agents.md",
   BOOT_SOUL: "soul.md",
