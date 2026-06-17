@@ -303,6 +303,22 @@ export function looksLikeMalformedToolCall(text: string): boolean {
   return false
 }
 
+/** Model returned a bare search query instead of calling WebSearch/WebFetch. */
+export function looksLikeSearchQueryInsteadOfToolCall(text: string, recentUserText: string): boolean {
+  const trimmed = text.trim()
+  if (!trimmed || trimmed.length > 160 || trimmed.includes("\n")) return false
+  if (/[.!?]/.test(trimmed) && trimmed.split(/\s+/).length > 12) return false
+
+  const userNeedsSearch = /\b(clima|weather|pronóstico|pronostico|forecast|tiempo|buscar|search|noticias|precio|cotización|cotizacion)\b/i.test(recentUserText)
+  if (!userNeedsSearch) return false
+
+  const looksLikeQuery = /\b(clima|weather|pronóstico|pronostico|forecast)\b/i.test(trimmed)
+    || (/\d{4}-\d{2}-\d{2}/.test(trimmed) && trimmed.split(/\s+/).length <= 12)
+    || (/^[a-z0-9\s\-áéíóúñü,.]+$/i.test(trimmed) && trimmed.split(/\s+/).length >= 3 && trimmed.split(/\s+/).length <= 12)
+
+  return looksLikeQuery
+}
+
 export function mergeConsecutiveMessages(messages: ConversationMessage[]): ConversationMessage[] {
   const merged: ConversationMessage[] = []
   for (const msg of messages) {

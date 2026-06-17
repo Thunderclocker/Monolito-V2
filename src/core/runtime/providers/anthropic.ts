@@ -3,6 +3,8 @@ import type { ToolUseBlock } from "@anthropic-ai/sdk/resources/messages"
 import type { ConversationMessage, ProviderConfig, ProviderResponse } from "./types.ts"
 import type { ProviderStreamEvent } from "./streamTypes.ts"
 import { buildAnthropicMessages, buildToolDefinitions, normalizeAnthropicToolInput } from "./utils.ts"
+import { isLocalOllamaAnthropicBackend } from "./resolveProvider.ts"
+import { ensureToolResultPairing } from "./ensureToolResultPairing.ts"
 
 function parsePartialJson(value: string): Record<string, unknown> {
   if (!value.trim()) return {}
@@ -59,16 +61,21 @@ export async function* callAnthropicApiStream(
   const thinkingBudget = thinkingConfig?.budgetTokens ?? 4_000
   const activeMaxTokens = thinkingEnabled ? Math.max(maxTokens ?? 8_000, thinkingBudget + 4_000) : (maxTokens ?? 4_000)
 
+  const localOllama = isLocalOllamaAnthropicBackend(config)
+  const systemBlocks = localOllama
+    ? [{ type: "text" as const, text: [system, memoryBlock, bootBlock].filter(Boolean).join("\n\n") }]
+    : [
+      { type: "text" as const, text: system, cache_control: { type: "ephemeral" as const } },
+      ...(memoryBlock ? [{ type: "text" as const, text: memoryBlock, cache_control: { type: "ephemeral" as const } }] : []),
+      ...(bootBlock ? [{ type: "text" as const, text: bootBlock, cache_control: { type: "ephemeral" as const } }] : []),
+    ]
+
   const stream = await client.messages.create({
     model: config.model,
     max_tokens: activeMaxTokens,
     stream: true,
-    system: [
-      { type: "text" as const, text: system, cache_control: { type: "ephemeral" as const } },
-      ...(memoryBlock ? [{ type: "text" as const, text: memoryBlock, cache_control: { type: "ephemeral" as const } }] : []),
-      ...(bootBlock ? [{ type: "text" as const, text: bootBlock, cache_control: { type: "ephemeral" as const } }] : []),
-    ],
-    messages: buildAnthropicMessages(messages),
+    system: systemBlocks,
+    messages: ensureToolResultPairing(buildAnthropicMessages(messages)),
     tools: anthropicTools,
     ...(thinkingEnabled ? {
       thinking: { type: "enabled", budget_tokens: thinkingBudget },

@@ -15,7 +15,8 @@ import { buildResearchCheckpointInjection } from "./researchCheckpoint.ts"
 import { wrapAuditFeedback } from "./auditFeedback.ts"
 import { incrementalFlushSession, getContextFlushThresholdChars } from "../context/incrementalFlush.ts"
 import { callProviderStream, type ConversationMessage, type ProviderConfig, type ProviderResponse, type ToolCall } from "./providers/index.ts"
-import { looksLikeMalformedToolCall } from "./providers/utils.ts"
+import { resolveChatProviderConfig } from "./providers/resolveProvider.ts"
+import { looksLikeMalformedToolCall, looksLikeSearchQueryInsteadOfToolCall } from "./providers/utils.ts"
 import { findUndeliveredToolOutputs } from "./autoDelivery.ts"
 import { ensureMonolitoRoot } from "../system/root.ts"
 import { redactSensitiveText } from "../security/redact.ts"
@@ -193,6 +194,7 @@ export type AgentLoopRecoverableAction =
   | "operational_interruption"
   | "malformed_tool_call"
   | "empty_content_retry"
+  | "search_query_as_text"
 
 export type AgentLoopEvent =
   | { type: "setup"; sessionId: string; iteration: number; model: string; maxIterations: number; maxTurnDurationMs: number }
@@ -949,20 +951,20 @@ async function* callProviderWithRetry(
 export function getEffectiveModelConfig() {
   const activeProfile = getActiveProfile()
   if (activeProfile) {
-    return {
+    return resolveChatProviderConfig({
       baseUrl: normalizeBaseUrl(activeProfile.baseUrl),
       apiKey: activeProfile.apiKey.trim(),
       model: compactWhitespace(activeProfile.model),
       provider: activeProfile.provider,
-    }
+    })
   }
   const settings = readModelSettings()
-  return {
+  return resolveChatProviderConfig({
     baseUrl: normalizeBaseUrl(settings.env.ANTHROPIC_BASE_URL),
     apiKey: settings.env.ANTHROPIC_AUTH_TOKEN.trim(),
     model: compactWhitespace(settings.env.ANTHROPIC_MODEL),
     provider: "anthropic_compatible" as ModelProvider,
-  }
+  })
 }
 
 function isOperationalTool(toolName: string): boolean {
@@ -1240,6 +1242,28 @@ export async function* runAgentLoop(
         // feedback fix).
         messages.push({ role: "user", content: feedback })
         continue
+      }
+
+      if (response.toolCalls.length === 0) {
+        const recentUserText = messages.findLast(m => m.role === "user")?.content ?? ""
+        if (looksLikeSearchQueryInsteadOfToolCall(response.text, recentUserText)) {
+          const queryExcerpt = response.text.trim().slice(0, 120)
+          yield {
+            type: "recoverable_error",
+            sessionId: session.id,
+            iteration,
+            action: "search_query_as_text",
+            error: `Model returned a search query as plain text instead of calling WebSearch: ${queryExcerpt}`,
+          }
+          messages.push({
+            role: "user",
+            content: wrapAuditFeedback(
+              `Devolviste una consulta de búsqueda como texto ("${queryExcerpt}") en lugar de invocar WebSearch o WebFetch. ` +
+              `Llamá WebSearch con esa consulta (o WebFetch si tenés URL) y respondé al usuario con los resultados.`,
+            ),
+          })
+          continue
+        }
       }
 
       if (response.toolCalls.length === 0) {

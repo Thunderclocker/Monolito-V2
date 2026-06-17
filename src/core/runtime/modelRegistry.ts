@@ -3,6 +3,7 @@ import { readModelSettings, maskApiKey } from "./modelConfig.ts"
 import { appendActionLog, readConfigWing, writeConfigWing } from "../session/store.ts"
 import { MONOLITO_ROOT } from "../system/root.ts"
 import { coerceConfigRecord } from "../config/wingValue.ts"
+import { isOllamaLocalBaseUrl } from "./providers/resolveProvider.ts"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -121,7 +122,8 @@ function normalizeProfile(raw: unknown): ModelProfile | null {
 function inferProviderFromUrl(baseUrl: string): ModelProvider {
   const normalized = baseUrl.toLowerCase()
   if (normalized.includes("minimax")) return "minimax"
-  if (normalized.includes("localhost:11434") || normalized.includes("ollama")) return "ollama"
+  if (normalized.includes("localhost:11434") || normalized.includes("127.0.0.1:11434")) return "anthropic_compatible"
+  if (normalized.includes("ollama")) return "ollama"
   if (normalized.includes("openai")) return "openai_compatible"
   return "anthropic_compatible"
 }
@@ -286,7 +288,7 @@ export async function discoverProviderModels(
   const baseUrl = options?.baseUrl?.trim().replace(/\/+$/, "") || getProviderDefaults(provider).baseUrl
   const apiKey = options?.apiKey?.trim() || ""
 
-  if (provider === "ollama") {
+  if (provider === "ollama" || (provider === "anthropic_compatible" && isOllamaLocalBaseUrl(baseUrl))) {
     return await discoverOllamaModels(baseUrl)
   }
 
@@ -338,7 +340,8 @@ export async function addOllamaDiscoveredModels(baseUrl?: string): Promise<Model
   const registry = readRegistry()
   const existingOllamaModels = new Set(
     registry.profiles
-      .filter(p => p.provider === "ollama")
+      .filter(p => p.provider === "ollama" || p.provider === "anthropic_compatible")
+      .filter(p => isOllamaLocalBaseUrl(p.baseUrl))
       .map(p => p.model),
   )
   const added: ModelProfile[] = []
@@ -347,9 +350,9 @@ export async function addOllamaDiscoveredModels(baseUrl?: string): Promise<Model
     const profile: ModelProfile = {
       id: randomUUID(),
       name: `Ollama ${model}`,
-      provider: "ollama",
+      provider: "anthropic_compatible",
       baseUrl: url,
-      apiKey: "",
+      apiKey: "ollama",
       model,
       active: false,
     }

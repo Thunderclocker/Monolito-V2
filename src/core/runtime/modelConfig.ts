@@ -174,7 +174,8 @@ export async function bootstrapConfigFromEnv(env: NodeJS.ProcessEnv = process.en
         const lowerUrl = baseUrl.toLowerCase()
         let provider: "minimax" | "ollama" | "openai_compatible" | "anthropic_compatible" = "anthropic_compatible"
         if (lowerUrl.includes("minimax")) provider = "minimax"
-        else if (lowerUrl.includes("localhost:11434") || lowerUrl.includes("ollama")) provider = "ollama"
+        else if (lowerUrl.includes("localhost:11434") || lowerUrl.includes("127.0.0.1:11434")) provider = "anthropic_compatible"
+        else if (lowerUrl.includes("ollama")) provider = "ollama"
         else if (lowerUrl.includes("openai")) provider = "openai_compatible"
         addProfile({
           provider,

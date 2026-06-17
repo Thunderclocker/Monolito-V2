@@ -127,13 +127,19 @@ Supported provider labels are:
 
 The first created profile becomes active automatically.
 
-### Ollama Context Window Management
+### Ollama / local models (Claude Code protocol)
 
-For the `ollama` provider, Monolito automatically configures the context window size (`num_ctx`) on every chat completion call. 
+Claude Code talks to local models via `ANTHROPIC_BASE_URL` → **`POST /v1/messages`**
+with native `tool_use` blocks. Monolito matches that stack:
 
-- Known local model families (such as `qwen`, `llama`, `gemma`, `mistral`, `phi`, and `deepseek`) have VRAM-safe context limits configured by default in `src/core/context/contextLimits.ts` (typically **16,384 tokens**).
-- This window size is passed directly to Ollama's API options (`options.num_ctx`), ensuring the model allocates enough memory without exceeding GPU VRAM capacities.
-- Monolito's context engine respects these limits and proactively triggers database-level smart context compaction before the active conversation history can saturate the configured window.
+- Profiles labeled `ollama` (legacy) or `anthropic_compatible` + `localhost:11434`
+  are resolved at runtime by `resolveChatProviderConfig()`.
+- Tool schemas go in the API `tools` array (`buildToolDefinitions`), not embedded
+  in system text — same as Claude Code's `toolToAPISchema` output shape.
+- Before each API call, `ensureToolResultPairing()` repairs orphaned/missing
+  `tool_use` / `tool_result` pairs (ported from Claude Code's `messages.ts`).
+
+The legacy Ollama `/api/chat` + OpenAI `tool_calls` path is **not** used for agent turns.
 
 `GenerateImage` auto-detecta el proveedor de imagen siguiendo este orden:
 

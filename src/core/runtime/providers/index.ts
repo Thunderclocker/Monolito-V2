@@ -1,6 +1,6 @@
 import { callAnthropicApi, callAnthropicApiStream } from "./anthropic.ts"
-import { callOllamaApi, callOllamaApiStream } from "./ollama.ts"
 import { callOpenAiCompatibleApi, callOpenAiCompatibleApiStream } from "./openai.ts"
+import { resolveChatProviderConfig } from "./resolveProvider.ts"
 import type { ProviderStreamEvent } from "./streamTypes.ts"
 import type { ConversationMessage, PromptBlocks, ProviderConfig, ProviderResponse, ToolCall } from "./types.ts"
 
@@ -16,21 +16,17 @@ export async function* callProviderStream(
   maxTokens?: number,
   thinkingConfig?: { enabled: boolean; budgetTokens?: number },
 ): AsyncGenerator<ProviderStreamEvent, ProviderResponse> {
-  let activeConfig = config
-  if (config.provider === "xai-oauth") {
+  let activeConfig = resolveChatProviderConfig(config)
+  if (activeConfig.provider === "xai-oauth") {
     const { resolveGrokAccessToken } = await import("./grokAuth.ts")
     const accessToken = await resolveGrokAccessToken()
-    activeConfig = { ...config, apiKey: accessToken }
+    activeConfig = { ...activeConfig, apiKey: accessToken }
   }
 
   if (activeConfig.provider === "anthropic_compatible" || activeConfig.provider === "minimax") {
     return yield* callAnthropicApiStream(
       activeConfig, prompt.system, prompt.memoryBlock, prompt.bootBlock, messages, abortSignal, maxTokens, isSubAgent, prompt.allowedToolNames, thinkingConfig,
     )
-  }
-  if (activeConfig.provider === "ollama") {
-    const mergedSystem = [prompt.system, prompt.memoryBlock, prompt.bootBlock].filter(Boolean).join("\n\n")
-    return yield* callOllamaApiStream(activeConfig, mergedSystem, messages, abortSignal, isSubAgent, prompt.allowedToolNames)
   }
   const mergedSystem = [prompt.system, prompt.memoryBlock, prompt.bootBlock].filter(Boolean).join("\n\n")
   return yield* callOpenAiCompatibleApiStream(
