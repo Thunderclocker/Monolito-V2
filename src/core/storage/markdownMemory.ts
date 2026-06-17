@@ -189,8 +189,10 @@ export function createMarkdownMemoryStore(rootDir: string): MemoryStore {
       this.ensureSeeded()
       const parts: string[] = [
         "<agent_memory_context>",
-        "The following boot configuration and curated memory are ALWAYS authoritative.",
-        "Read them before answering. Do not ask the user to confirm facts already stored here.",
+        "The following boot configuration and curated memory are ALREADY injected in this turn and are ALWAYS authoritative.",
+        "Do NOT call Glob, Read, or Boot to load memory/boot or memory.md — the full content is below.",
+        "Use BootRead/BootWrite only when you need to UPDATE boot files, not to read startup context.",
+        "Do not ask the user to confirm facts already stored here.",
         "",
       ]
       for (const wing of BOOT_WING_ORDER) {

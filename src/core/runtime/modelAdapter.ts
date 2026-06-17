@@ -15,7 +15,7 @@ import { buildResearchCheckpointInjection } from "./researchCheckpoint.ts"
 import { wrapAuditFeedback } from "./auditFeedback.ts"
 import { incrementalFlushSession, getContextFlushThresholdChars } from "../context/incrementalFlush.ts"
 import { callProviderStream, type ConversationMessage, type ProviderConfig, type ProviderResponse, type ToolCall } from "./providers/index.ts"
-import { resolveChatProviderConfig, isLocalOllamaAnthropicBackend } from "./providers/resolveProvider.ts"
+import { resolveChatProviderConfig } from "./providers/resolveProvider.ts"
 import {
   buildInitialApiToolAllowlist,
   mergeApiToolAllowlist,
@@ -549,7 +549,6 @@ function buildSystemPrompt(args: {
   extras?: ContextExtras
   systemPromptOverride?: string
   allowedToolNames?: string[]
-  compactForLocalModel?: boolean
   tieredToolExposure?: boolean
 }) {
   if (args.systemPromptOverride?.trim()) {
@@ -573,30 +572,6 @@ function buildSystemPrompt(args: {
 
 
 
-  const compact = args.compactForLocalModel === true
-
-  if (compact) {
-    const dynamicContext = ["=== DYNAMIC CONTEXT ==="]
-    dynamicContext.push(`Workspace root: ${args.rootDir}`)
-    if (lastUserMessage) {
-      dynamicContext.push(`Current user request: ${formatCurrentUserRequest(lastUserMessage)}`)
-    }
-    if (args.extras?.dateContext) dynamicContext.push(args.extras.dateContext)
-    const memoryBlock = loadCachedMemoryContext(args.rootDir) ?? ""
-    return {
-      system: [
-        "You are Monolito V2, a local assistant with tool access.",
-        "Use the API tool list. For weather, news, or live facts call Web (action=search or action=fetch) before answering.",
-        "If no tool is needed, answer directly in the user's language (Spanish by default).",
-        "Do not invent facts about weather, prices, or schedules without tool evidence.",
-      ].join("\n\n"),
-      memoryBlock: memoryBlock.length > 2_000 ? `${memoryBlock.slice(0, 2_000)}…` : memoryBlock,
-      bootBlock: dynamicContext.join("\n\n"),
-      allowedToolNames: args.allowedToolNames,
-      strictToolAllowlist: args.tieredToolExposure === true,
-    }
-  }
-
   const tieredTools = args.tieredToolExposure === true
   const toolSection = tieredTools
     ? [
@@ -612,6 +587,7 @@ function buildSystemPrompt(args: {
 
   const staticSystem = [
     "You are Monolito V2, a local assistant with tool access.",
+    "Boot files and memory.md are pre-injected in <agent_memory_context> on every turn — do NOT Glob/Read them to load startup context; use BootRead/BootWrite only when updating them.",
     "Use tools when the answer depends on current files, system state, internal task status, or external resources.",
     "If no tool is needed, answer directly and finish.",
     "Do not describe future work unless the same turn already started it.",
@@ -1118,7 +1094,6 @@ export async function* runAgentLoop(
     systemPromptOverride: options?.systemPromptOverride,
     allowedToolNames: apiToolAllowlist,
     tieredToolExposure: useTieredToolExposure,
-    compactForLocalModel: memoryAgentMode || isLocalOllamaAnthropicBackend(config),
   })
 
   for (let iteration = 1; iteration <= maxIterations; iteration++) {

@@ -1,5 +1,4 @@
 import type { ProviderConfig } from "./providers/types.ts"
-import { isLocalOllamaAnthropicBackend } from "./providers/resolveProvider.ts"
 
 /**
  * Claude Code parity: small eager tool surface on the API wire; full registry
@@ -46,9 +45,8 @@ const KEYWORD_TOOL_BOOSTS: Array<{ pattern: RegExp; tools: string[] }> = [
 ]
 
 /** When true, only eager + unlocked tools go to the model API (execution stays full registry). */
-export function shouldUseTieredToolExposure(config: ProviderConfig, totalToolCount: number): boolean {
+export function shouldUseTieredToolExposure(_config: ProviderConfig, totalToolCount: number): boolean {
   if (process.env.MONOLITO_FULL_TOOL_EXPOSURE === "1") return false
-  if (isLocalOllamaAnthropicBackend(config)) return true
   if (totalToolCount > 28) return true
   return process.env.MONOLITO_TIERED_TOOLS === "1"
 }

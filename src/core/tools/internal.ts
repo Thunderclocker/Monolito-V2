@@ -424,6 +424,18 @@ export const optionalPathInputSchema: ToolInputSchema = {
   additionalProperties: false,
 }
 
+/** Map shorthand memory paths (memory.md, memory/boot/…) to MONOLITO_ROOT/memory. */
+export function resolveMemoryStatePath(rootDir: string, target: string): string | null {
+  const normalized = target.replace(/\\/g, "/").replace(/^\.\//, "")
+  if (normalized === "memory.md") {
+    return join(getPaths(rootDir).stateDir, "memory.md")
+  }
+  if (normalized.startsWith("memory/")) {
+    return join(getPaths(rootDir).stateDir, normalized.slice("memory/".length))
+  }
+  return null
+}
+
 export async function resolveWorkspacePath(
   rootDir: string,
   cwd: string,
@@ -431,6 +443,8 @@ export async function resolveWorkspacePath(
   context?: ToolContext,
   toolName?: string,
 ) {
+  const memoryPath = resolveMemoryStatePath(rootDir, target)
+  if (memoryPath) return memoryPath
   return resolve(cwd, target)
 }
 

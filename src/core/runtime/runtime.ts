@@ -1304,7 +1304,7 @@ export class MonolitoV2Runtime {
 Your ONLY mission: read the conversation and existing memory, then maintain a curated digest in markdown files.
 
 Rules:
-1. READ boot/*.md and memory.md first (they are always loaded for the main agent).
+1. Boot and memory.md are pre-injected for the main agent — use BootRead only before WRITING updates, not to load startup context.
 2. Identify only GENUINELY NEW or CHANGED information from the conversation — facts, preferences, tasks, decisions, identity data.
 3. If NOTHING new or changed: reply immediately with "CONSOLIDATION_OK: 0 inserts, 0 updates, 0 skips" — NO tool calls, NO new entries, NO markers.
 4. NEVER write entries that describe the consolidation run itself. That is noise.

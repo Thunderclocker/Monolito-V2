@@ -5,7 +5,6 @@ import type { ProviderStreamEvent } from "./streamTypes.ts"
 import { buildAnthropicMessages, buildToolDefinitions, normalizeAnthropicToolInput } from "./utils.ts"
 import { isLocalOllamaAnthropicBackend } from "./resolveProvider.ts"
 import { ensureToolResultPairing } from "./ensureToolResultPairing.ts"
-import { selectToolsForLocalOllama, localOllamaToolBudget } from "./localOllamaTools.ts"
 import { resolveOllamaResponseText } from "./ollamaText.ts"
 
 function parsePartialJson(value: string): Record<string, unknown> {
@@ -65,10 +64,7 @@ export async function* callAnthropicApiStream(
     description: tool.description,
     input_schema: tool.input_schema,
   }))
-  const systemChars = system.length + memoryBlock.length + bootBlock.length
-  const anthropicTools = localOllama && rawTools.length > localOllamaToolBudget(systemChars)
-    ? selectToolsForLocalOllama(rawTools, lastUserText, localOllamaToolBudget(systemChars))
-    : rawTools
+  const anthropicTools = rawTools
 
   const thinkingEnabled = thinkingConfig?.enabled === true
   const thinkingBudget = thinkingConfig?.budgetTokens ?? 4_000
