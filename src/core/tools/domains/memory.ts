@@ -82,14 +82,20 @@ export const memoryTools: ToolDefinition[] = [
   name: "Boot",
   aliases: ["BootRead", "BootWrite", "BootListFiles", "BootListWings", "BootCreateFile", "BootCreateWing"],
   permissionTier: "edit",
-  description: "Manage boot context files (memory/boot/*.md, memory.md). action=read|write|list|create.",
+  description:
+    "Manage boot context files. action=read|write|list|create. To save the user's profile use action=write with file=BOOT_USER; for agent identity use file=BOOT_IDENTITY. Pass the boot wing name in `file` (e.g. BOOT_USER), not a filesystem path.",
   inputSchema: {
     type: "object",
     properties: {
       action: { type: "string", enum: ["read", "write", "list", "create"] },
-      file: { type: "string" },
-      wing: { type: "string" },
-      content: { type: "string" },
+      file: {
+        type: "string",
+        enum: [...BOOT_WING_ORDER],
+        description:
+          "Boot wing to read/write. BOOT_USER=user profile, BOOT_IDENTITY=agent name/identity, BOOT_SOUL=behavioral preferences, BOOT_AGENTS=workspace rules, BOOT_TOOLS=tool conventions, BOOT_MEMORY=long-term memory, BOOT_BOOTSTRAP=onboarding state.",
+      },
+      wing: { type: "string", description: "Alias for `file`." },
+      content: { type: "string", description: "For write: the full new markdown content of the wing (overwrites by default)." },
       mode: { type: "string", enum: ["overwrite", "append"], description: "For write. Default overwrite." },
     },
     additionalProperties: false,
