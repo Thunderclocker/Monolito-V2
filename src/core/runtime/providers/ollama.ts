@@ -48,8 +48,11 @@ function buildOllamaBody(
   isSubAgent: boolean,
   allowedToolNames: string[] | undefined,
   stream: boolean,
+  maxTokens?: number,
+  strictToolAllowlist?: boolean,
 ) {
   const budget = getContextBudget(config.model)
+  const numCtx = Math.min(budget.windowTokens, 32_768)
   return {
     model: config.model,
     stream,
@@ -58,9 +61,11 @@ function buildOllamaBody(
       isSubAgent,
       messages.slice().reverse().find(m => m.role === "user")?.content || "",
       allowedToolNames,
+      strictToolAllowlist,
     ).map(tool => ({ type: tool.type, function: tool.function })),
     options: {
-      num_ctx: budget.windowTokens,
+      num_ctx: numCtx,
+      num_predict: maxTokens ?? 4_096,
     },
   }
 }
@@ -100,11 +105,13 @@ export async function* callOllamaApiStream(
   abortSignal: AbortSignal | undefined,
   isSubAgent: boolean,
   allowedToolNames?: string[],
+  maxTokens?: number,
+  strictToolAllowlist?: boolean,
 ): AsyncGenerator<ProviderStreamEvent, ProviderResponse> {
   const response = await fetch(`${config.baseUrl}/api/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(buildOllamaBody(config, system, messages, isSubAgent, allowedToolNames, true)),
+    body: JSON.stringify(buildOllamaBody(config, system, messages, isSubAgent, allowedToolNames, true, maxTokens, strictToolAllowlist)),
     signal: abortSignal,
   })
   if (!response.ok) {
@@ -156,9 +163,11 @@ export async function callOllamaApi(
   abortSignal: AbortSignal | undefined,
   isSubAgent: boolean,
   allowedToolNames?: string[],
+  maxTokens?: number,
+  strictToolAllowlist?: boolean,
 ): Promise<ProviderResponse> {
   try {
-    const stream = callOllamaApiStream(config, system, messages, abortSignal, isSubAgent, allowedToolNames)
+    const stream = callOllamaApiStream(config, system, messages, abortSignal, isSubAgent, allowedToolNames, maxTokens, strictToolAllowlist)
     let response: ProviderResponse | undefined
     for await (const event of stream) {
       if (event.type === "done") response = event.response
@@ -171,7 +180,7 @@ export async function callOllamaApi(
   const data = await callJsonApi(`${config.baseUrl}/api/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(buildOllamaBody(config, system, messages, isSubAgent, allowedToolNames, false)),
+    body: JSON.stringify(buildOllamaBody(config, system, messages, isSubAgent, allowedToolNames, false, maxTokens, strictToolAllowlist)),
     signal: abortSignal,
   })
 

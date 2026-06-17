@@ -9,14 +9,12 @@ export function isOllamaLocalBaseUrl(baseUrl: string): boolean {
 }
 
 /**
- * Claude Code uses ANTHROPIC_BASE_URL → /v1/messages for local models.
- * Monolito resolves any local-Ollama profile to the same Anthropic Messages
- * protocol so tool_use blocks work (gpt-oss, qwen, etc.).
+ * Local OpenAI-compatible profiles on Ollama still use the Anthropic Messages shim.
+ * Native `ollama` profiles use /api/chat directly (see providers/index.ts).
  */
 export function resolveChatProviderConfig(config: ProviderConfig): ProviderConfig {
   const localOllama = isOllamaLocalBaseUrl(config.baseUrl)
-  const useAnthropicMessages = config.provider === "ollama"
-    || (localOllama && config.provider === "openai_compatible")
+  const useAnthropicMessages = localOllama && config.provider === "openai_compatible"
 
   if (!useAnthropicMessages) return config
 

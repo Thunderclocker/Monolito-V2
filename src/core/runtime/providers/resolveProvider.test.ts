@@ -8,26 +8,14 @@ test("isOllamaLocalBaseUrl detects localhost Ollama", () => {
   assert.equal(isOllamaLocalBaseUrl("https://api.anthropic.com"), false)
 })
 
-test("resolveChatProviderConfig routes ollama through anthropic_compatible", () => {
-  const resolved = resolveChatProviderConfig({
-    provider: "ollama",
+test("resolveChatProviderConfig leaves native ollama profiles unchanged", () => {
+  const input = {
+    provider: "ollama" as const,
     baseUrl: "http://localhost:11434",
     apiKey: "",
     model: "gpt-oss:20b",
-  })
-  assert.equal(resolved.provider, "anthropic_compatible")
-  assert.equal(resolved.apiKey, "ollama")
-  assert.equal(resolved.model, "gpt-oss:20b")
-})
-
-test("resolveChatProviderConfig preserves explicit apiKey", () => {
-  const resolved = resolveChatProviderConfig({
-    provider: "ollama",
-    baseUrl: "http://localhost:11434",
-    apiKey: "custom",
-    model: "qwen2.5:7b",
-  })
-  assert.equal(resolved.apiKey, "custom")
+  }
+  assert.deepEqual(resolveChatProviderConfig(input), input)
 })
 
 test("resolveChatProviderConfig leaves non-ollama providers unchanged", () => {

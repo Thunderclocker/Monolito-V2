@@ -1,6 +1,7 @@
 import { callAnthropicApi, callAnthropicApiStream } from "./anthropic.ts"
+import { callOllamaApiStream } from "./ollama.ts"
 import { callOpenAiCompatibleApi, callOpenAiCompatibleApiStream } from "./openai.ts"
-import { resolveChatProviderConfig } from "./resolveProvider.ts"
+import { isOllamaLocalBaseUrl, resolveChatProviderConfig } from "./resolveProvider.ts"
 import type { ProviderStreamEvent } from "./streamTypes.ts"
 import type { ConversationMessage, PromptBlocks, ProviderConfig, ProviderResponse, ToolCall } from "./types.ts"
 
@@ -16,6 +17,22 @@ export async function* callProviderStream(
   maxTokens?: number,
   thinkingConfig?: { enabled: boolean; budgetTokens?: number },
 ): AsyncGenerator<ProviderStreamEvent, ProviderResponse> {
+  const mergedSystem = [prompt.system, prompt.memoryBlock, prompt.bootBlock].filter(Boolean).join("\n\n")
+
+  // Native Ollama /api/chat sets num_ctx and avoids the /v1/messages ~4K silent truncate.
+  if (config.provider === "ollama" || isOllamaLocalBaseUrl(config.baseUrl)) {
+    return yield* callOllamaApiStream(
+      config,
+      mergedSystem,
+      messages,
+      abortSignal,
+      isSubAgent,
+      prompt.allowedToolNames,
+      maxTokens,
+      prompt.strictToolAllowlist,
+    )
+  }
+
   let activeConfig = resolveChatProviderConfig(config)
   if (activeConfig.provider === "xai-oauth") {
     const { resolveGrokAccessToken } = await import("./grokAuth.ts")
@@ -28,7 +45,6 @@ export async function* callProviderStream(
       activeConfig, prompt.system, prompt.memoryBlock, prompt.bootBlock, messages, abortSignal, maxTokens, isSubAgent, prompt.allowedToolNames, thinkingConfig, prompt.strictToolAllowlist,
     )
   }
-  const mergedSystem = [prompt.system, prompt.memoryBlock, prompt.bootBlock].filter(Boolean).join("\n\n")
   return yield* callOpenAiCompatibleApiStream(
     activeConfig, mergedSystem, messages, abortSignal, maxTokens, isSubAgent, prompt.allowedToolNames, thinkingConfig, prompt.strictToolAllowlist,
   )
