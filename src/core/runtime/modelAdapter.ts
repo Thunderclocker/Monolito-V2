@@ -1114,7 +1114,7 @@ export async function* runAgentLoop(
     systemPromptOverride: options?.systemPromptOverride,
     allowedToolNames: apiToolAllowlist,
     tieredToolExposure: useTieredToolExposure,
-    compactForLocalModel: isLocalOllamaAnthropicBackend(config) && !useTieredToolExposure,
+    compactForLocalModel: isLocalOllamaAnthropicBackend(config),
   })
 
   for (let iteration = 1; iteration <= maxIterations; iteration++) {

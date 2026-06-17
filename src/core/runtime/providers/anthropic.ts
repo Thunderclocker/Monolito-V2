@@ -6,6 +6,7 @@ import { buildAnthropicMessages, buildToolDefinitions, normalizeAnthropicToolInp
 import { isLocalOllamaAnthropicBackend } from "./resolveProvider.ts"
 import { ensureToolResultPairing } from "./ensureToolResultPairing.ts"
 import { selectToolsForLocalOllama, localOllamaToolBudget } from "./localOllamaTools.ts"
+import { resolveOllamaResponseText } from "./ollamaText.ts"
 
 function parsePartialJson(value: string): Record<string, unknown> {
   if (!value.trim()) return {}
@@ -149,10 +150,14 @@ export async function* callAnthropicApiStream(
     input: parsePartialJson(block.inputBuffer?.trim() ? block.inputBuffer : JSON.stringify(block.input ?? {})),
   }))
 
+  const rawText = textParts.join("").trim()
+  const rawThinking = thinkingParts.length > 0 ? thinkingParts.join("") : undefined
+  const resolved = localOllama ? resolveOllamaResponseText(rawText, rawThinking) : { text: rawText, thinking: rawThinking }
+
   const response: ProviderResponse = {
-    text: textParts.join("").trim(),
+    text: resolved.text,
     toolCalls,
-    thinking: thinkingParts.length > 0 ? thinkingParts.join("") : undefined,
+    thinking: resolved.thinking,
     usage,
   }
   yield { type: "done", response }

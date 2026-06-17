@@ -363,7 +363,9 @@ const legacyWebTools: ToolDefinition[] = [
   },
   concurrencySafe: true,
   validate: input => {
-    if (input.allowed_domains && input.blocked_domains) {
+    const allowed = Array.isArray(input.allowed_domains) ? input.allowed_domains as unknown[] : []
+    const blocked = Array.isArray(input.blocked_domains) ? input.blocked_domains as unknown[] : []
+    if (allowed.length > 0 && blocked.length > 0) {
       return "allowed_domains and blocked_domains are mutually exclusive"
     }
     return null
