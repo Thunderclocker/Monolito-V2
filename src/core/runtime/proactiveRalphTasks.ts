@@ -25,6 +25,26 @@ export function isLiveWebDataRequest(text: string): boolean {
   return /\b(clima|weather|pronostico|forecast|tiempo|noticias|news|precio|cotizacion|buscar|search|como esta el tiempo)\b/.test(normalized)
 }
 
+export function isWeatherRequest(text: string): boolean {
+  if (!text) return false
+  const normalized = text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+  return /\b(clima|weather|pronostico|forecast|tiempo|como esta el tiempo)\b/.test(normalized)
+}
+
+export function hasLocationContext(text: string): boolean {
+  if (!text) return false
+  const normalized = text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+  return /\b(vivo en|soy de|estoy en|ubicado en|mi ciudad|localidad)\b/.test(normalized)
+    || /\b(argentina|santa fe|buenos aires|cordoba|c[oó]rdoba|rosario|mendoza|santo tom[eé]|santo tome)\b/.test(normalized)
+    || /\ben\s+[a-záéíóúñ]{3,}(?:,\s*[a-záéíóúñ]{3,}){0,2}\b/i.test(text)
+}
+
 export function userProvidedApiKeyHint(text: string): boolean {
   return /\b(api\s*key|la\s+api|api\s+es|brave|tvly-)\b/i.test(text)
     || /\bBSA[A-Za-z0-9_-]{18,}\b/.test(text)
@@ -50,6 +70,41 @@ export function shouldSeedLiveWebProactiveTasks(
   if (isLiveWebDataRequest(userContext)) return true
   if (!userProvidedApiKeyHint(userContext)) return false
   return messages.some(m => m.role === "user" && isLiveWebDataRequest(m.text))
+}
+
+export function isGenericDeferralReply(reply: string): boolean {
+  const n = reply.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+  return /\b(en que puedo ayud|asistirte hoy|hola[!,?]|buen(?:os)? dias|good morning)\b/.test(n)
+    || /\b(entiendo el comentario|procedere segun|continuare con las tareas|tareas pendientes|informare cuando se complete)\b/.test(n)
+    || /\b(lo hare mas tarde|vuelvo con|en un momento te)\b/.test(n)
+}
+
+export function isLocationClarificationReply(reply: string): boolean {
+  const n = reply.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+  return /\?/.test(reply)
+    && /\b(donde|ubicacion|ciudad|localidad|zona|lugar|region)\b/.test(n)
+}
+
+export function isSubstantiveWeatherReply(reply: string): boolean {
+  if (isGenericDeferralReply(reply)) return false
+  const n = reply.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+  return /\b(\d+\s*°|grados|mm\b|pronostico|despejado|nublado|lluvia|tormenta|maxima|minima|humedad|viento|parcialmente|soleado|frio|calor|celsius)\b/.test(n)
+    || (/\bmañana\b/.test(n) && /\b(temp|tiempo|clima|weather)\b/.test(n))
+}
+
+export function isSubstantiveProactiveWebReply(userContext: string, reply: string): boolean {
+  const trimmed = reply.trim()
+  if (trimmed.length < 15 || looksLikeUserMessageEcho(trimmed, userContext)) return false
+  if (isGenericDeferralReply(trimmed)) return false
+
+  if (isWeatherRequest(userContext)) {
+    if (!hasLocationContext(userContext)) {
+      return isLocationClarificationReply(trimmed)
+    }
+    return isSubstantiveWeatherReply(trimmed)
+  }
+
+  return trimmed.length >= 40
 }
 
 function clearProactiveWebTasks(rootDir: string, sessionId: string, profileId: string) {
@@ -87,6 +142,7 @@ function patchProactiveTask(
 
 function promoteFirstPendingWebTask(rootDir: string, sessionId: string, profileId: string) {
   const order = [
+    `${PROACTIVE_WEB_TASK_PREFIX}location`,
     `${PROACTIVE_WEB_TASK_PREFIX}config`,
     `${PROACTIVE_WEB_TASK_PREFIX}search`,
     `${PROACTIVE_WEB_TASK_PREFIX}reply`,
@@ -108,8 +164,13 @@ export function seedLiveWebProactiveTasks(
   rootDir: string,
   sessionId: string,
   profileId: string,
+  userContext: string,
 ): boolean {
   const webReady = readWebSearchConfigAt(rootDir).provider !== "default"
+  const weather = isWeatherRequest(userContext)
+  const hasLocation = hasLocationContext(userContext)
+  const needsLocationFirst = weather && !hasLocation
+
   clearProactiveWebTasks(rootDir, sessionId, profileId)
   const now = new Date().toISOString()
 
@@ -125,12 +186,26 @@ export function seedLiveWebProactiveTasks(
     })
   }
 
+  if (needsLocationFirst) {
+    upsertProactiveTask(rootDir, sessionId, profileId, {
+      id: `${PROACTIVE_WEB_TASK_PREFIX}location`,
+      sessionId,
+      content: "Confirmar ciudad/zona del usuario (BOOT_USER o preguntar ubicación antes de buscar clima genérico)",
+      activeForm: "Confirmando ubicación para el clima",
+      status: "in_progress",
+      createdAt: now,
+      category: "cognitive",
+    })
+  }
+
   upsertProactiveTask(rootDir, sessionId, profileId, {
     id: `${PROACTIVE_WEB_TASK_PREFIX}search`,
     sessionId,
-    content: "Consultar Web (action=search) con la consulta del usuario",
+    content: needsLocationFirst
+      ? "Consultar Web (action=search) con ciudad + clima mañana cuando tengas ubicación"
+      : "Consultar Web (action=search) con la consulta del usuario",
     activeForm: "Buscando información en la web",
-    status: webReady ? "in_progress" : "pending",
+    status: needsLocationFirst || !webReady ? "pending" : "in_progress",
     createdAt: now,
     category: "cognitive",
   })
@@ -138,7 +213,9 @@ export function seedLiveWebProactiveTasks(
   upsertProactiveTask(rootDir, sessionId, profileId, {
     id: `${PROACTIVE_WEB_TASK_PREFIX}reply`,
     sessionId,
-    content: "Responder al usuario con la información obtenida (sin repetir API keys)",
+    content: needsLocationFirst
+      ? "Preguntar ubicación O responder con el pronóstico concreto (temperaturas, condiciones)"
+      : "Responder al usuario con la información obtenida (sin repetir API keys)",
     activeForm: "Redactando respuesta al usuario",
     status: "pending",
     createdAt: now,
@@ -157,7 +234,22 @@ export function seedLiveWebProactiveTasksFromSession(
 ): boolean {
   const context = buildLiveWebUserContext(messages, currentUserText)
   if (!shouldSeedLiveWebProactiveTasks(context, messages)) return false
-  return seedLiveWebProactiveTasks(rootDir, sessionId, profileId)
+  return seedLiveWebProactiveTasks(rootDir, sessionId, profileId, context)
+}
+
+/** When the user provides location in a follow-up, advance the location task. */
+export function resolveProactiveLocationFromUserMessage(
+  rootDir: string,
+  sessionId: string,
+  profileId: string,
+  userText: string,
+) {
+  if (!hasLocationContext(userText)) return
+  const locationId = `${PROACTIVE_WEB_TASK_PREFIX}location`
+  const locationTask = listSessionTasks(rootDir, sessionId, profileId).find(t => t.id === locationId)
+  if (!locationTask || locationTask.status === "completed") return
+  patchProactiveTask(rootDir, sessionId, profileId, locationId, { status: "completed" })
+  promoteFirstPendingWebTask(rootDir, sessionId, profileId)
 }
 
 function isWebSearchConfigSuccess(tool: string, input: Record<string, unknown>, output: unknown): boolean {
@@ -173,6 +265,12 @@ function isWebSearchSuccess(tool: string, output: unknown): boolean {
   if (!WEB_SEARCH_TOOLS.has(tool)) return false
   const rec = output && typeof output === "object" ? output as Record<string, unknown> : {}
   return rec.ok !== false && !rec.error
+}
+
+function proactiveWebSearchCompleted(rootDir: string, sessionId: string, profileId: string): boolean {
+  const search = listSessionTasks(rootDir, sessionId, profileId)
+    .find(t => t.id === `${PROACTIVE_WEB_TASK_PREFIX}search`)
+  return search?.status === "completed"
 }
 
 /** Advance proactive tasks when tools produce evidence (called from executeTool). */
@@ -200,19 +298,24 @@ export function advanceProactiveTasksOnToolSuccess(
   }
 
   if (isWebSearchSuccess(tool, output)) {
+    const locationId = `${PROACTIVE_WEB_TASK_PREFIX}location`
+    const locationTask = listSessionTasks(rootDir, sessionId, profileId).find(t => t.id === locationId)
+    if (locationTask && locationTask.status !== "completed") {
+      patchProactiveTask(rootDir, sessionId, profileId, locationId, { status: "completed" })
+    }
     patchProactiveTask(rootDir, sessionId, profileId, searchId, { status: "completed" })
     patchProactiveTask(rootDir, sessionId, profileId, replyId, { status: "in_progress" })
   }
 }
 
-/** Mark reply task done when Web ran and the assistant produced a real answer. */
+/** Mark reply task done only when the assistant actually answered the user's request. */
 export function finalizeProactiveWebTasksBeforeRalph(
   rootDir: string,
   sessionId: string,
   profileId: string,
   turnSteps: Array<{ type?: string; tool?: string }>,
   assistantReply: string,
-  recentUserText: string,
+  userContext: string,
 ) {
   const replyId = `${PROACTIVE_WEB_TASK_PREFIX}reply`
   const replyTask = listSessionTasks(rootDir, sessionId, profileId).find(t => t.id === replyId)
@@ -220,7 +323,47 @@ export function finalizeProactiveWebTasksBeforeRalph(
 
   const ranWeb = turnSteps.some(s => s.type === "tool" && typeof s.tool === "string" && WEB_SEARCH_TOOLS.has(s.tool))
   const reply = assistantReply.trim()
-  if (!ranWeb || reply.length < 20 || looksLikeUserMessageEcho(reply, recentUserText)) return
+
+  if (isWeatherRequest(userContext) && !hasLocationContext(userContext)) {
+    if (isLocationClarificationReply(reply)) {
+      patchProactiveTask(rootDir, sessionId, profileId, replyId, { status: "completed" })
+    }
+    return
+  }
+
+  if (!ranWeb && !proactiveWebSearchCompleted(rootDir, sessionId, profileId)) return
+  if (!isSubstantiveProactiveWebReply(userContext, reply)) return
 
   patchProactiveTask(rootDir, sessionId, profileId, replyId, { status: "completed" })
+}
+
+/** Extra Ralph guidance when the model defers instead of synthesizing Web results. */
+export function enrichProactiveWebRalphFeedback(
+  feedbackPrompt: string | null,
+  rootDir: string,
+  sessionId: string,
+  profileId: string,
+  userContext: string,
+  assistantReply: string,
+): string | null {
+  if (!feedbackPrompt) return feedbackPrompt
+  const replyTask = listSessionTasks(rootDir, sessionId, profileId)
+    .find(t => t.id === `${PROACTIVE_WEB_TASK_PREFIX}reply`)
+  if (!replyTask || replyTask.status === "completed") return feedbackPrompt
+  if (!proactiveWebSearchCompleted(rootDir, sessionId, profileId)) return feedbackPrompt
+
+  const lines = [feedbackPrompt, ""]
+  if (isGenericDeferralReply(assistantReply)) {
+    lines.push(
+      "Ya ejecutaste Web y tenés resultados en el historial del turno.",
+      "Respondé AHORA al usuario con el pronóstico concreto (temperaturas, condiciones, mañana).",
+      "Prohibido saludar, posponer ('continuaré con las tareas'), o hablar del proceso interno.",
+    )
+  } else if (isWeatherRequest(userContext) && hasLocationContext(userContext)) {
+    lines.push(
+      "Falta la respuesta final con el clima. Sintetizá los resultados de Web en español:",
+      "temperatura mín/máx, condición (soleado/nublado/lluvia) y fecha (mañana).",
+    )
+  }
+  return lines.join("\n")
 }

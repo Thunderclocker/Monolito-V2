@@ -70,7 +70,10 @@ import { normalizeToolInputPayload } from "./toolInput.ts"
 import { evaluateTopLevelRalphGate, TOP_LEVEL_RALPH_MAX_ATTEMPTS, isScreenViewingRequest } from "./topLevelRalphGate.ts"
 import {
   advanceProactiveTasksOnToolSuccess,
+  buildLiveWebUserContext,
+  enrichProactiveWebRalphFeedback,
   finalizeProactiveWebTasksBeforeRalph,
+  resolveProactiveLocationFromUserMessage,
   seedLiveWebProactiveTasksFromSession,
 } from "./proactiveRalphTasks.ts"
 import {
@@ -1537,6 +1540,7 @@ Rules:
       }
 
       appendMessage(this.rootDir, sessionId, "user", userText)
+      resolveProactiveLocationFromUserMessage(this.rootDir, sessionId, profileId, userText)
       this.emit({ type: "message.received", sessionId, role: "user", text: userText })
 
       appendWorklog(this.rootDir, sessionId, {
@@ -1939,13 +1943,14 @@ Rules:
           lastAssistantReplyForRalph = turn.finalText ?? ""
 
           if (!isAgentSession) {
+            const liveWebContext = buildLiveWebUserContext(preparedSession.messages, preparedUserText)
             finalizeProactiveWebTasksBeforeRalph(
               this.rootDir,
               sessionId,
               profileId,
               turn.steps ?? [],
               lastAssistantReplyForRalph,
-              preparedUserText,
+              liveWebContext,
             )
           }
 
@@ -2006,14 +2011,15 @@ Rules:
             summary: `${gate.unfinished.length} unfinished: ${gate.unfinished.map(t => t.content).slice(0, 3).join(" | ")}`,
           })
           if (gate.feedbackPrompt) {
-            // Ephemeral feedback: we keep it in `pendingRalphFeedback` and
-            // inject it into the next iteration's in-memory session below.
-            // It is NOT appended to the `messages` table — that caused the
-            // 2026-06-09 incident where 19 identical user-role messages
-            // were persisted in 540 ms, triggering 20 LLM-judge veracity
-            // calls (each failing on markdown-fenced JSON) and ballooning
-            // the context window.
-            pendingRalphFeedback = gate.feedbackPrompt
+            const liveWebContext = buildLiveWebUserContext(preparedSession.messages, preparedUserText)
+            pendingRalphFeedback = enrichProactiveWebRalphFeedback(
+              gate.feedbackPrompt,
+              this.rootDir,
+              sessionId,
+              profileId,
+              liveWebContext,
+              lastAssistantReplyForRalph,
+            )
           }
           ralphAttempt++
         }
