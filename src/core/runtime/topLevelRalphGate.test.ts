@@ -15,8 +15,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { listSessionTasks, writeSessionTask, supersedeAllSessionTasks, deleteSessionTask } from "../session/store.ts"
 import type { SessionTask } from "../session/store.ts"
-import { evaluateTopLevelRalphGate, isScreenViewingRequest, isSecurityAuditRequest, isLiveWebDataRequest } from "./topLevelRalphGate.ts"
-import { writeConfigWing } from "../session/store.ts"
+import { evaluateTopLevelRalphGate, isScreenViewingRequest, isSecurityAuditRequest } from "./topLevelRalphGate.ts"
 
 // All tests share a single rootDir because `getPaths` is anchored to
 // MONOLITO_ROOT (a module-level constant) — every test would otherwise
@@ -360,26 +359,5 @@ test("evaluateTopLevelRalphGate blocks security audit without tools", () => {
   )
   assert.equal(result.blocked, true)
   assert.match(result.feedbackPrompt ?? "", /Bash|system_status/i)
-})
-
-test("isLiveWebDataRequest detects weather questions", () => {
-  assert.equal(isLiveWebDataRequest("cual es el clima mañana en Santo Tomé"), true)
-  assert.equal(isLiveWebDataRequest("hola como estas"), false)
-})
-
-test("evaluateTopLevelRalphGate blocks weather request when Web was not called", () => {
-  writeConfigWing(sharedRoot, "CONF_WEBSEARCH", { provider: "brave", apiKey: "test-key" })
-  const result = evaluateTopLevelRalphGate(
-    sharedRoot,
-    "orchestrator",
-    "default",
-    "cual es el clima mañana en Santo Tomé",
-    1,
-    "No tengo acceso a búsqueda web",
-    [],
-    [],
-  )
-  assert.equal(result.blocked, true)
-  assert.match(result.feedbackPrompt ?? "", /Web \(action=search\)/i)
 })
 

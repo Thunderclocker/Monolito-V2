@@ -34,7 +34,7 @@ The active provider is stored in `CONF_WEBSEARCH` and is a runtime-level setting
 # CONF_WEBSEARCH.apiKey = "<key>"
 ```
 
-When the user pastes a hosted search API key in chat, the runtime auto-saves `CONF_WEBSEARCH`, redacts the key from persisted messages/worklog, and injects a directive to call `Web action=search` for the pending request.
+When the user pastes a hosted search API key in chat, the runtime auto-saves `CONF_WEBSEARCH`, redacts the key from persisted messages/worklog, and seeds proactive Ralph tasks (search → answer) that the top-level Ralph loop tracks until completed.
 
 ## Menu actions
 

@@ -69,6 +69,11 @@ import { getWorkspaceContext } from "../context/workspaceContext.ts"
 import { normalizeToolInputPayload } from "./toolInput.ts"
 import { evaluateTopLevelRalphGate, TOP_LEVEL_RALPH_MAX_ATTEMPTS, isScreenViewingRequest } from "./topLevelRalphGate.ts"
 import {
+  advanceProactiveTasksOnToolSuccess,
+  finalizeProactiveWebTasksBeforeRalph,
+  seedLiveWebProactiveTasksFromSession,
+} from "./proactiveRalphTasks.ts"
+import {
   commitCompletedTaskItem,
   formatAbortedResearchUserMessage,
   mergeResearchCheckpointOnAbort,
@@ -947,13 +952,6 @@ export class MonolitoV2Runtime {
   private activeTaskItemTimer: TaskItemTimerController | null = null
   private activeTurnTimingContext: ActiveTurnTimingContext | null = null
   private telegramStreamDeliveries = new Map<string, TelegramStreamDelivery>()
-  private pendingSystemDirectives = new Map<string, string>()
-
-  private consumePendingSystemDirective(sessionId: string): string | undefined {
-    const directive = this.pendingSystemDirectives.get(sessionId)
-    if (directive) this.pendingSystemDirectives.delete(sessionId)
-    return directive
-  }
 
   public bufferScreenshot(sessionId: string, path: string) {
     this.bufferedScreenshotPaths.set(sessionId, path)
@@ -1531,9 +1529,6 @@ Rules:
         const autoWebSearch = tryAutoConfigureWebSearchFromUserMessage(userText)
         if (autoWebSearch.configured) {
           userText = autoWebSearch.redactedText
-          if (autoWebSearch.modelHint) {
-            this.pendingSystemDirectives.set(sessionId, autoWebSearch.modelHint)
-          }
           appendWorklog(this.rootDir, sessionId, {
             type: "note",
             summary: "CONF_WEBSEARCH auto-configured from user message (provider inferred)",
@@ -1816,6 +1811,17 @@ Rules:
           }
         }
 
+        // Proactive Ralph: seed cognitive tasks for multi-step intents (e.g. clima → Web → respuesta).
+        if (!isAgentSession) {
+          seedLiveWebProactiveTasksFromSession(
+            this.rootDir,
+            sessionId,
+            profileId,
+            preparedSession.messages,
+            preparedUserText,
+          )
+        }
+
         // Top-level Ralph loop (Stop-hook analog). If the session has
         // unfinished TodoWrite items (pending or in_progress) after the
         // model turn, the runtime refuses to deliver the assistant reply
@@ -1895,7 +1901,6 @@ Rules:
                   webSearchProvider: webSearchConfig.provider,
                   stallAlert: this.consumeStallAlert(sessionId),
                   ralphAttempt,
-                  systemDirective: this.consumePendingSystemDirective(sessionId),
                 },
                 costState: this.costState,
                 abortSignal: abortController.signal,
@@ -1932,6 +1937,17 @@ Rules:
             )
           }
           lastAssistantReplyForRalph = turn.finalText ?? ""
+
+          if (!isAgentSession) {
+            finalizeProactiveWebTasksBeforeRalph(
+              this.rootDir,
+              sessionId,
+              profileId,
+              turn.steps ?? [],
+              lastAssistantReplyForRalph,
+              preparedUserText,
+            )
+          }
 
           if (abortController.signal.aborted) {
             break
@@ -2814,6 +2830,16 @@ Rules:
         sessionId,
       })
       this.emit({ type: "tool.finish", sessionId, toolUseId, tool: tool.name, ok: true, output })
+      if (!sessionId.startsWith("agent-")) {
+        advanceProactiveTasksOnToolSuccess(
+          this.rootDir,
+          sessionId,
+          profileId ?? context.profileId ?? "default",
+          tool.name,
+          normalizedInput,
+          output,
+        )
+      }
       // If the tool is a todo list mutation, emit a follow-up event so the
       // TUI can re-render the inline task list with the updated state.
       if (tool.name === "Todo") {
