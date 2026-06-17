@@ -18,6 +18,7 @@
 
 import { wrapAuditFeedback } from "./auditFeedback.ts"
 import { listSessionTasks } from "../session/store.ts"
+import { readWebSearchConfigAt } from "../websearch/config.ts"
 
 export type TopLevelRalphGateResult = {
   /** True when the gate has unfinished items and the loop must continue. */
@@ -64,6 +65,35 @@ export function isScreenViewingRequest(text: string): boolean {
   const directScreenshot = /\b(screenshot|pantallazo|captura de pantalla|captura de escritorio|screen capture|screen grab)\b/.test(normalized)
 
   return whatDoYouSee || lookAtScreen || directScreenshot
+}
+
+const WEB_SEARCH_TOOLS = new Set(["Web", "WebSearch", "WebFetch", "ImageSearch"])
+
+export function isLiveWebDataRequest(text: string): boolean {
+  if (!text) return false
+  const normalized = text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+  return /\b(clima|weather|pronostico|forecast|tiempo|noticias|news|precio|cotizacion|buscar|search|pronostico del tiempo|como esta el tiempo)\b/.test(normalized)
+}
+
+function ranWebSearchTool(turnSteps: Array<{ type?: string; tool?: string }>): boolean {
+  return turnSteps.some(s => s.type === "tool" && typeof s.tool === "string" && WEB_SEARCH_TOOLS.has(s.tool))
+}
+
+function configuredWebSearchThisTurn(turnSteps: Array<{ type?: string; tool?: string }>): boolean {
+  return turnSteps.some(s => s.type === "tool" && s.tool === "tool_manage_config")
+}
+
+function isWebSearchReady(rootDir: string): boolean {
+  return readWebSearchConfigAt(rootDir).provider !== "default"
+}
+
+function userProvidedApiKeyHint(text: string): boolean {
+  return /\b(api\s*key|la\s+api|api\s+es|brave|tvly-)\b/i.test(text)
+    || /\bBSA[A-Za-z0-9_-]{18,}\b/.test(text)
+    || /\btvly-[A-Za-z0-9_-]{10,}\b/i.test(text)
 }
 
 
@@ -142,6 +172,39 @@ export function evaluateTopLevelRalphGate(
       shouldRetry: true,
       feedbackPrompt,
       unfinished: [{ content: "Auditar seguridad del sistema con Bash/system_status", status: "pending" }],
+    }
+  }
+
+  // Rule 4: Live web data (weather, news, etc.) with search configured — must call Web
+  if (isLiveWebDataRequest(lastUserText) && isWebSearchReady(rootDir) && !ranWebSearchTool(turnSteps)) {
+    const feedbackPrompt = wrapAuditFeedback(
+      `[Ralph Loop] ALERTA DE COMPORTAMIENTO\n` +
+      `El usuario pidió información en vivo (clima, noticias, precios, etc.) y CONF_WEBSEARCH ya está configurado.\n` +
+      `Debés llamar Web (action=search) con una consulta concreta ANTES de responder.\n` +
+      `No des instrucciones manuales de configuración ni repitas API keys.`
+    )
+    return {
+      blocked: true,
+      shouldRetry: true,
+      feedbackPrompt,
+      unfinished: [{ content: "Consultar Web action=search para el pedido del usuario", status: "pending" }],
+    }
+  }
+
+  // Rule 5: Saved CONF_WEBSEARCH this turn but did not run Web for a pending live-data request
+  const priorLiveRequest = isLiveWebDataRequest(lastUserText) || userProvidedApiKeyHint(lastUserText)
+  if (priorLiveRequest && configuredWebSearchThisTurn(turnSteps) && isWebSearchReady(rootDir) && !ranWebSearchTool(turnSteps)) {
+    const feedbackPrompt = wrapAuditFeedback(
+      `[Ralph Loop] ALERTA DE COMPORTAMIENTO\n` +
+      `Guardaste CONF_WEBSEARCH en este turno pero no llamaste Web para cumplir el pedido original.\n` +
+      `Ejecutá Web (action=search) ahora con la ubicación/consulta del usuario y respondé con los resultados.\n` +
+      `Nunca repitas la API key en texto al usuario.`
+    )
+    return {
+      blocked: true,
+      shouldRetry: true,
+      feedbackPrompt,
+      unfinished: [{ content: "Llamar Web action=search tras configurar búsqueda web", status: "pending" }],
     }
   }
 

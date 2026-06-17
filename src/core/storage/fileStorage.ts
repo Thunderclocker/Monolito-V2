@@ -11,6 +11,7 @@ import {
 import { dirname, join } from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { ensureDirs } from "../ipc/protocol.ts"
+import { redactSensitiveText } from "../security/redact.ts"
 import type { AgentEvent, SessionRecord, SessionSummary, SessionWorklogEntry } from "../ipc/protocol.ts"
 import {
   CONFIG_WING_ORDER,
@@ -378,10 +379,11 @@ export class FileStorageBackend {
     meta.next_message_id += 1
     meta.updated_at = now
     this.writeSessionMeta(meta)
+    const safeText = redactSensitiveText(text)
     const row: FileMessageRow = {
       id,
       role,
-      text,
+      text: safeText,
       thinking: options.thinking ?? null,
       at: now,
       is_compacted: 0,
@@ -389,7 +391,7 @@ export class FileStorageBackend {
       hidden_from_model: options.hiddenFromModel ? 1 : 0,
     }
     appendJsonl(sessionMessagesPath(this.rootDir, sessionId), row)
-    this.appendWorklog(sessionId, { type: "message", summary: `${role === "user" ? "User" : role === "assistant" ? "Assistant" : "System"}: ${text.replace(/\s+/g, " ").trim().slice(0, 160)}` })
+    this.appendWorklog(sessionId, { type: "message", summary: `${role === "user" ? "User" : role === "assistant" ? "Assistant" : "System"}: ${safeText.replace(/\s+/g, " ").trim().slice(0, 160)}` })
     return id
   }
 

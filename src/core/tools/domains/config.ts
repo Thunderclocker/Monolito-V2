@@ -92,6 +92,21 @@ function resolveConfigWriteEffect(wing: ConfigWingName, changed: boolean): strin
   return "stored"
 }
 
+function normalizeWebSearchSet(
+  current: Record<string, unknown>,
+  path: string,
+  val: unknown,
+): { path: string; value: unknown; config: Record<string, unknown> } {
+  const config = JSON.parse(JSON.stringify(current)) as Record<string, unknown>
+  const normalized = setPathValue(config, path, val)
+  const apiKey = typeof normalized.apiKey === "string" ? normalized.apiKey.trim() : ""
+  const provider = normalized.provider
+  if (path === "apiKey" && apiKey && (provider === undefined || provider === "default")) {
+    normalized.provider = "brave"
+  }
+  return { path, value: val, config: normalized }
+}
+
 export const configTools: ToolDefinition[] = [
 {
   name: "tool_manage_config",
@@ -101,7 +116,7 @@ export const configTools: ToolDefinition[] = [
     "Do NOT read or write those JSON files manually. " +
     "If Telegram is already enabled with a token and allowedChats, do NOT call set/write again unless the user explicitly asks to reconfigure.\n\n" +
     "Schemas for config blocks (CONF_*.json):\n" +
-    "- CONF_WEBSEARCH: { provider: 'default' | 'brave' | 'serper' | 'tavily', apiKey?: string }\n" +
+    "- CONF_WEBSEARCH: { provider: 'default' | 'brave' | 'serper' | 'tavily', apiKey?: string }. Setting apiKey alone auto-enables provider='brave'.\n" +
     "- CONF_CHANNELS: { telegram: { enabled: boolean, token?: string, allowedChats: number[] }, ... }\n" +
     "- CONF_SYSTEM, CONF_MODELS: model and environment settings\n\n" +
     "EXAMPLES:\n" +
@@ -201,19 +216,37 @@ export const configTools: ToolDefinition[] = [
       }
       effectivePath = path
       const currentConfig = JSON.parse(JSON.stringify(readConfigWing(context.rootDir, configBlock))) as Record<string, unknown>
-      const currentAtPath = getPathValue(currentConfig, path)
-      if (valuesEqual(currentAtPath, val)) {
-        return {
-          config: configBlock,
-          path,
-          ok: true,
-          changed: false,
-          bytes: 0,
-          effect: "none",
-          message: "Value already configured; no write performed.",
+      if (configBlock === "CONF_WEBSEARCH") {
+        const normalized = normalizeWebSearchSet(currentConfig, path, val)
+        path = normalized.path
+        val = normalized.value
+        if (valuesEqual(currentConfig, normalized.config)) {
+          return {
+            config: configBlock,
+            path,
+            ok: true,
+            changed: false,
+            bytes: 0,
+            effect: "none",
+            message: "Value already configured; no write performed.",
+          }
         }
+        valueToSave = normalized.config
+      } else {
+        const currentAtPath = getPathValue(currentConfig, path)
+        if (valuesEqual(currentAtPath, val)) {
+          return {
+            config: configBlock,
+            path,
+            ok: true,
+            changed: false,
+            bytes: 0,
+            effect: "none",
+            message: "Value already configured; no write performed.",
+          }
+        }
+        valueToSave = setPathValue(currentConfig, path, val)
       }
-      valueToSave = setPathValue(currentConfig, path, val)
     } else {
       return formatToolError(`Unsupported action: ${action}`)
     }
@@ -229,6 +262,8 @@ export const configTools: ToolDefinition[] = [
       path: action === "set" ? effectivePath : undefined,
     })
     const effect = resolveConfigWriteEffect(configBlock, result.changed)
+    const webSearchReady = configBlock === "CONF_WEBSEARCH" && result.changed
+      && (effectivePath === "apiKey" || effectivePath === "provider")
     return {
       config: configBlock,
       path: action === "set" ? effectivePath : undefined,
@@ -236,7 +271,9 @@ export const configTools: ToolDefinition[] = [
       changed: result.changed,
       bytes: result.bytes,
       effect,
-      ...(result.changed ? {} : { message: "Value already configured; no write performed." }),
+      ...(webSearchReady ? {
+        message: "Web search configured (provider=brave when apiKey was set). Call Web action=search for the user's request now; never repeat the raw API key in your reply.",
+      } : result.changed ? {} : { message: "Value already configured; no write performed." }),
     }
   },
 },

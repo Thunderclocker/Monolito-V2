@@ -42,6 +42,7 @@ import {
 } from "../session/store.ts"
 import { getTool, listTools, validateToolInput, type ToolContext, type ToolInputSchema } from "../tools/registry.ts"
 import { getEffectiveModelConfig, runAgentLoop, runAssistantTurn, runBackgroundTextTask, type AgentLoopEvent, type AssistantTurnResult, type AssistantTurnStep } from "./modelAdapter.ts"
+import { isLocalOllamaAnthropicBackend } from "./providers/resolveProvider.ts"
 import { getActiveProfile } from "./modelRegistry.ts"
 import {
   applyModelSettingsToEnv,
@@ -58,7 +59,7 @@ import {
 import { MODEL_PROTOCOL } from "./modelConstants.ts"
 import { createCostState, recordApiCall, recordToolCall, formatCostSummary } from "../cost/tracker.ts"
 import { readChannelsConfig, writeChannelsConfig } from "../channels/config.ts"
-import { readWebSearchConfig, writeWebSearchConfig, type WebSearchProvider } from "../websearch/config.ts"
+import { readWebSearchConfig, writeWebSearchConfig, tryAutoConfigureWebSearchFromUserMessage, type WebSearchProvider } from "../websearch/config.ts"
 import { getContextBudget } from "../context/contextLimits.ts"
 import { getDateContext, getGitContextCached, scheduleGitContextPrefetch } from "../context/gitContext.ts"
 import { scheduleBootBlockPrefetch } from "./turnPrepCache.ts"
@@ -946,6 +947,13 @@ export class MonolitoV2Runtime {
   private activeTaskItemTimer: TaskItemTimerController | null = null
   private activeTurnTimingContext: ActiveTurnTimingContext | null = null
   private telegramStreamDeliveries = new Map<string, TelegramStreamDelivery>()
+  private pendingSystemDirectives = new Map<string, string>()
+
+  private consumePendingSystemDirective(sessionId: string): string | undefined {
+    const directive = this.pendingSystemDirectives.get(sessionId)
+    if (directive) this.pendingSystemDirectives.delete(sessionId)
+    return directive
+  }
 
   public bufferScreenshot(sessionId: string, path: string) {
     this.bufferedScreenshotPaths.set(sessionId, path)
@@ -1317,7 +1325,7 @@ Rules:
         async (tool, input, context, toolUseId) =>
           this.executeTool(sessionId, tool, input, { ...context, abortSignal: abortController.signal, sessionId, runtime: this }, toolUseId, profileId),
         { rootDir: this.rootDir, cwd: this.rootDir, abortSignal: abortController.signal, getMcpClient: async serverName => this.ensureMcpClient(serverName, sessionId), profileId },
-        { systemPromptOverride: promptOverride, costState: this.costState, abortSignal: abortController.signal, turnStartedAt, maxTurnDurationMs: 180_000, reasoningLevelOverride: "off" },
+        { systemPromptOverride: promptOverride, costState: this.costState, abortSignal: abortController.signal, turnStartedAt, maxTurnDurationMs: 180_000, reasoningLevelOverride: "off", memoryAgentMode: true, maxIterations: 6 },
       )
 
       if (turn.usage) {
@@ -1341,13 +1349,24 @@ Rules:
       } else {
         const reason = turn.error ? `error: ${turn.error}` : "empty final text (model stuck)"
         const isRecoverable = reason.includes("empty final text") || reason.includes("Turn duration exceeded")
-        if (!isRecoverable) {
-          this._memoryConsolidationFailures += 1
-          this._lastMemoryConsolidationFailureAt = Date.now()
+        const localOllamaEmpty = reason.includes("empty final text") && isLocalOllamaAnthropicBackend(getEffectiveModelConfig())
+        if (localOllamaEmpty) {
+          setMemoryConsolidationCursor(this.rootDir, lastProcessedId, profileId)
+          this._memoryConsolidationFailures = 0
+          this._lastMemoryConsolidationFailureAt = 0
+          const skipMsg = "CONSOLIDATION_OK: 0 inserts, 0 updates, 0 skips (local model empty reply — skipped)"
+          logger.warn(`[MemoryAgent] ${skipMsg}`)
+          emitSystemMessage(`⚡ MemoryAgent — omitido (modelo local sin respuesta utilizable)`)
+          appendWorklog(this.rootDir, sessionId, { type: "note", summary: `MemoryAgent: ${skipMsg}\n${timingSummary}` })
+        } else {
+          if (!isRecoverable) {
+            this._memoryConsolidationFailures += 1
+            this._lastMemoryConsolidationFailureAt = Date.now()
+          }
+          logger.error(`[MemoryAgent] Consolidation failed (${this._memoryConsolidationFailures} consecutive): ${reason}`)
+          emitSystemMessage(`❌ MemoryAgent falló: ${reason}`)
+          appendWorklog(this.rootDir, sessionId, { type: "note", summary: `MemoryAgent failed: ${reason}${isRecoverable ? " [recoverable]" : ""}\n${timingSummary}` })
         }
-        logger.error(`[MemoryAgent] Consolidation failed (${this._memoryConsolidationFailures} consecutive): ${reason}`)
-        emitSystemMessage(`❌ MemoryAgent falló: ${reason}`)
-        appendWorklog(this.rootDir, sessionId, { type: "note", summary: `MemoryAgent failed: ${reason}${isRecoverable ? " [recoverable]" : ""}\n${timingSummary}` })
       }
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e)
@@ -1505,6 +1524,20 @@ Rules:
         if (screenshotPath) {
           logger.info(`[screenshot] Screenshot captured at ${screenshotPath}. Appending to user message as attachment.`)
           userText = `${userText}\n\n<attachment kind="photo" local_path="${screenshotPath}" />`
+        }
+      }
+
+      if (!isSlash && !isSubAgent) {
+        const autoWebSearch = tryAutoConfigureWebSearchFromUserMessage(userText)
+        if (autoWebSearch.configured) {
+          userText = autoWebSearch.redactedText
+          if (autoWebSearch.modelHint) {
+            this.pendingSystemDirectives.set(sessionId, autoWebSearch.modelHint)
+          }
+          appendWorklog(this.rootDir, sessionId, {
+            type: "note",
+            summary: "CONF_WEBSEARCH auto-configured from user message (provider inferred)",
+          })
         }
       }
 
@@ -1862,6 +1895,7 @@ Rules:
                   webSearchProvider: webSearchConfig.provider,
                   stallAlert: this.consumeStallAlert(sessionId),
                   ralphAttempt,
+                  systemDirective: this.consumePendingSystemDirective(sessionId),
                 },
                 costState: this.costState,
                 abortSignal: abortController.signal,

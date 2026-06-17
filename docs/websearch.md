@@ -16,7 +16,7 @@ Monolito's `WebSearch` and `ImageSearch` tools consume **hosted search API provi
 Supported providers:
 
 - `default` — no provider configured. `WebSearch` and `ImageSearch` will return a clear error pointing the user to set up one of the providers below.
-- `brave` — Brave Search API (`https://api.search.brave.com/res/v1/web/search` and `/res/v1/images/search`). Requires `CONF_WEBSEARCH.apiKey`.
+- `brave` — Brave Search API (`https://api.search.brave.com/res/v1/web/search` and `/res/v1/images/search`). Requires `CONF_WEBSEARCH.apiKey`. Setting `apiKey` alone auto-enables `provider=brave`.
 - `serper` — Serper (Google) (`https://google.serper.dev/search` and `/images`). Requires `CONF_WEBSEARCH.apiKey`.
 - `tavily` — Tavily (`https://api.tavily.com/search`). Requires `CONF_WEBSEARCH.apiKey`.
 
@@ -33,6 +33,8 @@ The active provider is stored in `CONF_WEBSEARCH` and is a runtime-level setting
 # CONF_WEBSEARCH.provider = "brave"
 # CONF_WEBSEARCH.apiKey = "<key>"
 ```
+
+When the user pastes a hosted search API key in chat, the runtime auto-saves `CONF_WEBSEARCH`, redacts the key from persisted messages/worklog, and injects a directive to call `Web action=search` for the pending request.
 
 ## Menu actions
 

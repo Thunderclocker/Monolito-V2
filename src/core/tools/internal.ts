@@ -47,6 +47,7 @@ import {
   upsertRalphRule,
 } from "../session/store.ts"
 import { redactSensitiveValue } from "../security/redact.ts"
+import { resolveRgBinary } from "./rgPath.ts"
 import { type Logger } from "../logging/logger.ts"
 import { CONFIG_WING_ORDER, type ConfigWingName } from "../config/configWings.ts"
 import { coerceConfigRecord } from "../config/wingValue.ts"
@@ -730,7 +731,12 @@ export function normalizeConfigWingValue(wing: ConfigWingName, value: unknown) {
     return parseZod(systemConfigZod, coerceConfigRecord(value) ?? value, "CONF_SYSTEM")
   }
   if (wing === "CONF_WEBSEARCH") {
-    return parseZod(webSearchConfigZod, coerceConfigRecord(value) ?? value, "CONF_WEBSEARCH")
+    const parsed = parseZod(webSearchConfigZod, coerceConfigRecord(value) ?? value, "CONF_WEBSEARCH")
+    const apiKey = typeof parsed.apiKey === "string" ? parsed.apiKey.trim() : ""
+    if (apiKey && parsed.provider === "default") {
+      return { provider: "brave" as const, apiKey }
+    }
+    return parsed
   }
   if (wing === "CONF_MCP") {
     return parseZod(strictRecordZod, coerceConfigRecord(value) ?? value, "CONF_MCP")
@@ -978,8 +984,17 @@ export async function resolveTelegramDownload(
 }
 
 export async function runRg(args: string[], cwd: string) {
+  const rgBin = resolveRgBinary()
+  if (!rgBin) {
+    const fallback = await runRgFallback(args, cwd)
+    if (fallback) return { stdout: fallback, stderr: "" }
+    throw new Error(
+      "rg (ripgrep) is not installed and no fallback applies to this invocation. " +
+      "Install rg (apt: ripgrep, brew: ripgrep) or use a simpler Glob/Grep query."
+    )
+  }
   try {
-    return await execFileAsync("rg", args, {
+    return await execFileAsync(rgBin, args, {
       cwd,
       maxBuffer: MAX_EXEC_BUFFER,
       env: { ...process.env, LC_ALL: "C", LANG: "C" },
@@ -990,12 +1005,6 @@ export async function runRg(args: string[], cwd: string) {
       return { stdout: typed.stdout ?? "", stderr: typed.stderr ?? "" }
     }
     if (typed.code === "ENOENT") {
-      // rg is not installed. Fall back to a Node-based recursive walker so
-      // Glob/Grep degrade gracefully on machines without ripgrep (e.g. a
-      // fresh VPS where the user hasn't installed it yet). The fallback is
-      // intentionally minimal: handles only --files and content searches
-      // with a single literal pattern. For everything else, surface a clear
-      // error message so the caller can install rg.
       const fallback = await runRgFallback(args, cwd)
       if (fallback) return { stdout: fallback, stderr: "" }
       throw new Error(

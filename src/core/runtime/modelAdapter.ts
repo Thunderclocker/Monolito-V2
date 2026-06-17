@@ -22,7 +22,7 @@ import {
   shouldUseTieredToolExposure,
   unlockToolsFromSearchResult,
 } from "./toolExposure.ts"
-import { looksLikeMalformedToolCall, looksLikeSearchQueryInsteadOfToolCall } from "./providers/utils.ts"
+import { looksLikeMalformedToolCall, looksLikeSearchQueryInsteadOfToolCall, looksLikeUserMessageEcho } from "./providers/utils.ts"
 import { findUndeliveredToolOutputs } from "./autoDelivery.ts"
 import { ensureMonolitoRoot } from "../system/root.ts"
 import { redactSensitiveText } from "../security/redact.ts"
@@ -201,6 +201,7 @@ export type AgentLoopRecoverableAction =
   | "malformed_tool_call"
   | "empty_content_retry"
   | "search_query_as_text"
+  | "user_message_echo"
 
 export type AgentLoopEvent =
   | { type: "setup"; sessionId: string; iteration: number; model: string; maxIterations: number; maxTurnDurationMs: number }
@@ -1033,6 +1034,7 @@ export async function* runAgentLoop(
     contextExtras?: ContextExtras
     turnStartedAt?: number
     reasoningLevelOverride?: ReasoningLevel
+    memoryAgentMode?: boolean
   },
 ): AsyncGenerator<AgentLoopEvent, AssistantTurnResult> {
   const logger = getLogger(context, options?.logger)
@@ -1090,10 +1092,13 @@ export async function* runAgentLoop(
 
   const exposeTelegramDownload = session.messages.some(m => m.text.includes('status="size_limit_exceeded"'))
   const totalToolCount = listModelTools(isSubAgent, blockedTools, undefined, rootDir, exposeTelegramDownload).length
-  const useTieredToolExposure = shouldUseTieredToolExposure(config, totalToolCount)
+  const memoryAgentMode = options?.memoryAgentMode === true
+  const useTieredToolExposure = !memoryAgentMode && shouldUseTieredToolExposure(config, totalToolCount)
   const sessionUnlockedTools = new Set<string>()
   let apiToolAllowlist: string[] | undefined
-  if (useTieredToolExposure) {
+  if (memoryAgentMode) {
+    apiToolAllowlist = ["Boot", "Memory", "BootRead", "BootWrite", "WorkspaceMemoryFiling", "WorkspaceMemoryRecall"]
+  } else if (useTieredToolExposure) {
     apiToolAllowlist = buildInitialApiToolAllowlist({
       lastUserText: plainUserText,
       isTelegramChannel,
@@ -1114,7 +1119,7 @@ export async function* runAgentLoop(
     systemPromptOverride: options?.systemPromptOverride,
     allowedToolNames: apiToolAllowlist,
     tieredToolExposure: useTieredToolExposure,
-    compactForLocalModel: isLocalOllamaAnthropicBackend(config),
+    compactForLocalModel: memoryAgentMode || isLocalOllamaAnthropicBackend(config),
   })
 
   for (let iteration = 1; iteration <= maxIterations; iteration++) {
@@ -1319,6 +1324,25 @@ export async function* runAgentLoop(
             content: wrapAuditFeedback(
               `Devolviste una consulta de búsqueda como texto ("${queryExcerpt}") en lugar de invocar Web (action=search). ` +
               `Llamá Web con esa consulta (o action=fetch si tenés URL) y respondé al usuario con los resultados.`,
+            ),
+          })
+          continue
+        }
+
+        if (looksLikeUserMessageEcho(response.text, recentUserText)) {
+          yield {
+            type: "recoverable_error",
+            sessionId: session.id,
+            iteration,
+            action: "user_message_echo",
+            error: "Model echoed the user message instead of completing the task.",
+          }
+          messages.push({
+            role: "user",
+            content: wrapAuditFeedback(
+              "Repetiste el mensaje del usuario en lugar de actuar. " +
+              "Si acabás de guardar CONF_WEBSEARCH, llamá Web (action=search) ahora para cumplir el pedido original. " +
+              "Nunca repitas API keys ni secrets en texto al usuario.",
             ),
           })
           continue
@@ -1971,6 +1995,7 @@ export async function runAssistantTurn(
     contextExtras?: ContextExtras
     turnStartedAt?: number
     reasoningLevelOverride?: ReasoningLevel
+    memoryAgentMode?: boolean
   },
 ): Promise<AssistantTurnResult> {
   let finalResult: AssistantTurnResult | null = null

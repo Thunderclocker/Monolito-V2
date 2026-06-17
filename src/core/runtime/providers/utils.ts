@@ -322,6 +322,20 @@ export function looksLikeSearchQueryInsteadOfToolCall(text: string, recentUserTe
   return looksLikeQuery
 }
 
+/** Model echoed the user's message (common gpt-oss failure after config tools). */
+export function looksLikeUserMessageEcho(text: string, recentUserText: string): boolean {
+  const reply = text.trim()
+  const user = recentUserText.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
+  if (!reply || !user || reply.length > 400) return false
+  const a = reply.toLowerCase()
+  const b = user.toLowerCase()
+  if (a === b) return true
+  if (b.length >= 10 && a.includes(b)) return true
+  const secret = user.match(/\b[A-Za-z0-9_-]{20,}\b/)?.[0]
+  if (secret && a.includes(secret.toLowerCase())) return true
+  return false
+}
+
 export function mergeConsecutiveMessages(messages: ConversationMessage[]): ConversationMessage[] {
   const merged: ConversationMessage[] = []
   for (const msg of messages) {
