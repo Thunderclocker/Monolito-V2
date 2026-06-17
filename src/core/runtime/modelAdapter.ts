@@ -12,7 +12,6 @@ import { loadAndApplyModelSettings, readModelSettings } from "./modelConfig.ts"
 import { getActiveProfile, type ModelProvider, getDefaultReasoningLevel, type ReasoningLevel } from "./modelRegistry.ts"
 import { compactSession, fileMemory, getSession, getRawMessagesForSession, readSessionSources, tailEvents, listSessionTasks, appendWorklog, saveResolvedError, querySimilarErrors, deleteMessages, rewriteMessageInPlace, loadCachedMemoryContext } from "../session/store.ts"
 import { buildResearchCheckpointInjection } from "./researchCheckpoint.ts"
-import type { RecentToolCall } from "./coherenceGuard.ts"
 import { wrapAuditFeedback } from "./auditFeedback.ts"
 import { incrementalFlushSession, getContextFlushThresholdChars } from "../context/incrementalFlush.ts"
 import { callProviderStream, type ConversationMessage, type ProviderConfig, type ProviderResponse, type ToolCall } from "./providers/index.ts"
@@ -23,9 +22,6 @@ import { redactSensitiveText } from "../security/redact.ts"
 import { planToolExecutionWaves } from "./toolBatchPlanner.ts"
 import { logFirstTokenTiming } from "./turnTiming.ts"
 import type { AgentYieldEvent } from "./types.ts"
-import { checkTurnCoherence, logCoherenceBreach } from "./coherenceGuard.ts"
-import { checkTurnIntegrity, logBrokenPromise, logUnverifiedIncapacity, logVeracityBreach } from "./veracityGuard.ts"
-
 import { getContextBudget } from "../context/contextLimits.ts"
 import { truncateHeadTail, calculateToolResultBudget } from "../context/toolResultGuard.ts"
 import { saveEmergencySnapshot } from "../context/contextSnapshot.ts"
@@ -990,7 +986,6 @@ export async function* runAgentLoop(
     contextExtras?: ContextExtras
     turnStartedAt?: number
     reasoningLevelOverride?: ReasoningLevel
-    skipCoherenceGuard?: boolean
   },
 ): AsyncGenerator<AgentLoopEvent, AssistantTurnResult> {
   const logger = getLogger(context, options?.logger)
@@ -1016,8 +1011,6 @@ export async function* runAgentLoop(
   let activeSession = session
   let compacted = false
   let compactionCount = 0
-  let coherenceFailureCount = 0
-  const MAX_COHERENCE_RETRIES = 3
   const MAX_COMPACTIONS_PER_TURN = 3
   let usage: TurnUsage | undefined
   const steps: AssistantTurnStep[] = []
@@ -1304,212 +1297,6 @@ Considera esta estrategia de solución.`
           })
           continue
         }
-
-        // --- COHERENCE GUARD VERIFICATION ---
-        if (!options?.skipCoherenceGuard) {
-        const profileId = context.profileId || "default";
-        // Bug #8 (09-jun-2026): pass the live tool registry snapshot so the
-        // coherence-guard judge can validate 'claims of limitation' against
-        // ground truth. Without this, the agent can claim 'Bash no sale
-        // al host' or 'no tengo docker' and the judge has no way to know
-        // the claim is false.
-         const liveTools = listModelTools(false, undefined, undefined, rootDir, false)
-
-          // Extract recent tool calls from events (ground truth for coherence guard)
-          let recentToolCalls: RecentToolCall[] | undefined
-          try {
-            const events = tailEvents(rootDir, session.id, 30)
-            // Fix C (2026-06-10): also pull the tool input from the
-            // preceding `tool.start` event so the coherence guard can
-            // distinguish actions (e.g. VoiceClone `list` vs
-            // `list_remote`). Events come in chronological order, so we
-            // // pair each `tool.finish` with the most recent
-            // `tool.start` for the same toolCallId if available.
-            const startsById = new Map<string, Record<string, unknown>>()
-            for (const e of events) {
-              if (e.type === "tool.start" && typeof (e as { toolUseId?: unknown }).toolUseId === "string") {
-                const id = String((e as { toolUseId: string }).toolUseId)
-                const input = (e as { input?: unknown }).input
-                if (input && typeof input === "object") {
-                  startsById.set(id, input as Record<string, unknown>)
-                }
-              }
-            }
-            recentToolCalls = events
-              .filter(e => e.type === "tool.finish" && typeof (e as { tool?: unknown }).tool === "string")
-              .map(e => {
-                const finishEvent = e as { tool: string; ok?: boolean; at?: string; toolUseId?: string }
-                const input = finishEvent.toolUseId ? startsById.get(finishEvent.toolUseId) : undefined
-                return {
-                  tool: String(finishEvent.tool),
-                  ok: finishEvent.ok ?? false,
-                  at: finishEvent.at,
-                  input,
-                }
-              })
-              .slice(-15) // Last 15 tool calls
-          } catch {}
-
-         const coherence = await checkTurnCoherence(
-           rootDir,
-           response.text,
-           profileId,
-           runBackgroundTextTask,
-           session.messages.slice(-3),
-           { tools: liveTools.map(t => ({ name: t.name, description: t.description })), bins: [] },
-           recentToolCalls
-         );
-
-        if (!coherence.coherent) {
-          coherenceFailureCount++
-          logCoherenceBreach(rootDir, session.id, coherence.reason ?? "Incoherencia de perfil", response.text);
-
-          // Bug #3 (09-jun-2026): the previous bypass was unconditional at
-          // count >= 2, which meant persistent false claims (the model
-          // reports "Mandada. 864×1152, 125KB" without ever invoking
-          // GenerateImage or TelegramSendPhoto) got BYPASSED, not aborted.
-          // 6 occurrences observed on 2026-06-08 between 19:26 and 19:52.
-          //
-          // The correct policy: a 'false execution claim' (the model says
-          // it ran an action that the worklog shows it did NOT run) is
-          // terminal — there's no self-correction path. Abort on the FIRST
-          // such rejection, no bypass. Other kinds of incoherence
-          // (delegation to user, contradiction with memories) keep the
-          // 2-strikes-then-bypass policy because the model CAN self-correct.
-           if (coherenceFailureCount >= MAX_COHERENCE_RETRIES) {
-             // Agotó reintentos internos. Mensaje genérico al usuario, sin exponer detalles del guard.
-             logger.warn(
-               `Coherence guard exhausted retries for session ${session.id} after ${coherenceFailureCount} attempts. Last reason: ${coherence.reason}`
-             );
-             appendWorklog(rootDir, session.id, {
-               type: "note",
-               summary: `COHERENCE_GUARD_EXHAUSTED: ${coherenceFailureCount} consecutive rejections. Last reason: "${coherence.reason}"`,
-             });
-             // Sanitize internal terms so the user sees a natural explanation, not guard jargon.
-             const sanitized = (coherence.reason ?? "")
-               .replace(/coherence guard|tool_manage_config|reporte inflado|guard de coherencia/gi, "")
-               .replace(/\s+/g, " ")
-               .trim();
-             const userMessage = sanitized
-               ? `No pude completar la acción: ${sanitized}. ¿Querés que lo intente de nuevo?`
-               : "No pude completar esta acción. ¿Querés que lo intente de nuevo?";
-             return finalize(
-               userMessage,
-               steps,
-               startedAt,
-               iteration,
-               undefined,
-               `coherence_exhausted: ${coherence.reason}`,
-               "aborted",
-               accumulatedThinking.length > 0 ? accumulatedThinking.join("\n\n") : undefined,
-             );
-           }
-
-          yield {
-            type: "recoverable_error",
-            sessionId: session.id,
-            iteration,
-            action: "coherence_correction",
-            error: `Respuesta rechazada por coherencia: ${coherence.reason}`
-          };
-
-          messages.push({
-            role: "user",
-            content: `[SYSTEM ALERT - COHERENCE GUARD] Tu respuesta anterior fue RECHAZADA.
-Contradicción detectada: ${coherence.reason}
-Por favor, corregí este error de inmediato y reescribí tu respuesta respetando estrictamente tu memoria. Si no podés corregirla, indicá brevemente el problema en una línea. No narres herramientas que no ejecutaste.`
-          });
-
-          continue;
-        }
-        }
-        // --- END OF COHERENCE GUARD ---
-
-        // --- UNIFIED INTEGRITY GUARD VERIFICATION ---
-        try {
-          const toolsCalledInTurn = steps
-            .filter(step => step.type === "tool")
-            .map(step => (step as { type: "tool"; tool: string }).tool)
-
-          // If a screenshot was pre-attached, treat CaptureScreenshot as executed to avoid Veracity Guard falsification errors.
-          const hasAttachedScreenshot = lastUserText && (lastUserText.includes('kind="photo"') || lastUserText.includes('attachment kind="photo"'));
-          if (hasAttachedScreenshot && !toolsCalledInTurn.includes("CaptureScreenshot")) {
-            toolsCalledInTurn.push("CaptureScreenshot");
-          }
-
-          const integrity = await checkTurnIntegrity(
-            rootDir,
-            response.text,
-            toolsCalledInTurn,
-            runBackgroundTextTask
-          );
-
-          if (!integrity.verified) {
-            if (integrity.type === "falsified_execution") {
-              logVeracityBreach(rootDir, session.id, integrity.reason ?? "Mismatch de ejecución detectado", response.text);
-
-              yield {
-                type: "recoverable_error",
-                sessionId: session.id,
-                iteration,
-                action: "veracity_correction",
-                error: `Respuesta rechazada por veracidad: ${integrity.reason}`
-              };
-
-              messages.push({
-                role: "user",
-                content: `[SYSTEM ALERT - VERACITY GUARD] Tu respuesta anterior fue RECHAZADA.
-Afirmas haber ejecutado comandos de consola, scripts, o transferencias de archivos en este turno, pero no realizaste las llamadas a herramientas reales correspondientes.
-No inventes ni alucines resultados. Por favor, ejecuta las herramientas reales (como Bash) para realizar la acción, o corrige tu respuesta para reflejar lo que realmente hiciste.`
-              });
-            } else if (integrity.type === "broken_promise") {
-              logBrokenPromise(rootDir, session.id, integrity.reason ?? "Promesa rota detectada", response.text);
-
-              yield {
-                type: "recoverable_error",
-                sessionId: session.id,
-                iteration,
-                action: "commitment_correction",
-                error: `Respuesta rechazada por promesa rota: no se llamó a ninguna herramienta para cumplir el compromiso.`
-              };
-
-              messages.push({
-                role: "user",
-                content: `[SYSTEM ALERT - COMMITMENT GUARD] Tu respuesta anterior fue RECHAZADA.
-Promesa rota/falsa detectada: Prometiste realizar una acción, buscar información, enviar archivos o realizar una tarea (ej. "Buscando ahora mismo...", "Dame un toque", "En un momento te las mando", "revisando...", etc.) pero finalizaste el turno sin ejecutar ninguna herramienta ni delegar la tarea.
-Por favor, si vas a realizar la acción ahora mismo, ejecutá las herramientas correspondientes (ej. ImageSearch, TelegramSendPhoto, Bash, etc.) en este mismo turno ANTES de dar tu respuesta final. Si es una acción diferida, debés usar schedule_task. No hagas promesas vacías en tu texto final.`
-              });
-            } else if (integrity.type === "unverified_incapacity") {
-              logUnverifiedIncapacity(rootDir, session.id, integrity.reason ?? "Incapacidad no verificada", response.text);
-
-              yield {
-                type: "recoverable_error",
-                sessionId: session.id,
-                iteration,
-                action: "incapacity_correction",
-                error: `Respuesta rechazada por incapacidad no verificada: ${integrity.reason}`
-              };
-
-              messages.push({
-                role: "user",
-                content: `[SYSTEM ALERT - VERACITY GUARD] Tu respuesta anterior fue RECHAZADA.
-Declaraste no poder hacer algo (o que algo es imposible / no accesible / no disponible) sin haber intentado verificar la limitación en este turno.
-El patrón es: "no puedo / I can't / no tengo acceso / impossible / no es posible" SIN una tool call previa que confirme la limitación.
-EXCEPCIONES VÁLIDAS (no rechaces si la respuesta entra en alguna):
-- Llamaste una tool y la tool devolvió evidencia concreta de la limitación (403, 404, ENOENT, permission denied, connection refused, etc.).
-- El usuario preguntó hipotéticamente sobre una capacidad, y tu respuesta es explicativa, no un claim sobre el turno actual.
-- Es una explicación general sobre escenarios futuros, no sobre el turno presente.
-
-ACCION REQUERIDA: ejecutá al menos una tool en este turno ANTES de declarar que no podés. Si la tool confirma la limitación, incluí la evidencia concreta (código de error, mensaje, output) en tu respuesta. Si la tool desmiente tu afirmación, corregila.`
-              });
-            }
-
-            continue;
-          }
-        } catch (integrityErr) {
-          logger.warn(`Integrity guard check failed: ${integrityErr}`);
-        }
-        // --- END OF UNIFIED INTEGRITY GUARD ---
 
         await detectAndSaveLearning(rootDir, messages, logger)
         const finalThinking = accumulatedThinking.length > 0 ? accumulatedThinking.join("\n\n") : undefined
@@ -2044,7 +1831,6 @@ export async function runAssistantTurn(
     contextExtras?: ContextExtras
     turnStartedAt?: number
     reasoningLevelOverride?: ReasoningLevel
-    skipCoherenceGuard?: boolean
   },
 ): Promise<AssistantTurnResult> {
   let finalResult: AssistantTurnResult | null = null
