@@ -192,6 +192,7 @@ export type AgentLoopRecoverableAction =
   | "incapacity_correction"
   | "operational_interruption"
   | "malformed_tool_call"
+  | "empty_content_retry"
 
 export type AgentLoopEvent =
   | { type: "setup"; sessionId: string; iteration: number; model: string; maxIterations: number; maxTurnDurationMs: number }
@@ -1024,6 +1025,8 @@ export async function* runAgentLoop(
   const toolFailures = new ToolFailureTracker()
   let lastFailedToolSig: { toolName: string; kind: string; detail: string } | null = null
   let sameErrorRepeatCount = 0
+  let emptyContentRetries = 0
+  const MAX_EMPTY_CONTENT_RETRIES = 2
 
   const lastUserText = getLastUserMessage(session)
   // Full Tool Access Model: Expose all tools directly to the agent.
@@ -1240,6 +1243,30 @@ export async function* runAgentLoop(
       }
 
       if (response.toolCalls.length === 0) {
+        if (!response.text.trim()) {
+          emptyContentRetries++
+          if (emptyContentRetries <= MAX_EMPTY_CONTENT_RETRIES) {
+            yield {
+              type: "recoverable_error",
+              sessionId: session.id,
+              iteration,
+              action: "empty_content_retry",
+              error: "Model returned empty user-facing content (gpt-oss/Ollama thinking-only). Re-feeding.",
+            }
+            messages.push({
+              role: "user",
+              content: wrapAuditFeedback(
+                `Tu respuesta quedó vacía: no emitiste texto visible para el usuario. ` +
+                `Respondé ahora en texto plano en el idioma del usuario. ` +
+                `Si necesitás persistir datos, llamá BootWrite o WorkspaceMemoryFiling y DESPUÉS escribí la confirmación al usuario.`,
+              ),
+            })
+            continue
+          }
+        } else {
+          emptyContentRetries = 0
+        }
+
         // --- TDD FINALIZATION GUARD ---
         let lastFailureTool = ""
         let failureSnippet = ""

@@ -17,6 +17,7 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "mistral": 16_384,
   "phi": 16_384,
   "deepseek": 16_384,
+  "gpt-oss": 131_072,
   // fallback
   "default": 128_000,
 };

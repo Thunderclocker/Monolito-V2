@@ -2094,17 +2094,38 @@ Rules:
             })
             await this.deliverText(sessionId, userFacingText, options?.delivery, "Failed to deliver honest error reply")
           } else {
-            appendWorklog(this.rootDir, sessionId, {
-              type: "note",
-              summary: "Suppressed empty assistant response",
-            })
-            this.emit({
-              type: "turn.completed",
-              sessionId,
-              role: "assistant",
-              durationMs: Date.now() - turnStartedAt,
-              usage: turn.usage,
-            })
+            const hadModelOutput = (turn.usage?.outputTokens ?? 0) > 0
+            if (hadModelOutput) {
+              userFacingText =
+                "Recibí tu mensaje, pero el modelo no generó texto visible en esta respuesta. " +
+                "Probá repetir el pedido o reformularlo."
+              appendMessage(this.rootDir, sessionId, "assistant", userFacingText, { thinking: turn.thinking })
+              appendWorklog(this.rootDir, sessionId, {
+                type: "note",
+                summary: `Suppressed empty assistant response (had ${turn.usage?.outputTokens ?? 0} output tokens); delivered fallback message.`,
+              })
+              this.emit({ type: "message.received", sessionId, role: "assistant", text: userFacingText, thinking: turn.thinking })
+              this.emit({
+                type: "turn.completed",
+                sessionId,
+                role: "assistant",
+                durationMs: Date.now() - turnStartedAt,
+                usage: turn.usage,
+              })
+              await this.deliverText(sessionId, userFacingText, options?.delivery, "Failed to deliver empty-response fallback")
+            } else {
+              appendWorklog(this.rootDir, sessionId, {
+                type: "note",
+                summary: "Suppressed empty assistant response",
+              })
+              this.emit({
+                type: "turn.completed",
+                sessionId,
+                role: "assistant",
+                durationMs: Date.now() - turnStartedAt,
+                usage: turn.usage,
+              })
+            }
           }
         } else {
           if (!turn.error && !shouldSuppressEmit(userFacingText)) {

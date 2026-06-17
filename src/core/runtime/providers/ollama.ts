@@ -3,6 +3,7 @@ import { parseStructuredToolCalls } from "./types.ts"
 import type { ProviderStreamEvent } from "./streamTypes.ts"
 import { buildOpenAiMessages, buildToolDefinitions, callJsonApi, modelSupportsVision } from "./utils.ts"
 import { getContextBudget } from "../../context/contextLimits.ts"
+import { resolveOllamaResponseText } from "./ollamaText.ts"
 
 function buildOllamaMessages(
   config: ProviderConfig,
@@ -111,6 +112,7 @@ export async function* callOllamaApiStream(
   }
 
   const textParts: string[] = []
+  const thinkingParts: string[] = []
   let toolCalls: ProviderResponse["toolCalls"] = []
   let usage: ProviderResponse["usage"] | undefined
 
@@ -119,6 +121,10 @@ export async function* callOllamaApiStream(
     if (typeof message?.content === "string" && message.content) {
       textParts.push(message.content)
       yield { type: "text_delta", text: message.content }
+    }
+    if (typeof message?.thinking === "string" && message.thinking) {
+      thinkingParts.push(message.thinking)
+      yield { type: "thinking_delta", text: message.thinking }
     }
     if (Array.isArray(message?.tool_calls)) {
       toolCalls = parseStructuredToolCalls(message.tool_calls)
@@ -129,9 +135,14 @@ export async function* callOllamaApiStream(
     }
   }
 
+  const resolved = resolveOllamaResponseText(
+    textParts.join(""),
+    thinkingParts.join(""),
+  )
   const responsePayload: ProviderResponse = {
-    text: textParts.join("").trim(),
+    text: resolved.text,
     toolCalls,
+    thinking: resolved.thinking,
     usage,
   }
   yield { type: "done", response: responsePayload }
@@ -165,9 +176,14 @@ export async function callOllamaApi(
   })
 
   const message = data.message ?? {}
+  const resolved = resolveOllamaResponseText(
+    typeof message.content === "string" ? message.content : "",
+    typeof message.thinking === "string" ? message.thinking : undefined,
+  )
   return {
-    text: typeof message.content === "string" ? message.content.trim() : "",
+    text: resolved.text,
     toolCalls: parseStructuredToolCalls(message.tool_calls),
+    thinking: resolved.thinking,
     usage: {
       inputTokens: data.prompt_eval_count,
       outputTokens: data.eval_count,
