@@ -21,6 +21,7 @@ function buildOpenAiRequestBody(
   maxTokens: number | undefined,
   stream: boolean,
   thinkingConfig?: { enabled: boolean; budgetTokens?: number },
+  strictToolAllowlist?: boolean,
 ) {
   const isMiniMax = config.provider === "minimax" || config.baseUrl.includes("minimax.io") || config.baseUrl.includes("api.minimax.io")
   const minimaxThinking = isMiniMax && thinkingConfig?.enabled === true
@@ -33,6 +34,7 @@ function buildOpenAiRequestBody(
       isSubAgent,
       messages.slice().reverse().find(m => m.role === "user")?.content || "",
       allowedToolNames,
+      strictToolAllowlist,
     ).map(tool => ({ type: tool.type, function: tool.function })),
     tool_choice: "auto",
     max_tokens: maxTokens ?? 4_000,
@@ -139,10 +141,11 @@ export async function* callOpenAiCompatibleApiStream(
   isSubAgent: boolean,
   allowedToolNames?: string[],
   thinkingConfig?: { enabled: boolean; budgetTokens?: number },
+  strictToolAllowlist?: boolean,
 ): AsyncGenerator<ProviderStreamEvent, ProviderResponse> {
   const url = `${config.baseUrl}/v1/chat/completions`
   const headers = buildOpenAiHeaders(config)
-  const body = buildOpenAiRequestBody(config, system, messages, isSubAgent, allowedToolNames, maxTokens, true, thinkingConfig)
+  const body = buildOpenAiRequestBody(config, system, messages, isSubAgent, allowedToolNames, maxTokens, true, thinkingConfig, strictToolAllowlist)
 
   const response = await pooledFetch(url, {
     method: "POST",
@@ -219,10 +222,11 @@ export async function callOpenAiCompatibleApi(
   isSubAgent: boolean,
   allowedToolNames?: string[],
   thinkingConfig?: { enabled: boolean; budgetTokens?: number },
+  strictToolAllowlist?: boolean,
 ): Promise<ProviderResponse> {
   try {
     const stream = callOpenAiCompatibleApiStream(
-      config, system, messages, abortSignal, maxTokens, isSubAgent, allowedToolNames, thinkingConfig,
+      config, system, messages, abortSignal, maxTokens, isSubAgent, allowedToolNames, thinkingConfig, strictToolAllowlist,
     )
     let response: ProviderResponse | undefined
     for await (const event of stream) {
@@ -237,7 +241,7 @@ export async function callOpenAiCompatibleApi(
     method: "POST",
     headers: buildOpenAiHeaders(config),
     body: JSON.stringify(buildOpenAiRequestBody(
-      config, system, messages, isSubAgent, allowedToolNames, maxTokens, false, thinkingConfig,
+      config, system, messages, isSubAgent, allowedToolNames, maxTokens, false, thinkingConfig, strictToolAllowlist,
     )),
     signal: abortSignal,
   })

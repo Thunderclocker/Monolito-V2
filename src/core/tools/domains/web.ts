@@ -14,6 +14,7 @@ import {
   isValidJson,
   objectArrayField,
   optionalNumber,
+  optionalString,
   requireString,
   selectRelevantText,
   truncateText,
@@ -27,9 +28,9 @@ import {
   writeSessionSource,
 } from "../../session/store.ts"
 
-import type { ToolDefinition } from "../registry.ts"
+import type { ToolDefinition, ToolContext } from "../internal.ts"
 
-export const webTools: ToolDefinition[] = [
+const legacyWebTools: ToolDefinition[] = [
 {
   name: "WebFetch",
   aliases: ["web_fetch"],
@@ -509,4 +510,86 @@ export const webTools: ToolDefinition[] = [
   },
 },
 
+]
+
+function runLegacyWebTool(legacyName: string, input: Record<string, unknown>, context: ToolContext) {
+  const tool = legacyWebTools.find(t => t.name === legacyName)
+  if (!tool?.run) return formatToolError(`Internal Web handler missing: ${legacyName}`)
+  return tool.run(input, context)
+}
+
+function resolveWebAction(invoked: string, input: Record<string, unknown>): string {
+  const aliasMap: Record<string, string> = {
+    WebFetch: "fetch",
+    web_fetch: "fetch",
+    WebSearch: "search",
+    web_search: "search",
+    ImageSearch: "image_search",
+  }
+  if (aliasMap[invoked]) return aliasMap[invoked]
+  const explicit = optionalString(input, "action")
+  if (explicit === "fetch" || explicit === "search" || explicit === "image_search") return explicit
+  if (typeof input.url === "string" && typeof input.prompt === "string") return "fetch"
+  if (typeof input.query === "string" && !input.url) return "search"
+  return "search"
+}
+
+function isTodoPayload(input: Record<string, unknown>): boolean {
+  const action = optionalString(input, "action")
+  return action === "write" || action === "list" || "todos" in input
+}
+
+const WEB_ACTION_LEGACY: Record<string, string> = {
+  fetch: "WebFetch",
+  search: "WebSearch",
+  image_search: "ImageSearch",
+}
+
+export function validateWebInput(invoked: string, input: Record<string, unknown>): string | null {
+  if (isTodoPayload(input)) {
+    return "Web does not manage todos — use Todo (action=write|list) with {todos:[...]}."
+  }
+  const action = resolveWebAction(invoked, input)
+  const legacyName = WEB_ACTION_LEGACY[action]
+  const legacy = legacyWebTools.find(t => t.name === legacyName)
+  return legacy?.validate ? legacy.validate(input) : null
+}
+
+export const webTools: ToolDefinition[] = [
+{
+  name: "Web",
+  aliases: ["WebSearch", "web_search", "WebFetch", "web_fetch", "ImageSearch"],
+  permissionTier: "read",
+  isReadOnly: true,
+  isSearchOrReadCommand: true,
+  description:
+    "Web access. action=search (text results), fetch (URL + prompt), image_search (image URLs via SearXNG/providers). " +
+    "Do NOT use search/fetch for image discovery — use image_search.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["search", "fetch", "image_search"] },
+      query: { type: "string" },
+      url: { type: "string" },
+      prompt: { type: "string" },
+      limit: { type: "number" },
+      allowed_domains: { type: "array", items: { type: "string" } },
+      blocked_domains: { type: "array", items: { type: "string" } },
+      recency: { type: "string", enum: ["day", "week", "month", "year"] },
+    },
+    additionalProperties: false,
+  },
+  concurrencySafe: true,
+  validate: input => validateWebInput("Web", input as Record<string, unknown>),
+  async run(input, context) {
+    const invoked = context.invokedAs ?? "Web"
+    if (isTodoPayload(input as Record<string, unknown>)) {
+      return formatToolError("Web does not manage todos — use Todo (action=write|list) with {todos:[...]}.")
+    }
+    const action = resolveWebAction(invoked, input as Record<string, unknown>)
+    const legacyName = WEB_ACTION_LEGACY[action]
+    if (!legacyName) return formatToolError(`Unknown Web action: ${action}`)
+    return runLegacyWebTool(legacyName, input as Record<string, unknown>, context)
+  },
+},
 ]

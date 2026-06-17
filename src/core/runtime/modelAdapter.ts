@@ -15,7 +15,13 @@ import { buildResearchCheckpointInjection } from "./researchCheckpoint.ts"
 import { wrapAuditFeedback } from "./auditFeedback.ts"
 import { incrementalFlushSession, getContextFlushThresholdChars } from "../context/incrementalFlush.ts"
 import { callProviderStream, type ConversationMessage, type ProviderConfig, type ProviderResponse, type ToolCall } from "./providers/index.ts"
-import { resolveChatProviderConfig } from "./providers/resolveProvider.ts"
+import { resolveChatProviderConfig, isLocalOllamaAnthropicBackend } from "./providers/resolveProvider.ts"
+import {
+  buildInitialApiToolAllowlist,
+  mergeApiToolAllowlist,
+  shouldUseTieredToolExposure,
+  unlockToolsFromSearchResult,
+} from "./toolExposure.ts"
 import { looksLikeMalformedToolCall, looksLikeSearchQueryInsteadOfToolCall } from "./providers/utils.ts"
 import { findUndeliveredToolOutputs } from "./autoDelivery.ts"
 import { ensureMonolitoRoot } from "../system/root.ts"
@@ -543,8 +549,12 @@ function buildSystemPrompt(args: {
   extras?: ContextExtras
   systemPromptOverride?: string
   allowedToolNames?: string[]
+  compactForLocalModel?: boolean
+  tieredToolExposure?: boolean
 }) {
-  if (args.systemPromptOverride?.trim()) return { system: args.systemPromptOverride.trim(), memoryBlock: "", bootBlock: "" }
+  if (args.systemPromptOverride?.trim()) {
+    return { system: args.systemPromptOverride.trim(), memoryBlock: "", bootBlock: "", strictToolAllowlist: false }
+  }
   const bootstrap = args.bootstrap ?? args.extras?.workspaceContext
   const lastUserMessage = getLastUserMessage(args.session)
   const isSubAgent = args.session.id.startsWith("agent-")
@@ -555,16 +565,50 @@ function buildSystemPrompt(args: {
   const isTelegramMessage = lastUserMessage.includes('<channel source="telegram"')
   if (!isTelegramMessage) {
     blockedTools.push(
-      "TelegramSend",
-      "TelegramSendPhoto",
-      "TelegramSendAudio",
-      "TelegramSendVoice",
-      "TelegramSendDocument",
-      "TelegramGetRecentPhotos"
+      "Telegram",
+      "TelegramGet",
+      "DownloadFile",
     )
   }
 
 
+
+  const compact = args.compactForLocalModel === true
+
+  if (compact) {
+    const dynamicContext = ["=== DYNAMIC CONTEXT ==="]
+    dynamicContext.push(`Workspace root: ${args.rootDir}`)
+    if (lastUserMessage) {
+      dynamicContext.push(`Current user request: ${formatCurrentUserRequest(lastUserMessage)}`)
+    }
+    if (args.extras?.dateContext) dynamicContext.push(args.extras.dateContext)
+    const memoryBlock = loadCachedMemoryContext(args.rootDir) ?? ""
+    return {
+      system: [
+        "You are Monolito V2, a local assistant with tool access.",
+        "Use the API tool list. For weather, news, or live facts call Web (action=search or action=fetch) before answering.",
+        "If no tool is needed, answer directly in the user's language (Spanish by default).",
+        "Do not invent facts about weather, prices, or schedules without tool evidence.",
+      ].join("\n\n"),
+      memoryBlock: memoryBlock.length > 2_000 ? `${memoryBlock.slice(0, 2_000)}…` : memoryBlock,
+      bootBlock: dynamicContext.join("\n\n"),
+      allowedToolNames: args.allowedToolNames,
+      strictToolAllowlist: args.tieredToolExposure === true,
+    }
+  }
+
+  const tieredTools = args.tieredToolExposure === true
+  const toolSection = tieredTools
+    ? [
+        "Tool discovery (Claude Code parity):",
+        "- The active tool schemas are attached to this API request (not duplicated here).",
+        "- Call search_tools with a keyword to discover and unlock additional tools for this turn.",
+        "- Prefer the eager tools already loaded; unlock only when you need a specialized capability.",
+      ].join("\n")
+    : [
+        "Available tools:",
+        buildToolSummary(isSubAgent, blockedTools, args.allowedToolNames, args.rootDir, exposeTelegramDownload),
+      ].join("\n")
 
   const staticSystem = [
     "You are Monolito V2, a local assistant with tool access.",
@@ -585,7 +629,7 @@ function buildSystemPrompt(args: {
     "- For current, external, runtime, filesystem, financial, legal, medical, version, weather, schedule, or other unstable facts, use tools before making concrete claims.",
     "- If evidence is missing, ambiguous, blocked, stale, or only inferential, say that explicitly instead of filling the gap.",
     "- When questioned or challenged about the source or truth of any fact (in any language), NEVER apologize blindly or claim you 'made it up' (sycophancy). Instead: reconstruct the actual origin. Check if the information came from: 1) startup boot files loaded at session start (e.g. BOOT_MEMORY → memory.md, BOOT_USER → boot/user.md), 2) general world/programming knowledge, 3) logical inferences, or 4) prior tool results/messages. Cite the specific source clearly (e.g., 'From memory.md', 'From boot/user.md', 'From the results of tool X', or 'From logical deduction of Y').",
-    "- If a user asks you to generate or send audio/voice, you must call GenerateSpeech and then the relevant delivery tool (TelegramSendAudio/TelegramSendVoice for Telegram) before saying the audio is generated, sent, or being delivered. If a required tool fails, report the failure plainly instead of promising more work.",
+    "- If a user asks you to generate or send audio/voice, you must call GenerateSpeech and then Telegram (action=send_audio or action=send_voice) before saying the audio is generated, sent, or being delivered. If a required tool fails, report the failure plainly instead of promising more work.",
     "- If a user asks you to clone, replicate, copy, learn, or save a voice (in any language: 'clonar', 'clona', 'clone', 'replicate', 'imitá', 'aprendé esta voz', 'guardá esta voz', 'voice clone'), you MUST call VoiceClone in the same turn. The file_id of the source audio is exposed as `<attachment kind=\"voice\" file_id=\"...\" />` or `<attachment kind=\"audio\" file_id=\"...\" />` in the inbound channel payload. Pass it as `source.type: \"telegram_file_id\"` and `source.value: \"<file_id>\"` with the alias the user requested. Do not debate the audio quality or the speaker's identity before invoking the tool — upload and clone, then let the user evaluate the result. If the user later complains about the cloned voice quality, then you can discuss.",
     "- For simple, sequential configuration changes (e.g. setting tts_provider, tts_base_url, tts_apiKey, stt.engine), apply them directly in the main session with tool_manage_config action='set' or 'write'. Do them yourself in the same turn — the user is waiting on them.",
     "- When a user asks where a prior answer came from, inspect the conversation/tool evidence first. Use SessionForensics when available. Never claim no tool was used if tool evidence exists in the session.",
@@ -596,16 +640,16 @@ function buildSystemPrompt(args: {
     "- COMMITMENT RULE: If you verbally promise to do something in the future (remind, notify, review, analyze, send, check, etc.), you MUST call the appropriate deferred/background tool in the exact same turn. If you do not execute a background/scheduling tool, do not make promises of future action. In that case, say something like 'I need to do X first' or simply do not make a promise. A verbal promise without a corresponding tool call in the same turn is invalid.",
     "- PRONOMBRES Y PRIORIDAD DE ATENCIÓN (CRITICAL): Tus datos y reglas estáticas de usuario están aislados en <user_profile_context>. Está estrictamente PROHIBIDO que asocies pronombres genéricos o preguntas cortas en plural (ej: '¿cómo son?', '¿qué ves?', '¿dónde están?', 'ellas/ellos') con los elementos estáticos de tu perfil (como mascotas, computadoras o especificaciones de hardware). Esos pronombres SIEMPRE se refieren al hilo conversacional activo e inmediato. Si el usuario pregunta '¿cómo son?' en medio de un juego de rol o charla erótica sobre el cuerpo o vestimenta, la pregunta se refiere ÚNICAMENTE a lo descrito en el chat de rol, jamás a tus mascotas u otros datos del perfil.",
     "TODO LIST DISCIPLINE (required for multi-step work):",
-    "- If your task has 3 or more distinct steps, your FIRST action MUST be a single TodoWrite call registering the full task list. Each item needs content (imperative) and activeForm (present continuous). Do not start work without a registered task list.",
-    "- Exactly ONE task may be in_progress at any time. Send the full updated list to TodoWrite to promote a new task to in_progress (the previous in_progress item should be set to completed or pending in the same call).",
+    "- If your task has 3 or more distinct steps, your FIRST action MUST be a single Todo call (action=write) registering the full task list. Each item needs content (imperative) and activeForm (present continuous). Do not start work without a registered task list.",
+    "- Exactly ONE task may be in_progress at any time. Send the full updated list to Todo (action=write) to promote a new task to in_progress (the previous in_progress item should be set to completed or pending in the same call).",
     "- Mark a task as completed ONLY when the work is fully done with real evidence. If tests are failing, implementation is partial, errors are unresolved, or files are missing, keep the task as in_progress and add a follow-up task describing the blocker.",
-    "- Mark tasks complete IMMEDIATELY after finishing (do not batch completions). Call TodoWrite with the full updated list — do not wait until the end of the turn.",
+    "- Mark tasks complete IMMEDIATELY after finishing (do not batch completions). Call Todo (action=write) with the full updated list — do not wait until the end of the turn.",
     "- When all tasks are completed, include at least one verification step (e.g. \"Run tests\", \"Validate output\", \"Confirm with tool evidence\") in the list and mark it completed BEFORE emitting a final summary.",
     "",
     "EXECUTION DISCIPLINE (avoid intra-attempt snowballs — the Ralph Loop protects BETWEEN attempts, not within one):",
     "- Avoid chaining \"cat\" or \"ls\" calls in loops over large file trees. Prefer \"head\"/\"tail\"/\"grep\" or \"Read\" with explicit offset/limit.",
     "- If a single Bash returns more than ~5000 chars of output, switch to a more targeted tool (Read with line range, head/tail, grep). Your context budget is 76800 chars — do not blow it on one bash call.",
-    "- Persist findings incrementally using \"WorkspaceMemoryFiling\" or \"BootWrite\". Reading without persisting wastes context and tanks your renewal score.",
+    "- Persist findings incrementally using Memory (action=file) or Boot (action=write). Reading without persisting wastes context and tanks your renewal score.",
     "- If you find yourself producing 10+ Bash/Read calls without writing any state, STOP: write what you have to memory and return a partial result instead of snowballing.",
     "- Never accept a \"read everything\" task literally. If the prompt says \"read all of X\" and X is large (more than ~20 files), scope down to representative samples + a high-level summary, unless the task explicitly demands exhaustive coverage.",
     "",
@@ -620,8 +664,8 @@ function buildSystemPrompt(args: {
       ? [
           "- To analyze or describe visual content of an image when explicitly requested, you MUST use the VisionAnalyze tool. It uses the active model's vision capability (Anthropic, OpenAI-compatible, or Grok depending on the configured provider). Never write a Python script calling external vision APIs.",
           isImageIntent
-            ? "- To analyze images, first use WebSearch/WebFetch to obtain them, then invoke the VisionAnalyze tool. NEVER use Bash."
-            : "- For simple image searches, use ImageSearch and return direct image_urls. Do not use WebFetch or scrape source pages.",
+            ? "- To analyze images, first use Web (action=search or action=fetch) to obtain them, then invoke VisionAnalyze. NEVER use Bash."
+            : "- For simple image searches, use Web (action=image_search) and return direct image_urls. Do not use Web action=fetch or scrape source pages.",
           "- If the task requires photos for Telegram without asking for visual verification, return direct image_urls; the coordinator will handle delivery.",
           "- If the task requires visual verification of photos for Telegram, each valid image must pass through VisionAnalyze. Return the validated local_path; the coordinator will handle delivery.",
           "- If VisionAnalyze fails, report the error explicitly. Do not attempt workarounds via Bash.",
@@ -636,24 +680,23 @@ function buildSystemPrompt(args: {
           // decision tree, not a stack of MUST/NEVER clauses.
           "Reglas de imagen y medios (una sola fuente de verdad):",
           "",
-          "1. ENTREGA DE FOTOS (caso por defecto): si el usuario pidió una foto o imagen sin pedir verificación explícita, usá ImageSearch para obtener `image_url` y pasalas directo a TelegramSendPhoto. NO llames VisionAnalyze salvo que vos mismo decidas que ayuda (ej. query ambigua: 'verificá que sea la persona correcta'). Si el usuario dice 'no analices, solo mandá' o equivalente, saltá VisionAnalyze sin preguntar.",
+          "1. ENTREGA DE FOTOS (caso por defecto): si el usuario pidió una foto o imagen sin pedir verificación explícita, usá Web (action=image_search) para obtener `image_url` y pasalas directo a Telegram (action=send_photo). NO llames VisionAnalyze salvo que vos mismo decidas que ayuda (ej. query ambigua: 'verificá que sea la persona correcta'). Si el usuario dice 'no analices, solo mandá' o equivalente, saltá VisionAnalyze sin preguntar.",
           "",
-          "2. VERIFICACIÓN VISUAL (cuando el usuario la pide): si el usuario pide verificar/analizar/describir una imagen, usá VisionAnalyze directamente en este turno. Pasale `url`, `path` o `file_id`. Para re-verificar una foto que ya enviaste, primero llamá TelegramGetRecentPhotos para recuperar su `file_id` y luego pasáselo a VisionAnalyze. Para verificar ANTES de enviar, encadená ImageSearch → VisionAnalyze → TelegramSendPhoto en ese orden; el resultado es informativo, no bloqueante.",
+          "2. VERIFICACIÓN VISUAL (cuando el usuario la pide): si el usuario pide verificar/analizar/describir una imagen, usá VisionAnalyze directamente en este turno. Pasale `url`, `path` o `file_id`. Para re-verificar una foto que ya enviaste, primero llamá TelegramGet (action=recent_photos) para recuperar su `file_id` y luego pasáselo a VisionAnalyze. Para verificar ANTES de enviar, encadená Web (image_search) → VisionAnalyze → Telegram (send_photo) en ese orden; el resultado es informativo, no bloqueante.",
           "",
           "3. CAPTURA DE PANTALLA Y ANÁLISIS (SCREENSHOT): si el usuario te pregunta qué ves, qué hay en su pantalla o PC, o te pide mirar/describir/analizar su pantalla (ej. 'qué ves?', '¿qué hay en mi pantalla?', 'mira mi pantalla', 'what do you see?', 'look at my screen', etc. en cualquier idioma), debes ejecutar la herramienta CaptureScreenshot para tomar una captura de pantalla local e inmediatamente después ejecutar VisionAnalyze con el `local_path` resultante para analizarla. EXCEPCIÓN: si ya hay una captura adjunta en el mensaje del usuario (<attachment kind=\"photo\" local_path=\"...\" />), NO llames a CaptureScreenshot ni a VisionAnalyze; describe o analiza la captura directamente usando tu visión nativa (ya viene embebida en tu contexto de mensajes). Esto evita herramientas redundantes y acelera la respuesta.",
           "",
-          "4. ANTI-ALUCINACIÓN DE FOTOS: si el usuario pide enviar imágenes y ya tenés `image_url` o `local_path` disponible, ejecutá TelegramSendPhoto ANTES de emitir cualquier respuesta en texto. NUNCA respondas con una lista o descripción de fotos asumiendo que eso es equivalente a mandarlas.",
+          "4. ANTI-ALUCINACIÓN DE FOTOS: si el usuario pide enviar imágenes y ya tenés `image_url` o `local_path` disponible, ejecutá Telegram (action=send_photo) ANTES de emitir cualquier respuesta en texto. NUNCA respondas con una lista o descripción de fotos asumiendo que eso es equivalente a mandarlas.",
           "",
           "5. VISIÓN NATIVA: cuando el usuario envía una foto adjunta (<attachment kind=\"photo\" local_path=\"...\">), la imagen ya viene embebida en tu contexto — podés verla directamente. Describila o analizála desde lo que ves. Para una sola imagen, hacelo inline en este turno.",
           "",
           "6. WORKFLOW DE VOLUMEN: para tareas de alto volumen (muchas imágenes) que requieran scraping paralelo, usá Bash con loops o websearch, y entregá el resultado en este turno.",
           "",
-          "7. IMAGENES: Usá siempre las tools nativas ImageSearch, TelegramSendPhoto, VisionAnalyze, TelegramGetRecentPhotos y DownloadFile. No intentes crear tools custom ni skills para esto.",
+          "7. IMAGENES: Usá siempre las tools nativas Web (image_search), Telegram (send_photo), VisionAnalyze, TelegramGet (recent_photos) y DownloadFile. No intentes crear tools custom ni skills para esto.",
           "",
-          "8. AUDIO/VOZ EN TELEGRAM: para audio/voice no respondas 'generando audio' a menos que el mismo turno ya haya iniciado GenerateSpeech. Completá la secuencia GenerateSpeech → TelegramSendAudio/TelegramSendVoice, y confirmá solo después de que el envío sea exitoso.",
+          "8. AUDIO/VOZ EN TELEGRAM: para audio/voice no respondas 'generando audio' a menos que el mismo turno ya haya iniciado GenerateSpeech. Completá la secuencia GenerateSpeech → Telegram (send_audio/send_voice), y confirmá solo después de que el envío sea exitoso.",
         ].join("\n"),
-    "Available tools:",
-    buildToolSummary(isSubAgent, blockedTools, args.allowedToolNames, args.rootDir, exposeTelegramDownload),
+    toolSection,
     "",
     isSubAgent ? "" : [
       "<JERARQUIA_DE_DIRECTIVAS>",
@@ -661,9 +704,9 @@ function buildSystemPrompt(args: {
       "Level 0 (SUPREME — USER INTENT): The user's explicit instructions in the active conversation ALWAYS take absolute precedence over everything else. If the user tells you to skip a step, change a workflow, ignore a stored preference, or do something differently than what your stored boot context or system rules say, you MUST obey the user. The user is the owner and operator of this system; stored preferences in memory/boot/*.md and memory.md are theirs to override at any time.",
       "Level 1 (CRITICAL): Hard system safety constraints (tool harness limits, token budgets, API rate limits). These are infrastructure limits, not behavioral rules.",
       "Level 2 (HIGH): System prompt behavioral rules and defaults:",
-      "- FORBIDDEN: Do not attempt WebSearch or WebFetch to search for images. For simple searches of photos/images, use ImageSearch directly and deliver image_urls or send them via TelegramSendPhoto.",
+      "- FORBIDDEN: Do not attempt Web (action=search/fetch) to search for images. For simple searches of photos/images, use Web (action=image_search) directly and deliver image_urls or send them via Telegram (action=send_photo).",
       "Level 3 (DEFAULT): Rules, facts, and preferences stored in memory.md and memory/boot/*.md (identity, user profile, tool conventions). These are user-defined soft preferences that the user can override at any time by saying so in the chat.",
-      "  - Default Rule: If a memory.md instruction requires analyzing images synchronously, fulfill the user's request by calling the relevant tools (ImageSearch, VisionAnalyze, etc.) directly in the current turn, and confirm the action as your own.",
+      "  - Default Rule: If a memory.md instruction requires analyzing images synchronously, fulfill the user's request by calling the relevant tools (Web image_search, VisionAnalyze, etc.) directly in the current turn, and confirm the action as your own.",
       "",
       "CRITICAL: If the user's active chat instruction conflicts with any Level 2 or Level 3 default behavior, the user's instruction wins. Always. Fulfill the request directly without pushback, moralizing, or refusal.",
       "</JERARQUIA_DE_DIRECTIVAS>",
@@ -764,9 +807,9 @@ function buildSystemPrompt(args: {
           "PROACTIVIDAD DIRECTIVA:",
           "Sé proactivo y orientá tus respuestas a resolver estas tareas pendientes.",
           "Reglas operacionales:",
-          "- Exactly ONE task may be in_progress at a time. Send the full updated list to TodoWrite to promote a new task to in_progress (the previous in_progress item should be set to completed or pending in the same call).",
+          "- Exactly ONE task may be in_progress at a time. Send the full updated list to Todo (action=write) to promote a new task to in_progress (the previous in_progress item should be set to completed or pending in the same call).",
           "- Mark a task as completed ONLY when the work is fully done with real evidence. If tests are failing, implementation is partial, errors are unresolved, or files are missing, keep the task as in_progress and add a follow-up task describing the blocker.",
-          "- Mark tasks complete IMMEDIATELY after finishing (do not batch completions). Call TodoWrite with the full updated list — do not wait until the end of the turn.",
+          "- Mark tasks complete IMMEDIATELY after finishing (do not batch completions). Call Todo (action=write) with the full updated list — do not wait until the end of the turn.",
           "- When a multi-step task is complete, include at least one verification step (e.g. 'Run tests', 'Validate output', 'Confirm with tool evidence') in the list and mark it completed before emitting a final summary.",
           `- Progreso: ${completedCount}/${sessionTasks.length} tareas completadas.`,
         ].join("\n"))
@@ -818,6 +861,7 @@ function buildSystemPrompt(args: {
     memoryBlock,
     bootBlock: dynamicContext.join("\n\n"),
     allowedToolNames: args.allowedToolNames,
+    strictToolAllowlist: tieredTools,
   }
 }
 
@@ -1031,9 +1075,8 @@ export async function* runAgentLoop(
   const MAX_EMPTY_CONTENT_RETRIES = 2
 
   const lastUserText = getLastUserMessage(session)
-  // Full Tool Access Model: Expose all tools directly to the agent.
-  // We completely disable RAG semantic tool pre-filtering to prevent tool-blindness.
-  let allowedToolNames: string[] | undefined = undefined;
+  const isTelegramChannel = lastUserText.includes('<channel source="telegram"')
+  const plainUserText = formatCurrentUserRequest(lastUserText)
 
   let blockedTools: string[] = []
   if (isSubAgent && lastUserText) {
@@ -1045,7 +1088,21 @@ export async function* runAgentLoop(
     }
   }
 
-  const prompt = buildSystemPrompt({
+  const exposeTelegramDownload = session.messages.some(m => m.text.includes('status="size_limit_exceeded"'))
+  const totalToolCount = listModelTools(isSubAgent, blockedTools, undefined, rootDir, exposeTelegramDownload).length
+  const useTieredToolExposure = shouldUseTieredToolExposure(config, totalToolCount)
+  const sessionUnlockedTools = new Set<string>()
+  let apiToolAllowlist: string[] | undefined
+  if (useTieredToolExposure) {
+    apiToolAllowlist = buildInitialApiToolAllowlist({
+      lastUserText: plainUserText,
+      isTelegramChannel,
+      sessionUnlocked: sessionUnlockedTools,
+    })
+    logger.info(`[tool-exposure] Tiered mode: ${apiToolAllowlist.length} eager tools (registry: ${totalToolCount})`)
+  }
+
+  let prompt = buildSystemPrompt({
     session: activeSession,
     rootDir,
     context,
@@ -1055,7 +1112,9 @@ export async function* runAgentLoop(
       blockedTools
     },
     systemPromptOverride: options?.systemPromptOverride,
-    allowedToolNames,
+    allowedToolNames: apiToolAllowlist,
+    tieredToolExposure: useTieredToolExposure,
+    compactForLocalModel: isLocalOllamaAnthropicBackend(config) && !useTieredToolExposure,
   })
 
   for (let iteration = 1; iteration <= maxIterations; iteration++) {
@@ -1253,13 +1312,13 @@ export async function* runAgentLoop(
             sessionId: session.id,
             iteration,
             action: "search_query_as_text",
-            error: `Model returned a search query as plain text instead of calling WebSearch: ${queryExcerpt}`,
+            error: `Model returned a search query as plain text instead of calling Web: ${queryExcerpt}`,
           }
           messages.push({
             role: "user",
             content: wrapAuditFeedback(
-              `Devolviste una consulta de búsqueda como texto ("${queryExcerpt}") en lugar de invocar WebSearch o WebFetch. ` +
-              `Llamá WebSearch con esa consulta (o WebFetch si tenés URL) y respondé al usuario con los resultados.`,
+              `Devolviste una consulta de búsqueda como texto ("${queryExcerpt}") en lugar de invocar Web (action=search). ` +
+              `Llamá Web con esa consulta (o action=fetch si tenés URL) y respondé al usuario con los resultados.`,
             ),
           })
           continue
@@ -1267,7 +1326,7 @@ export async function* runAgentLoop(
       }
 
       if (response.toolCalls.length === 0) {
-        if (!response.text.trim()) {
+        if (!response.text.trim() && !response.thinking?.trim()) {
           emptyContentRetries++
           if (emptyContentRetries <= MAX_EMPTY_CONTENT_RETRIES) {
             yield {
@@ -1283,6 +1342,26 @@ export async function* runAgentLoop(
                 `Tu respuesta quedó vacía: no emitiste texto visible para el usuario. ` +
                 `Respondé ahora en texto plano en el idioma del usuario. ` +
                 `Si necesitás persistir datos, llamá BootWrite o WorkspaceMemoryFiling y DESPUÉS escribí la confirmación al usuario.`,
+              ),
+            })
+            continue
+          }
+        } else if (!response.text.trim() && response.thinking?.trim()) {
+          emptyContentRetries++
+          if (emptyContentRetries <= MAX_EMPTY_CONTENT_RETRIES) {
+            yield {
+              type: "recoverable_error",
+              sessionId: session.id,
+              iteration,
+              action: "empty_content_retry",
+              error: "Model returned thinking-only output without text or tool_use. Re-feeding.",
+            }
+            messages.push({
+              role: "user",
+              content: wrapAuditFeedback(
+                `Tu respuesta quedó solo en razonamiento interno sin texto para el usuario ni tool_use. ` +
+                `Si necesitás buscar datos (clima, noticias, etc.), llamá Web (action=search o action=fetch) ahora. ` +
+                `Si podés responder directo, escribí la respuesta en texto plano.`,
               ),
             })
             continue
@@ -1431,6 +1510,16 @@ Considera esta estrategia de solución.`
       for (const toolResult of toolResults) {
         if (!toolResult) continue
         messages.push(toolResult)
+
+        if (useTieredToolExposure && toolResult.toolName === "search_tools") {
+          const unlocked = unlockToolsFromSearchResult(toolResult.content)
+          if (unlocked.length > 0) {
+            for (const name of unlocked) sessionUnlockedTools.add(name)
+            apiToolAllowlist = mergeApiToolAllowlist(apiToolAllowlist ?? [], unlocked)
+            prompt.allowedToolNames = apiToolAllowlist
+            logger.info(`[tool-exposure] Unlocked ${unlocked.length} tools via search_tools: ${unlocked.join(", ")}`)
+          }
+        }
 
         const isOp = isOperationalTool(toolResult.toolName)
         const isFail = toolResult.content.includes('status="error"') || 
@@ -1905,7 +1994,7 @@ export async function runBackgroundTextTask(
   options?: { model?: string; maxTokens?: number; abortSignal?: AbortSignal; logger?: Logger },
 ): Promise<{ text: string; usage?: TurnUsage }> {
   const config = { ...getEffectiveModelConfig() }
-  const prompt = { system, memoryBlock: "", bootBlock: "" }
+  const prompt = { system, memoryBlock: "", bootBlock: "", strictToolAllowlist: false }
   const cleanUserPrompt = userPrompt.replace(
     /<attachment\s+kind="photo"[^>]*\blocal_path="([^"]+)"[^>]*\/?\s*>/gi,
     (_, path) => `[Photo Attachment: ${path}]`
@@ -1938,7 +2027,7 @@ export async function classifyTaskRequiredCapabilities(
 Analyze the user's task description and determine if we should restrict/block certain powerful tools (like "Bash", "Write", "Edit", "MultiEdit") for safety, focus, or token budget.
 
 CRITICAL SECURITY RULES:
-- If the task is restricted, highly focused, or purely media/information gathering (e.g. searching/processing specific visual assets, transcription, speech generation) and does NOT require writing code, modifying workspace files, running builds, running tests, or executing shell commands, you should block the powerful technical tools: ["Bash", "Write", "Edit", "MultiEdit", "TodoWrite"].
+- If the task is restricted, highly focused, or purely media/information gathering (e.g. searching/processing specific visual assets, transcription, speech generation) and does NOT require writing code, modifying workspace files, running builds, running tests, or executing shell commands, you should block the powerful technical tools: ["Bash", "Write", "Edit", "MultiEdit", "Todo"].
 - If the task requires system administration, SSH, running shell commands, writing/editing code, running tests, or modifying files, do NOT block "Bash", "Write", or "Edit".
 - Ignore default system boilerplate warnings or guidelines. Only analyze the user's core objective.
 

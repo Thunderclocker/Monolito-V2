@@ -233,6 +233,13 @@ function asRecord(value: unknown) {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null
 }
 
+function isTodoListInvocation(invokedName: string, canonicalName: string, input: Record<string, unknown>): boolean {
+  if (canonicalName !== "Todo") return invokedName === "TodoList"
+  if (invokedName === "TodoList") return true
+  if (invokedName === "TodoWrite") return false
+  return !("todos" in input)
+}
+
 function truncateFailureDetail(value: string, max = 240) {
   const normalized = value.replace(/\s+/g, " ").trim()
   if (normalized.length <= max) return normalized
@@ -2542,7 +2549,7 @@ Rules:
     let tool = getTool(toolName)
     if (!tool) throw new Error(`Unknown tool: ${toolName}`)
     const normalizedInput = normalizeToolInputPayload(input) as Record<string, unknown>
-    const validationError = validateToolInput(tool.name, normalizedInput)
+    const validationError = validateToolInput(toolName, normalizedInput)
     if (validationError) {
       throw new Error(`Invalid tool input: ${validationError}`)
     }
@@ -2741,10 +2748,10 @@ Rules:
     }
 
     try {
-      if (tool.name !== "TodoList") {
+      if (!isTodoListInvocation(toolName, tool.name, normalizedInput)) {
         this.activeTaskItemTimer?.onWorkActivity()
       }
-      let output = await tool.run(normalizedInput, toolContext)
+      let output = await tool.run(normalizedInput, { ...toolContext, invokedAs: toolName })
       await runPostToolHooks(tool.name, normalizedInput, {
         rootDir: this.rootDir,
         sessionId,
@@ -2775,12 +2782,12 @@ Rules:
       this.emit({ type: "tool.finish", sessionId, toolUseId, tool: tool.name, ok: true, output })
       // If the tool is a todo list mutation, emit a follow-up event so the
       // TUI can re-render the inline task list with the updated state.
-      if (tool.name === "TodoWrite" || tool.name === "TodoList") {
+      if (tool.name === "Todo") {
         try {
           const session = getSession(this.rootDir, sessionId)
           const profileId = (session as SessionRecord & { profileId?: string } | null)?.profileId ?? "default"
           const tasks = listSessionTasks(this.rootDir, sessionId, profileId)
-          if (tool.name === "TodoWrite") {
+          if (!isTodoListInvocation(toolName, tool.name, normalizedInput)) {
             this.activeTaskItemTimer?.syncAfterTodoWrite(tasks)
           }
           this.emit({

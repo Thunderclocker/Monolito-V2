@@ -34,6 +34,7 @@ export type PromptBlocks = {
   memoryBlock: string
   bootBlock: string
   allowedToolNames?: string[]
+  strictToolAllowlist?: boolean
 }
 
 

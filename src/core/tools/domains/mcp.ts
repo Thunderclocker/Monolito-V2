@@ -21,9 +21,9 @@ import {
   getSharedLspClient,
 } from "../../lsp/client.ts"
 
-import type { ToolDefinition } from "../registry.ts"
+import type { ToolDefinition, ToolContext } from "../internal.ts"
 
-export const mcpTools: ToolDefinition[] = [
+const legacyMcpTools: ToolDefinition[] = [
 {
   name: "ListMcpResourcesTool",
   aliases: ["mcp_list_resources"],
@@ -77,68 +77,6 @@ export const mcpTools: ToolDefinition[] = [
       server,
       uri,
       resource: await client.readResource(uri),
-    }
-  },
-},
-
-{
-  name: "LspQuery",
-  permissionTier: "read",
-  isReadOnly: true,
-  isSearchOrReadCommand: true,
-  description: "Query TypeScript semantic information through the workspace LSP server.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      action: { type: "string", enum: ["definition", "references", "hover"] },
-      file: { type: "string" },
-      line: { type: "number" },
-      character: { type: "number" },
-    },
-    required: ["action", "file", "line", "character"],
-    additionalProperties: false,
-  },
-  concurrencySafe: true,
-  validate: input => {
-    if (typeof input.action !== "string" || !["definition", "references", "hover"].includes(input.action)) {
-      return "action must be one of: definition, references, hover"
-    }
-    if (typeof input.file !== "string" || input.file.length === 0) return "file must be a non-empty string"
-    if (typeof input.line !== "number" || !Number.isInteger(input.line) || input.line < 0) return "line must be a non-negative integer"
-    if (typeof input.character !== "number" || !Number.isInteger(input.character) || input.character < 0) {
-      return "character must be a non-negative integer"
-    }
-    return null
-  },
-  async run(input, context) {
-    const action = requireString(input, "action") as "definition" | "references" | "hover"
-    const file = requireString(input, "file")
-    const line = input.line as number
-    const character = input.character as number
-    const absoluteFile = await resolveWorkspacePath(context.rootDir, context.rootDir, file, context, "LspNavigation")
-    const relativeFile = toWorkspaceRelative(context.rootDir, absoluteFile)
-    const fileUri = pathToFileURL(absoluteFile).href
-    const client = await getSharedLspClient(context.rootDir)
-
-    let result: unknown
-    switch (action) {
-      case "definition":
-        result = await client.getDefinition(relativeFile, line, character)
-        break
-      case "references":
-        result = await client.getReferences(relativeFile, line, character)
-        break
-      case "hover":
-        result = await client.getHover(relativeFile, line, character)
-        break
-    }
-
-    return {
-      action,
-      file: relativeFile,
-      uri: fileUri,
-      position: { line, character },
-      result,
     }
   },
 },
@@ -205,4 +143,126 @@ export const mcpTools: ToolDefinition[] = [
   },
 },
 
+]
+
+function runLegacyMcpTool(legacyName: string, input: Record<string, unknown>, context: ToolContext) {
+  const tool = legacyMcpTools.find(t => t.name === legacyName)
+  if (!tool?.run) return formatToolError(`Internal MCP handler missing: ${legacyName}`)
+  return tool.run(input, context)
+}
+
+function resolveMcpAction(invoked: string, input: Record<string, unknown>): string {
+  const aliasMap: Record<string, string> = {
+    ListMcpResourcesTool: "list_resources",
+    mcp_list_resources: "list_resources",
+    ReadMcpResourceTool: "read_resource",
+    mcp_read_resource: "read_resource",
+    McpInvokeTool: "invoke",
+    mcp_invoke: "invoke",
+  }
+  if (aliasMap[invoked]) return aliasMap[invoked]
+  const explicit = optionalString(input, "action")
+  if (explicit === "list_resources" || explicit === "read_resource" || explicit === "invoke") return explicit
+  if (typeof input.uri === "string") return "read_resource"
+  if (typeof input.tool === "string") return "invoke"
+  return "list_resources"
+}
+
+const MCP_ACTION_LEGACY: Record<string, string> = {
+  list_resources: "ListMcpResourcesTool",
+  read_resource: "ReadMcpResourceTool",
+  invoke: "McpInvokeTool",
+}
+
+const lspQueryTool: ToolDefinition = {
+  name: "LspQuery",
+  permissionTier: "read",
+  isReadOnly: true,
+  isSearchOrReadCommand: true,
+  description: "Query TypeScript semantic information through the workspace LSP server.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["definition", "references", "hover"] },
+      file: { type: "string" },
+      line: { type: "number" },
+      character: { type: "number" },
+    },
+    required: ["action", "file", "line", "character"],
+    additionalProperties: false,
+  },
+  concurrencySafe: true,
+  validate: input => {
+    if (typeof input.action !== "string" || !["definition", "references", "hover"].includes(input.action)) {
+      return "action must be one of: definition, references, hover"
+    }
+    if (typeof input.file !== "string" || input.file.length === 0) return "file must be a non-empty string"
+    if (typeof input.line !== "number" || !Number.isInteger(input.line) || input.line < 0) return "line must be a non-negative integer"
+    if (typeof input.character !== "number" || !Number.isInteger(input.character) || input.character < 0) {
+      return "character must be a non-negative integer"
+    }
+    return null
+  },
+  async run(input, context) {
+    const action = requireString(input, "action") as "definition" | "references" | "hover"
+    const file = requireString(input, "file")
+    const line = input.line as number
+    const character = input.character as number
+    const absoluteFile = await resolveWorkspacePath(context.rootDir, context.rootDir, file, context, "LspNavigation")
+    const relativeFile = toWorkspaceRelative(context.rootDir, absoluteFile)
+    const fileUri = pathToFileURL(absoluteFile).href
+    const client = await getSharedLspClient(context.rootDir)
+
+    let result: unknown
+    switch (action) {
+      case "definition":
+        result = await client.getDefinition(relativeFile, line, character)
+        break
+      case "references":
+        result = await client.getReferences(relativeFile, line, character)
+        break
+      case "hover":
+        result = await client.getHover(relativeFile, line, character)
+        break
+    }
+
+    return {
+      action,
+      file: relativeFile,
+      uri: fileUri,
+      position: { line, character },
+      result,
+    }
+  },
+}
+
+export const mcpTools: ToolDefinition[] = [
+{
+  name: "Mcp",
+  aliases: ["ListMcpResourcesTool", "mcp_list_resources", "ReadMcpResourceTool", "mcp_read_resource", "McpInvokeTool", "mcp_invoke"],
+  permissionTier: "edit",
+  isMcp: true,
+  isOpenWorld: true,
+  description: "MCP server access. action=list_resources|read_resource|invoke.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["list_resources", "read_resource", "invoke"] },
+      server: { type: "string" },
+      uri: { type: "string" },
+      tool: { type: "string" },
+      arguments: { type: "object" },
+    },
+    additionalProperties: false,
+  },
+  concurrencySafe: true,
+  async run(input, context) {
+    const invoked = context.invokedAs ?? "Mcp"
+    const action = resolveMcpAction(invoked, input as Record<string, unknown>)
+    const legacyName = MCP_ACTION_LEGACY[action]
+    if (!legacyName) return formatToolError(`Unknown MCP action: ${action}`)
+    return runLegacyMcpTool(legacyName, input as Record<string, unknown>, context)
+  },
+},
+  lspQueryTool,
 ]

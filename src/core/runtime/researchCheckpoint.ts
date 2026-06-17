@@ -7,7 +7,7 @@ import {
   type ResearchCheckpointFile,
 } from "../session/store.ts"
 
-export const RESEARCH_CHECKPOINT_TOOLS = new Set(["WebSearch", "WebFetch", "ImageSearch"])
+export const RESEARCH_CHECKPOINT_TOOLS = new Set(["Web", "WebSearch", "WebFetch", "ImageSearch"])
 export const CHECKPOINT_TTL_MS = 24 * 60 * 60 * 1000
 export const CHECKPOINT_SILENT_WINDOW_MS = 5 * 60 * 1000
 export const CHECKPOINT_EVIDENCE_BUDGET_CHARS = 12_000
@@ -58,15 +58,19 @@ function buildEvidenceIndexFromSteps(steps: AssistantTurnStep[]): ResearchCheckp
   for (const step of steps) {
     if (step.type !== "tool" || !RESEARCH_CHECKPOINT_TOOLS.has(step.tool)) continue
     const input = step.input ?? {}
-    if (step.tool === "WebSearch") {
+    const tool = step.tool
+    const webAction = tool === "Web"
+      ? (typeof input.action === "string" ? input.action : typeof input.url === "string" ? "fetch" : typeof input.query === "string" ? "search" : "")
+      : ""
+    if (tool === "WebSearch" || webAction === "search") {
       const query = typeof input.query === "string" ? input.query : "(query)"
-      index.push({ tool: step.tool, summary: `WebSearch: ${query}` })
-    } else if (step.tool === "WebFetch") {
+      index.push({ tool, summary: `WebSearch: ${query}` })
+    } else if (tool === "WebFetch" || webAction === "fetch") {
       const url = typeof input.url === "string" ? input.url : "(url)"
-      index.push({ tool: step.tool, summary: `WebFetch: ${url}`, url })
-    } else if (step.tool === "ImageSearch") {
+      index.push({ tool, summary: `WebFetch: ${url}`, url })
+    } else if (tool === "ImageSearch" || webAction === "image_search") {
       const query = typeof input.query === "string" ? input.query : "(query)"
-      index.push({ tool: step.tool, summary: `ImageSearch: ${query}` })
+      index.push({ tool, summary: `ImageSearch: ${query}` })
     }
   }
   return index

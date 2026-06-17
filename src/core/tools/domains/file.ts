@@ -36,38 +36,6 @@ import type { ToolDefinition } from "../registry.ts"
 
 export const fileTools: ToolDefinition[] = [
 {
-  name: "pwd",
-  permissionTier: "read",
-  description: "Return the current workspace directory.",
-  inputSchema: emptyInputSchema,
-  concurrencySafe: true,
-  async run(_input, context) {
-    return { cwd: context.cwd }
-  },
-},
-
-{
-  name: "list_files",
-  permissionTier: "read",
-  description: "List files in a workspace-relative directory.",
-  inputSchema: optionalPathInputSchema,
-  concurrencySafe: true,
-  async run(input, context) {
-    const target = normalizePathInput(input)
-    const directory = await resolveWorkspacePath(context.rootDir, context.cwd, target, context, "list_files")
-    return readdirSync(directory).map(name => {
-      const absolute = join(directory, name)
-      const stats = statSync(absolute)
-      return {
-        name,
-        path: toWorkspaceRelative(context.rootDir, absolute),
-        type: stats.isDirectory() ? "dir" : "file",
-      }
-    })
-  },
-},
-
-{
   name: "Read",
   aliases: ["read_file"],
   permissionTier: "read",

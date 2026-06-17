@@ -82,7 +82,7 @@ export function findUndeliveredToolOutputs(
   for (const m of messages) {
     if (m.role !== "assistant" || !m.toolCalls) continue
     for (const tc of m.toolCalls) {
-      if (!tc.name.startsWith("TelegramSend")) continue
+      if (tc.name !== "Telegram" && !tc.name.startsWith("TelegramSend")) continue
       // parseStructuredToolCalls expects the OpenAI-shaped item with
       // `id` + `function: { name, arguments: string }` (arguments as a
       // serialized JSON string). Adapt the in-memory toolCall into that

@@ -14,7 +14,6 @@ Domain groups (in order of file naming):
 - mcp        : ListMcpResourcesTool, ReadMcpResourceTool, LspQuery
 - web        : WebFetch, WebSearch, ImageSearch
 - file       : pwd, list_files, Read, Write, Edit, Glob, Grep
-- git        : GitStatus, GitDiff, GitDiffCached, GitAdd, GitCommit
 - telegram   : TelegramSend, TelegramSendAudio, TelegramSendVoice, TelegramSendPhoto,
                TelegramSendDocument, TelegramGetFile, DownloadFile, TelegramDownloadFile
 - media      : TtsService*, SttService*, TranscribeAudio, GenerateSpeech,
@@ -54,11 +53,6 @@ TOOL_DOMAIN = {
     "Edit": "file",
     "Glob": "file",
     "Grep": "file",
-    "GitStatus": "git",
-    "GitDiff": "git",
-    "GitDiffCached": "git",
-    "GitAdd": "git",
-    "GitCommit": "git",
     "TelegramSend": "telegram",
     "TelegramSendAudio": "telegram",
     "TelegramSendVoice": "telegram",

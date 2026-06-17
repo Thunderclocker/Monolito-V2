@@ -85,84 +85,63 @@ let lastSuccessfulScreenshotCmd: string | null = null;
 
 export const mediaTools: ToolDefinition[] = [
 {
-  name: "SttServiceStatus",
-  aliases: ["stt_service_status"],
-  permissionTier: "read",
-  description: "Show the status of the managed local speech-to-text service container.",
-  inputSchema: emptyInputSchema,
-  concurrencySafe: true,
-  async run() {
-    const config = readChannelsConfig()
-    const stt = normalizeSttConfig(config.stt)
-    const status = await getManagedSttStatus(stt)
-    return {
-      managed: stt.managed,
-      auto_deploy: stt.autoDeploy,
-      auto_transcribe: stt.autoTranscribe,
-      status,
-      base_url: getManagedSttBaseUrl(stt),
-      container_name: stt.containerName,
-      image: stt.image,
-      port: stt.port,
-      engine: stt.engine,
-      model: stt.model,
+  name: "SttService",
+  aliases: ["SttServiceStatus", "SttServiceDeploy", "SttServiceStop", "SttServiceRemove", "SttServiceList", "stt_service_status", "stt_service_deploy", "stt_service_stop", "stt_service_remove", "stt_service_list"],
+  permissionTier: "edit",
+  description: "Managed local speech-to-text Docker service. action=status|deploy|stop|remove|list.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["status", "deploy", "stop", "remove", "list"] },
+    },
+    additionalProperties: false,
+  },
+  concurrencySafe: (input) => {
+    const action = typeof input.action === "string" ? input.action : "status"
+    return action === "status" || action === "list"
+  },
+  async run(input, context) {
+    const invoked = context.invokedAs ?? "SttService"
+    const actionMap: Record<string, string> = {
+      SttServiceStatus: "status",
+      stt_service_status: "status",
+      SttServiceDeploy: "deploy",
+      stt_service_deploy: "deploy",
+      SttServiceStop: "stop",
+      stt_service_stop: "stop",
+      SttServiceRemove: "remove",
+      stt_service_remove: "remove",
+      SttServiceList: "list",
+      stt_service_list: "list",
     }
-  },
-},
-
-{
-  name: "SttServiceDeploy",
-  aliases: ["stt_service_deploy"],
-  permissionTier: "edit",
-  description: "Deploy or restart the managed local speech-to-text service container using Docker. Cleans conflicting legacy Whisper containers first.",
-  inputSchema: emptyInputSchema,
-  concurrencySafe: false,
-  async run() {
+    const action = optionalString(input, "action") ?? actionMap[invoked] ?? "status"
     const config = readChannelsConfig()
     const stt = normalizeSttConfig(config.stt)
-    return await deployManagedSttContainer(stt)
-  },
-},
-
-{
-  name: "SttServiceStop",
-  aliases: ["stt_service_stop"],
-  permissionTier: "edit",
-  description: "Stop the managed local speech-to-text service container without deleting it.",
-  inputSchema: emptyInputSchema,
-  concurrencySafe: false,
-  async run() {
-    const config = readChannelsConfig()
-    const stt = normalizeSttConfig(config.stt)
-    return await stopManagedSttContainer(stt)
-  },
-},
-
-{
-  name: "SttServiceRemove",
-  aliases: ["stt_service_remove"],
-  permissionTier: "edit",
-  description: "Remove the managed local speech-to-text service container and conflicting legacy Whisper containers when found.",
-  inputSchema: emptyInputSchema,
-  concurrencySafe: false,
-  async run() {
-    const config = readChannelsConfig()
-    const stt = normalizeSttConfig(config.stt)
-    return await removeManagedSttContainer(stt)
-  },
-},
-
-{
-  name: "SttServiceList",
-  aliases: ["stt_service_list"],
-  permissionTier: "read",
-  description: "List detected local speech-to-text service containers related to the managed image or container name, including legacy Whisper containers.",
-  inputSchema: emptyInputSchema,
-  concurrencySafe: true,
-  async run() {
-    const config = readChannelsConfig()
-    const stt = normalizeSttConfig(config.stt)
-    return { message: await listManagedSttContainers(stt) }
+    switch (action) {
+      case "deploy":
+        return await deployManagedSttContainer(stt)
+      case "stop":
+        return await stopManagedSttContainer(stt)
+      case "remove":
+        return await removeManagedSttContainer(stt)
+      case "list":
+        return { message: await listManagedSttContainers(stt) }
+      default: {
+        const status = await getManagedSttStatus(stt)
+        return {
+          managed: stt.managed,
+          auto_deploy: stt.autoDeploy,
+          auto_transcribe: stt.autoTranscribe,
+          status,
+          base_url: getManagedSttBaseUrl(stt),
+          container_name: stt.containerName,
+          image: stt.image,
+          port: stt.port,
+          engine: stt.engine,
+          model: stt.model,
+        }
+      }
+    }
   },
 },
 

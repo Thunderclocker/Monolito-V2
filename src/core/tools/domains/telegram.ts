@@ -42,7 +42,7 @@ import {
   listTelegramSentPhotos,
 } from "../../session/store.ts"
 
-import type { ToolDefinition } from "../registry.ts"
+import type { ToolDefinition, ToolContext } from "../internal.ts"
 
 interface TelegramPhotoResult {
   ok: boolean
@@ -151,7 +151,7 @@ async function sendTelegramChatMessage(
   return { ok: false, error: `Telegram API error: ${lastError}` }
 }
 
-export const telegramTools: ToolDefinition[] = [
+const legacyTelegramSendTools: ToolDefinition[] = [
 {
   name: "TelegramSend",
   aliases: ["telegram_send"],
@@ -441,6 +441,48 @@ export const telegramTools: ToolDefinition[] = [
 },
 
 {
+  name: "TelegramSendDocument",
+  permissionTier: "edit",
+  description: "Send a document to a Telegram chat. Accepts a Telegram file_id, an HTTP URL, or a local file path.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      chat_id: { type: "number", description: "The Telegram chat ID to send the document to." },
+      document: { type: "string", description: "Telegram file_id, HTTP URL, or local file path." },
+      caption: { type: "string", description: "Optional caption for the document." },
+    },
+    required: ["chat_id", "document"],
+    additionalProperties: false,
+  },
+  concurrencySafe: true,
+  sideEffect: true,
+  validate: input => {
+    if (typeof input.chat_id !== "number") return "chat_id must be a number"
+    if (typeof input.document !== "string" || input.document.length === 0) return "document must be a non-empty string"
+    return null
+  },
+  async run(input) {
+    const chatId = input.chat_id as number
+    const document = requireString(input, "document")
+    const caption = optionalString(input, "caption")
+    const config = readChannelsConfig()
+    if (!config.telegram?.enabled || !config.telegram.token) {
+      return formatToolError("Telegram is not configured or not enabled. Use /channels to set it up.")
+    }
+    const params: Record<string, unknown> = { chat_id: chatId, document }
+    if (caption) params.caption = caption
+    const data = isLocalPath(document)
+      ? await telegramApiCallWithFile(config.telegram.token, "sendDocument", "document", document, params)
+      : await telegramApiCall(config.telegram.token, "sendDocument", params)
+    if (!data.ok) return formatToolError(`Telegram API error: ${data.description ?? "sendDocument failed"}`)
+    return { ok: true, chat_id: chatId, message: data.result }
+  },
+},
+
+]
+
+const legacyTelegramGetTools: ToolDefinition[] = [
+{
   name: "TelegramGetRecentPhotos",
   permissionTier: "read",
   description: "Lista las últimas fotos enviadas a un chat de Telegram, devolviendo `file_id`, `message_id`, `local_path` y `caption` por cada una. Usala cuando el usuario pida verificar o revisar una foto enviada previamente (ej. 'verifica la última foto que te mandé'). Para analizar visualmente la foto, pasá el `file_id` o `local_path` a `VisionAnalyze`.",
@@ -483,45 +525,6 @@ export const telegramTools: ToolDefinition[] = [
 },
 
 {
-  name: "TelegramSendDocument",
-  permissionTier: "edit",
-  description: "Send a document to a Telegram chat. Accepts a Telegram file_id, an HTTP URL, or a local file path.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      chat_id: { type: "number", description: "The Telegram chat ID to send the document to." },
-      document: { type: "string", description: "Telegram file_id, HTTP URL, or local file path." },
-      caption: { type: "string", description: "Optional caption for the document." },
-    },
-    required: ["chat_id", "document"],
-    additionalProperties: false,
-  },
-  concurrencySafe: true,
-  sideEffect: true,
-  validate: input => {
-    if (typeof input.chat_id !== "number") return "chat_id must be a number"
-    if (typeof input.document !== "string" || input.document.length === 0) return "document must be a non-empty string"
-    return null
-  },
-  async run(input) {
-    const chatId = input.chat_id as number
-    const document = requireString(input, "document")
-    const caption = optionalString(input, "caption")
-    const config = readChannelsConfig()
-    if (!config.telegram?.enabled || !config.telegram.token) {
-      return formatToolError("Telegram is not configured or not enabled. Use /channels to set it up.")
-    }
-    const params: Record<string, unknown> = { chat_id: chatId, document }
-    if (caption) params.caption = caption
-    const data = isLocalPath(document)
-      ? await telegramApiCallWithFile(config.telegram.token, "sendDocument", "document", document, params)
-      : await telegramApiCall(config.telegram.token, "sendDocument", params)
-    if (!data.ok) return formatToolError(`Telegram API error: ${data.description ?? "sendDocument failed"}`)
-    return { ok: true, chat_id: chatId, message: data.result }
-  },
-},
-
-{
   name: "TelegramGetFile",
   permissionTier: "read",
   description: "Resolve a Telegram file_id into Telegram file metadata and a downloadable file_path.",
@@ -547,6 +550,134 @@ export const telegramTools: ToolDefinition[] = [
   },
 },
 
+]
+
+function runLegacyTelegramTool(tools: ToolDefinition[], legacyName: string, input: Record<string, unknown>, context: ToolContext) {
+  const tool = tools.find(t => t.name === legacyName)
+  if (!tool?.run) return formatToolError(`Internal Telegram handler missing: ${legacyName}`)
+  return tool.run(input, context)
+}
+
+function resolveTelegramSendAction(invoked: string, input: Record<string, unknown>): string {
+  const aliasMap: Record<string, string> = {
+    TelegramSend: "send_text",
+    telegram_send: "send_text",
+    TelegramSendPhoto: "send_photo",
+    TelegramSendAudio: "send_audio",
+    telegram_send_audio: "send_audio",
+    TelegramSendVoice: "send_voice",
+    telegram_send_voice: "send_voice",
+    TelegramSendDocument: "send_document",
+  }
+  if (aliasMap[invoked]) return aliasMap[invoked]
+  const explicit = optionalString(input, "action")
+  if (explicit?.startsWith("send_")) return explicit
+  if (typeof input.text === "string") return "send_text"
+  if (typeof input.photo === "string") return "send_photo"
+  if (typeof input.audio === "string") return "send_audio"
+  if (typeof input.voice === "string") return "send_voice"
+  if (typeof input.document === "string") return "send_document"
+  return "send_text"
+}
+
+const SEND_ACTION_LEGACY: Record<string, string> = {
+  send_text: "TelegramSend",
+  send_photo: "TelegramSendPhoto",
+  send_audio: "TelegramSendAudio",
+  send_voice: "TelegramSendVoice",
+  send_document: "TelegramSendDocument",
+}
+
+function resolveTelegramGetAction(invoked: string, input: Record<string, unknown>): string {
+  if (invoked === "TelegramGetRecentPhotos") return "recent_photos"
+  if (invoked === "TelegramGetFile") return "get_file"
+  const explicit = optionalString(input, "action")
+  if (explicit === "recent_photos" || explicit === "get_file") return explicit
+  if (typeof input.file_id === "string" && input.chat_id === undefined && input.limit === undefined) return "get_file"
+  return "recent_photos"
+}
+
+const GET_ACTION_LEGACY: Record<string, string> = {
+  recent_photos: "TelegramGetRecentPhotos",
+  get_file: "TelegramGetFile",
+}
+
+export const telegramTools: ToolDefinition[] = [
+{
+  name: "Telegram",
+  aliases: [
+    "TelegramSend", "telegram_send",
+    "TelegramSendPhoto",
+    "TelegramSendAudio", "telegram_send_audio",
+    "TelegramSendVoice", "telegram_send_voice",
+    "TelegramSendDocument",
+  ],
+  permissionTier: "edit",
+  sideEffect: true,
+  description:
+    "Send content to a Telegram chat. action=send_text|send_photo|send_voice|send_audio|send_document. " +
+    "Legacy alias names (TelegramSendPhoto, etc.) still work. Requires /channels Telegram config.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["send_text", "send_photo", "send_voice", "send_audio", "send_document"] },
+      chat_id: { type: "number" },
+      text: { type: "string" },
+      photo: { type: "string" },
+      voice: { type: "string" },
+      audio: { type: "string" },
+      document: { type: "string" },
+      caption: { type: "string" },
+      parse_mode: { type: "string", enum: ["Markdown", "MarkdownV2", "HTML"] },
+      title: { type: "string" },
+      performer: { type: "string" },
+      ignore_cache: { type: "boolean" },
+    },
+    additionalProperties: false,
+  },
+  concurrencySafe: true,
+  validate: input => {
+    const legacyName = SEND_ACTION_LEGACY[resolveTelegramSendAction("TelegramSend", input as Record<string, unknown>)] ?? "TelegramSend"
+    const legacy = legacyTelegramSendTools.find(t => t.name === legacyName)
+    return legacy?.validate ? legacy.validate(input) : null
+  },
+  async run(input, context) {
+    const invoked = context.invokedAs ?? "Telegram"
+    const action = resolveTelegramSendAction(invoked, input as Record<string, unknown>)
+    const legacyName = SEND_ACTION_LEGACY[action]
+    if (!legacyName) return formatToolError(`Unknown Telegram send action: ${action}`)
+    return runLegacyTelegramTool(legacyTelegramSendTools, legacyName, input as Record<string, unknown>, context)
+  },
+},
+{
+  name: "TelegramGet",
+  aliases: ["TelegramGetRecentPhotos", "TelegramGetFile"],
+  permissionTier: "read",
+  description: "Read Telegram state. action=recent_photos|get_file.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["recent_photos", "get_file"] },
+      chat_id: { type: "number" },
+      limit: { type: "number" },
+      file_id: { type: "string" },
+    },
+    additionalProperties: false,
+  },
+  concurrencySafe: true,
+  validate: input => {
+    const legacyName = GET_ACTION_LEGACY[resolveTelegramGetAction("TelegramGetRecentPhotos", input as Record<string, unknown>)] ?? "TelegramGetRecentPhotos"
+    const legacy = legacyTelegramGetTools.find(t => t.name === legacyName)
+    return legacy?.validate ? legacy.validate(input) : null
+  },
+  async run(input, context) {
+    const invoked = context.invokedAs ?? "TelegramGet"
+    const action = resolveTelegramGetAction(invoked, input as Record<string, unknown>)
+    const legacyName = GET_ACTION_LEGACY[action]
+    if (!legacyName) return formatToolError(`Unknown Telegram get action: ${action}`)
+    return runLegacyTelegramTool(legacyTelegramGetTools, legacyName, input as Record<string, unknown>, context)
+  },
+},
 {
   name: "DownloadFile",
   permissionTier: "read",

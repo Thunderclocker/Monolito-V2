@@ -25,12 +25,12 @@ export async function* callProviderStream(
 
   if (activeConfig.provider === "anthropic_compatible" || activeConfig.provider === "minimax") {
     return yield* callAnthropicApiStream(
-      activeConfig, prompt.system, prompt.memoryBlock, prompt.bootBlock, messages, abortSignal, maxTokens, isSubAgent, prompt.allowedToolNames, thinkingConfig,
+      activeConfig, prompt.system, prompt.memoryBlock, prompt.bootBlock, messages, abortSignal, maxTokens, isSubAgent, prompt.allowedToolNames, thinkingConfig, prompt.strictToolAllowlist,
     )
   }
   const mergedSystem = [prompt.system, prompt.memoryBlock, prompt.bootBlock].filter(Boolean).join("\n\n")
   return yield* callOpenAiCompatibleApiStream(
-    activeConfig, mergedSystem, messages, abortSignal, maxTokens, isSubAgent, prompt.allowedToolNames, thinkingConfig,
+    activeConfig, mergedSystem, messages, abortSignal, maxTokens, isSubAgent, prompt.allowedToolNames, thinkingConfig, prompt.strictToolAllowlist,
   )
 }
 

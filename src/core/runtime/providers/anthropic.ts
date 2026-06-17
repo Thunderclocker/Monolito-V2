@@ -5,6 +5,7 @@ import type { ProviderStreamEvent } from "./streamTypes.ts"
 import { buildAnthropicMessages, buildToolDefinitions, normalizeAnthropicToolInput } from "./utils.ts"
 import { isLocalOllamaAnthropicBackend } from "./resolveProvider.ts"
 import { ensureToolResultPairing } from "./ensureToolResultPairing.ts"
+import { selectToolsForLocalOllama, localOllamaToolBudget } from "./localOllamaTools.ts"
 
 function parsePartialJson(value: string): Record<string, unknown> {
   if (!value.trim()) return {}
@@ -48,20 +49,30 @@ export async function* callAnthropicApiStream(
   isSubAgent: boolean,
   allowedToolNames?: string[],
   thinkingConfig?: { enabled: boolean; budgetTokens?: number },
+  strictToolAllowlist?: boolean,
 ): AsyncGenerator<ProviderStreamEvent, ProviderResponse> {
   const client = getAnthropicClient(config)
   const lastUserText = messages.slice().reverse().find(m => m.role === "user")?.content || ""
-  const anthropicTools = buildToolDefinitions(isSubAgent, lastUserText, allowedToolNames).map(tool => ({
+  const localOllama = isLocalOllamaAnthropicBackend(config)
+  const rawTools = buildToolDefinitions(
+    isSubAgent,
+    lastUserText,
+    allowedToolNames,
+    strictToolAllowlist,
+  ).map(tool => ({
     name: tool.name,
     description: tool.description,
     input_schema: tool.input_schema,
   }))
+  const systemChars = system.length + memoryBlock.length + bootBlock.length
+  const anthropicTools = localOllama && rawTools.length > localOllamaToolBudget(systemChars)
+    ? selectToolsForLocalOllama(rawTools, lastUserText, localOllamaToolBudget(systemChars))
+    : rawTools
 
   const thinkingEnabled = thinkingConfig?.enabled === true
   const thinkingBudget = thinkingConfig?.budgetTokens ?? 4_000
   const activeMaxTokens = thinkingEnabled ? Math.max(maxTokens ?? 8_000, thinkingBudget + 4_000) : (maxTokens ?? 4_000)
 
-  const localOllama = isLocalOllamaAnthropicBackend(config)
   const systemBlocks = localOllama
     ? [{ type: "text" as const, text: [system, memoryBlock, bootBlock].filter(Boolean).join("\n\n") }]
     : [
@@ -159,9 +170,10 @@ export async function callAnthropicApi(
   isSubAgent: boolean,
   allowedToolNames?: string[],
   thinkingConfig?: { enabled: boolean; budgetTokens?: number },
+  strictToolAllowlist?: boolean,
 ): Promise<ProviderResponse> {
   const stream = callAnthropicApiStream(
-    config, system, memoryBlock, bootBlock, messages, abortSignal, maxTokens, isSubAgent, allowedToolNames, thinkingConfig,
+    config, system, memoryBlock, bootBlock, messages, abortSignal, maxTokens, isSubAgent, allowedToolNames, thinkingConfig, strictToolAllowlist,
   )
   let response: ProviderResponse | undefined
   for await (const event of stream) {

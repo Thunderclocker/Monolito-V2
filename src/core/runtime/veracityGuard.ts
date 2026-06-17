@@ -42,7 +42,7 @@ const STRUCTURAL_OUTPUT: RegExp[] = [
   // Unified diff header (only patch tools produce this)
   /^---\s+[^\n]+\n\+\+\+\s+[^\n]+\n@@/m,
   // Tool name + args paren (imitating a tool call log line)
-  /\b(TelegramSendVoice|GenerateSpeech|TelegramSendPhoto|TelegramSendAudio|Bash|WebFetch|WebSearch|BootWrite|BootRead|Edit|Read)\s*\(\s*\{/i,
+  /\b(Telegram|TelegramSendVoice|GenerateSpeech|TelegramSendPhoto|TelegramSendAudio|Bash|Web|WebFetch|WebSearch|Boot|BootWrite|BootRead|Edit|Read|Todo)\s*\(\s*\{/i,
   // Bare "ok: true" (very common fabricated result)
   /\bok\s*[:=]\s*true\b/i,
 ]

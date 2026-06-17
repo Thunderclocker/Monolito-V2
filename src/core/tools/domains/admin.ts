@@ -30,54 +30,48 @@ import type { ToolDefinition } from "../registry.ts"
 
 export const adminTools: ToolDefinition[] = [
 {
-  name: "QuerySessionStatus",
+  name: "QueryRuntime",
+  aliases: ["QuerySessionStatus", "QueryCost", "QuerySessionStats"],
   permissionTier: "read",
-  description: "Return metadata for the current Monolito session, model configuration, and available tool count.",
+  description: "Query Monolito runtime state. metric='status': session metadata and tool count. metric='cost': token/cost summary. metric='stats': session usage statistics. Optional sessionId (defaults to current session) for status/stats.",
   inputSchema: {
     type: "object",
     properties: {
-      sessionId: { type: "string", description: "Optional session ID. Defaults to the current session." },
+      metric: { type: "string", enum: ["status", "cost", "stats"], description: "Which runtime metric to fetch." },
+      sessionId: { type: "string", description: "Optional session ID for status/stats." },
     },
     additionalProperties: false,
   },
   concurrencySafe: true,
   async run(input, context) {
+    const invoked = context.invokedAs ?? "QueryRuntime"
+    if (invoked === "QueryCost") {
+      if (!context.queryCost) return formatToolError("Cost query is not available in this context")
+      return context.queryCost()
+    }
     const sessionId = optionalString(input, "sessionId") ?? context.sessionId
+    if (invoked === "QuerySessionStats") {
+      if (!sessionId) return formatToolError("sessionId is required")
+      if (!context.queryStats) return formatToolError("Session stats query is not available in this context")
+      return context.queryStats(sessionId)
+    }
+    if (invoked === "QuerySessionStatus") {
+      if (!sessionId) return formatToolError("sessionId is required")
+      if (!context.querySessionStatus) return formatToolError("Session status query is not available in this context")
+      return context.querySessionStatus(sessionId)
+    }
+    const metric = optionalString(input, "metric")
+    if (metric === "cost") {
+      if (!context.queryCost) return formatToolError("Cost query is not available in this context")
+      return context.queryCost()
+    }
     if (!sessionId) return formatToolError("sessionId is required")
+    if (metric === "stats") {
+      if (!context.queryStats) return formatToolError("Session stats query is not available in this context")
+      return context.queryStats(sessionId)
+    }
     if (!context.querySessionStatus) return formatToolError("Session status query is not available in this context")
     return context.querySessionStatus(sessionId)
-  },
-},
-
-{
-  name: "QueryCost",
-  permissionTier: "read",
-  description: "Return the current Monolito session token and cost summary.",
-  inputSchema: emptyInputSchema,
-  concurrencySafe: true,
-  async run(_input, context) {
-    if (!context.queryCost) return formatToolError("Cost query is not available in this context")
-    return context.queryCost()
-  },
-},
-
-{
-  name: "QuerySessionStats",
-  permissionTier: "read",
-  description: "Return usage statistics for a Monolito session.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      sessionId: { type: "string", description: "Optional session ID. Defaults to the current session." },
-    },
-    additionalProperties: false,
-  },
-  concurrencySafe: true,
-  async run(input, context) {
-    const sessionId = optionalString(input, "sessionId") ?? context.sessionId
-    if (!sessionId) return formatToolError("sessionId is required")
-    if (!context.queryStats) return formatToolError("Session stats query is not available in this context")
-    return context.queryStats(sessionId)
   },
 },
 
@@ -146,20 +140,6 @@ export const adminTools: ToolDefinition[] = [
     const reason = requireString(input, "reason").trim()
     context.runtime.gracefulRestart(reason)
     return `Reinicio iniciado. El sistema volverá a estar online en unos segundos por el motivo: ${reason}`
-  },
-},
-
-{
-  name: "show_master_dashboard",
-  aliases: ["master_config", "config_hub"],
-  permissionTier: "read",
-  description:
-    "Opens the Master Configuration Hub — an interactive menu for managing all system settings: models, channels, web search, audio/voice, and system configuration. ALWAYS use this tool (instead of reading config files manually) when the user wants to view or change settings, configure the system, or asks about current configuration. The tool returns a visual interactive menu to the CLI.",
-  inputSchema: emptyInputSchema,
-  concurrencySafe: true,
-  async run() {
-    const { buildMasterDashboard } = await import("../../menu/masterDashboard.ts")
-    return buildMasterDashboard()
   },
 },
 

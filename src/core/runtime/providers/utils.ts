@@ -8,8 +8,13 @@ import { pooledFetch } from "./httpClient.ts"
 
 let cachedToolDefinitions: { key: string; defs: ReturnType<typeof buildToolDefinitionsUncached> } | null = null
 
-function buildToolDefinitionsUncached(isSubAgent: boolean, lastUserText?: string, allowedToolNames?: string[]) {
-  return listModelTools(isSubAgent, lastUserText, allowedToolNames).map(tool => ({
+function buildToolDefinitionsUncached(
+  isSubAgent: boolean,
+  lastUserText?: string,
+  allowedToolNames?: string[],
+  strictAllowlist?: boolean,
+) {
+  return listModelTools(isSubAgent, lastUserText, allowedToolNames, undefined, false, { strictAllowlist }).map(tool => ({
     name: tool.name,
     description: tool.description,
     input_schema: tool.inputSchema,
@@ -26,10 +31,15 @@ export function invalidateToolDefinitionsCache() {
   cachedToolDefinitions = null
 }
 
-export function buildToolDefinitions(isSubAgent: boolean, lastUserText?: string, allowedToolNames?: string[]) {
-  const key = `${isSubAgent}:${(allowedToolNames ?? []).slice().sort().join(",")}:${lastUserText ?? ""}`
+export function buildToolDefinitions(
+  isSubAgent: boolean,
+  lastUserText?: string,
+  allowedToolNames?: string[],
+  strictAllowlist?: boolean,
+) {
+  const key = `${isSubAgent}:${strictAllowlist ? "strict" : "full"}:${(allowedToolNames ?? []).slice().sort().join(",")}:${lastUserText ?? ""}`
   if (cachedToolDefinitions?.key === key) return cachedToolDefinitions.defs
-  const defs = buildToolDefinitionsUncached(isSubAgent, lastUserText, allowedToolNames)
+  const defs = buildToolDefinitionsUncached(isSubAgent, lastUserText, allowedToolNames, strictAllowlist)
   cachedToolDefinitions = { key, defs }
   return defs
 }
@@ -252,19 +262,12 @@ export function normalizeAnthropicToolInput(input: unknown) {
 
 const REGISTERED_TOOL_NAMES = [
   "Bash", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "WebFetch", "WebSearch",
-  "ImageSearch", "TelegramSend", "TelegramSendVoice", "TelegramSendAudio", "TelegramSendPhoto",
-  "TelegramSendDocument", "TelegramGetRecentPhotos", "TelegramGetFile", "DownloadFile",
+  "ImageSearch", "Web", "Telegram", "TelegramGet", "DownloadFile",
   "TelegramDownloadFile", "GenerateSpeech", "VoiceClone", "VisionAnalyze", "GenerateImage",
-  "TranscribeAudio", "SttServiceStatus", "SttServiceDeploy", "SttServiceStop", "SttServiceRemove",
-  "SttServiceList", "BootRead", "BootWrite", "BootListFiles", "BootCreateFile", "WorkspaceMemoryFiling",
-  "WorkspaceMemoryRecall", "KgAdd", "KgInvalidate", "KgQuery", "SessionForensics",
-  "AgentSpawn", "AgentSendMessage", "AgentStop", "list_active_workers",
-  "delegate_background_task", "TriggerBackgroundStudy", "AgentList", "ProfileCreate",
-  "TodoWrite", "TodoList", "QuerySessionStatus", "QueryCost", "QuerySessionStats",
-  "CompactSession", "system_status", "system_reboot", "show_master_dashboard",
-  "search_tools", "McpInvokeTool", "LspQuery",
-  "ListMcpResourcesTool", "ReadMcpResourceTool", "GitStatus", "GitDiff", "GitDiffCached",
-  "GitAdd", "GitCommit", "list_files", "pwd", "tool_manage_config", "schedule_task",
+  "TranscribeAudio", "SttService", "Boot", "Memory", "Kg", "SessionForensics",
+  "Todo", "QueryRuntime", "CompactSession", "system_status", "system_reboot",
+  "search_tools", "Mcp", "LspQuery",
+  "tool_manage_config", "schedule_task",
 ]
 
 const ORPHAN_CLOSING_TAGS = [

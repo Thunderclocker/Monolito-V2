@@ -18,9 +18,8 @@ import { type Logger, createLogger } from "../logging/logger.ts"
 // ─── Domain tool arrays ─────────────────────────────────────────────────────
 import { shellTools } from "./domains/shell.ts"
 import { mcpTools } from "./domains/mcp.ts"
-import { webTools } from "./domains/web.ts"
+import { webTools, validateWebInput } from "./domains/web.ts"
 import { fileTools } from "./domains/file.ts"
-import { gitTools } from "./domains/git.ts"
 import { telegramTools } from "./domains/telegram.ts"
 import { mediaTools } from "./domains/media.ts"
 import { memoryTools } from "./domains/memory.ts"
@@ -29,7 +28,7 @@ import { configTools } from "./domains/config.ts"
 import { todoTools } from "./domains/todo.ts"
 import { adminTools } from "./domains/admin.ts"
 
-import type { ToolDefinition } from "./internal.ts"
+import type { ToolDefinition, ToolContext } from "./internal.ts"
 
 // ─── Re-exports for the public API ──────────────────────────────────────────
 export { formatToolError, resolveWorkspacePath } from "./internal.ts"
@@ -38,7 +37,6 @@ export type { ToolContext, ToolInputSchema, ToolDefinition } from "./internal.ts
 const rawTools: ToolDefinition[] = [
   ...shellTools,
   ...fileTools,
-  ...gitTools,
   ...mcpTools,
   ...webTools,
   ...telegramTools,
@@ -58,7 +56,14 @@ export function listTools() {
   return tools
 }
 
-export function listModelTools(isSubAgent = false, lastUserText?: string | boolean | string[], allowedToolNames?: string[], rootDir?: string, exposeTelegramDownload = false) {
+export function listModelTools(
+  isSubAgent = false,
+  lastUserText?: string | boolean | string[],
+  allowedToolNames?: string[],
+  rootDir?: string,
+  exposeTelegramDownload = false,
+  options?: { strictAllowlist?: boolean },
+) {
   // Service-management and infra tools: ALWAYS hidden from sub-agents.
   // Sub-agents no longer exist in the runtime (delegation feature was
   // removed); this set is kept as defense-in-depth in case any future
@@ -66,22 +71,14 @@ export function listModelTools(isSubAgent = false, lastUserText?: string | boole
   // hidden so synthetic sub-agents can't spin up daemons or reconfigure
   // channels even if one is ever introduced.
   const hiddenFromSubAgents = new Set([
-    "TelegramSend",
-    "TelegramSendAudio",
-    "TelegramSendVoice",
-    "TelegramSendPhoto",
-    "TelegramSendDocument",
+    "Telegram",
+    "TelegramGet",
     "schedule_task",
     "system_reboot",
     "system_status",
-    "QueryCost",
-    "QuerySessionStats",
+    "QueryRuntime",
     "CompactSession",
-    "SttServiceStatus",
-    "SttServiceDeploy",
-    "SttServiceStop",
-    "SttServiceRemove",
-    "SttServiceList",
+    "SttService",
     "tool_manage_config",
     "TelegramDownloadFile",
     "manage_sudo_mode"
@@ -109,26 +106,31 @@ export function listModelTools(isSubAgent = false, lastUserText?: string | boole
   // the delegation removal, this no longer includes any worker
   // orchestration tools.
   const CORE_TOOLS = new Set([
-    "TodoWrite",
-    "TodoList",
+    "Todo",
     "search_tools",
     "Bash",
     "Write",
     "Edit",
     "MultiEdit",
-    "TelegramSend",
-    "TelegramSendPhoto",
-    "ImageSearch",
+    "Telegram",
+    "Web",
     "DownloadFile",
     "GenerateImage",
     "VisionAnalyze",
-    "TelegramGetRecentPhotos",
+    "TelegramGet",
     "CaptureScreenshot",
     "VideoAnalyze",
   ])
 
+  const strictAllowlist = options?.strictAllowlist === true
+    && Array.isArray(allowedToolNames)
+    && allowedToolNames.length > 0
+
   const staticMapped = tools
     .filter(tool => {
+      if (strictAllowlist) {
+        return allowedToolNames!.includes(tool.name)
+      }
       if (Array.isArray(lastUserText) && lastUserText.includes(tool.name)) {
         return false
       }
@@ -161,8 +163,24 @@ export function listModelTools(isSubAgent = false, lastUserText?: string | boole
   })
 }
 
-export function getTool(name: string) {
-  return tools.find(tool => tool.name === name || tool.aliases?.includes(name))
+export function getTool(name: string): ToolDefinition | undefined {
+  const tool = tools.find(t => t.name === name || t.aliases?.includes(name))
+  if (!tool || tool.name === name) return tool
+  const invokedAs = name
+  const baseRun = tool.run
+  const baseValidate = tool.validate
+  const wrapped: ToolDefinition = {
+    ...tool,
+    run: (input: Record<string, unknown>, context: ToolContext) =>
+      baseRun(input, { ...context, invokedAs }),
+  }
+  if (baseValidate) {
+    wrapped.validate = (input: Record<string, unknown>) => {
+      if (tool.name === "Web") return validateWebInput(invokedAs, input)
+      return baseValidate(input)
+    }
+  }
+  return wrapped
 }
 
 export function validateToolInput(name: string, input: Record<string, unknown>) {
@@ -181,7 +199,9 @@ export function isToolConcurrencySafe(name: string, input: Record<string, unknow
 
 export function isToolSideEffect(name: string): boolean {
   const tool = getTool(name)
-  return tool?.sideEffect === true
+  if (!tool) return false
+  if (tool.name === "TelegramGet") return false
+  return tool.sideEffect === true
 }
 
 export async function indexSemanticTools(rootDir: string) {
@@ -241,7 +261,7 @@ export async function indexRalphRules(rootDir: string) {
     intentRegex: "\\b(listame|lista|listas|listar|enumera|enumerar|mostrame|mostrar|ensename|ensenar|dime\\s+(?:que|cuales|cuantas|cuantos|qué|cuáles|cuántas|cuántos)|inventario|inventaria|qué\\s+(?:herramientas|sessions|sesiones|archivos|files|tools|tienes|hay|existen)|how\\s+many|cuantas?\\s+(?:herramientas|sessions|sesiones|archivos|files|tools|hay)|show\\s+(?:me\\s+)?(?:all\\s+)?(?:your\\s+)?(?:sessions|files|tools))\\b",
     requiredRegex: "\\b(herramientas?|tools?|sessions?|sesiones?|archivos?|files?|canales?|channels?|procesos?|processes?|configs?|profiles?|modelos?|models?)\\b",
     requiredTools: [],
-    errorMessage: "[Ralph Loop] SYSTEM ALERT\nEl usuario pidió enumerar/listar el estado actual de un recurso dinámico del sistema (sessions, archivos, tools, etc.).\nTu respuesta parece basada en memoria/recuerdo, NO en una tool ejecutada en este turno.\nEsto está PROHIBIDO. La respuesta correcta es ejecutar la tool correspondiente (Read/Glob/list_files para archivos, etc.) y reportar lo que la tool devuelve.\nNO respondas desde memoria con disclaimers ('tomátelo con pinzas', 'no verifiqué', 'si querés el 100% decime').\nCorregilo: ejecutá la tool apropiada y respondé con el resultado real."
+    errorMessage: "[Ralph Loop] SYSTEM ALERT\nEl usuario pidió enumerar/listar el estado actual de un recurso dinámico del sistema (sessions, archivos, tools, etc.).\nTu respuesta parece basada en memoria/recuerdo, NO en una tool ejecutada en este turno.\nEsto está PROHIBIDO. La respuesta correcta es ejecutar la tool correspondiente (Read/Glob/Bash para archivos, etc.) y reportar lo que la tool devuelve.\nNO respondas desde memoria con disclaimers ('tomátelo con pinzas', 'no verifiqué', 'si querés el 100% decime').\nCorregilo: ejecutá la tool apropiada y respondé con el resultado real."
   }
 
   try {

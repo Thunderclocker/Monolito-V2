@@ -317,7 +317,49 @@ export function summarizeOutput(tool: string, output: unknown) {
   return summarizeGenericRecord(value) ?? truncate(stringify(value), 180)
 }
 
+function normalizeToolNameForRender(tool: string, input: unknown): string {
+  const value = record(input)
+  if (tool === "Web") {
+    const action = getString(value, "action")
+    if (action === "fetch" || (typeof value?.url === "string" && typeof value?.prompt === "string")) return "WebFetch"
+    if (action === "image_search") return "ImageSearch"
+    return "WebSearch"
+  }
+  if (tool === "Telegram") {
+    const action = getString(value, "action")
+    if (action === "send_photo" || typeof value?.photo === "string") return "TelegramSendPhoto"
+    if (action === "send_audio" || typeof value?.audio === "string") return "TelegramSendAudio"
+    if (action === "send_voice" || typeof value?.voice === "string") return "TelegramSendVoice"
+    if (action === "send_document" || typeof value?.document === "string") return "TelegramSendDocument"
+    return "TelegramSend"
+  }
+  if (tool === "TelegramGet") {
+    const action = getString(value, "action")
+    if (action === "get_file" || typeof value?.file_id === "string") return "TelegramGetFile"
+    return "TelegramGetRecentPhotos"
+  }
+  if (tool === "Todo") {
+    const action = getString(value, "action")
+    if (action === "list") return "TodoList"
+    return "TodoWrite"
+  }
+  if (tool === "Boot") {
+    const action = getString(value, "action")
+    if (action === "write") return "BootWrite"
+    if (action === "list") return "BootListFiles"
+    if (action === "create") return "BootCreateFile"
+    return "BootRead"
+  }
+  if (tool === "Memory") {
+    const action = getString(value, "action")
+    if (action === "recall") return "WorkspaceMemoryRecall"
+    return "WorkspaceMemoryFiling"
+  }
+  return tool
+}
+
 export function renderToolStart(tool: string, input: unknown): ToolRenderLine {
+  tool = normalizeToolNameForRender(tool, input)
   const value = record(input)
   switch (tool) {
     case "Bash": {
@@ -569,6 +611,7 @@ export function renderToolStart(tool: string, input: unknown): ToolRenderLine {
 }
 
 export function renderToolFinish(tool: string, ok: boolean, output: unknown, input?: unknown): ToolRenderLine {
+  tool = normalizeToolNameForRender(tool, input)
   const value = record(output)
   const tone: ToolRenderTone = ok ? "success" : "error"
   const label = ok ? "done" : "error"

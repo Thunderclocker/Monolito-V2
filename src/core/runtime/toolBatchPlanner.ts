@@ -9,13 +9,9 @@ export type IndexedToolCall = {
 const NEVER_PARALLEL = new Set([
   "Bash",
   "Shell",
-  "TodoWrite",
-  "TodoUpdate",
-  "TelegramSend",
-  "TelegramSendPhoto",
-  "TelegramSendVoice",
-  "TelegramSendAudio",
-  "TelegramSendDocument",
+  "Todo",
+  "Telegram",
+  "TelegramGet",
 ])
 
 const PATH_SCOPED_TOOLS = new Set([

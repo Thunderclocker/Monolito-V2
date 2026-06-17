@@ -332,6 +332,8 @@ export type ToolContext = {
   getMcpClient?: (serverName: string) => Promise<McpClient>
   logger?: Logger
   sessionId?: string
+  /** Tool name the model invoked (may differ from canonical definition name). */
+  invokedAs?: string
   // Optional whitelist of tool names the LLM is allowed to call in this turn.
   allowedToolNames?: string[]
   runtime?: {
