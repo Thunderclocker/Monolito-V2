@@ -535,6 +535,7 @@ class InteractiveTranscriptFormatter {
           label: "ralph",
           tone: "info",
           text: `intento ${event.attempt}/${event.maxAttempts} · ${event.unfinished.length} pendiente${event.unfinished.length !== 1 ? "s" : ""}: ${taskList}${more}`,
+          replacesLastEvent: true,
         }]
       }
       case "error":
@@ -1388,12 +1389,15 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
     }
 
     // Try local command execution first.
-    // Clear input and show a spinner immediately so the user gets feedback
-    // that the command was sent. Local commands can take seconds to minutes
-    // (e.g. /update runs git fetch + npm install + daemon restart), and
-    // without this the input box stays frozen showing the command text.
+    // Clear input, echo the user line locally, then show a spinner so Enter
+    // never paints "Processing..." without the submitted message visible.
     composer.input = ""
     composer.cursor = 0
+    if (!line.startsWith("/")) {
+      transcript = appendMenuTranscript(transcript, [
+        { type: "message", role: "user", text: line },
+      ])
+    }
     composer.busy = true
     composer.thinkingVisible = true
     startThinkingAnimation()
@@ -1486,11 +1490,6 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       transcript = { blocks: [], scrollOffset: 0 }
       needsClear = true
       redraw()
-    }
-    if (!line.startsWith("/")) {
-      transcript = appendTranscriptBlocks(transcript, [
-        { type: "message", role: "user", text: line }
-      ])
     }
     composer.busy = true
     composer.thinkingFrame = 0
@@ -1756,10 +1755,10 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
             queuedPrompt = line
             composer.input = ""
             composer.cursor = 0
-            transcript = appendTranscriptBlocks(transcript, [
-              { type: "event", label: "queued", tone: "info", text: `Queued for later: ${line}` },
+            transcript = appendMenuTranscript(transcript, [
+              { type: "message", role: "user", text: line },
+              { type: "event", label: "queued", tone: "info", text: "Queued for later — will send when the current turn finishes." },
             ])
-            transcript.scrollOffset = 0
             // If the queued line is a runtime control command (e.g. /update,
             // /stop, /reset), do NOT wait for the in-flight turn to finish
             // naturally. Abort it now so the control command can run as soon

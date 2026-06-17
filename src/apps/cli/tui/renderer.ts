@@ -357,6 +357,13 @@ type EventBlock = Extract<TranscriptBlock, { type: "event" }>
 
 /** Locate the in-flight tool.start row to update when a tool.finish arrives. */
 export function findInFlightToolEventIndex(blocks: TranscriptBlock[], finish: EventBlock): number {
+  if (finish.label === "ralph") {
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      const b = blocks[i]
+      if (b?.type === "event" && b.label === "ralph") return i
+    }
+    return -1
+  }
   if (finish.toolUseId) {
     for (let i = blocks.length - 1; i >= 0; i--) {
       const b = blocks[i]
