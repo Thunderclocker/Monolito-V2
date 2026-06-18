@@ -1833,6 +1833,13 @@ Rules:
         // Stop hook in upstream reference: the runtime has the last word,
         // not the LLM.
         let ralphAttempt = 1
+        // Reasoning-first local models (gpt-oss et al.) intermittently stall in
+        // the analysis channel and emit thinking but no content/tool_call. Treat
+        // such an empty reply as a failure and retry with escalated reasoning
+        // (Mechanism A applied to empty output), bounded so a truly mute model
+        // still falls through to the honest fallback.
+        let emptyReplyRetries = 0
+        const MAX_EMPTY_REPLY_RETRIES = 3
         const ralphAttemptHistory: Array<{ attempt: number; kind: string; summary: string }> = []
         // Snapshot task ids at turn start: Ralph only blocks on tasks the user
         // (or a prior turn) left open — not TodoWrite items created mid-turn.
@@ -1973,7 +1980,51 @@ Rules:
             turn.steps,
             preExistingTaskIds,
           )
-          if (!gate.blocked) break
+          if (!gate.blocked) {
+            // The cognitive task list is clean, but the model may have produced
+            // a genuinely empty reply (no visible text, no tool_call). If so —
+            // and the turn had no irreversible side-effects and was not aborted —
+            // retry with escalated reasoning instead of falling straight to the
+            // "no generó texto visible" fallback. Bounded by MAX_EMPTY_REPLY_RETRIES.
+            const turnHadSideEffects = turn.steps?.some(step =>
+              step.type === "tool" && getTool(step.tool)?.sideEffect === true
+            ) ?? false
+            const turnWasAborted = !!turn.error ||
+              turn.meta?.stopReason === "max_duration" ||
+              turn.meta?.stopReason === "aborted"
+            const replyIsEmpty = shouldSuppressEmit(
+              sanitizeExternalAssistantText(sessionId, lastAssistantReplyForRalph, preparedUserText),
+            )
+            if (
+              !isAgentSession &&
+              replyIsEmpty &&
+              !turnHadSideEffects &&
+              !turnWasAborted &&
+              !abortController.signal.aborted &&
+              emptyReplyRetries < MAX_EMPTY_REPLY_RETRIES
+            ) {
+              emptyReplyRetries++
+              appendWorklog(this.rootDir, sessionId, {
+                type: "note",
+                summary: `[Top-level Ralph] Empty reply on attempt ${ralphAttempt} (${turn.usage?.outputTokens ?? 0} out tokens); escalating reasoning (empty-retry ${emptyReplyRetries}/${MAX_EMPTY_REPLY_RETRIES}).`,
+              })
+              this.emit({
+                type: "ralph.attempt",
+                sessionId,
+                attempt: ralphAttempt,
+                maxAttempts: TOP_LEVEL_RALPH_MAX_ATTEMPTS,
+                unfinished: [],
+              })
+              ralphAttemptHistory.push({
+                attempt: ralphAttempt,
+                kind: "empty-reply",
+                summary: `Model produced no visible output (${turn.usage?.outputTokens ?? 0} out tokens); retrying with higher reasoning.`,
+              })
+              ralphAttempt++
+              continue
+            }
+            break
+          }
 
           if (ralphAttempt >= TOP_LEVEL_RALPH_MAX_ATTEMPTS) {
             // Build an honest user-facing TASK_FAILED message so the user

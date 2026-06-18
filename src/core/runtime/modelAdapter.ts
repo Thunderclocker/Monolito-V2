@@ -1178,7 +1178,15 @@ export async function* runAgentLoop(
         : "off")
 
       let targetLevel: ReasoningLevel = "off"
-      if (configLevel === "low") {
+      if (configLevel === "off") {
+        // Mechanism A: reasoning is disabled by default, but escalate on Ralph
+        // retries so a stalled local model (gpt-oss harmony analysis stall) gets
+        // progressively more thinking budget to recover. Capped at "medium"
+        // since the operator chose "off" as the ceiling.
+        if (ralphAttempt === 1) targetLevel = "off"
+        else if (ralphAttempt === 2) targetLevel = "low"
+        else targetLevel = "medium"
+      } else if (configLevel === "low") {
         targetLevel = ralphAttempt === 1 ? "off" : "low"
       } else if (configLevel === "medium") {
         if (ralphAttempt === 1) targetLevel = "off"
@@ -1205,7 +1213,7 @@ export async function* runAgentLoop(
         }
       }
 
-      if (configLevel !== "off") {
+      if (configLevel !== "off" || targetLevel !== "off") {
         logger.info(`[reasoning-escalation] Ralph attempt ${ralphAttempt}: using reasoning level '${targetLevel}' (configured ceiling: '${configLevel}').`)
       }
 
