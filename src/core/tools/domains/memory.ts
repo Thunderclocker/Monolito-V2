@@ -35,8 +35,33 @@ import {
 
 import type { ToolDefinition } from "../registry.ts"
 
+/**
+ * Local models frequently invent the argument name (`path`, `file_path`, `key`)
+ * and pass a filesystem-ish value (`boot/BOOT_USER.md`, `user.md`) instead of
+ * the canonical wing name. Normalize all of that to a valid BOOT_* wing so the
+ * write/read does not fail on a cosmetic mismatch.
+ */
+function normalizeBootWing(raw: string): string {
+  let value = raw.trim()
+  if (!value) return value
+  // Strip any directory prefix and a trailing .md extension.
+  value = value.split(/[\\/]/).pop() ?? value
+  value = value.replace(/\.md$/i, "").trim()
+  const upper = value.toUpperCase()
+  if (isBootWingName(upper)) return upper
+  const prefixed = `BOOT_${upper}`
+  if (isBootWingName(prefixed)) return prefixed
+  return value
+}
+
 function resolveBootFileKey(input: Record<string, unknown>) {
-  return optionalString(input, "file") ?? optionalString(input, "wing")
+  const raw =
+    optionalString(input, "file") ??
+    optionalString(input, "wing") ??
+    optionalString(input, "key") ??
+    optionalString(input, "path") ??
+    optionalString(input, "file_path")
+  return raw ? normalizeBootWing(raw) : undefined
 }
 
 type BootAction = "read" | "write" | "list" | "create"
