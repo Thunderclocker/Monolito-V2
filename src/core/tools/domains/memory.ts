@@ -163,7 +163,11 @@ export const memoryTools: ToolDefinition[] = [
       const legacyMode = optionalString(input, "action")
       const writeMode = optionalString(input, "mode")
         ?? (legacyMode === "append" || legacyMode === "overwrite" ? legacyMode : "overwrite")
-      const parsed = parseZod(bootWriteInputZod, { ...input, wing: file, action: writeMode }, "Boot write")
+      // Only forward canonical keys to the strict zod schema; the raw input may
+      // carry model-invented keys (`file`, `mode`, `path`, …) that would trip
+      // `.strict()` and fail the write with "Unrecognized keys".
+      const writeContent = optionalString(input, "content")
+      const parsed = parseZod(bootWriteInputZod, { wing: file, content: writeContent, action: writeMode }, "Boot write")
       if (!bootWingExists(context.rootDir, parsed.wing, profile)) {
         return formatToolError(`Boot file ${parsed.wing} does not exist. Use create first.`)
       }

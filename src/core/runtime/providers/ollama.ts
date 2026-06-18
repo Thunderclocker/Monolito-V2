@@ -36,7 +36,40 @@ function buildOllamaMessages(
   const rawMessages = buildOpenAiMessages(system, messages, {
     supportsVision: modelSupportsVision(config.provider, config.model),
   })
+  // Ollama's /api/chat tool protocol differs from the OpenAI shape that
+  // buildOpenAiMessages emits:
+  //  - assistant tool_calls[].function.arguments must be an OBJECT, not a JSON
+  //    string (a string triggers HTTP 400 "Value looks like object…").
+  //  - tool result messages are keyed by `tool_name`, not `tool_call_id`.
+  // Build an id->name map so tool results can carry the right `tool_name`.
+  const toolCallIdToName = new Map<string, string>()
+  for (const msg of rawMessages) {
+    const tcs = (msg as Record<string, any>).tool_calls
+    if (Array.isArray(tcs)) {
+      for (const tc of tcs) {
+        if (tc?.id && tc?.function?.name) toolCallIdToName.set(tc.id, tc.function.name)
+      }
+    }
+  }
   return rawMessages.map(msg => {
+    const m = msg as Record<string, any>
+    if (Array.isArray(m.tool_calls)) {
+      m.tool_calls = m.tool_calls.map((tc: any) => {
+        let args = tc?.function?.arguments
+        if (typeof args === "string") {
+          try {
+            args = JSON.parse(args || "{}")
+          } catch {
+            args = {}
+          }
+        }
+        return { ...tc, function: { ...tc.function, arguments: args ?? {} } }
+      })
+    }
+    if (m.role === "tool") {
+      const name = m.tool_call_id ? toolCallIdToName.get(m.tool_call_id) : undefined
+      return { ...m, tool_name: name ?? m.tool_name ?? "tool" }
+    }
     if (Array.isArray(msg.content)) {
       const images: string[] = []
       let text = ""
