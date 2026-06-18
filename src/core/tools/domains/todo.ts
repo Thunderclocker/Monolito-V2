@@ -19,6 +19,14 @@ function inferTodoAction(input: Record<string, unknown>): TodoAction {
   return "list"
 }
 
+export function normalizeTodoStatus(raw: unknown): "pending" | "in_progress" | "completed" {
+  if (typeof raw !== "string") return "pending"
+  const k = raw.trim().toLowerCase().replace(/[\s-]+/g, "_")
+  if (["completed", "complete", "done", "finished", "closed", "resolved", "ready"].includes(k)) return "completed"
+  if (["in_progress", "inprogress", "doing", "active", "started", "working", "wip", "ongoing", "running"].includes(k)) return "in_progress"
+  return "pending"
+}
+
 function normalizeTodosInput(rawTodos: unknown): unknown[] {
   if (Array.isArray(rawTodos)) return rawTodos
   if (rawTodos && typeof rawTodos === "object" && Array.isArray((rawTodos as { item?: unknown }).item)) {
@@ -45,34 +53,44 @@ async function runTodoWrite(input: Record<string, unknown>, context: { rootDir: 
     return formatToolError("Todo write: todos array is empty. To mark all done, send [{content: 'All previous tasks completed', activeForm: 'Wrapping up', status: 'completed'}] explicitly.")
   }
 
-  const validStatuses = new Set(["pending", "in_progress", "completed"])
+  // Local models (gpt-oss et al.) frequently emit partially-formed todo items
+  // (missing/empty activeForm, empty or synonym status). Repair instead of
+  // hard-failing, mirroring the tolerant Boot tool: derive the missing field
+  // from its sibling, normalize status synonyms (default 'pending'), and drop
+  // items that are entirely empty. Hard-failing here loses the model's intent
+  // and surfaces noisy "TodoWrite failed" lines to the user.
+  type RepairedTodo = { content: string; activeForm: string; status: "pending" | "in_progress" | "completed"; category?: "cognitive" | "life" }
+  const repaired: RepairedTodo[] = []
   for (let i = 0; i < todos.length; i++) {
-    const t = todos[i] as Record<string, unknown>
-    const content = typeof t.content === "string" ? t.content.trim() : ""
-    const activeForm = typeof t.activeForm === "string" ? t.activeForm.trim() : ""
-    const status = typeof t.status === "string" ? t.status : ""
-    const category = typeof t.category === "string" ? t.category : undefined
-    if (content.length === 0) return formatToolError(`todos[${i}].content cannot be empty.`)
-    if (activeForm.length === 0) return formatToolError(`todos[${i}].activeForm cannot be empty.`)
-    if (!validStatuses.has(status)) return formatToolError(`todos[${i}].status must be one of pending|in_progress|completed (got '${status}').`)
-    if (category !== undefined && category !== "cognitive" && category !== "life") {
-      return formatToolError(`todos[${i}].category must be one of cognitive|life (got '${category}').`)
-    }
+    const t = (todos[i] ?? {}) as Record<string, unknown>
+    let content = typeof t.content === "string" ? t.content.trim() : ""
+    let activeForm = typeof t.activeForm === "string" ? t.activeForm.trim() : ""
+    if (!content) content = activeForm
+    if (!activeForm) activeForm = content
+    if (!content) continue
+    const status = normalizeTodoStatus(t.status)
+    const rawCategory = typeof t.category === "string" ? t.category.trim().toLowerCase() : ""
+    const category = rawCategory === "cognitive" || rawCategory === "life" ? rawCategory : undefined
+    repaired.push({ content, activeForm, status, category })
+  }
+  if (repaired.length === 0) {
+    return formatToolError("Todo write: no usable todos after normalization (every item lacked content/activeForm).")
   }
 
-  const inProgressCount = todos.filter(t => (t as { status?: unknown }).status === "in_progress").length
-  if (inProgressCount > 1) {
-    return formatToolError(
-      `Multiple todos are marked as in_progress (${inProgressCount}). Exactly ONE todo may be in_progress at a time.`,
-    )
+  // Enforce the single-in_progress invariant by demotion rather than error:
+  // keep the first in_progress item, demote the rest to pending.
+  let seenInProgress = false
+  for (const t of repaired) {
+    if (t.status !== "in_progress") continue
+    if (seenInProgress) t.status = "pending"
+    else seenInProgress = true
   }
 
   const now = new Date().toISOString()
   supersedeAllSessionTasks(context.rootDir, sessionId, profileId)
 
   const persisted: SessionTask[] = []
-  for (const t of todos) {
-    const tt = t as { content: string; activeForm: string; status: "pending" | "in_progress" | "completed"; category?: "cognitive" | "life" }
+  for (const tt of repaired) {
     const taskId = `task-${randomUUID().slice(0, 8)}`
     const task: SessionTask = {
       id: taskId,
