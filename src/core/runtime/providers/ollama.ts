@@ -5,6 +5,27 @@ import { buildOpenAiMessages, buildToolDefinitions, callJsonApi, modelSupportsVi
 import { getContextBudget } from "../../context/contextLimits.ts"
 import { resolveOllamaResponseText } from "./ollamaText.ts"
 
+/**
+ * Reasoning-first local models that expose the harmony analysis/final channels.
+ * For these, `think:false` is harmful (no tool_calls / empty final), so the
+ * effective floor is "low" even when the profile reasoning level is "off".
+ */
+function isReasoningModel(model: string): boolean {
+  return /gpt-oss|deepseek-r1|\br1\b|qwen3|qwq|magistral|phi-?4-reasoning/i.test(model)
+}
+
+export function resolveOllamaThink(
+  model: string,
+  thinkingConfig?: { enabled: boolean; budgetTokens?: number; level?: "low" | "medium" | "high" | "off" },
+): boolean | "low" | "medium" | "high" {
+  if (thinkingConfig?.enabled === true && thinkingConfig.level && thinkingConfig.level !== "off") {
+    return thinkingConfig.level
+  }
+  // Disabled / "off": keep a minimal "low" floor for reasoning models so the
+  // analysis→final/tool flow completes; truly disable for the rest.
+  return isReasoningModel(model) ? "low" : false
+}
+
 function buildOllamaMessages(
   config: ProviderConfig,
   system: string,
@@ -58,13 +79,12 @@ function buildOllamaBody(
   // Keep a generous floor so reasoning + the final tool_call/content never get
   // truncated mid-flight (which surfaces as an empty assistant reply).
   const numPredict = Math.min(Math.max(maxTokens ?? 8_192, 8_192), numCtx)
-  // Honor the profile's reasoning level. Ollama's gpt-oss accepts a granular
-  // `think` effort ("low"|"medium"|"high"); "off" → think:false so the model
-  // does not burn its whole budget on chain-of-thought.
-  const think: boolean | "low" | "medium" | "high" =
-    thinkingConfig?.enabled === true
-      ? (thinkingConfig.level && thinkingConfig.level !== "off" ? thinkingConfig.level : true)
-      : false
+  // Honor the profile's reasoning level via Ollama's granular `think` effort.
+  // Reasoning models (gpt-oss et al.) DEGRADE with think:false — the harmony
+  // template stalls in the analysis channel and never emits a final answer or
+  // tool_call (observed: empty replies / no BootWrite during onboarding). So
+  // for those models we clamp the floor to "low" instead of disabling.
+  const think = resolveOllamaThink(config.model, thinkingConfig)
   return {
     model: config.model,
     stream,
