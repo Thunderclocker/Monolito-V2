@@ -38,14 +38,26 @@ export type PromptBlocks = {
 }
 
 
+let toolCallCounter = 0
+
 export function parseStructuredToolCalls(rawToolCalls: unknown): ToolCall[] {
   if (!Array.isArray(rawToolCalls)) return []
   return rawToolCalls.flatMap<ToolCall>(item => {
-    const toolCall = item as { id?: string; function?: { name?: string; arguments?: string } }
-    if (!toolCall?.id || !toolCall.function?.name) return []
+    const toolCall = item as { id?: string; function?: { name?: string; arguments?: unknown } }
+    if (!toolCall.function?.name) return []
+    const rawArgs = toolCall.function.arguments
     try {
-      const parsed = normalizeToolInputPayload(JSON.parse(toolCall.function.arguments ?? "{}"))
-      return [{ id: toolCall.id, name: toolCall.function.name, input: parsed as Record<string, unknown> }]
+      // OpenAI/Anthropic stream `arguments` as a JSON string; Ollama's native
+      // /api/chat returns it as an already-parsed object. Handle both so the
+      // tool call is not silently dropped (which surfaces as an empty reply).
+      const argsObject =
+        typeof rawArgs === "string"
+          ? JSON.parse(rawArgs || "{}")
+          : (rawArgs ?? {})
+      const parsed = normalizeToolInputPayload(argsObject)
+      // Some providers (Ollama) may omit a call id; synthesize a stable one.
+      const id = toolCall.id || `call_${Date.now().toString(36)}_${toolCallCounter++}`
+      return [{ id, name: toolCall.function.name, input: parsed as Record<string, unknown> }]
     } catch {
       return []
     }
