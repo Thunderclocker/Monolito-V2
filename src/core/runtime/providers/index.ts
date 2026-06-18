@@ -15,7 +15,7 @@ export async function* callProviderStream(
   abortSignal: AbortSignal | undefined,
   isSubAgent: boolean,
   maxTokens?: number,
-  thinkingConfig?: { enabled: boolean; budgetTokens?: number },
+  thinkingConfig?: { enabled: boolean; budgetTokens?: number; level?: "low" | "medium" | "high" | "off" },
 ): AsyncGenerator<ProviderStreamEvent, ProviderResponse> {
   const mergedSystem = [prompt.system, prompt.memoryBlock, prompt.bootBlock].filter(Boolean).join("\n\n")
 
@@ -58,7 +58,7 @@ export async function callProvider(
   abortSignal: AbortSignal | undefined,
   isSubAgent: boolean,
   maxTokens?: number,
-  thinkingConfig?: { enabled: boolean; budgetTokens?: number },
+  thinkingConfig?: { enabled: boolean; budgetTokens?: number; level?: "low" | "medium" | "high" | "off" },
 ): Promise<ProviderResponse> {
   const stream = callProviderStream(config, prompt, messages, abortSignal, isSubAgent, maxTokens, thinkingConfig)
   let response: ProviderResponse | undefined

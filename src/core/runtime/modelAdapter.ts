@@ -199,7 +199,6 @@ export type AgentLoopRecoverableAction =
   | "incapacity_correction"
   | "operational_interruption"
   | "malformed_tool_call"
-  | "empty_content_retry"
   | "search_query_as_text"
 
 export type AgentLoopEvent =
@@ -889,7 +888,7 @@ async function* callProviderWithRetry(
   abortSignal: AbortSignal | undefined,
   isSubAgent: boolean,
   maxTokens: number | undefined,
-  thinkingConfig?: { enabled: boolean; budgetTokens?: number },
+  thinkingConfig?: { enabled: boolean; budgetTokens?: number; level?: ReasoningLevel },
 ): AsyncGenerator<AgentYieldEvent, ProviderResponse> {
   let currentConfig = config
   let rateLimitAttempts = 0
@@ -1048,8 +1047,6 @@ export async function* runAgentLoop(
   const toolFailures = new ToolFailureTracker()
   let lastFailedToolSig: { toolName: string; kind: string; detail: string } | null = null
   let sameErrorRepeatCount = 0
-  let emptyContentRetries = 0
-  const MAX_EMPTY_CONTENT_RETRIES = 2
 
   const lastUserText = getLastUserMessage(session)
   const isTelegramChannel = lastUserText.includes('<channel source="telegram"')
@@ -1194,7 +1191,7 @@ export async function* runAgentLoop(
         else targetLevel = "high"
       }
 
-      let currentThinkingConfig = { enabled: false, budgetTokens: 0 }
+      let currentThinkingConfig: { enabled: boolean; budgetTokens: number; level: ReasoningLevel } = { enabled: false, budgetTokens: 0, level: "off" }
       if (targetLevel !== "off") {
         currentThinkingConfig = {
           enabled: true,
@@ -1204,6 +1201,7 @@ export async function* runAgentLoop(
               : targetLevel === "high"
               ? 32_768
               : 10_240,
+          level: targetLevel,
         }
       }
 
@@ -1305,50 +1303,6 @@ export async function* runAgentLoop(
       }
 
       if (response.toolCalls.length === 0) {
-        if (!response.text.trim() && !response.thinking?.trim()) {
-          emptyContentRetries++
-          if (emptyContentRetries <= MAX_EMPTY_CONTENT_RETRIES) {
-            yield {
-              type: "recoverable_error",
-              sessionId: session.id,
-              iteration,
-              action: "empty_content_retry",
-              error: "Model returned empty user-facing content (gpt-oss/Ollama thinking-only). Re-feeding.",
-            }
-            messages.push({
-              role: "user",
-              content: wrapAuditFeedback(
-                `Tu respuesta quedó vacía: no emitiste texto visible para el usuario. ` +
-                `Respondé ahora en texto plano en el idioma del usuario. ` +
-                `Si necesitás persistir datos, llamá BootWrite o WorkspaceMemoryFiling y DESPUÉS escribí la confirmación al usuario.`,
-              ),
-            })
-            continue
-          }
-        } else if (!response.text.trim() && response.thinking?.trim()) {
-          emptyContentRetries++
-          if (emptyContentRetries <= MAX_EMPTY_CONTENT_RETRIES) {
-            yield {
-              type: "recoverable_error",
-              sessionId: session.id,
-              iteration,
-              action: "empty_content_retry",
-              error: "Model returned thinking-only output without text or tool_use. Re-feeding.",
-            }
-            messages.push({
-              role: "user",
-              content: wrapAuditFeedback(
-                `Tu respuesta quedó solo en razonamiento interno sin texto para el usuario ni tool_use. ` +
-                `Si necesitás buscar datos (clima, noticias, etc.), llamá Web (action=search o action=fetch) ahora. ` +
-                `Si podés responder directo, escribí la respuesta en texto plano.`,
-              ),
-            })
-            continue
-          }
-        } else {
-          emptyContentRetries = 0
-        }
-
         // --- TDD FINALIZATION GUARD ---
         let lastFailureTool = ""
         let failureSnippet = ""

@@ -50,7 +50,7 @@ function buildOllamaBody(
   stream: boolean,
   maxTokens?: number,
   strictToolAllowlist?: boolean,
-  thinkingConfig?: { enabled: boolean; budgetTokens?: number },
+  thinkingConfig?: { enabled: boolean; budgetTokens?: number; level?: "low" | "medium" | "high" | "off" },
 ) {
   const budget = getContextBudget(config.model)
   const numCtx = Math.min(budget.windowTokens, 32_768)
@@ -58,12 +58,17 @@ function buildOllamaBody(
   // Keep a generous floor so reasoning + the final tool_call/content never get
   // truncated mid-flight (which surfaces as an empty assistant reply).
   const numPredict = Math.min(Math.max(maxTokens ?? 8_192, 8_192), numCtx)
+  // Honor the profile's reasoning level. Ollama's gpt-oss accepts a granular
+  // `think` effort ("low"|"medium"|"high"); "off" → think:false so the model
+  // does not burn its whole budget on chain-of-thought.
+  const think: boolean | "low" | "medium" | "high" =
+    thinkingConfig?.enabled === true
+      ? (thinkingConfig.level && thinkingConfig.level !== "off" ? thinkingConfig.level : true)
+      : false
   return {
     model: config.model,
     stream,
-    // Honor the profile's reasoning level: "off" → think:false so the model
-    // does not burn its whole budget on chain-of-thought.
-    think: thinkingConfig?.enabled === true,
+    think,
     messages: buildOllamaMessages(config, system, messages, isSubAgent, allowedToolNames),
     tools: buildToolDefinitions(
       isSubAgent,
@@ -115,7 +120,7 @@ export async function* callOllamaApiStream(
   allowedToolNames?: string[],
   maxTokens?: number,
   strictToolAllowlist?: boolean,
-  thinkingConfig?: { enabled: boolean; budgetTokens?: number },
+  thinkingConfig?: { enabled: boolean; budgetTokens?: number; level?: "low" | "medium" | "high" | "off" },
 ): AsyncGenerator<ProviderStreamEvent, ProviderResponse> {
   const response = await fetch(`${config.baseUrl}/api/chat`, {
     method: "POST",
@@ -174,7 +179,7 @@ export async function callOllamaApi(
   allowedToolNames?: string[],
   maxTokens?: number,
   strictToolAllowlist?: boolean,
-  thinkingConfig?: { enabled: boolean; budgetTokens?: number },
+  thinkingConfig?: { enabled: boolean; budgetTokens?: number; level?: "low" | "medium" | "high" | "off" },
 ): Promise<ProviderResponse> {
   try {
     const stream = callOllamaApiStream(config, system, messages, abortSignal, isSubAgent, allowedToolNames, maxTokens, strictToolAllowlist, thinkingConfig)
