@@ -30,6 +30,7 @@ export async function* callProviderStream(
       prompt.allowedToolNames,
       maxTokens,
       prompt.strictToolAllowlist,
+      thinkingConfig,
     )
   }
 

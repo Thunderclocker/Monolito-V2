@@ -50,12 +50,20 @@ function buildOllamaBody(
   stream: boolean,
   maxTokens?: number,
   strictToolAllowlist?: boolean,
+  thinkingConfig?: { enabled: boolean; budgetTokens?: number },
 ) {
   const budget = getContextBudget(config.model)
   const numCtx = Math.min(budget.windowTokens, 32_768)
+  // Reasoning models (gpt-oss) spend output budget on the analysis channel.
+  // Keep a generous floor so reasoning + the final tool_call/content never get
+  // truncated mid-flight (which surfaces as an empty assistant reply).
+  const numPredict = Math.min(Math.max(maxTokens ?? 8_192, 8_192), numCtx)
   return {
     model: config.model,
     stream,
+    // Honor the profile's reasoning level: "off" → think:false so the model
+    // does not burn its whole budget on chain-of-thought.
+    think: thinkingConfig?.enabled === true,
     messages: buildOllamaMessages(config, system, messages, isSubAgent, allowedToolNames),
     tools: buildToolDefinitions(
       isSubAgent,
@@ -65,7 +73,7 @@ function buildOllamaBody(
     ).map(tool => ({ type: tool.type, function: tool.function })),
     options: {
       num_ctx: numCtx,
-      num_predict: maxTokens ?? 4_096,
+      num_predict: numPredict,
     },
   }
 }
@@ -107,11 +115,12 @@ export async function* callOllamaApiStream(
   allowedToolNames?: string[],
   maxTokens?: number,
   strictToolAllowlist?: boolean,
+  thinkingConfig?: { enabled: boolean; budgetTokens?: number },
 ): AsyncGenerator<ProviderStreamEvent, ProviderResponse> {
   const response = await fetch(`${config.baseUrl}/api/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(buildOllamaBody(config, system, messages, isSubAgent, allowedToolNames, true, maxTokens, strictToolAllowlist)),
+    body: JSON.stringify(buildOllamaBody(config, system, messages, isSubAgent, allowedToolNames, true, maxTokens, strictToolAllowlist, thinkingConfig)),
     signal: abortSignal,
   })
   if (!response.ok) {
@@ -165,9 +174,10 @@ export async function callOllamaApi(
   allowedToolNames?: string[],
   maxTokens?: number,
   strictToolAllowlist?: boolean,
+  thinkingConfig?: { enabled: boolean; budgetTokens?: number },
 ): Promise<ProviderResponse> {
   try {
-    const stream = callOllamaApiStream(config, system, messages, abortSignal, isSubAgent, allowedToolNames, maxTokens, strictToolAllowlist)
+    const stream = callOllamaApiStream(config, system, messages, abortSignal, isSubAgent, allowedToolNames, maxTokens, strictToolAllowlist, thinkingConfig)
     let response: ProviderResponse | undefined
     for await (const event of stream) {
       if (event.type === "done") response = event.response
@@ -180,7 +190,7 @@ export async function callOllamaApi(
   const data = await callJsonApi(`${config.baseUrl}/api/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(buildOllamaBody(config, system, messages, isSubAgent, allowedToolNames, false, maxTokens, strictToolAllowlist)),
+    body: JSON.stringify(buildOllamaBody(config, system, messages, isSubAgent, allowedToolNames, false, maxTokens, strictToolAllowlist, thinkingConfig)),
     signal: abortSignal,
   })
 
