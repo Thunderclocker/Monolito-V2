@@ -720,7 +720,7 @@ test("Todo tools: TodoWrite requires todos array with content+activeForm+status,
   }
 })
 
-test("Todo tools: TodoWrite rejects when more than ONE todo is in_progress", async () => {
+test("Todo tools: TodoWrite demotes extra in_progress todos to pending", async () => {
   const rootDir = createRootDir()
   try {
     const { ensureSession } = await import("../session/store.ts")
@@ -737,7 +737,7 @@ test("Todo tools: TodoWrite rejects when more than ONE todo is in_progress", asy
       ],
     }, { rootDir, cwd: rootDir, sessionId, profileId: "default" })
 
-    // Second call: TWO in_progress — should fail
+    // Second call: TWO in_progress — first kept, rest demoted to pending
     const second = await writeTool!.run({
       todos: [
         { content: "Task one", activeForm: "Doing task one", status: "in_progress" },
@@ -745,10 +745,11 @@ test("Todo tools: TodoWrite rejects when more than ONE todo is in_progress", asy
       ],
     }, { rootDir, cwd: rootDir, sessionId, profileId: "default" })
 
-    assert.equal(typeof second, "string")
-    const parsed = JSON.parse(second as string)
-    assert.equal(parsed.success, false)
-    assert.match(parsed.error, /Multiple todos are marked as in_progress/i)
+    assert.equal(typeof second, "object")
+    const result = second as { todos: { content: string; status: string }[] }
+    assert.equal(result.todos.length, 2)
+    assert.equal(result.todos[0].status, "in_progress")
+    assert.equal(result.todos[1].status, "pending")
   } finally {
     cleanupRootDir(rootDir)
   }
