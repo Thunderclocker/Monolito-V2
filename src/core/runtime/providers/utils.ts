@@ -263,10 +263,12 @@ export function normalizeAnthropicToolInput(input: unknown) {
 const REGISTERED_TOOL_NAMES = [
   "Bash", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "WebFetch", "WebSearch",
   "ImageSearch", "Web", "Telegram", "TelegramGet", "DownloadFile",
-  "TelegramDownloadFile", "GenerateSpeech", "VoiceClone", "VisionAnalyze", "GenerateImage",
+  "TelegramDownloadFile", "TelegramSend", "TelegramSendPhoto", "TelegramSendVoice",
+  "TelegramSendAudio", "TelegramSendDocument",
+  "GenerateSpeech", "VoiceClone", "VisionAnalyze", "GenerateImage",
   "TranscribeAudio", "SttService", "Boot", "Memory", "Kg", "SessionForensics",
-  "Todo", "QueryRuntime", "CompactSession", "system_status", "system_reboot",
-  "search_tools", "Mcp", "LspQuery",
+  "Todo", "TodoWrite", "TodoList", "QueryRuntime", "CompactSession", "system_status", "system_reboot",
+  "search_tools", "Mcp", "ListMcpResourcesTool", "McpInvokeTool", "ReadMcpResourceTool", "LspQuery",
   "tool_manage_config", "schedule_task",
 ]
 
