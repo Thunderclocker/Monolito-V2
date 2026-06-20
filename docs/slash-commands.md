@@ -16,6 +16,7 @@ Monolito exposes runtime control commands in the CLI and, where supported, throu
 - `/model info`
 - `/model set <base_url|api_key|model> <value>`
 - `/model reset`
+- `/think [off|low|medium|high]`
 - `/history [limit]`
 - `/cost`
 - `/compact [max-messages]`
@@ -45,6 +46,7 @@ Monolito exposes runtime control commands in the CLI and, where supported, throu
 - `/tts`: shows or controls the managed local TTS service lifecycle.
 - `/stt`: shows or controls the managed local speech-to-text service lifecycle.
 - `/websearch`: opens web search configuration controls through menus in the CLI and Telegram.
+- `/think [off|low|medium|high]`: gets or sets the reasoning level of the active model profile.
 - `/clear`: clears the CLI transcript only. The daemon session, messages, and memory are unchanged.
 - `/new`: resets the current session and restarts the agent startup sequence.
 - `/reset`: resets the current session, clears profile memory data, and restarts the agent startup sequence. It does not clear runtime configuration.

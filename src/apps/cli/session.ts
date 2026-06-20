@@ -1085,6 +1085,11 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       }
       if (cmd === "/doctor") return formatDoctor(await client.queryDoctor() as string)
       if (cmd === "/status") return { type: "list", tone: "info", content: await client.runDaemonCommand("/status") }
+      if (cmd === "/think") {
+        const reply = await client.runDaemonCommand(line)
+        refreshHeader()
+        return { type: "text", tone: "info", content: reply }
+      }
       if (cmd === "/minimax" && args[0] === "remains") {
         refreshMinimaxBalance()
         // Give the async fetch a moment to complete, then read the cache

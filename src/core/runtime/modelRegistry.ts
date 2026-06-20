@@ -13,6 +13,13 @@ export type ModelProvider = "minimax" | "ollama" | "openai_compatible" | "anthro
 
 export type ReasoningLevel = "low" | "medium" | "high" | "off"
 
+export function isReasoningModel(provider: string, model: string): boolean {
+  if (provider === "ollama") {
+    return /gpt-oss|deepseek-r1|\br1\b|qwen3|qwq|magistral|phi-?4-reasoning/i.test(model)
+  }
+  return false
+}
+
 export function getDefaultReasoningLevel(provider: string, model: string): ReasoningLevel {
   const isClaude37 = model.toLowerCase().includes("claude-3-7") || model.toLowerCase().includes("claude-3.7")
   if (provider === "minimax" || isClaude37) {
@@ -20,6 +27,7 @@ export function getDefaultReasoningLevel(provider: string, model: string): Reaso
   }
   return "off"
 }
+
 
 export type ModelProfile = {
   id: string

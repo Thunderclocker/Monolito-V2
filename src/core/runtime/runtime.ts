@@ -43,7 +43,7 @@ import {
 import { getTool, listTools, validateToolInput, type ToolContext, type ToolInputSchema } from "../tools/registry.ts"
 import { getEffectiveModelConfig, runAgentLoop, runAssistantTurn, runBackgroundTextTask, type AgentLoopEvent, type AssistantTurnResult, type AssistantTurnStep } from "./modelAdapter.ts"
 import { isLocalOllamaAnthropicBackend } from "./providers/resolveProvider.ts"
-import { getActiveProfile } from "./modelRegistry.ts"
+import { getActiveProfile, updateProfile, isReasoningModel, type ReasoningLevel } from "./modelRegistry.ts"
 import {
   applyModelSettingsToEnv,
   draftToSettings,
@@ -2545,6 +2545,7 @@ Rules:
           "/new",
           "/reset",
           "/model",
+          "/think",
           "/channels",
           "/status",
           "/todos",
@@ -2582,6 +2583,25 @@ Rules:
       }
       case "/model":
         return this.runModelCommand(rest)
+      case "/think": {
+        const active = getActiveProfile()
+        if (!active) {
+          return "No hay un perfil de modelo activo."
+        }
+        const level = rest[0]?.toLowerCase().trim()
+        if (!level || !["off", "low", "medium", "high"].includes(level)) {
+          return `Nivel de razonamiento actual: ${active.reasoningLevel || "off"}\nUso: /think [off|low|medium|high]`
+        }
+
+        const isReasoning = isReasoningModel(active.provider, active.model)
+        updateProfile(active.id, { reasoningLevel: level as ReasoningLevel })
+
+        if (level === "off" && isReasoning) {
+          return `Advertencia: El modelo '${active.model}' requiere razonamiento y no se puede desactivar por completo. Se configurará como 'off', pero se usará el nivel mínimo ('low') a nivel de ejecución para evitar fallos.\nNivel de razonamiento establecido a: off`
+        }
+
+        return `Nivel de razonamiento establecido a: ${level}`
+      }
       case "/update": {
         return this.runUpdate()
       }
