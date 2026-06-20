@@ -750,6 +750,8 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       composer.toolThinkingText = ""
       composer.toolThinkingFrame = 0
       composer.thinkingVisible = true
+      composer.streamingText = ""
+      composer.accumulatedThinking = ""
       startThinkingAnimation()
     }
 
