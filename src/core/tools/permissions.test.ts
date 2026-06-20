@@ -24,6 +24,18 @@ test("resolveWorkspacePath resolves any absolute path without prompting", async 
   assert.equal(res, resolve("/etc/passwd"))
 })
 
+test("resolveWorkspacePath resolves tilde home directory paths", async () => {
+  const rootDir = "/tmp/fake-root"
+  const cwd = "/tmp/fake-cwd"
+  const { homedir } = await import("node:os")
+
+  const resHome = await resolveWorkspacePath(rootDir, cwd, "~")
+  assert.equal(resHome, homedir())
+
+  const resSub = await resolveWorkspacePath(rootDir, cwd, "~/Downloads")
+  assert.equal(resSub, join(homedir(), "Downloads"))
+})
+
 test("isDestructiveAction detects dangerous bash commands", () => {
   const dangerous = [
     "rm -rf /",

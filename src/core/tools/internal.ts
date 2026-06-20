@@ -9,6 +9,7 @@ import { promisify } from "node:util"
 import { createWriteStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { dirname, join, relative, resolve, sep } from "node:path"
 import { pathToFileURL } from "node:url"
+import { homedir } from "node:os"
 import { z, type ZodType } from "zod"
 import { ensureDirs, getPaths } from "../ipc/protocol.ts"
 import { MONOLITO_ROOT } from "../system/root.ts"
@@ -445,7 +446,15 @@ export async function resolveWorkspacePath(
 ) {
   const memoryPath = resolveMemoryStatePath(rootDir, target)
   if (memoryPath) return memoryPath
-  return resolve(cwd, target)
+
+  let resolvedTarget = target
+  if (target.startsWith("~/")) {
+    resolvedTarget = join(homedir(), target.slice(2))
+  } else if (target === "~") {
+    resolvedTarget = homedir()
+  }
+
+  return resolve(cwd, resolvedTarget)
 }
 
 export function toWorkspaceRelative(rootDir: string, absolute: string) {
