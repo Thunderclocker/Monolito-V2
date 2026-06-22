@@ -223,10 +223,10 @@ export const memoryTools: ToolDefinition[] = [
 },
 
 {
-  name: "Kg",
-  aliases: ["KgAdd", "KgQuery", "KgInvalidate"],
+  name: "KnowledgeGraph",
+  aliases: ["Kg", "KgAdd", "KgQuery", "KgInvalidate"],
   permissionTier: "edit",
-  description: "Temporal knowledge graph. action=add|query|invalidate.",
+  description: "Temporal knowledge graph management tool. action=add|query|invalidate.",
   inputSchema: {
     type: "object",
     properties: {
@@ -242,7 +242,7 @@ export const memoryTools: ToolDefinition[] = [
   },
   concurrencySafe: false,
   async run(input, context) {
-    const invoked = context.invokedAs ?? "Kg"
+    const invoked = context.invokedAs ?? "KnowledgeGraph"
     const action = resolveKgAction(invoked, input as Record<string, unknown>)
     const profileId = context.profileId ?? "default"
     if (action === "query") {

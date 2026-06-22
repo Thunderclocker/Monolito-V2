@@ -985,7 +985,53 @@ test("Download, Diagnostics, and Maintenance consolidated tools", async () => {
     const rebootRes = await maintenanceTool.run({ maintenance_task: "reboot_daemon", reason: "testing" }, mockMaintenanceContext)
     assert.match(rebootRes as string, /Reinicio iniciado/)
     assert.equal(rebootReason, "testing")
+
+    // 4. KnowledgeGraph Test
+    const kgTool = getTool("KnowledgeGraph")
+    const kgAliasTool = getTool("Kg")
+    assert.ok(kgTool)
+    assert.ok(kgAliasTool)
+    assert.equal(kgTool.name, "KnowledgeGraph")
+    assert.equal(kgAliasTool.name, "KnowledgeGraph")
+
+    const mockKgContext = {
+      rootDir,
+      cwd: rootDir,
+      sessionId: "test-sess",
+      profileId: "default"
+    }
+
+    // Add triple
+    const addRes = await kgTool.run({
+      action: "add",
+      subject: "User",
+      predicate: "prefers",
+      object: "dark_mode"
+    }, mockKgContext) as { ok: boolean; id: string }
+    assert.ok(addRes.ok)
+    assert.ok(addRes.id)
+
+    // Query triple
+    const queryRes = await kgTool.run({
+      action: "query",
+      entity: "User"
+    }, mockKgContext) as { ok: boolean; facts: any[] }
+    assert.ok(queryRes.ok)
+    assert.ok(queryRes.facts.length > 0)
+    assert.equal(queryRes.facts[0].subject, "User")
+    assert.equal(queryRes.facts[0].predicate, "prefers")
+    assert.equal(queryRes.facts[0].object, "dark_mode")
+
+    // Invalidate triple
+    const invRes = await kgTool.run({
+      action: "invalidate",
+      subject: "User",
+      predicate: "prefers",
+      object: "dark_mode"
+    }, mockKgContext) as { ok: boolean }
+    assert.ok(invRes.ok)
   } finally {
     cleanupRootDir(rootDir)
   }
 })
+

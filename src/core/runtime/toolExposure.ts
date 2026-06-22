@@ -40,7 +40,7 @@ const KEYWORD_TOOL_BOOSTS: Array<{ pattern: RegExp; tools: string[] }> = [
   { pattern: /\b(daemon|reinici|reboot|servicio|system)\b/i, tools: ["GetSystemStatus", "ExecuteSystemMaintenance"] },
   { pattern: /\b(forensic|worklog|auditor)/i, tools: ["SessionForensics", "SearchHistory"] },
   { pattern: /\b(compact|contexto|context)\b/i, tools: ["ExecuteSystemMaintenance"] },
-  { pattern: /\b(kg|knowledge graph|grafo)\b/i, tools: ["Kg"] },
+  { pattern: /\b(kg|knowledge graph|grafo)\b/i, tools: ["KnowledgeGraph"] },
 ]
 
 /** When true, only eager + unlocked tools go to the model API (execution stays full registry). */
