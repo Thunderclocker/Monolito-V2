@@ -1050,6 +1050,8 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
         if (wasEmpty) await syncTranscriptFromSession(session)
         // If this is the first time we connect and still no model configured, open the wizard
         if (!hasConfiguredModel() && !composer.menuState) {
+          // Clear old transcript so the model wizard is immediately visible
+          transcript = { blocks: [], scrollOffset: 0 }
           const result = openMissingModelMenu()
           composer.menuState = result.nextState
           transcript = appendMenuTranscript(transcript, [
@@ -1844,6 +1846,8 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       if (hasConfiguredModel()) {
         await maybeStartBootstrap(session, { isFreshSession: false })
       } else {
+        // Clear old transcript so the model wizard is immediately visible
+        transcript = { blocks: [], scrollOffset: 0 }
         const result = openMissingModelMenu()
         composer.menuState = result.nextState
         transcript = appendMenuTranscript(transcript, [
