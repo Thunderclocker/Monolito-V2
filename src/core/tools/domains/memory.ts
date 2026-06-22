@@ -104,15 +104,19 @@ function resolveKgAction(invoked: string, input: Record<string, unknown>): KgAct
 
 export const memoryTools: ToolDefinition[] = [
 {
-  name: "Boot",
-  aliases: ["BootRead", "BootWrite", "BootListFiles", "BootListWings", "BootCreateFile", "BootCreateWing"],
+  name: "Memory",
+  aliases: [
+    "Boot", "BootRead", "BootWrite", "BootListFiles", "BootListWings", "BootCreateFile", "BootCreateWing",
+    "WorkspaceMemoryFiling", "WorkspaceMemoryRecall"
+  ],
   permissionTier: "edit",
   description:
-    "Manage boot context files. action=read|write|list|create. To save the user's profile use action=write with file=BOOT_USER; for agent identity use file=BOOT_IDENTITY. Pass the boot wing name in `file` (e.g. BOOT_USER), not a filesystem path.",
+    "Manage boot context files or curated memory.md sections. action=read|write|list|create for boot wings (e.g. file=BOOT_USER); action=file|recall for memory.md sections.",
   inputSchema: {
     type: "object",
     properties: {
-      action: { type: "string", enum: ["read", "write", "list", "create"] },
+      action: { type: "string", enum: ["read", "write", "list", "create", "file", "recall"] },
+      // Boot properties
       file: {
         type: "string",
         enum: [...BOOT_WING_ORDER],
@@ -120,78 +124,12 @@ export const memoryTools: ToolDefinition[] = [
           "Boot wing to read/write. BOOT_USER=user profile, BOOT_IDENTITY=agent name/identity, BOOT_SOUL=behavioral preferences, BOOT_AGENTS=workspace rules, BOOT_TOOLS=tool conventions, BOOT_MEMORY=long-term memory, BOOT_BOOTSTRAP=onboarding state.",
       },
       wing: { type: "string", description: "Alias for `file`." },
-      content: { type: "string", description: "For write: the full new markdown content of the wing (overwrites by default)." },
+      content: { type: "string", description: "For write/file: new content." },
       mode: { type: "string", enum: ["overwrite", "append"], description: "For write. Default overwrite." },
-    },
-    additionalProperties: false,
-  },
-  concurrencySafe: false,
-  async run(input, context) {
-    const invoked = context.invokedAs ?? "Boot"
-    const action = resolveBootAction(invoked, input as Record<string, unknown>)
-    const profile = context.profileId ?? "default"
-    try {
-      if (action === "list") {
-        return JSON.stringify({ profile, files: listBootWings(context.rootDir, profile) })
-      }
-      const file = resolveBootFileKey(input as Record<string, unknown>)
-      if (action === "read") {
-        if (!file) return formatToolError("file is required")
-        ensureBootWings(context.rootDir, profile)
-        if (!bootWingExists(context.rootDir, file, profile)) {
-          return formatToolError(`Boot file ${file} not found. Use action=list.`)
-        }
-        const content = readBootWing(context.rootDir, file, profile)
-        if (content == null) return formatToolError(`Boot file ${file} not found`)
-        return { file, content, profile }
-      }
-      if (action === "create") {
-        if (!file) return formatToolError("file is required")
-        const wing = file.trim()
-        const wingErr = validateZod(bootCreateWingInputZod, { wing })
-        if (wingErr) return wingErr
-        if (!isBootWingName(wing)) {
-          return formatToolError(`Cannot create "${wing}". Allowed: ${BOOT_WING_ORDER.join(", ")}.`)
-        }
-        if (bootWingExists(context.rootDir, wing, profile)) {
-          return formatToolError(`Boot file ${wing} already exists. Use write.`)
-        }
-        const result = createBootWing(context.rootDir, wing, profile, "")
-        return { ok: true, file: wing, created: result.created, profile }
-      }
-      if (!file) return formatToolError("file is required")
-      const legacyMode = optionalString(input, "action")
-      const writeMode = optionalString(input, "mode")
-        ?? (legacyMode === "append" || legacyMode === "overwrite" ? legacyMode : "overwrite")
-      // Only forward canonical keys to the strict zod schema; the raw input may
-      // carry model-invented keys (`file`, `mode`, `path`, …) that would trip
-      // `.strict()` and fail the write with "Unrecognized keys".
-      const writeContent = optionalString(input, "content")
-      const parsed = parseZod(bootWriteInputZod, { wing: file, content: writeContent, action: writeMode }, "Boot write")
-      if (!bootWingExists(context.rootDir, parsed.wing, profile)) {
-        return formatToolError(`Boot file ${parsed.wing} does not exist. Use create first.`)
-      }
-      const result = writeBootWing(context.rootDir, parsed.wing, parsed.content, profile, parsed.action === "append")
-      return { file: parsed.wing, ok: true, changed: result.changed, bytes: result.bytes, profile }
-    } catch (error) {
-      return formatToolError(error)
-    }
-  },
-},
-
-{
-  name: "Memory",
-  aliases: ["WorkspaceMemoryFiling", "WorkspaceMemoryRecall"],
-  permissionTier: "edit",
-  description: "Curated memory.md sections. action=file stores facts; action=recall keyword-searches.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      action: { type: "string", enum: ["file", "recall"] },
+      // Memory properties
       namespace: { type: "string" },
       section: { type: "string" },
       key: { type: "string" },
-      content: { type: "string" },
       query: { type: "string" },
     },
     additionalProperties: false,
@@ -199,34 +137,88 @@ export const memoryTools: ToolDefinition[] = [
   concurrencySafe: false,
   async run(input, context) {
     const invoked = context.invokedAs ?? "Memory"
-    const action = resolveMemoryAction(invoked, input as Record<string, unknown>)
-    const namespace = optionalString(input, "namespace") ?? optionalString(input, "wing")
-    const section = optionalString(input, "section") ?? optionalString(input, "room")
-    const key = optionalString(input, "key")
-    const query = optionalString(input, "query")
+    const isBoot =
+      invoked.startsWith("Boot") ||
+      ["read", "write", "list", "create"].includes(String(input.action)) ||
+      (input.file !== undefined) ||
+      (input.wing !== undefined && !input.namespace && !input.section)
 
-    if (action === "file") {
-      if (!namespace || !section) return formatToolError("namespace and section are required")
-      const content = requireString(input, "content")
-      const result = key
-        ? await upsertCuratedMemory(context.rootDir, namespace, section, content, context.profileId, key)
-        : { id: await fileMemory(context.rootDir, namespace, section, content, context.profileId), action: "inserted" as const }
-      return { ok: true, id: result.id, action: result.action, namespace, section, key: key ?? null, shared: namespace.trim().toUpperCase() === "SHARED" }
-    }
+    if (isBoot) {
+      const action = resolveBootAction(invoked, input as Record<string, unknown>)
+      const profile = context.profileId ?? "default"
+      try {
+        if (action === "list") {
+          return JSON.stringify({ profile, files: listBootWings(context.rootDir, profile) })
+        }
+        const file = resolveBootFileKey(input as Record<string, unknown>)
+        if (action === "read") {
+          if (!file) return formatToolError("file is required")
+          ensureBootWings(context.rootDir, profile)
+          if (!bootWingExists(context.rootDir, file, profile)) {
+            return formatToolError(`Boot file ${file} not found. Use action=list.`)
+          }
+          const content = readBootWing(context.rootDir, file, profile)
+          if (content == null) return formatToolError(`Boot file ${file} not found`)
+          return { file, content, profile }
+        }
+        if (action === "create") {
+          if (!file) return formatToolError("file is required")
+          const wing = file.trim()
+          const wingErr = validateZod(bootCreateWingInputZod, { wing })
+          if (wingErr) return wingErr
+          if (!isBootWingName(wing)) {
+            return formatToolError(`Cannot create "${wing}". Allowed: ${BOOT_WING_ORDER.join(", ")}.`)
+          }
+          if (bootWingExists(context.rootDir, wing, profile)) {
+            return formatToolError(`Boot file ${wing} already exists. Use write.`)
+          }
+          const result = createBootWing(context.rootDir, wing, profile, "")
+          return { ok: true, file: wing, created: result.created, profile }
+        }
+        if (!file) return formatToolError("file is required")
+        const legacyMode = optionalString(input, "action")
+        const writeMode = optionalString(input, "mode")
+          ?? (legacyMode === "append" || legacyMode === "overwrite" ? legacyMode : "overwrite")
+        const writeContent = optionalString(input, "content")
+        const parsed = parseZod(bootWriteInputZod, { wing: file, content: writeContent, action: writeMode }, "Boot write")
+        if (!bootWingExists(context.rootDir, parsed.wing, profile)) {
+          return formatToolError(`Boot file ${parsed.wing} does not exist. Use create first.`)
+        }
+        const result = writeBootWing(context.rootDir, parsed.wing, parsed.content, profile, parsed.action === "append")
+        return { file: parsed.wing, ok: true, changed: result.changed, bytes: result.bytes, profile }
+      } catch (error) {
+        return formatToolError(error)
+      }
+    } else {
+      const action = resolveMemoryAction(invoked, input as Record<string, unknown>)
+      const namespace = optionalString(input, "namespace") ?? optionalString(input, "wing")
+      const section = optionalString(input, "section") ?? optionalString(input, "room")
+      const key = optionalString(input, "key")
+      const query = optionalString(input, "query")
 
-    let results: unknown[] = []
-    try {
-      results = await recallMemory(context.rootDir, namespace, section, query, context.profileId, key)
-    } catch (error) {
-      return formatToolError(error)
+      if (action === "file") {
+        if (!namespace || !section) return formatToolError("namespace and section are required")
+        const content = requireString(input, "content")
+        const result = key
+          ? await upsertCuratedMemory(context.rootDir, namespace, section, content, context.profileId, key)
+          : { id: await fileMemory(context.rootDir, namespace, section, content, context.profileId), action: "inserted" as const }
+        return { ok: true, id: result.id, action: result.action, namespace, section, key: key ?? null, shared: namespace.trim().toUpperCase() === "SHARED" }
+      }
+
+      let results: unknown[] = []
+      try {
+        results = await recallMemory(context.rootDir, namespace, section, query, context.profileId, key)
+      } catch (error) {
+        return formatToolError(error)
+      }
+      if (!namespace && !section && !key && !query) {
+        return { namespaces: listMemoryNamespaces(context.rootDir, context.profileId), recentMemories: results }
+      }
+      if (namespace && !section && !key && !query) {
+        return { namespace, sections: listMemorySections(context.rootDir, namespace, context.profileId), memories: results }
+      }
+      return { namespace, section, key, query, keywordSearchActive: !!query, memories: results }
     }
-    if (!namespace && !section && !key && !query) {
-      return { namespaces: listMemoryNamespaces(context.rootDir, context.profileId), recentMemories: results }
-    }
-    if (namespace && !section && !key && !query) {
-      return { namespace, sections: listMemorySections(context.rootDir, namespace, context.profileId), memories: results }
-    }
-    return { namespace, section, key, query, keywordSearchActive: !!query, memories: results }
   },
 },
 

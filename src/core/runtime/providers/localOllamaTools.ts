@@ -22,7 +22,6 @@ export const LOCAL_OLLAMA_TOOL_PRIORITY = [
   "GenerateImage",
   "GenerateSpeech",
   "TranscribeAudio",
-  "Boot",
   "Memory",
   "tool_manage_config",
   "Todo",

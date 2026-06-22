@@ -266,7 +266,7 @@ const REGISTERED_TOOL_NAMES = [
   "TelegramDownloadFile", "TelegramSend", "TelegramSendPhoto", "TelegramSendVoice",
   "TelegramSendAudio", "TelegramSendDocument",
   "GenerateSpeech", "VoiceClone", "VisionAnalyze", "GenerateImage",
-  "TranscribeAudio", "SttService", "Boot", "Memory", "Kg", "SessionForensics",
+  "TranscribeAudio", "SttService", "Memory", "Kg", "SessionForensics",
   "Todo", "TodoWrite", "TodoList", "QueryRuntime", "CompactSession", "system_status", "system_reboot",
   "search_tools", "Mcp", "ListMcpResourcesTool", "McpInvokeTool", "ReadMcpResourceTool", "LspQuery",
   "tool_manage_config", "schedule_task",

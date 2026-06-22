@@ -1069,7 +1069,7 @@ export async function* runAgentLoop(
   const sessionUnlockedTools = new Set<string>()
   let apiToolAllowlist: string[] | undefined
   if (memoryAgentMode) {
-    apiToolAllowlist = ["Boot", "Memory", "BootRead", "BootWrite", "WorkspaceMemoryFiling", "WorkspaceMemoryRecall"]
+    apiToolAllowlist = ["Memory", "BootRead", "BootWrite", "WorkspaceMemoryFiling", "WorkspaceMemoryRecall"]
   } else if (useTieredToolExposure) {
     apiToolAllowlist = buildInitialApiToolAllowlist({
       lastUserText: plainUserText,

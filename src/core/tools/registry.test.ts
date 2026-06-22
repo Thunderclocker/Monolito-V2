@@ -875,3 +875,50 @@ test("HookDefinition: supports both 'command' and 'prompt' types", async () => {
   // The default hook's maxTokens is reasonable
   assert.ok(policy.hooks.PreToolUse[0].maxTokens === undefined || policy.hooks.PreToolUse[0].maxTokens! <= 500)
 })
+
+test("Memory tool: handles both boot wing operations and semantic memory via aliases", async () => {
+  const rootDir = createRootDir()
+  try {
+    const memoryTool = getTool("Memory")
+    assert.ok(memoryTool)
+
+    // Test writing to a boot wing via Memory tool directly
+    const writeResult = await memoryTool.run({
+      action: "write",
+      file: "BOOT_USER",
+      content: "Name: Test User\nOS: Linux",
+    }, { rootDir, cwd: rootDir, profileId: "default", invokedAs: "BootWrite" }) as any
+    assert.ok(writeResult.ok)
+    assert.equal(writeResult.file, "BOOT_USER")
+
+    // Test reading it back
+    const readResult = await memoryTool.run({
+      action: "read",
+      file: "BOOT_USER",
+    }, { rootDir, cwd: rootDir, profileId: "default", invokedAs: "BootRead" }) as any
+    assert.equal(readResult.file, "BOOT_USER")
+    assert.match(readResult.content, /Test User/)
+
+    // Test semantic memory filing
+    const fileResult = await memoryTool.run({
+      action: "file",
+      namespace: "SHARED",
+      section: "test",
+      content: "Important fact",
+    }, { rootDir, cwd: rootDir, profileId: "default", invokedAs: "WorkspaceMemoryFiling" }) as any
+    assert.ok(fileResult.ok)
+
+    // Test semantic memory recall
+    const recallResult = await memoryTool.run({
+      action: "recall",
+      namespace: "SHARED",
+      section: "test",
+      query: "fact",
+    }, { rootDir, cwd: rootDir, profileId: "default", invokedAs: "WorkspaceMemoryRecall" }) as any
+    assert.ok(Array.isArray(recallResult.memories))
+    assert.equal(recallResult.memories.length, 1)
+    assert.match(recallResult.memories[0].content, /Important fact/)
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})

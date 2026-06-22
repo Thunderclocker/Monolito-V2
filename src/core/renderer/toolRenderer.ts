@@ -343,17 +343,24 @@ function normalizeToolNameForRender(tool: string, input: unknown): string {
     if (action === "list") return "TodoList"
     return "TodoWrite"
   }
-  if (tool === "Boot") {
+  if (tool === "Memory") {
     const action = getString(value, "action")
     if (action === "write") return "BootWrite"
     if (action === "list") return "BootListFiles"
     if (action === "create") return "BootCreateFile"
-    return "BootRead"
-  }
-  if (tool === "Memory") {
-    const action = getString(value, "action")
+    if (action === "read") return "BootRead"
     if (action === "recall") return "WorkspaceMemoryRecall"
-    return "WorkspaceMemoryFiling"
+    if (action === "file") return "WorkspaceMemoryFiling"
+
+    // Fallbacks based on properties if action is unset
+    if (getString(value, "file") || getString(value, "wing")) {
+      if (value?.content) return "BootWrite"
+      return "BootRead"
+    }
+    if (getString(value, "namespace") || getString(value, "section")) {
+      if (value?.content) return "WorkspaceMemoryFiling"
+      return "WorkspaceMemoryRecall"
+    }
   }
   return tool
 }
