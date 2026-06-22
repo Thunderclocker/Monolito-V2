@@ -74,13 +74,10 @@ export function listModelTools(
     "Telegram",
     "TelegramGet",
     "schedule_task",
-    "system_reboot",
-    "system_status",
-    "QueryRuntime",
-    "CompactSession",
+    "ExecuteSystemMaintenance",
+    "GetSystemStatus",
     "SttService",
     "tool_manage_config",
-    "TelegramDownloadFile",
     "manage_sudo_mode"
   ])
 
@@ -92,14 +89,7 @@ export function listModelTools(
   // hallucinate success. The infra/service-management tools above stay
   // hidden so sub-agents can't spin up daemons or reconfigure channels.
 
-  const hiddenFromMainSession = new Set([
-    "TelegramDownloadFile"
-  ])
-
-  if (exposeTelegramDownload) {
-    hiddenFromSubAgents.delete("TelegramDownloadFile")
-    hiddenFromMainSession.delete("TelegramDownloadFile")
-  }
+  const hiddenFromMainSession = new Set<string>([])
 
   // Core tool set: tools the model can always reach, regardless of
   // any per-session allowlist or lastUserText-mode filtering. After

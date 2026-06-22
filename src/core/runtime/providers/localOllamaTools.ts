@@ -29,8 +29,7 @@ export const LOCAL_OLLAMA_TOOL_PRIORITY = [
   "TelegramGet",
   "DownloadFile",
   "Mcp",
-  "QueryRuntime",
-  "system_status",
+  "GetSystemStatus",
   "SearchHistory",
   "schedule_task",
 ] as const

@@ -20,7 +20,7 @@ export const EAGER_TOOL_NAMES = [
   "VisionAnalyze",
   "GenerateSpeech",
   "TranscribeAudio",
-  "QueryRuntime",
+  "GetSystemStatus",
 ] as const
 
 const TELEGRAM_EAGER = [
@@ -36,10 +36,10 @@ const KEYWORD_TOOL_BOOSTS: Array<{ pattern: RegExp; tools: string[] }> = [
   { pattern: /\b(git|commit|diff|stash|branch)\b/i, tools: ["Bash"] },
   { pattern: /\b(audio|voz|tts|hablar|transcri)/i, tools: ["GenerateSpeech", "TranscribeAudio", "VoiceClone"] },
   { pattern: /\b(memoria|memory|boot|recordar)\b/i, tools: ["Memory"] },
-  { pattern: /\b(costo|cost|usage|tokens)\b/i, tools: ["QueryRuntime"] },
-  { pattern: /\b(daemon|reinici|reboot|servicio|system)\b/i, tools: ["system_status", "system_reboot"] },
+  { pattern: /\b(costo|cost|usage|tokens)\b/i, tools: ["GetSystemStatus"] },
+  { pattern: /\b(daemon|reinici|reboot|servicio|system)\b/i, tools: ["GetSystemStatus", "ExecuteSystemMaintenance"] },
   { pattern: /\b(forensic|worklog|auditor)/i, tools: ["SessionForensics", "SearchHistory"] },
-  { pattern: /\b(compact|contexto|context)\b/i, tools: ["CompactSession"] },
+  { pattern: /\b(compact|contexto|context)\b/i, tools: ["ExecuteSystemMaintenance"] },
   { pattern: /\b(kg|knowledge graph|grafo)\b/i, tools: ["Kg"] },
 ]
 

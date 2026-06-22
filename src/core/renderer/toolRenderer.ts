@@ -362,6 +362,25 @@ function normalizeToolNameForRender(tool: string, input: unknown): string {
       return "WorkspaceMemoryRecall"
     }
   }
+  if (tool === "DownloadFile") {
+    if (typeof value?.file_id === "string") return "TelegramDownloadFile"
+    return "DownloadFile"
+  }
+  if (tool === "GetSystemStatus" || tool === "QueryRuntime" || tool === "system_status" || tool === "SystemStatus") {
+    const infoType = getString(value, "info_type")
+    const metric = getString(value, "metric")
+    if (infoType === "cost" || metric === "cost") return "QueryCost"
+    if (infoType === "session" || metric === "stats") return "QuerySessionStats"
+    if (metric === "status") return "QuerySessionStatus"
+    if (infoType === "health") return "SystemStatus"
+    return "GetSystemStatus"
+  }
+  if (tool === "ExecuteSystemMaintenance" || tool === "CompactSession" || tool === "system_reboot" || tool === "SystemReboot") {
+    const task = getString(value, "maintenance_task")
+    if (task === "reboot_daemon") return "SystemReboot"
+    if (task === "compact_context") return "CompactSession"
+    return "ExecuteSystemMaintenance"
+  }
   return tool
 }
 
@@ -539,6 +558,21 @@ export function renderToolStart(tool: string, input: unknown): ToolRenderLine {
         text: `Downloading ${truncate(getString(value, "url") ?? "...", 80)}...`,
         detail: getString(value, "url"),
       }
+    case "GetSystemStatus":
+      return {
+        label: "",
+        tone: "info",
+        text: `Querying system status (${getString(value, "info_type") ?? "all"})...`,
+      }
+    case "ExecuteSystemMaintenance": {
+      const task = getString(value, "maintenance_task")
+      const taskLabel = task === "reboot_daemon" ? "rebooting daemon" : task === "compact_context" ? "compacting context" : "maintenance task"
+      return {
+        label: "",
+        tone: "info",
+        text: `Executing system maintenance (${taskLabel})...`,
+      }
+    }
     // Vision
     case "VisionAnalyze":
       return {
@@ -742,6 +776,21 @@ export function renderToolFinish(tool: string, ok: boolean, output: unknown, inp
       const localPath = getString(value, "local_path")
       const bytes = getNumber(value, "bytes")
       return { label, tone, text: `Downloaded to ${localPath ? humanizePath(localPath) : "file"}${bytes !== undefined ? ` (${bytes} bytes)` : ""}` }
+    }
+    case "GetSystemStatus":
+      return {
+        label,
+        tone,
+        text: `System status queried successfully`,
+      }
+    case "ExecuteSystemMaintenance": {
+      const task = getString(value, "maintenance_task")
+      const taskLabel = task === "reboot_daemon" ? "rebooted daemon" : task === "compact_context" ? "compacted context" : "maintenance task completed"
+      return {
+        label,
+        tone,
+        text: `System maintenance (${taskLabel}) completed`,
+      }
     }
     // Vision
     case "VisionAnalyze": {

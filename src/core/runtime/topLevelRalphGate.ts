@@ -127,13 +127,13 @@ export function evaluateTopLevelRalphGate(
 
   // Rule 3: Security / PC audit — must run tools before answering
   const ranAuditTool = turnSteps.some(
-    s => s.type === "tool" && (s.tool === "Bash" || s.tool === "system_status" || s.tool === "SystemStatus"),
+    s => s.type === "tool" && (s.tool === "Bash" || s.tool === "system_status" || s.tool === "SystemStatus" || s.tool === "GetSystemStatus"),
   )
   if (isSecurityAuditRequest(lastUserText) && !ranAuditTool) {
     const feedbackPrompt = wrapAuditFeedback(
       `[Ralph Loop] ALERTA DE COMPORTAMIENTO\n` +
       `El usuario pidió una auditoría o evaluación de seguridad de su PC/sistema ("${lastUserText}").\n` +
-      `Por regla del sistema debes ejecutar herramientas (Bash: ss -tulnp, ufw status, apt list --upgradable, etc.; o system_status) ANTES de responder.\n` +
+      `Por regla del sistema debes ejecutar herramientas (Bash: ss -tulnp, ufw status, apt list --upgradable, etc.; o GetSystemStatus) ANTES de responder.\n` +
       `No preguntes si quiere auditar — auditá directamente con evidencia.\n` +
       `Corrige esto: ejecuta las herramientas de diagnóstico ahora y responde con los resultados.`
     )
@@ -141,7 +141,7 @@ export function evaluateTopLevelRalphGate(
       blocked: true,
       shouldRetry: true,
       feedbackPrompt,
-      unfinished: [{ content: "Auditar seguridad del sistema con Bash/system_status", status: "pending" }],
+      unfinished: [{ content: "Auditar seguridad del sistema con Bash/GetSystemStatus", status: "pending" }],
     }
   }
 

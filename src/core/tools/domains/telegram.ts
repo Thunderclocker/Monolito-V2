@@ -680,38 +680,50 @@ export const telegramTools: ToolDefinition[] = [
 },
 {
   name: "DownloadFile",
+  aliases: ["TelegramDownloadFile"],
   permissionTier: "read",
-  description: "Download any file from a public HTTP/HTTPS URL into the secure Monolito scratchpad storage and return the local path. Essential for bypassing hotlinking blocks on images or getting documents.",
+  description: "Download any file from a public HTTP/HTTPS URL or Telegram file_id into the secure Monolito scratchpad storage and return the local path. Essential for bypassing hotlinking blocks on images or getting documents.",
   inputSchema: {
     type: "object",
     properties: {
       url: { type: "string", description: "The HTTP/HTTPS URL of the file to download." },
-      filename: { type: "string", description: "Optional local filename override (including extension). If not provided, a safe name will be generated from the URL path." },
+      file_id: { type: "string", description: "The Telegram file_id to download." },
+      filename: { type: "string", description: "Optional local filename override (including extension)." },
     },
-    required: ["url"],
     additionalProperties: false,
   },
   concurrencySafe: true,
   validate: input => {
-    if (typeof input.url !== "string" || input.url.length === 0) return "url must be a non-empty string"
-    try { new URL(input.url) } catch { return "url must be a valid HTTP/HTTPS URL" }
+    const url = optionalString(input, "url")
+    const fileId = optionalString(input, "file_id")
+    if (!url && !fileId) return "Either url or file_id must be provided"
+    if (url) {
+      try { new URL(url) } catch { return "url must be a valid HTTP/HTTPS URL" }
+    }
     if (input.filename !== undefined && typeof input.filename !== "string") return "filename must be a string"
     return null
   },
   async run(input, context) {
-    const url = requireString(input, "url")
+    const fileId = optionalString(input, "file_id")
+    const url = optionalString(input, "url")
     const filename = optionalString(input, "filename")
+
+    if (fileId || (url && (url.startsWith("tg://") || !url.startsWith("http")))) {
+      const actualFileId = fileId ?? url!.replace(/^tg:\/\/(file\?id=)?/, "")
+      const config = readChannelsConfig()
+      if (!config.telegram?.enabled || !config.telegram.token) {
+        return formatToolError("Telegram is not configured or not enabled. Use /channels to set it up.")
+      }
+      return await resolveTelegramDownload(config.telegram.token, actualFileId, context.rootDir, filename)
+    }
+
+    if (!url) return formatToolError("url is required for HTTP downloads")
 
     const paths = ensureDirs(context.rootDir)
     const downloadsDir = join(paths.scratchpadDir, "downloads")
 
     const startedAt = Date.now()
     try {
-      // Browser-required hosts block generic bot user-agents with 403. Reddit
-      // and Pinterest in particular need a full browser-shaped request
-      // (Referer + Accept-Language + Sec-Fetch-*). Without these the host
-      // returns 403 even though the file is publicly accessible — observed
-      // 2026-06-09 when 4 of 10 fan-art downloads failed this way.
       const parsedUrl = new URL(url)
       const browserHeaders = (referer: string) => ({
         "User-Agent":
@@ -725,18 +737,11 @@ export const telegramTools: ToolDefinition[] = [
         "Sec-Fetch-User": "?1",
         "Upgrade-Insecure-Requests": "1",
       })
-      // First attempt: minimal browser-shaped headers with the URL's own
-      // origin as Referer. Works for most CDNs (i.redd.it, imgur direct,
-      // i.pinimg.com).
       let response = await fetch(url, {
         headers: browserHeaders(parsedUrl.origin + "/"),
         signal: AbortSignal.timeout(30_000),
         redirect: "follow",
       })
-      // Second attempt (only on 403 from a known bot-blocking host): use
-      // a domain-appropriate Referer. Many image CDNs (preview.redd.it,
-      // b.thumbs.redditmedia.com) require Referer=https://www.reddit.com/
-      // to even serve the bytes.
       if (response.status === 403 && isBrowserRequiredHost(parsedUrl.hostname)) {
         response = await fetch(url, {
           headers: browserHeaders(refererForHost(parsedUrl.hostname)),
@@ -755,10 +760,6 @@ export const telegramTools: ToolDefinition[] = [
       const contentType = response.headers.get("content-type") ?? "application/octet-stream"
       const buffer = Buffer.from(await response.arrayBuffer())
 
-      // Some 403 pages still return 200 with an HTML login wall. If the
-      // resource is not a sensible content-type, fail with a clear message
-      // so the model doesn't pass a login page to TelegramSendPhoto and
-      // get back 'wrong type of the web page content'.
       if (isHtmlContentType(contentType) || isJsonErrorBody(buffer, contentType)) {
         return formatToolError(
           `Download failed: ${url} returned a ${contentType} response, not a direct file. ` +
@@ -768,7 +769,6 @@ export const telegramTools: ToolDefinition[] = [
         )
       }
 
-      // Determinar nombre del archivo
       let finalName = filename
       if (!finalName) {
         const urlSegment = parsedUrl.pathname.split("/").at(-1)
@@ -777,7 +777,6 @@ export const telegramTools: ToolDefinition[] = [
           : `download-${Date.now()}`
       }
 
-      // Asegurar extensión adecuada si falta en la inferencia básica
       if (!finalName.includes(".") && contentType !== "application/octet-stream") {
         const mimeExt = contentType.split(";")[0]?.split("/")[1]
         if (mimeExt) finalName = `${finalName}.${mimeExt}`
@@ -799,32 +798,6 @@ export const telegramTools: ToolDefinition[] = [
       return formatToolError(`Download failed: ${error.message || error}`)
     }
   },
-},
-
-{
-  name: "TelegramDownloadFile",
-  permissionTier: "edit",
-  description: "Download a Telegram file_id into Monolito scratchpad storage and return the local path. IMPORTANT: Do NOT execute this tool for standard attachments that already provide a 'local_path' attribute, as they are downloaded automatically. Only execute this tool as a manual override when a Telegram attachment exceeds the auto-download size limit (status='size_limit_exceeded') and the user explicitly confirms they want to proceed.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      file_id: { type: "string", description: "The Telegram file_id to download." },
-      filename: { type: "string", description: "Optional local filename override." },
-    },
-    required: ["file_id"],
-    additionalProperties: false,
-  },
-  concurrencySafe: false,
-  validate: input => typeof input.file_id === "string" && input.file_id.length > 0 ? null : "file_id must be a non-empty string",
-  async run(input, context) {
-    const fileId = requireString(input, "file_id")
-    const filename = optionalString(input, "filename")
-    const config = readChannelsConfig()
-    if (!config.telegram?.enabled || !config.telegram.token) {
-      return formatToolError("Telegram is not configured or not enabled. Use /channels to set it up.")
-    }
-    return await resolveTelegramDownload(config.telegram.token, fileId, context.rootDir, filename)
-  },
-},
+}
 
 ]

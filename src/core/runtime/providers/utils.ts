@@ -268,6 +268,7 @@ const REGISTERED_TOOL_NAMES = [
   "GenerateSpeech", "VoiceClone", "VisionAnalyze", "GenerateImage",
   "TranscribeAudio", "SttService", "Memory", "Kg", "SessionForensics",
   "Todo", "TodoWrite", "TodoList", "QueryRuntime", "CompactSession", "system_status", "system_reboot",
+  "GetSystemStatus", "ExecuteSystemMaintenance",
   "search_tools", "Mcp", "ListMcpResourcesTool", "McpInvokeTool", "ReadMcpResourceTool", "LspQuery",
   "tool_manage_config", "schedule_task",
 ]

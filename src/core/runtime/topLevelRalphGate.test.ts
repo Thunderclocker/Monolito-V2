@@ -358,6 +358,6 @@ test("evaluateTopLevelRalphGate blocks security audit without tools", () => {
     new Set(),
   )
   assert.equal(result.blocked, true)
-  assert.match(result.feedbackPrompt ?? "", /Bash|system_status/i)
+  assert.match(result.feedbackPrompt ?? "", /Bash|GetSystemStatus/i)
 })
 

@@ -30,26 +30,33 @@ import type { ToolDefinition } from "../registry.ts"
 
 export const adminTools: ToolDefinition[] = [
 {
-  name: "QueryRuntime",
-  aliases: ["QuerySessionStatus", "QueryCost", "QuerySessionStats"],
+  name: "GetSystemStatus",
+  aliases: ["QueryRuntime", "system_status", "SystemStatus", "QuerySessionStatus", "QueryCost", "QuerySessionStats"],
   permissionTier: "read",
-  description: "Query Monolito runtime state. metric='status': session metadata and tool count. metric='cost': token/cost summary. metric='stats': session usage statistics. Optional sessionId (defaults to current session) for status/stats.",
+  description: "Query Monolito daemon health diagnostics, token consumption cost metrics, or session status history. Optional info_type='all'|'health'|'cost'|'session'. Defaults to 'all'.",
   inputSchema: {
     type: "object",
     properties: {
-      metric: { type: "string", enum: ["status", "cost", "stats"], description: "Which runtime metric to fetch." },
-      sessionId: { type: "string", description: "Optional session ID for status/stats." },
+      info_type: { 
+        type: "string", 
+        enum: ["all", "health", "cost", "session"],
+        description: "The type of information to retrieve."
+      },
+      metric: { type: "string", enum: ["status", "cost", "stats"], description: "Legacy parameter (same as info_type)." },
+      sessionId: { type: "string", description: "Optional session ID (defaults to current session)." },
     },
     additionalProperties: false,
   },
   concurrencySafe: true,
   async run(input, context) {
-    const invoked = context.invokedAs ?? "QueryRuntime"
+    const invoked = context.invokedAs ?? "GetSystemStatus"
+    const sessionId = optionalString(input, "sessionId") ?? context.sessionId
+
+    // Handle legacy specific actions by invoked name
     if (invoked === "QueryCost") {
       if (!context.queryCost) return formatToolError("Cost query is not available in this context")
       return context.queryCost()
     }
-    const sessionId = optionalString(input, "sessionId") ?? context.sessionId
     if (invoked === "QuerySessionStats") {
       if (!sessionId) return formatToolError("sessionId is required")
       if (!context.queryStats) return formatToolError("Session stats query is not available in this context")
@@ -60,86 +67,147 @@ export const adminTools: ToolDefinition[] = [
       if (!context.querySessionStatus) return formatToolError("Session status query is not available in this context")
       return context.querySessionStatus(sessionId)
     }
+    if (invoked === "system_status" || invoked === "SystemStatus") {
+      if (!context.runtime?.getSystemStatus) {
+        return formatToolError("system_status is unavailable outside the Monolito runtime.")
+      }
+      return JSON.stringify(await context.runtime.getSystemStatus())
+    }
+
+    // Normal routing
+    const infoType = optionalString(input, "info_type") ?? "all"
     const metric = optionalString(input, "metric")
-    if (metric === "cost") {
+
+    // Map legacy metric parameter to infoType if specified
+    let targetType = infoType
+    if (metric === "cost") targetType = "cost"
+    else if (metric === "stats" || metric === "status") targetType = "session"
+
+    // If QueryRuntime invoked without metric, default to session status or cost depending on legacy behavior
+    if (invoked === "QueryRuntime" && !metric && infoType === "all") {
+      targetType = "session"
+    }
+
+    if (targetType === "health") {
+      if (!context.runtime?.getSystemStatus) {
+        return formatToolError("System health is unavailable outside the Monolito runtime.")
+      }
+      return JSON.stringify(await context.runtime.getSystemStatus())
+    }
+
+    if (targetType === "cost") {
       if (!context.queryCost) return formatToolError("Cost query is not available in this context")
       return context.queryCost()
     }
-    if (!sessionId) return formatToolError("sessionId is required")
-    if (metric === "stats") {
-      if (!context.queryStats) return formatToolError("Session stats query is not available in this context")
-      return context.queryStats(sessionId)
+
+    if (targetType === "session") {
+      if (!sessionId) return formatToolError("sessionId is required")
+      // Under legacy QueryRuntime status / stats:
+      if (metric === "stats" || invoked === "QuerySessionStats") {
+        if (!context.queryStats) return formatToolError("Session stats query is not available in this context")
+        return context.queryStats(sessionId)
+      }
+      if (!context.querySessionStatus) return formatToolError("Session status query is not available in this context")
+      return context.querySessionStatus(sessionId)
     }
-    if (!context.querySessionStatus) return formatToolError("Session status query is not available in this context")
-    return context.querySessionStatus(sessionId)
+
+    // Default: 'all'
+    const result: Record<string, any> = {}
+    if (context.runtime?.getSystemStatus) {
+      try {
+        result.health = await context.runtime.getSystemStatus()
+      } catch (err: any) {
+        result.health_error = err.message || err
+      }
+    }
+    if (context.queryCost) {
+      try {
+        result.cost = await context.queryCost()
+      } catch (err: any) {
+        result.cost_error = err.message || err
+      }
+    }
+    if (sessionId) {
+      if (context.querySessionStatus) {
+        try {
+          result.session = await context.querySessionStatus(sessionId)
+        } catch (err: any) {
+          result.session_error = err.message || err
+        }
+      }
+      if (context.queryStats) {
+        try {
+          result.stats = await context.queryStats(sessionId)
+        } catch (err: any) {
+          result.stats_error = err.message || err
+        }
+      }
+    }
+    return JSON.stringify(result)
   },
 },
 
 {
-  name: "CompactSession",
+  name: "ExecuteSystemMaintenance",
+  aliases: ["CompactSession", "system_reboot", "SystemReboot"],
   permissionTier: "edit",
-  description: "Compact older messages in the current Monolito session.",
+  description: "Execute system maintenance tasks like rebooting the daemon or compacting historical context to prevent token overflows.",
   inputSchema: {
     type: "object",
     properties: {
-      sessionId: { type: "string", description: "Optional session ID. Defaults to the current session." },
-      maxMessages: { type: "number", description: "Optional number of recent messages to keep un-compacted." },
+      maintenance_task: {
+        type: "string",
+        enum: ["reboot_daemon", "compact_context"],
+        description: "The maintenance task to execute."
+      },
+      reason: { type: "string", description: "Reason for rebooting (required for reboot_daemon)." },
+      sessionId: { type: "string", description: "Optional session ID for context compaction (defaults to current)." },
+      maxMessages: { type: "number", description: "Optional max messages to keep un-compacted." },
     },
     additionalProperties: false,
   },
+  concurrencySafe: false,
   validate: input => {
-    const maxMessages = input.maxMessages
-    if (maxMessages !== undefined && (typeof maxMessages !== "number" || !Number.isInteger(maxMessages) || maxMessages < 1)) {
-      return "maxMessages must be a positive integer"
+    const invoked = input.maintenance_task
+    const task = invoked ? String(invoked) : undefined
+
+    if (task === "reboot_daemon") {
+      const reason = input.reason
+      if (typeof reason !== "string" || reason.trim().length === 0) {
+        return "reason must be a non-empty string for reboot_daemon"
+      }
+    }
+    if (task === "compact_context") {
+      const maxMessages = input.maxMessages
+      if (maxMessages !== undefined && (typeof maxMessages !== "number" || !Number.isInteger(maxMessages) || maxMessages < 1)) {
+        return "maxMessages must be a positive integer"
+      }
     }
     return null
   },
   async run(input, context) {
-    const sessionId = optionalString(input, "sessionId") ?? context.sessionId
-    const maxMessages = optionalNumber(input, "maxMessages")
-    if (!sessionId) return formatToolError("sessionId is required")
-    if (!context.compactSession) return formatToolError("Session compaction is not available in this context")
-    return context.compactSession(sessionId, maxMessages)
-  },
-},
+    const invoked = context.invokedAs ?? "ExecuteSystemMaintenance"
+    const task = optionalString(input, "maintenance_task")
 
-{
-  name: "system_status",
-  aliases: ["SystemStatus"],
-  permissionTier: "read",
-  description: "Return a concurrent JSON audit of Monolito system health, including JIT-managed services, routing, file-backed sessions, workspace state, and daemon memory agent consolidation timing (lastExecutedAt, lastSkippedAt, isRunning). Use this tool when asked about the current state or recent activity of any daemon component.",
-  inputSchema: emptyInputSchema,
-  concurrencySafe: true,
-  async run(_input, context) {
-    if (!context.runtime?.getSystemStatus) {
-      return formatToolError("system_status is unavailable outside the Monolito runtime.")
+    if (invoked === "system_reboot" || invoked === "SystemReboot" || task === "reboot_daemon") {
+      if (!context.runtime?.gracefulRestart) {
+        return formatToolError("system_reboot is unavailable outside the Monolito runtime.")
+      }
+      const reason = optionalString(input, "reason")?.trim() || "Manual maintenance reboot request"
+      context.runtime.gracefulRestart(reason)
+      return `Reinicio iniciado. El sistema volverá a estar online en unos segundos por el motivo: ${reason}`
     }
-    return JSON.stringify(await context.runtime.getSystemStatus())
-  },
-},
 
-{
-  name: "system_reboot",
-  aliases: ["SystemReboot"],
-  permissionTier: "edit",
-  description: "Reinicia completamente el daemon de Monolito. ÚSALA ÚNICAMENTE después de haber modificado el código fuente y haber verificado que compila (npm run build), para que el sistema cargue tu nueva lógica en memoria.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      reason: { type: "string", description: "Motivo del reinicio" },
-    },
-    required: ["reason"],
-    additionalProperties: false,
-  },
-  concurrencySafe: false,
-  validate: input => typeof input.reason === "string" && input.reason.trim().length > 0 ? null : "reason must be a non-empty string",
-  async run(input, context) {
-    if (!context.runtime?.gracefulRestart) {
-      return formatToolError("system_reboot is unavailable outside the Monolito runtime.")
+    // Default to compaction for CompactSession or explicit compact_context
+    if (invoked === "CompactSession" || task === "compact_context" || (!task && invoked === "ExecuteSystemMaintenance")) {
+      const sessionId = optionalString(input, "sessionId") ?? context.sessionId
+      const maxMessages = optionalNumber(input, "maxMessages")
+      if (!sessionId) return formatToolError("sessionId is required")
+      if (!context.compactSession) return formatToolError("Session compaction is not available in this context")
+      return context.compactSession(sessionId, maxMessages)
     }
-    const reason = requireString(input, "reason").trim()
-    context.runtime.gracefulRestart(reason)
-    return `Reinicio iniciado. El sistema volverá a estar online en unos segundos por el motivo: ${reason}`
+
+    return formatToolError(`Unknown maintenance task or invoked alias: ${invoked}`)
   },
 },
 

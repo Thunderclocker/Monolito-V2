@@ -922,3 +922,70 @@ test("Memory tool: handles both boot wing operations and semantic memory via ali
     cleanupRootDir(rootDir)
   }
 })
+
+test("Download, Diagnostics, and Maintenance consolidated tools", async () => {
+  const rootDir = createRootDir()
+  try {
+    // 1. DownloadFile Test
+    const downloadTool = getTool("DownloadFile")
+    assert.ok(downloadTool)
+
+    // Test validation
+    assert.equal(downloadTool!.validate!({}), "Either url or file_id must be provided")
+
+    // 2. GetSystemStatus Test
+    const statusTool = getTool("GetSystemStatus")
+    assert.ok(statusTool)
+
+    // Verify alias invocations route to proper context helpers
+    const mockContext = {
+      rootDir,
+      cwd: rootDir,
+      sessionId: "test-sess",
+      queryCost: () => JSON.stringify({ cost: 42 }),
+      queryStats: (sid: string) => JSON.stringify({ sid, stats: "ok" }),
+      querySessionStatus: (sid: string) => JSON.stringify({ sid, status: "active" }),
+      runtime: {
+        getSystemStatus: async () => ({ status: "online" })
+      }
+    }
+
+    const costRes = await statusTool.run({}, { ...mockContext, invokedAs: "QueryCost" })
+    assert.deepEqual(JSON.parse(costRes as string), { cost: 42 })
+
+    const statsRes = await statusTool.run({}, { ...mockContext, invokedAs: "QuerySessionStats" })
+    assert.deepEqual(JSON.parse(statsRes as string), { sid: "test-sess", stats: "ok" })
+
+    const infoCostRes = await statusTool.run({ info_type: "cost" }, mockContext)
+    assert.deepEqual(JSON.parse(infoCostRes as string), { cost: 42 })
+
+    const infoHealthRes = await statusTool.run({ info_type: "health" }, mockContext)
+    assert.deepEqual(JSON.parse(infoHealthRes as string), { status: "online" })
+
+    // 3. ExecuteSystemMaintenance Test
+    const maintenanceTool = getTool("ExecuteSystemMaintenance")
+    assert.ok(maintenanceTool)
+
+    let rebootReason: string | null = null
+    const mockMaintenanceContext = {
+      rootDir,
+      cwd: rootDir,
+      sessionId: "test-sess",
+      compactSession: (sid: string, max?: number) => JSON.stringify({ sid, max, compacted: true }),
+      runtime: {
+        gracefulRestart: (reason?: string) => { rebootReason = reason ?? null }
+      }
+    }
+
+    // Compact action
+    const compactRes = await maintenanceTool.run({ maintenance_task: "compact_context", maxMessages: 10 }, mockMaintenanceContext)
+    assert.deepEqual(JSON.parse(compactRes as string), { sid: "test-sess", max: 10, compacted: true })
+
+    // Reboot action
+    const rebootRes = await maintenanceTool.run({ maintenance_task: "reboot_daemon", reason: "testing" }, mockMaintenanceContext)
+    assert.match(rebootRes as string, /Reinicio iniciado/)
+    assert.equal(rebootReason, "testing")
+  } finally {
+    cleanupRootDir(rootDir)
+  }
+})
