@@ -520,16 +520,26 @@ export function renderComposerLines(sessionId: string, composer: ComposerState, 
   const width = Math.max(20, cols)
   const innerWidth = Math.max(1, width - 4)
   const prompt = getPromptLabel(sessionId)
-  
+
   let inputLinesPlain: string[]
   if (composer.permissionPrompt) {
     const p = composer.permissionPrompt
-    inputLinesPlain = [
-      `${ANSI.yellow}${ANSI.bold}⚠️ DESTRUCTIVE ACTION DETECTED:${ANSI.reset} Tool ${p.tool} wants to execute:`,
-      `  ${ANSI.red}${ANSI.bold}${p.path}${ANSI.reset}`,
-      `  Reason: ${p.reason}`,
-      `  [A]llow once  ·  [S]ave always  ·  [D]eny`,
-    ]
+    const isSudo = p.reason.toLowerCase().includes("sudo") || p.reason.toLowerCase().includes("superusuario")
+    if (isSudo) {
+      inputLinesPlain = [
+        `${ANSI.yellow}${ANSI.bold}🔑 PRIVILEGE ESCALATION REQUIRED:${ANSI.reset} Tool ${p.tool} wants to run:`,
+        `  ${ANSI.yellow}${ANSI.bold}${p.path}${ANSI.reset}`,
+        `  ${p.reason}`,
+        `  [A]llow once  ·  [D]eny`,
+      ]
+    } else {
+      inputLinesPlain = [
+        `${ANSI.yellow}${ANSI.bold}⚠️ DESTRUCTIVE ACTION DETECTED:${ANSI.reset} Tool ${p.tool} wants to execute:`,
+        `  ${ANSI.red}${ANSI.bold}${p.path}${ANSI.reset}`,
+        `  Reason: ${p.reason}`,
+        `  [A]llow once  ·  [S]ave always  ·  [D]eny`,
+      ]
+    }
   } else {
     inputLinesPlain = wrapPlainText(`${prompt.plain}${composer.input}`, innerWidth)
   }

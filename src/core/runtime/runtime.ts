@@ -2702,7 +2702,7 @@ Rules:
       lastUserText,
     })
     if (permission.behavior !== "allow") {
-      if (permission.behavior === "ask" && permission.source === "destructive_guard") {
+      if (permission.behavior === "ask" && (permission.source === "destructive_guard" || permission.source === "sudo_guard")) {
         const confirmId = randomUUID()
         let resolveDecision: (decision: "allow" | "deny" | "ask") => void = () => {}
         let timeoutHandle: NodeJS.Timeout | null = null
@@ -2728,13 +2728,13 @@ Rules:
             try {
               appendWorklog(this.rootDir, sessionId, {
                 type: "note",
-                summary: `CONFIRM_TIMEOUT: no responder for destructive action confirmId=${confirmId} (tool=${tool.name}, command=${commandStr}). Defaulted to 'deny' after ${CONFIRM_TIMEOUT_MS}ms.`,
+                summary: `CONFIRM_TIMEOUT: no responder for destructive/sudo action confirmId=${confirmId} (tool=${tool.name}, command=${commandStr}). Defaulted to 'deny' after ${CONFIRM_TIMEOUT_MS}ms.`,
               })
             } catch {}
             this.emit?.({
               type: "error",
               sessionId,
-              error: `Destructive action confirmation request timed out after ${CONFIRM_TIMEOUT_MS}ms (no responder). Defaulted to 'deny'.`,
+              error: `Action confirmation request timed out after ${CONFIRM_TIMEOUT_MS}ms (no responder). Defaulted to 'deny'.`,
             })
           } catch {}
         }, CONFIRM_TIMEOUT_MS)
@@ -2743,7 +2743,36 @@ Rules:
         if (timeoutHandle) clearTimeout(timeoutHandle)
 
         if (decision === "allow" || decision === "ask") {
-          if (decision === "allow") {
+          if (permission.source === "sudo_guard") {
+            try {
+              const { userInfo } = await import("node:os")
+              const username = userInfo().username
+              if (!/^[a-zA-Z0-9_-]+$/.test(username)) {
+                throw new Error(`Nombre de usuario inválido: ${username}`)
+              }
+              const sudoersFile = "/etc/sudoers.d/monolito-temp"
+              const ruleLine = `${username} ALL=(ALL) NOPASSWD: ALL`
+              const bashCmd = `echo '${ruleLine}' > ${sudoersFile} && chmod 0440 ${sudoersFile} && chown root:root ${sudoersFile} && (visudo -c -f ${sudoersFile} || (rm -f ${sudoersFile} && exit 1))`
+              
+              this.emit({
+                type: "message.received",
+                sessionId,
+                role: "system",
+                text: "🔑 Solicitando privilegios sudo mediante pkexec...",
+              })
+              await execFileAsync("pkexec", ["bash", "-c", bashCmd], { timeout: 30000 })
+              this.emit({
+                type: "message.received",
+                sessionId,
+                role: "system",
+                text: "✅ Modo sudo dinámico activado con éxito.",
+              })
+            } catch (err: any) {
+              const errMsg = `Error al activar el modo sudo: ${err.stderr || err.message}`
+              this.emit({ type: "error", sessionId, error: errMsg })
+              throw new Error(errMsg)
+            }
+          } else if (decision === "allow") {
             try {
               const policy = readConfigWing(this.rootDir, "CONF_POLICY")
               const rules = policy?.permissions?.rules || []
@@ -2763,10 +2792,11 @@ Rules:
           }
           // Allowed: proceed to execute tool.
         } else {
-          const message = `[Destructive Action Guard] Denied: ${permission.message || "Destructive action rejected by user"}.`
+          const guardName = permission.source === "sudo_guard" ? "Sudo Guard" : "Destructive Action Guard"
+          const message = `[${guardName}] Denied: ${permission.message || "Action rejected by user"}.`
           appendWorklog(this.rootDir, sessionId, {
             type: "tool",
-            summary: `Tool ${tool.name} blocked by Destructive Action Guard: ${message}`,
+            summary: `Tool ${tool.name} blocked by ${guardName}: ${message}`,
           })
           this.emit({ type: "error", sessionId, error: message })
           this.recordToolFailureStall(sessionId, tool.name, message)

@@ -41,6 +41,7 @@ const KEYWORD_TOOL_BOOSTS: Array<{ pattern: RegExp; tools: string[] }> = [
   { pattern: /\b(forensic|worklog|auditor)/i, tools: ["SessionForensics", "SearchHistory"] },
   { pattern: /\b(compact|contexto|context)\b/i, tools: ["ExecuteSystemMaintenance"] },
   { pattern: /\b(kg|knowledge graph|grafo)\b/i, tools: ["KnowledgeGraph"] },
+  { pattern: /\b(sudo|root|administrador|pkexec|privilegios|elevaci|elevación)\b/i, tools: ["manage_sudo_mode"] },
 ]
 
 /** When true, only eager + unlocked tools go to the model API (execution stays full registry). */

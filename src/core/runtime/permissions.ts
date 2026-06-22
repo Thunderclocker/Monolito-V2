@@ -26,7 +26,7 @@ export type PermissionContext = {
 
 export type PermissionCheckResult = {
   behavior: "allow" | "deny" | "ask"
-  source: "mode" | "rule" | "hook" | "destructive_guard"
+  source: "mode" | "rule" | "hook" | "destructive_guard" | "sudo_guard"
   message?: string
 }
 
@@ -488,6 +488,49 @@ async function runPromptHook(
   return null
 }
 
+export function requiresSudoPrivilege(toolName: string, input: Record<string, unknown>): boolean {
+  if (toolName !== "Bash") return false
+  const command = getBashCommand(input)
+  if (!command) return false
+
+  // 1. Explicitly starts with or contains sudo, doas, or su
+  if (/\b(sudo|doas|su)\b/i.test(command)) {
+    return true
+  }
+
+  // 2. Known administrative commands that require root privileges
+  const rootCommands = new Set([
+    "apt", "apt-get", "dpkg", "snap", "flatpak", "dnf", "yum", "pacman",
+    "systemctl", "service", "ufw", "iptables", "visudo", "chown", "chmod"
+  ])
+
+  for (const head of iterateHeadTokens(command)) {
+    if (rootCommands.has(head)) {
+      if (head === "systemctl" || head === "service") {
+        const lower = command.toLowerCase()
+        if (/\b(status|is-active|is-enabled|list-units|show)\b/.test(lower)) {
+          continue
+        }
+      }
+      if (head === "pacman") {
+        const lower = command.toLowerCase()
+        if (/\b-q\b/.test(lower) || /\b-s[a-z]*i\b/.test(lower)) {
+          continue
+        }
+      }
+      if (head === "flatpak") {
+        const lower = command.toLowerCase()
+        if (/\b(run|search|list|info)\b/.test(lower)) {
+          continue
+        }
+      }
+      return true
+    }
+  }
+
+  return false
+}
+
 export async function checkToolPermission(toolName: string, input: Record<string, unknown>, context: PermissionContext): Promise<PermissionCheckResult> {
   const policy = readPolicyConfig(context.rootDir)
   const hookDecision = await runHookCommands("PreToolUse", policy.hooks.PreToolUse, toolName, input, context)
@@ -506,6 +549,13 @@ export async function checkToolPermission(toolName: string, input: Record<string
   if (decision.behavior === "allow" && policy.permissions.mode !== "bypassPermissions") {
     const isSudoMode = _testExistsSync("/etc/sudoers.d/monolito-temp")
     if (!isSudoMode) {
+      if (requiresSudoPrivilege(toolName, input)) {
+        return {
+          behavior: "ask",
+          source: "sudo_guard",
+          message: "Este comando requiere privilegios de superusuario (sudo). ¿Deseas activar el modo sudo temporal?",
+        }
+      }
       const dest = isDestructiveAction(toolName, input)
       if (dest.destructive) {
         return {

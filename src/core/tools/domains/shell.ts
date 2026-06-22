@@ -231,7 +231,13 @@ Requires: message, chat_id, timezone. Plus either delay_seconds, at/time, OR cro
   concurrencySafe: false,
   validate: input => typeof input.command === "string" && input.command.trim().length > 0 ? null : "command must be a non-empty string",
   async run(input, context) {
-    const command = requireString(input, "command")
+    let command = requireString(input, "command")
+    if (existsSync("/etc/sudoers.d/monolito-temp") && !/^\s*(sudo|doas|su\b)/i.test(command)) {
+      const { requiresSudoPrivilege } = await import("../../runtime/permissions.ts")
+      if (requiresSudoPrivilege("Bash", { command })) {
+        command = `sudo ${command}`
+      }
+    }
     const timeout = optionalNumber(input, "timeout") ?? DEFAULT_BASH_TIMEOUT_MS
     const runInBackground = optionalBoolean(input, "run_in_background") ?? false
 
