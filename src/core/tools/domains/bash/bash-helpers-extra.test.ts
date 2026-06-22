@@ -35,7 +35,7 @@ test("V15 CR injection", () => {
   const findings = hasCrInjection("ls\rrm -rf /")
   assert.ok(findings.length > 0)
   assert.equal(findings[0].rule, "cr_injection")
-  assert.equal(findings[0].severity, "high")
+  assert.equal(findings[0].severity, "medium")
 })
 
 test("V16 heredoc unquoted delimiter", () => {

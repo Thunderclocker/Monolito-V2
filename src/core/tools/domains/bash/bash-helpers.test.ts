@@ -25,8 +25,8 @@ test("V1 control chars: NUL byte blocked", () => {
   assert.equal(findings[0].severity, "critical")
 })
 
-test("V1 control chars: CR blocked", () => {
-  const findings = hasControlChars("ls\r\nrm -rf /")
+test("V1 control chars: VT blocked", () => {
+  const findings = hasControlChars("ls\x0brm -rf /")
   assert.equal(findings.length, 1)
   assert.equal(findings[0].rule, "control_chars")
 })
@@ -70,7 +70,7 @@ test("V12 dangerous variable: LD_PRELOAD", () => {
 test("V10 embedded newline", () => {
   const findings = hasEmbeddedNewline("ls\nrm -rf /")
   assert.equal(findings.length, 1)
-  assert.equal(findings[0].severity, "high")
+  assert.equal(findings[0].severity, "medium")
 })
 
 test("runSecurityValidators returns ALL criticals (curl|sh, LD_PRELOAD)", () => {

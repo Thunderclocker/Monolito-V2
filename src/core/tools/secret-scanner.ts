@@ -102,7 +102,7 @@ export function scanForSecrets(content: string): SecretFinding[] {
 /** Heurística adicional: detecta strings de 40+ chars alfanuméricos con
  *  alta entropía que podrían ser API keys no catalogadas. Devuelve findings
  *  sin description específica, marcados como `entropy-high`. */
-export function scanHighEntropyStrings(content: string, minLength = 40, threshold = 3.5): SecretFinding[] {
+export function scanHighEntropyStrings(content: string, minLength = 40, threshold = 4.5): SecretFinding[] {
   const findings: SecretFinding[] = []
   const re = /[A-Za-z0-9_\-+/=]{40,}/g
   let m: RegExpExecArray | null

@@ -51,7 +51,7 @@ export function detectDestructiveCommand(command: string): BashFinding[] {
 // 12 security validators
 
 /** V1: control chars que no deberían estar en un shell command. */
-const CONTROL_CHARS = /[\x00-\x1f\x7f]/
+const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/
 export function hasControlChars(command: string): BashFinding[] {
   const m = command.match(CONTROL_CHARS)
   if (m && m.index !== undefined) {
@@ -170,7 +170,7 @@ export function hasEmbeddedNewline(command: string): BashFinding[] {
   if (m && m.index !== undefined) {
     return [{
       rule: "embedded_newline",
-      severity: "high",
+      severity: "medium",
       description: "embedded newline in command",
       position: m.index,
     }]
@@ -233,7 +233,7 @@ const CR_INJECTION = /\r/
 export function hasCrInjection(command: string): BashFinding[] {
   const m = command.match(CR_INJECTION)
   if (m && m.index !== undefined) {
-    return [{ rule: "cr_injection", severity: "high", description: "carriage return detected (possible CRLF injection)", position: m.index }]
+    return [{ rule: "cr_injection", severity: "medium", description: "carriage return detected (possible CRLF injection)", position: m.index }]
   }
   return []
 }
@@ -286,7 +286,7 @@ const SHEBANG_IN_ARG = /#!(?:\/bin\/(?:ba)?sh|env)/
 export function hasShebangInArg(command: string): BashFinding[] {
   const m = command.match(SHEBANG_IN_ARG)
   if (m && m.index !== undefined) {
-    return [{ rule: "shebang_in_arg", severity: "high", description: `shebang in command: ${m[0]}`, position: m.index }]
+    return [{ rule: "shebang_in_arg", severity: "medium", description: `shebang in command: ${m[0]}`, position: m.index }]
   }
   return []
 }

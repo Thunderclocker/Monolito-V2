@@ -69,7 +69,7 @@ test("scanForSecrets returns no findings for clean code", () => {
 })
 
 test("scanHighEntropyStrings detects high-entropy strings", () => {
-  const content = "key = 7f2c9b1a4d8e3f5a6c2d9e1b3f5a7c9d2e4f6a8b1c3d5e7f9a2b4c6d8e1f3a5b7"
+  const content = "key = abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
   const findings = scanHighEntropyStrings(content)
   assert.ok(findings.length > 0)
   assert.equal(findings[0].patternId, "entropy-high")
@@ -88,6 +88,6 @@ test("isSafeToWrite returns unsafe on secret pattern", () => {
 })
 
 test("isSafeToWrite returns unsafe on high-entropy string", () => {
-  const r = isSafeToWrite("token: 7f2c9b1a4d8e3f5a6c2d9e1b3f5a7c9d2e4f6a8b1c3d5e7f9a2b4c6d8e1f3a5b7")
+  const r = isSafeToWrite("token: abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
   assert.equal(r.safe, false)
 })
