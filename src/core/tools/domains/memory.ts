@@ -89,18 +89,6 @@ function resolveMemoryAction(invoked: string, input: Record<string, unknown>): M
   return "recall"
 }
 
-type KgAction = "add" | "query" | "invalidate"
-
-function resolveKgAction(invoked: string, input: Record<string, unknown>): KgAction {
-  const explicit = optionalString(input, "action")
-  if (explicit === "add" || explicit === "query" || explicit === "invalidate") return explicit
-  if (invoked === "KgAdd") return "add"
-  if (invoked === "KgQuery") return "query"
-  if (invoked === "KgInvalidate") return "invalidate"
-  if (optionalString(input, "entity")) return "query"
-  if (optionalString(input, "valid_to")) return "invalidate"
-  return "add"
-}
 
 export const memoryTools: ToolDefinition[] = [
 {
@@ -224,9 +212,8 @@ export const memoryTools: ToolDefinition[] = [
 
 {
   name: "KnowledgeGraph",
-  aliases: ["Kg", "KgAdd", "KgQuery", "KgInvalidate"],
   permissionTier: "edit",
-  description: "Temporal knowledge graph management tool. action=add|query|invalidate.",
+  description: "Manage temporal knowledge graph (add, query, or invalidate facts).",
   inputSchema: {
     type: "object",
     properties: {
@@ -238,12 +225,12 @@ export const memoryTools: ToolDefinition[] = [
       valid_from: { type: "string" },
       valid_to: { type: "string" },
     },
+    required: ["action"],
     additionalProperties: false,
   },
   concurrencySafe: false,
   async run(input, context) {
-    const invoked = context.invokedAs ?? "KnowledgeGraph"
-    const action = resolveKgAction(invoked, input as Record<string, unknown>)
+    const action = requireString(input, "action") as "add" | "query" | "invalidate"
     const profileId = context.profileId ?? "default"
     if (action === "query") {
       const entity = requireString(input, "entity")

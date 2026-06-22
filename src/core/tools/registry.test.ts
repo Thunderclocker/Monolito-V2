@@ -988,11 +988,9 @@ test("Download, Diagnostics, and Maintenance consolidated tools", async () => {
 
     // 4. KnowledgeGraph Test
     const kgTool = getTool("KnowledgeGraph")
-    const kgAliasTool = getTool("Kg")
     assert.ok(kgTool)
-    assert.ok(kgAliasTool)
     assert.equal(kgTool.name, "KnowledgeGraph")
-    assert.equal(kgAliasTool.name, "KnowledgeGraph")
+    assert.equal(getTool("Kg"), undefined)
 
     const mockKgContext = {
       rootDir,
