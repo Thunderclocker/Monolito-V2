@@ -1046,7 +1046,17 @@ export async function openInteractiveSession(client: DaemonClient, sessionId?: s
       connectionHealthy = true
       if (activeSessionId === "offline" || !subscribedSessionId) {
         const session = await ensureConnectedSession()
-        if (transcript.blocks.length === 0) await syncTranscriptFromSession(session)
+        const wasEmpty = transcript.blocks.length === 0
+        if (wasEmpty) await syncTranscriptFromSession(session)
+        // If this is the first time we connect and still no model configured, open the wizard
+        if (!hasConfiguredModel() && !composer.menuState) {
+          const result = openMissingModelMenu()
+          composer.menuState = result.nextState
+          transcript = appendMenuTranscript(transcript, [
+            { type: "event", label: "model", tone: result.tone, text: result.output },
+          ])
+          shouldRedraw = true
+        }
       }
     } catch {
       connectionHealthy = false
