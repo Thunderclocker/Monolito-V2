@@ -1265,8 +1265,8 @@ export class MonolitoV2Runtime {
       }
 
       // Estimate tokens per message and fit batch to ~65% of model's input budget
-      const model = getEffectiveModelConfig().model
-      const { inputBudgetTokens } = getContextBudget(model)
+      const config = getEffectiveModelConfig()
+      const { inputBudgetTokens } = getContextBudget(config.model, config.provider)
       const targetTokens = Math.floor(inputBudgetTokens * 0.65)
       let runningTokens = 0
       let batchEnd = 0

@@ -354,8 +354,8 @@ function stringifyToolResult(value: unknown) {
   }
   serialized = redactSensitiveText(serialized)
 
-  const activeModel = getEffectiveModelConfig().model
-  const budget = getContextBudget(activeModel)
+  const config = getEffectiveModelConfig()
+  const budget = getContextBudget(config.model, config.provider)
   const toolResultBudget = calculateToolResultBudget(budget.windowTokens)
 
   if (serialized.length <= toolResultBudget) {
@@ -1108,7 +1108,7 @@ export async function* runAgentLoop(
       return result
     }
     try {
-      const budget = getContextBudget(config.model)
+      const budget = getContextBudget(config.model, config.provider)
       const estimatedTokens = estimateContextTokens(prompt.system, messages)
       if (estimatedTokens > budget.compactTriggerTokens) {
         if (compactionCount < MAX_COMPACTIONS_PER_TURN) {
@@ -1703,7 +1703,7 @@ Considera esta estrategia de solución.`
           }
 
           // In-memory Tier 1 compaction of tool results to be absolutely sure we fit
-          const budget = getContextBudget(config.model)
+          const budget = getContextBudget(config.model, config.provider)
           const inMemBudgetChars = budget.compactTriggerTokens * 3.5
           const inMemResult = compactInMemoryTier1(messages, inMemBudgetChars)
           if (inMemResult.freedChars > 0) {

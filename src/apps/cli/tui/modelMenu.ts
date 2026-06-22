@@ -151,16 +151,18 @@ function renderAddModelPickMenuText(state: MenuState): string {
   const baseUrl = state!.draft.baseUrl ?? ""
   const apiKey = state!.draft.apiKey ?? ""
   const models = state!.availableModels ?? []
-  return [
-    `Provider: ${provider}`,
-    `Base URL: ${baseUrl}`,
-    `API Key: ${apiKey ? "***" + apiKey.slice(-4) : "(not required)"}`,
-    "",
-    "Available models:",
+  const lines = [
+    provider === "minimax" ? "MiniMax — select model:" : `Provider: ${provider}`,
+    ...(provider === "minimax"
+      ? []
+      : [`Base URL: ${baseUrl}`, `API Key: ${apiKey ? "***" + apiKey.slice(-4) : "(not required)"}`, ""]),
     ...models.map((model, index) => `  ${index + 1}. ${model}`),
     "",
-    "Enter model number, or type 'manual' to enter one yourself:",
-  ].join("\n")
+    provider === "minimax"
+      ? "Enter model number:"
+      : "Enter model number, or type 'manual' to enter one yourself:",
+  ]
+  return lines.join("\n")
 }
 
 function menuOutput(menu: string, prefixMessage?: string): string {
@@ -392,6 +394,25 @@ function handleAddProvider(input: string, state: MenuState): MenuResult {
     }
   }
   const defaults = getProviderDefaults(provider)
+  if (provider === "minimax") {
+    const baseUrl = defaults.baseUrl
+    const lines = [
+      `[+] Add new profile — MiniMax`,
+      "",
+      `Base URL: ${baseUrl}`,
+      "",
+      "API Key:",
+    ]
+    return {
+      output: lines.join("\n"),
+      nextState: {
+        ...state!,
+        step: "add-apikey",
+        draft: { ...state!.draft, provider, baseUrl },
+      },
+      tone: "info",
+    }
+  }
   const lines = [
     `Provider: ${provider}`,
     "",
@@ -529,8 +550,9 @@ async function handleAddApiKey(input: string, state: MenuState): Promise<MenuRes
 }
 
 function handleAddModelPick(input: string, state: MenuState): MenuResult {
+  const provider = state!.draft.provider as ModelProvider
   const normalized = input.trim().toLowerCase()
-  if (normalized === "manual" || normalized === "m") {
+  if (provider !== "minimax" && (normalized === "manual" || normalized === "m")) {
     return {
       output: "Enter model name manually:",
       nextState: { ...state!, step: "add-model" },
@@ -543,6 +565,26 @@ function handleAddModelPick(input: string, state: MenuState): MenuResult {
   const model = models[index]
   if (!model) {
     return openAddModelPickMenu(state, `Invalid option "${input}".`, "error")
+  }
+
+  if (provider === "minimax") {
+    try {
+      const draft: ModelProfileDraft = {
+        name: model,
+        provider,
+        baseUrl: state!.draft.baseUrl,
+        apiKey: state!.draft.apiKey,
+        model,
+      }
+      const profile = addProfile(draft)
+      const profiles = listProfiles()
+      const idx = profiles.findIndex(p => p.id === profile.id)
+      if (idx >= 0) activateProfileByIndex(idx)
+      applyProfileToEnv(process.env, profile)
+      return openMainMenu(`MiniMax configured: ${profile.model} (active).`, "success", true)
+    } catch (error) {
+      return openMainMenu(`Error configuring MiniMax: ${error instanceof Error ? error.message : String(error)}`, "error")
+    }
   }
 
   const lines = [
@@ -562,6 +604,7 @@ function handleAddModelPick(input: string, state: MenuState): MenuResult {
 
 function handleAddModel(input: string, state: MenuState): MenuResult {
   const model = input.trim()
+  const provider = state!.draft.provider as ModelProvider
   if (!model) {
     const lines = [
       `Provider: ${state!.draft.provider}`,
@@ -577,6 +620,26 @@ function handleAddModel(input: string, state: MenuState): MenuResult {
       output: lines.join("\n"),
       nextState: state,
       tone: "error",
+    }
+  }
+
+  if (provider === "minimax") {
+    try {
+      const draft: ModelProfileDraft = {
+        name: model,
+        provider,
+        baseUrl: state!.draft.baseUrl,
+        apiKey: state!.draft.apiKey,
+        model,
+      }
+      const profile = addProfile(draft)
+      const profiles = listProfiles()
+      const idx = profiles.findIndex(p => p.id === profile.id)
+      if (idx >= 0) activateProfileByIndex(idx)
+      applyProfileToEnv(process.env, profile)
+      return openMainMenu(`MiniMax configured: ${profile.model} (active).`, "success", true)
+    } catch (error) {
+      return openMainMenu(`Error configuring MiniMax: ${error instanceof Error ? error.message : String(error)}`, "error")
     }
   }
 

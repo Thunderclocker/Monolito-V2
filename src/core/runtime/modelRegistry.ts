@@ -4,6 +4,7 @@ import { appendActionLog, readConfigWing, writeConfigWing } from "../session/sto
 import { MONOLITO_ROOT } from "../system/root.ts"
 import { coerceConfigRecord } from "../config/wingValue.ts"
 import { isOllamaLocalBaseUrl } from "./providers/resolveProvider.ts"
+import { scheduleLocalModelContextPreload } from "./localMode.ts"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -146,7 +147,11 @@ export function listProfiles(): ModelProfile[] {
 
 export function getActiveProfile(): ModelProfile | null {
   const registry = readRegistry()
-  return registry.profiles.find(p => p.active) ?? registry.profiles[0] ?? null
+  const active = registry.profiles.find(p => p.active) ?? registry.profiles[0] ?? null
+  if (active && active.provider === "ollama") {
+    scheduleLocalModelContextPreload(active.model, active.baseUrl)
+  }
+  return active
 }
 
 export function getProfileById(id: string): ModelProfile | null {
@@ -242,6 +247,9 @@ export function activateProfile(id: string): ModelProfile {
     provider: target.provider,
     model: target.model,
   })
+  if (target.provider === "ollama") {
+    scheduleLocalModelContextPreload(target.model, target.baseUrl)
+  }
   return target
 }
 
@@ -259,6 +267,9 @@ export function activateProfileByIndex(index: number): ModelProfile {
     provider: target.provider,
     model: target.model,
   })
+  if (target.provider === "ollama") {
+    scheduleLocalModelContextPreload(target.model, target.baseUrl)
+  }
   return target
 }
 
@@ -300,10 +311,6 @@ export async function discoverProviderModels(
     return await discoverOllamaModels(baseUrl)
   }
 
-  if (provider === "minimax") {
-    return []
-  }
-
   if (!baseUrl || !apiKey) {
     return []
   }
@@ -312,7 +319,7 @@ export async function discoverProviderModels(
     const headers: Record<string, string> = {}
     if (provider === "openai_compatible") {
       headers.Authorization = `Bearer ${apiKey}`
-    } else if (provider === "anthropic_compatible") {
+    } else if (provider === "anthropic_compatible" || provider === "minimax") {
       headers["x-api-key"] = apiKey
       headers["anthropic-version"] = "2023-06-01"
     }

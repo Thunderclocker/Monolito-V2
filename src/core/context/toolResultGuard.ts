@@ -90,8 +90,8 @@ export function calculateToolResultBudget(contextWindowTokens: number): number {
 /**
  * Enforces the budget on a single tool result content.
  */
-export function enforceToolResultBudget(text: string, model: string): string {
-  const budget = getContextBudget(model);
+export function enforceToolResultBudget(text: string, model: string, provider?: string): string {
+  const budget = getContextBudget(model, provider);
   const charBudget = calculateToolResultBudget(budget.windowTokens);
   return truncateHeadTail(text, charBudget);
 }

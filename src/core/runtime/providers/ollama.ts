@@ -2,7 +2,7 @@ import type { ConversationMessage, ProviderConfig, ProviderResponse } from "./ty
 import { parseStructuredToolCalls } from "./types.ts"
 import type { ProviderStreamEvent } from "./streamTypes.ts"
 import { buildOpenAiMessages, buildToolDefinitions, callJsonApi, modelSupportsVision } from "./utils.ts"
-import { getContextBudget } from "../../context/contextLimits.ts"
+import { getLocalOllamaOptions, getLocalOllamaKeepAlive } from "../localMode.ts"
 import { resolveOllamaResponseText } from "./ollamaText.ts"
 
 /**
@@ -106,22 +106,15 @@ function buildOllamaBody(
   strictToolAllowlist?: boolean,
   thinkingConfig?: { enabled: boolean; budgetTokens?: number; level?: "low" | "medium" | "high" | "off" },
 ) {
-  const budget = getContextBudget(config.model)
-  const numCtx = Math.min(budget.windowTokens, 32_768)
-  // Reasoning models (gpt-oss) spend output budget on the analysis channel.
-  // Keep a generous floor so reasoning + the final tool_call/content never get
-  // truncated mid-flight (which surfaces as an empty assistant reply).
-  const numPredict = Math.min(Math.max(maxTokens ?? 8_192, 8_192), numCtx)
-  // Honor the profile's reasoning level via Ollama's granular `think` effort.
-  // Reasoning models (gpt-oss et al.) DEGRADE with think:false — the harmony
-  // template stalls in the analysis channel and never emits a final answer or
-  // tool_call (observed: empty replies / no BootWrite during onboarding). So
-  // for those models we clamp the floor to "low" instead of disabling.
+  const localOpts = getLocalOllamaOptions(config.model)
+  // Keep output budget floor high enough for reasoning trace + tool call
+  const numPredict = Math.max(localOpts.num_predict, maxTokens ?? 0)
   const think = resolveOllamaThink(config.model, thinkingConfig)
   return {
     model: config.model,
     stream,
     think,
+    keep_alive: getLocalOllamaKeepAlive(),
     messages: buildOllamaMessages(config, system, messages, isSubAgent, allowedToolNames),
     tools: buildToolDefinitions(
       isSubAgent,
@@ -130,7 +123,7 @@ function buildOllamaBody(
       strictToolAllowlist,
     ).map(tool => ({ type: tool.type, function: tool.function })),
     options: {
-      num_ctx: numCtx,
+      ...localOpts,
       num_predict: numPredict,
     },
   }
