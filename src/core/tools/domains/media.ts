@@ -21,6 +21,10 @@ import {
 } from "node:path"
 
 import {
+  homedir,
+} from "node:os"
+
+import {
   TTS_RESPONSE_FORMATS,
   emptyInputSchema,
   execFileAsync,
@@ -1415,6 +1419,12 @@ export const mediaTools: ToolDefinition[] = [
     const filename = `screenshot-${Date.now()}.png`
     const localPath = join(screenshotDir, filename)
 
+    const env = {
+      ...process.env,
+      DISPLAY: process.env.DISPLAY || ":0",
+      XAUTHORITY: process.env.XAUTHORITY || join(homedir(), ".Xauthority")
+    }
+
     const commands = [
       { name: "gnome-screenshot", args: ["-f", localPath] },
       { name: "import", args: ["-window", "root", localPath] },
@@ -1433,7 +1443,7 @@ export const mediaTools: ToolDefinition[] = [
 
     for (const cmd of commands) {
       try {
-        await execFileAsync(cmd.name, cmd.args)
+        await execFileAsync(cmd.name, cmd.args, { env })
         if (existsSync(localPath)) {
           lastSuccessfulScreenshotCmd = cmd.name
           return { ok: true, local_path: localPath }
