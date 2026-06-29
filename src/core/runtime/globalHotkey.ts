@@ -17,10 +17,17 @@ import { existsSync, mkdirSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import { readChannelsConfig } from "../channels/config.ts"
-import { transcribeManagedAudioFile, normalizeSttConfig } from "../stt/managed.ts"
+import {
+  transcribeManagedAudioFile,
+  normalizeSttConfig,
+  getManagedSttStatus,
+  probeManagedStt,
+  deployManagedSttContainer,
+} from "../stt/managed.ts"
 import { MONOLITO_ROOT } from "../system/root.ts"
 import { createLogger } from "../logging/logger.ts"
 import type { MonolitoV2Runtime } from "./runtime.ts"
+import { appendMessage } from "../session/store.ts"
 
 const execFileAsync = promisify(execFile)
 const logger = createLogger("globalHotkey")
@@ -349,12 +356,57 @@ export class GlobalHotkeyService {
   // --------------------------------------------------------------------------
 
   private async transcribeAndSubmit(audioPath: string) {
+    const sessionId = "orchestrator"
+    // Ensure the orchestrator session exists first
+    this.runtime.ensureSession(sessionId, "Orchestrator")
+
     const channelsConfig = readChannelsConfig()
     const sttConfig = normalizeSttConfig(channelsConfig.stt)
+
+    // Auto-deploy container if managed and autoDeploy is enabled
+    if (sttConfig.managed && sttConfig.autoDeploy) {
+      try {
+        const isRunning = (await getManagedSttStatus(sttConfig)) === "running" && (await probeManagedStt(sttConfig)).ok
+        if (!isRunning) {
+          const msg = "Un momento, por favor. Preparando el servicio de transcripción de voz local (esto puede tardar unos minutos si es la primera vez que se descarga el modelo Whisper)..."
+          appendMessage(this.runtime.rootDir, sessionId, "system", msg)
+          this.runtime.emit({ type: "message.received", sessionId, role: "system", text: msg })
+        }
+
+        const deploy = await deployManagedSttContainer(sttConfig)
+        if (!deploy.ok) {
+          const errMsg = `Error al autodesplegar STT: ${deploy.message}`
+          appendMessage(this.runtime.rootDir, sessionId, "system", errMsg)
+          this.runtime.emit({ type: "message.received", sessionId, role: "system", text: errMsg })
+          logger.warn(`[GlobalHotkey] ${errMsg}`)
+          return
+        }
+
+        if (!isRunning) {
+          const msg = "¡Listo! El servicio de voz se ha iniciado correctamente. Transcribiendo..."
+          appendMessage(this.runtime.rootDir, sessionId, "system", msg)
+          this.runtime.emit({ type: "message.received", sessionId, role: "system", text: msg })
+        }
+      } catch (err) {
+        const errMsg = `Error al verificar o desplegar STT: ${err instanceof Error ? err.message : String(err)}`
+        appendMessage(this.runtime.rootDir, sessionId, "system", errMsg)
+        this.runtime.emit({ type: "message.received", sessionId, role: "system", text: errMsg })
+        logger.warn(`[GlobalHotkey] ${errMsg}`)
+        return
+      }
+    }
+
+    // Always show a temporary status message indicating that we are processing/transcribing
+    const processingMsg = "Procesando y transcribiendo audio..."
+    appendMessage(this.runtime.rootDir, sessionId, "system", processingMsg)
+    this.runtime.emit({ type: "message.received", sessionId, role: "system", text: processingMsg })
 
     const result = await transcribeManagedAudioFile(audioPath, sttConfig)
 
     if (!result.ok || !result.text.trim()) {
+      const errMsg = `Transcripción fallida: ${result.error ?? "no se detectó texto"}`
+      appendMessage(this.runtime.rootDir, sessionId, "system", errMsg)
+      this.runtime.emit({ type: "message.received", sessionId, role: "system", text: errMsg })
       logger.warn(`[GlobalHotkey] STT returned empty or failed: ${result.error ?? "empty text"}`)
       return
     }
@@ -362,9 +414,7 @@ export class GlobalHotkeyService {
     const transcript = result.text.trim()
     logger.info(`[GlobalHotkey] Transcribed: "${transcript.slice(0, 120)}"`)
 
-    // Ensure the orchestrator session exists, then send the message
-    this.runtime.ensureSession("orchestrator", "Orchestrator")
-    await this.runtime.processMessage("orchestrator", transcript)
+    await this.runtime.processMessage(sessionId, transcript)
   }
 }
 
