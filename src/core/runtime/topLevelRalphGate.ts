@@ -150,27 +150,9 @@ export function evaluateTopLevelRalphGate(
     return { blocked: false, shouldRetry: false, feedbackPrompt: null, unfinished: [] }
   }
 
-  const tasks = listSessionTasks(rootDir, sessionId, profileId)
-  let unfinished = tasks
-    .filter(t => (t.status === "pending" || t.status === "in_progress") && t.category !== "life")
-  if (preExistingTaskIds !== undefined) {
-    unfinished = unfinished.filter(t => preExistingTaskIds.has(t.id))
-  }
-  const unfinishedSummary = unfinished.map(t => ({ content: t.content, status: t.status }))
-
-  if (unfinishedSummary.length === 0) {
-    return { blocked: false, shouldRetry: false, feedbackPrompt: null, unfinished: [] }
-  }
-
-  const feedbackPrompt = buildRalphLoopUnfinishedTasksPrompt(
-    lastUserText,
-    unfinishedSummary,
-    assistantReply,
-    history,
-    attempt,
-    TOP_LEVEL_RALPH_ESCAPE_AT,
-  )
-  return { blocked: true, shouldRetry: true, feedbackPrompt, unfinished: unfinishedSummary }
+  // Ralph no longer blocks on unfinished tasks (the list of objectives is a cognitive
+  // aid and tracker, not an execution blocker that prevents the agent from replying).
+  return { blocked: false, shouldRetry: false, feedbackPrompt: null, unfinished: [] }
 }
 
 /**
