@@ -4,8 +4,30 @@ import { join } from "node:path"
 import { promisify } from "node:util"
 import type { SttConfig } from "../channels/config.ts"
 import { MONOLITO_ROOT } from "../system/root.ts"
+import { createLogger } from "../logging/logger.ts"
 
 const execFileAsync = promisify(execFile)
+const logger = createLogger("stt")
+
+async function getContainerModel(name: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync("docker", [
+      "inspect",
+      "--format",
+      "{{json .Config.Env}}",
+      name,
+    ], { timeout: 10_000 })
+    const envs = JSON.parse(stdout.trim()) as string[]
+    for (const env of envs) {
+      if (env.startsWith("ASR_MODEL=")) {
+        return env.slice("ASR_MODEL=".length)
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
 
 export type ManagedSttStatus = "running" | "stopped" | "not_found" | "docker_error"
 
@@ -250,11 +272,16 @@ export async function deployManagedSttContainer(config: SttConfig): Promise<{ ok
   const baseUrl = getManagedSttBaseUrl(config)
   const status = await getManagedSttStatus(config)
   if (status === "running" && (await probeManagedStt(config)).ok) {
-    const repaired = await ensureRestartPolicy(config.containerName).catch(() => false)
-    return {
-      ok: true,
-      message: `STT ya está corriendo en ${baseUrl}.${repaired ? " Restart policy reparada a unless-stopped." : ""}`,
-      baseUrl,
+    const runningModel = await getContainerModel(config.containerName)
+    if (runningModel && runningModel !== config.model) {
+      logger.info(`Running STT model is ${runningModel}, but config requires ${config.model}. Redeploying...`)
+    } else {
+      const repaired = await ensureRestartPolicy(config.containerName).catch(() => false)
+      return {
+        ok: true,
+        message: `STT ya está corriendo en ${baseUrl}.${repaired ? " Restart policy reparada a unless-stopped." : ""}`,
+        baseUrl,
+      }
     }
   }
 
