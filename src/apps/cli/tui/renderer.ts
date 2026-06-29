@@ -132,7 +132,8 @@ export function flattenTranscript(blocks: TranscriptBlock[], width: number, show
   
   for (let i = 0; i < taggedBlocks.length; i++) {
     const b = taggedBlocks[i];
-    const isEventOrMeta = b.type === "event" || b.type === "assistant-meta" || b.type === "todo-list";
+    const isEventOrMeta = (b.type === "event" || b.type === "assistant-meta" || b.type === "todo-list") &&
+      !(b.type === "event" && b.label === "system" && !b.text.includes("MemoryAgent") && !(b as any).isMemoryAgent);
     
     if (isEventOrMeta) {
       if (seqStart === -1) {
@@ -267,7 +268,8 @@ export function flattenCopyTranscript(blocks: TranscriptBlock[], width: number, 
   
   for (let i = 0; i < taggedBlocks.length; i++) {
     const b = taggedBlocks[i];
-    const isEventOrMeta = b.type === "event" || b.type === "assistant-meta" || b.type === "todo-list";
+    const isEventOrMeta = (b.type === "event" || b.type === "assistant-meta" || b.type === "todo-list") &&
+      !(b.type === "event" && b.label === "system" && !b.text.includes("MemoryAgent") && !(b as any).isMemoryAgent);
     
     if (isEventOrMeta) {
       if (seqStart === -1) {

@@ -410,6 +410,17 @@ class InteractiveTranscriptFormatter {
   private pendingMcpCall: string | null = null
 
   render(event: AgentEvent): TranscriptBlock[] {
+    const blocks = this.renderRaw(event)
+    const isMemoryAgent = (event as any).isMemoryAgent
+    if (isMemoryAgent) {
+      for (const block of blocks) {
+        (block as any).isMemoryAgent = true
+      }
+    }
+    return blocks
+  }
+
+  private renderRaw(event: AgentEvent): TranscriptBlock[] {
     switch (event.type) {
       case "session.created":
         return []
