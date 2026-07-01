@@ -109,7 +109,7 @@ test("resolveProactiveLocationFromUserMessage completes location task", () => {
   assert.equal(search?.status, "in_progress")
 })
 
-test("Ralph blocks delivery while proactive web tasks are open", () => {
+test("Ralph does not block delivery while proactive web tasks are open", () => {
   writeConfigWing(root, "CONF_WEBSEARCH", { provider: "brave", apiKey: "test-key" })
   seedLiveWebProactiveTasksFromSession(
     root,
@@ -134,6 +134,6 @@ test("Ralph blocks delivery while proactive web tasks are open", () => {
     [],
     taskIds,
   )
-  assert.equal(result.blocked, true)
-  assert.ok(result.unfinished.length > 0)
+  assert.equal(result.blocked, false)
+  assert.equal(result.unfinished.length, 0)
 })

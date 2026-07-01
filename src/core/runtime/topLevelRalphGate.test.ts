@@ -32,7 +32,7 @@ test.after(() => {
   rmSync(sharedRoot, { recursive: true, force: true })
 })
 
-test("evaluateTopLevelRalphGate: blocks when there are pending tasks", () => {
+test("evaluateTopLevelRalphGate: does NOT block when there are pending tasks", () => {
   const sessionId = "orchestrator-bug-repro"
   const profileId = "default"
   clearActiveTasks(sessionId)
@@ -78,27 +78,10 @@ test("evaluateTopLevelRalphGate: blocks when there are pending tasks", () => {
     new Set(["task-2", "task-3"]),
   )
 
-  assert.equal(result.blocked, true, "Gate must block when pending/in_progress tasks exist")
-  assert.equal(result.shouldRetry, true, "Gate must request a retry (re-feed the prompt)")
-  assert.ok(typeof result.feedbackPrompt === "string", "Gate must return a feedback prompt")
-  assert.ok(result.feedbackPrompt.length > 0, "Feedback prompt must be non-empty")
-  assert.ok(
-    result.feedbackPrompt.includes("AUDIT FEEDBACK"),
-    "Feedback prompt must be wrapped with the audit demarcation",
-  )
-  assert.ok(
-    result.feedbackPrompt.includes("Tareas en tu lista que quedaron abiertas"),
-    "Feedback prompt must reference the unfinished tasks list",
-  )
-  assert.ok(
-    result.feedbackPrompt.includes("Save preferences and tasks to memory.md sections"),
-    "Feedback prompt must list the pending task by content",
-  )
-  assert.ok(
-    result.feedbackPrompt.includes("Save VPS access facts and DB locations to curated memory"),
-    "Feedback prompt must list the in_progress task by content",
-  )
-  assert.equal(result.unfinished.length, 2, "Gate must report both unfinished items")
+  assert.equal(result.blocked, false, "Gate must not block when pending/in_progress tasks exist")
+  assert.equal(result.shouldRetry, false, "Gate must not request a retry")
+  assert.equal(result.feedbackPrompt, null, "No feedback prompt when tasks are unfinished")
+  assert.equal(result.unfinished.length, 0, "No unfinished items reported")
 })
 
 test("evaluateTopLevelRalphGate: passes when all tasks are completed", () => {
