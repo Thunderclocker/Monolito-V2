@@ -73,17 +73,42 @@ ensure_system_deps() {
     fi
   fi
 
-  # 3. Check Node.js and version (Node >= 22 required).
-  #
-  # IMPORTANT: We intentionally do NOT auto-install Node.js via
-  # `curl ... | sudo bash` (e.g. NodeSource's setup_22.x script). The Monolito
-  # runtime blocks `curl | bash` patterns in agent-generated skill guides
-  # because they are an arbitrary-code-execution vector if the upstream
-  # endpoint is ever compromised. Auto-installing the same way for our own
-  # installer would be inconsistent and expose users to the same risk.
-  #
-  # Instead, we require Node.js 22+ as a prerequisite (already documented in
-  # the README) and fail with concrete install instructions if missing.
+  # 3. Check and install build tools (required for compiling native modules like better-sqlite3)
+  if ! command -v make >/dev/null 2>&1 || ! command -v gcc >/dev/null 2>&1; then
+    log "Build tools (make/gcc) are missing. Installing build dependencies..."
+    if command -v apt-get >/dev/null 2>&1; then
+      install_package build-essential
+    elif command -v pacman >/dev/null 2>&1; then
+      install_package base-devel
+    else
+      log "Warning: Could not auto-install build tools. Native modules compilation might fail."
+    fi
+  fi
+
+  # 4. Check and install Node.js and npm
+  local needs_node_install=false
+  if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+    needs_node_install=true
+  else
+    local node_major
+    node_major="$(parse_node_major)"
+    if [[ ! "$node_major" =~ ^[0-9]+$ ]] || (( node_major < 22 )); then
+      log "Installed Node.js version (${node_major}) is below 22. Attempting to upgrade..."
+      needs_node_install=true
+    fi
+  fi
+
+  if [ "$needs_node_install" = true ]; then
+    log "Node.js 22+ is required. Attempting to install system packages..."
+    if command -v apt-get >/dev/null 2>&1 || command -v pacman >/dev/null 2>&1; then
+      install_package nodejs
+      install_package npm
+    else
+      fail "No package manager available to install Node.js. Please install Node.js 22+ manually."
+    fi
+  fi
+
+  # Re-verify Node.js and npm after installation attempt
   local node_ok=true
   if ! command -v node >/dev/null 2>&1; then
     node_ok=false
@@ -100,7 +125,8 @@ ensure_system_deps() {
   if [ "$node_ok" = false ]; then
     cat <<'NODE_HELP' >&2
 
-[monolito-install] Node.js 22+ is required but was not found.
+[monolito-install] Node.js 22+ is required but was not found or is out of date.
+Auto-installation failed or did not meet the version requirement.
 
 Recommended install options (choose one):
 
