@@ -24,31 +24,41 @@ parse_node_major() {
 
 APT_UPDATED=false
 
-install_apt() {
+install_package() {
   local pkg="$1"
   log "Installing system package '${pkg}'..."
-  if [ "$APT_UPDATED" = false ]; then
-    log "Running apt-get update first..."
-    if [[ "$EUID" -ne 0 ]]; then
-      sudo apt-get update -y
-    else
-      apt-get update -y
+  if command -v apt-get >/dev/null 2>&1; then
+    if [ "$APT_UPDATED" = false ]; then
+      log "Running apt-get update first..."
+      if [[ "$EUID" -ne 0 ]]; then
+        sudo apt-get update -y
+      else
+        apt-get update -y
+      fi
+      APT_UPDATED=true
     fi
-    APT_UPDATED=true
-  fi
 
-  if [[ "$EUID" -ne 0 ]]; then
-    sudo apt-get install -y "$pkg"
+    if [[ "$EUID" -ne 0 ]]; then
+      sudo apt-get install -y "$pkg"
+    else
+      apt-get install -y "$pkg"
+    fi
+  elif command -v pacman >/dev/null 2>&1; then
+    if [[ "$EUID" -ne 0 ]]; then
+      sudo pacman -S --needed --noconfirm "$pkg"
+    else
+      pacman -S --needed --noconfirm "$pkg"
+    fi
   else
-    apt-get install -y "$pkg"
+    fail "No supported package manager found (apt-get or pacman). Please install '${pkg}' manually."
   fi
 }
 
 ensure_system_deps() {
   # 1. Check curl
   if ! command -v curl >/dev/null 2>&1; then
-    if command -v apt-get >/dev/null 2>&1; then
-      install_apt curl
+    if command -v apt-get >/dev/null 2>&1 || command -v pacman >/dev/null 2>&1; then
+      install_package curl
     else
       fail "curl is missing. Please install it on your system."
     fi
@@ -56,8 +66,8 @@ ensure_system_deps() {
 
   # 2. Check git
   if ! command -v git >/dev/null 2>&1; then
-    if command -v apt-get >/dev/null 2>&1; then
-      install_apt git
+    if command -v apt-get >/dev/null 2>&1 || command -v pacman >/dev/null 2>&1; then
+      install_package git
     else
       fail "git is missing. Please install it on your system."
     fi
@@ -105,8 +115,9 @@ Recommended install options (choose one):
       https://github.com/nvm-sh/nvm#installing-and-updating
       nvm install 22 && nvm use 22
 
-  • Your distribution's package manager (apt/dnf/brew/etc):
-      e.g. on Debian/Ubuntu: see https://nodejs.org/en/download/package-manager/
+  • Your distribution's package manager:
+      - Debian/Ubuntu/Mint:  sudo apt install nodejs npm
+      - Arch/CachyOS/Manjaro: sudo pacman -S nodejs npm
 
 Re-run this installer after installing Node.js 22+.
 NODE_HELP
