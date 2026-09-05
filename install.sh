@@ -73,19 +73,7 @@ ensure_system_deps() {
     fi
   fi
 
-  # 3. Check and install build tools (required for compiling native modules like better-sqlite3)
-  if ! command -v make >/dev/null 2>&1 || ! command -v gcc >/dev/null 2>&1; then
-    log "Build tools (make/gcc) are missing. Installing build dependencies..."
-    if command -v apt-get >/dev/null 2>&1; then
-      install_package build-essential
-    elif command -v pacman >/dev/null 2>&1; then
-      install_package base-devel
-    else
-      log "Warning: Could not auto-install build tools. Native modules compilation might fail."
-    fi
-  fi
-
-  # 4. Check and install Node.js and npm
+  # 3. Check and install Node.js and npm
   local needs_node_install=false
   if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
     needs_node_install=true
