@@ -18,8 +18,31 @@ fail() {
   exit 1
 }
 
-parse_node_major() {
-  node -p "process.versions.node.split('.')[0]"
+parse_node_version() {
+  node -p "process.versions.node"
+}
+
+version_at_least_22_6() {
+  local version="$1"
+  local major minor patch extra
+
+  # Reject prereleases/build metadata and malformed/incomplete versions.
+  if [[ "$version" == *-* ]] || [[ "$version" == *+* ]]; then
+    return 1
+  fi
+
+  IFS='.' read -r major minor patch extra <<<"${version}"
+  if [[ -n "${extra:-}" ]] || [[ ! "${major:-}" =~ ^[0-9]+$ ]] || [[ ! "${minor:-}" =~ ^[0-9]+$ ]] || [[ ! "${patch:-}" =~ ^[0-9]+$ ]]; then
+    return 1
+  fi
+
+  if (( major > 22 )); then
+    return 0
+  fi
+  if (( major < 22 )); then
+    return 1
+  fi
+  (( minor >= 6 ))
 }
 
 APT_UPDATED=false
@@ -78,21 +101,21 @@ ensure_system_deps() {
   if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
     needs_node_install=true
   else
-    local node_major
-    node_major="$(parse_node_major)"
-    if [[ ! "$node_major" =~ ^[0-9]+$ ]] || (( node_major < 22 )); then
-      log "Installed Node.js version (${node_major}) is below 22. Attempting to upgrade..."
+    local node_version
+    node_version="$(parse_node_version)"
+    if ! version_at_least_22_6 "$node_version"; then
+      log "Installed Node.js version (${node_version}) does not satisfy >=22.6.0. Attempting to upgrade..."
       needs_node_install=true
     fi
   fi
 
   if [ "$needs_node_install" = true ]; then
-    log "Node.js 22+ is required. Attempting to install system packages..."
+    log "Node.js >=22.6.0 is required. Attempting to install system packages..."
     if command -v apt-get >/dev/null 2>&1 || command -v pacman >/dev/null 2>&1; then
       install_package nodejs
       install_package npm
     else
-      fail "No package manager available to install Node.js. Please install Node.js 22+ manually."
+      fail "No package manager available to install Node.js. Please install Node.js >=22.6.0 manually."
     fi
   fi
 
@@ -103,9 +126,9 @@ ensure_system_deps() {
   elif ! command -v npm >/dev/null 2>&1; then
     node_ok=false
   else
-    local node_major
-    node_major="$(parse_node_major)"
-    if [[ ! "$node_major" =~ ^[0-9]+$ ]] || (( node_major < 22 )); then
+    local node_version
+    node_version="$(parse_node_version)"
+    if ! version_at_least_22_6 "$node_version"; then
       node_ok=false
     fi
   fi
@@ -113,17 +136,14 @@ ensure_system_deps() {
   if [ "$node_ok" = false ]; then
     cat <<'NODE_HELP' >&2
 
-[monolito-install] Node.js 22+ is required but was not found or is out of date.
+[monolito-install] Node.js >=22.6.0 is required but was not found or is out of date.
 Auto-installation failed or did not meet the version requirement.
+Prerelease Node.js builds are intentionally rejected for production installs.
 
 Recommended install options (choose one):
 
-  • Official binary tarball (verifiable SHA256):
-      curl -fsSLO https://nodejs.org/dist/v22.11.0/node-v22.11.0-linux-x64.tar.xz
-      curl -fsSLO https://nodejs.org/dist/v22.11.0/SHASUMS256.txt
-      grep node-v22.11.0-linux-x64.tar.xz SHASUMS256.txt | sha256sum -c -
-      tar -xJf node-v22.11.0-linux-x64.tar.xz -C /usr/local --strip-components=1
-      (or into ~/.local for a user-local install)
+  • Official Node.js downloads:
+      https://nodejs.org/en/download
 
   • nvm (Node Version Manager):
       https://github.com/nvm-sh/nvm#installing-and-updating
@@ -133,9 +153,10 @@ Recommended install options (choose one):
       - Debian/Ubuntu/Mint:  sudo apt install nodejs npm
       - Arch/CachyOS/Manjaro: sudo pacman -S nodejs npm
 
-Re-run this installer after installing Node.js 22+.
+After installation, verify that `node --version` reports a stable release >=22.6.0,
+then re-run this installer.
 NODE_HELP
-    fail "Node.js 22+ is required. See the instructions above."
+    fail "Node.js >=22.6.0 is required. See the instructions above."
   fi
 }
 
