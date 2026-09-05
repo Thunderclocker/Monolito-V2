@@ -1,0 +1,18 @@
+name: Carter Node minimum version regression
+
+on:
+  push:
+    branches:
+      - carter/node-min-22-6-stacked-20260905
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  node-min-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run >=22.6.0 regression
+        run: bash scripts/test_node_min_version.sh
