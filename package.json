@@ -6,6 +6,9 @@
   "bin": {
     "monolito": "./bin/monolito.js"
   },
+  "engines": {
+    "node": ">=22.6.0"
+  },
   "scripts": {
     "daemon": "node --experimental-strip-types src/apps/daemon.ts",
     "cli": "node --experimental-strip-types src/apps/cli.ts",
