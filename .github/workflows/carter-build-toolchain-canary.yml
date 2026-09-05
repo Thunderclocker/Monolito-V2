@@ -1,0 +1,31 @@
+name: Carter build-toolchain canary
+
+on:
+  push:
+    branches:
+      - carter/remove-obsolete-build-toolchain-20260905
+    paths:
+      - install.sh
+      - package.json
+      - package-lock.json
+      - .github/workflows/carter-build-toolchain-canary.yml
+  workflow_dispatch:
+
+jobs:
+  npm-ci-without-compiler:
+    runs-on: ubuntu-latest
+    container: node:22-bookworm-slim
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm compiler toolchain is absent
+        shell: sh
+        run: |
+          ! command -v gcc
+          ! command -v g++
+          ! command -v make
+      - name: Install dependencies from lockfile
+        run: npm ci
+      - name: Type-check
+        run: npm run build
+      - name: Launcher smoke check
+        run: npm run check
