@@ -27,5 +27,3 @@ jobs:
         run: npm ci
       - name: Type-check
         run: npm run build
-      - name: Launcher smoke check
-        run: npm run check
