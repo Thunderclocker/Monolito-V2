@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync 
 import { homedir } from "node:os"
 import { join } from "node:path"
 
-function loadEnvFile(envPath: string) {
+export function loadEnvFile(envPath: string) {
   if (!existsSync(envPath)) return
   try {
     const content = readFileSync(envPath, "utf8")
@@ -16,7 +16,7 @@ function loadEnvFile(envPath: string) {
       if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
         val = val.slice(1, -1)
       }
-      if (key) {
+      if (key && process.env[key] === undefined) {
         process.env[key] = val
       }
     }
