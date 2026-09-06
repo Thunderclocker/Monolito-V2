@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync 
 import { homedir } from "node:os"
 import { join } from "node:path"
 
-function loadEnvFile(envPath: string) {
+export function loadEnvFile(envPath: string) {
   if (!existsSync(envPath)) return
   try {
     const content = readFileSync(envPath, "utf8")
