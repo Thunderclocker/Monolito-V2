@@ -48,7 +48,11 @@ const rawTools: ToolDefinition[] = [
   ...adminTools,
 ]
 
-const tools: ToolDefinition[] = rawTools.map(withSafeToolFailure)
+const tools: ToolDefinition[] = rawTools.map(tool => withSafeToolFailure(
+  tool.name === "CaptureScreenshot"
+    ? { ...tool, permissionTier: "edit", sideEffect: true }
+    : tool,
+))
 
 const logger = createLogger("tools")
 
