@@ -30,6 +30,9 @@ export function validateUrlStrict(input: string): UrlValidation {
   if (!ALLOWED_PROTOCOLS.has(url.protocol)) {
     return { valid: false, upgraded: false, reason: `protocol not allowed: ${url.protocol}` }
   }
+  if (url.protocol !== "data:" && isPrivateHost(url.hostname)) {
+    return { valid: false, upgraded: false, reason: `private host not allowed: ${url.hostname}` }
+  }
   if (url.protocol === "http:") {
     // Upgrade to https
     const upgraded = `https:${url.toString().slice(url.protocol.length)}`
@@ -39,14 +42,20 @@ export function validateUrlStrict(input: string): UrlValidation {
 }
 
 export function isPrivateHost(hostname: string): boolean {
-  // RFC 1918 + loopback + link-local
-  if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "0.0.0.0") return true
-  if (hostname.startsWith("10.")) return true
-  if (hostname.startsWith("192.168.")) return true
-  if (hostname.startsWith("169.254.")) return true
-  if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(hostname)) return true
-  // IPv6 private ranges
-  if (hostname.startsWith("fc") || hostname.startsWith("fd")) return true
-  if (hostname.startsWith("fe80:")) return true
+  // Normalize URL.hostname IPv6 bracket form and case.
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "")
+
+  // RFC 1918 + loopback + link-local + unspecified IPv4.
+  if (host === "localhost" || host === "::1" || host === "0.0.0.0") return true
+  if (/^127\./.test(host)) return true
+  if (/^0\./.test(host)) return true
+  if (host.startsWith("10.")) return true
+  if (host.startsWith("192.168.")) return true
+  if (host.startsWith("169.254.")) return true
+  if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(host)) return true
+
+  // IPv6 unique-local and link-local ranges.
+  if (host.startsWith("fc") || host.startsWith("fd")) return true
+  if (host.startsWith("fe80:")) return true
   return false
 }
