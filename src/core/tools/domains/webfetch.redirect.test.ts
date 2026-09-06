@@ -3,6 +3,7 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import {
+  assertPublicResolvedHost,
   isPermittedRedirect,
   getRegistrableDomain,
   MAX_REDIRECTS,
@@ -46,6 +47,46 @@ test("isPermittedRedirect: private redirect targets blocked", () => {
 test("isPermittedRedirect: invalid URLs", () => {
   assert.equal(isPermittedRedirect("not a url", "https://example.com"), false)
   assert.equal(isPermittedRedirect("https://example.com", "not a url"), false)
+})
+
+test("assertPublicResolvedHost: allows public DNS answers", async () => {
+  await assert.doesNotReject(() => assertPublicResolvedHost(
+    "https://example.com/data",
+    async () => [{ address: "93.184.216.34", family: 4 }],
+  ))
+})
+
+test("assertPublicResolvedHost: blocks DNS rebinding to private IPv4", async () => {
+  await assert.rejects(
+    () => assertPublicResolvedHost(
+      "https://example.com/admin",
+      async () => [{ address: "127.0.0.1", family: 4 }],
+    ),
+    /private address 127\.0\.0\.1/,
+  )
+})
+
+test("assertPublicResolvedHost: blocks any private answer in mixed DNS results", async () => {
+  await assert.rejects(
+    () => assertPublicResolvedHost(
+      "https://example.com/latest/meta-data",
+      async () => [
+        { address: "93.184.216.34", family: 4 },
+        { address: "169.254.169.254", family: 4 },
+      ],
+    ),
+    /private address 169\.254\.169\.254/,
+  )
+})
+
+test("assertPublicResolvedHost: blocks DNS rebinding to private IPv6", async () => {
+  await assert.rejects(
+    () => assertPublicResolvedHost(
+      "https://example.com/admin",
+      async () => [{ address: "::1", family: 6 }],
+    ),
+    /private address ::1/,
+  )
 })
 
 test("MAX_REDIRECTS is 10", () => {
