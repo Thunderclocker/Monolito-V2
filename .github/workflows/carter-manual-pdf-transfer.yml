@@ -1,16 +1,16 @@
-name: Carter Mercado Libre listing recovery
+name: Carter Mercado Libre metadata proxy
 
 on:
   pull_request:
     branches: [ main ]
 
 jobs:
-  recover-listings:
+  fetch-metadata:
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - name: Fetch review and listing pages
+      - name: Fetch exact listings via reader
         shell: bash
         run: |
           mkdir -p recovered
@@ -18,22 +18,20 @@ jobs:
           fetch() {
             name="$1"
             url="$2"
-            code=$(curl --location --retry 2 --connect-timeout 15 --max-time 45               -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36"               -w "%{http_code}" -o "recovered/$name" "$url" || true)
+            code=$(curl --fail --location --retry 2 --connect-timeout 20 --max-time 90               -A "Mozilla/5.0" -w "%{http_code}" -o "recovered/$name" "$url" || true)
             printf '%s %s %s\n' "$code" "$name" "$url" | tee -a recovered/status.txt
           }
-          fetch "gigabyte-review.html" "https://reviews.mercadolibre.com.ar/review/MLA1460572707?rating=0&origin=first_email"
-          fetch "mixio-review.html" "https://reviews.mercadolibre.com.ar/review/MLA1608076332?rating=0&origin=first_email"
-          fetch "atheros-review.html" "https://reviews.mercadolibre.com.ar/review/MLA880805822?rating=0&origin=first_email"
-          fetch "gigabyte-listing.html" "https://articulo.mercadolibre.com.ar/MLA-1460572707-_JM"
-          fetch "mixio-listing.html" "https://articulo.mercadolibre.com.ar/MLA-1608076332-_JM"
-          fetch "atheros-listing.html" "https://articulo.mercadolibre.com.ar/MLA-880805822-_JM"
-          grep -RoiE 'G27[A-Z0-9-]*|MX-[0-9]+|AR9271|Atheros|Gigabyte|Mixio|model[^<]{0,100}|modelo[^<]{0,100}' recovered/*.html > recovered/grep-hits.txt || true
+          for id in MLA1460572707 MLA1608076332 MLA880805822; do
+            fetch "$id-api.txt" "https://r.jina.ai/http://api.mercadolibre.com/items/$id"
+            fetch "$id-page.txt" "https://r.jina.ai/http://articulo.mercadolibre.com.ar/$id-_JM"
+          done
+          grep -RniE 'title|model|modelo|brand|marca|G27|G32|MX-|AR9271|Atheros|Gigabyte|Mixio|attributes' recovered/* > recovered/hits.txt || true
           cat recovered/status.txt
-          cat recovered/grep-hits.txt || true
-      - name: Upload recovered pages
+          cat recovered/hits.txt | head -n 300 || true
+      - name: Upload recovered metadata
         uses: actions/upload-artifact@v4
         with:
-          name: carter-ml-listing-recovery
+          name: carter-ml-metadata-proxy
           path: recovered/
           if-no-files-found: error
           retention-days: 1
