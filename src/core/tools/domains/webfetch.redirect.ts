@@ -1,7 +1,8 @@
 // WebFetch redirect validation: isPermittedRedirect + followWithPermittedRedirects.
 // FC parity: extraído de WebFetch upstream. Same-host+port+registrable-host check.
 
-import { validateUrlStrict } from "./webfetch-validators.ts"
+import { lookup } from "node:dns/promises"
+import { isPrivateHost, validateUrlStrict } from "./webfetch-validators.ts"
 
 export const MAX_REDIRECTS = 10
 
@@ -33,6 +34,33 @@ export function isPermittedRedirect(fromUrl: string, toUrl: string): boolean {
   }
 }
 
+type DnsRecord = { address: string; family: number }
+type ResolveAll = (hostname: string) => Promise<DnsRecord[]>
+
+const resolveAll: ResolveAll = async hostname => lookup(hostname, { all: true, verbatim: true })
+
+/**
+ * Re-resuelve el host inmediatamente antes de cada request y falla cerrado si
+ * cualquier respuesta DNS apunta a una red privada/local. Esto cubre nombres
+ * públicos que intentan rebindear a loopback, link-local, RFC1918 o IPv6 local.
+ */
+export async function assertPublicResolvedHost(
+  url: string,
+  resolver: ResolveAll = resolveAll,
+): Promise<void> {
+  const parsed = new URL(url)
+  if (parsed.protocol === "data:") return
+
+  const records = await resolver(parsed.hostname.replace(/^\[|\]$/g, ""))
+  if (!records.length) throw new Error(`DNS resolution returned no addresses for ${parsed.hostname}`)
+
+  for (const record of records) {
+    if (isPrivateHost(record.address)) {
+      throw new Error(`DNS resolution for ${parsed.hostname} returned private address ${record.address}`)
+    }
+  }
+}
+
 export type RedirectResult = {
   finalUrl: string
   content: string
@@ -59,6 +87,7 @@ export async function followWithPermittedRedirects(
   let lastUrl = initialUrl
 
   for (let i = 0; i <= MAX_REDIRECTS; i++) {
+    await assertPublicResolvedHost(currentUrl)
     const response = await fetch(currentUrl, {
       headers: {
         "User-Agent": "MonolitoV2/1.0",
