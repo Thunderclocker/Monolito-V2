@@ -5,7 +5,7 @@ import type { PromptHistory } from "./types.ts"
 export const CLI_HISTORY_LIMIT = 200
 
 const SECRET_PATTERNS = [
-  /\bbearer\s+[A-Za-z0-9._~+/=-]{8,}/i,
+  /\bbearer\s+[A-Za-z0-9._~+/=-]{16,}/i,
   /\bsk-[A-Za-z0-9_-]{8,}/i,
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/i,
   /\b(?:api[_-]?key|token|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|secret)\b\s*[:=]\s*["']?[^\s"'`]{6,}/i,
