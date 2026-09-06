@@ -23,16 +23,23 @@ export const AUDIT_FEEDBACK_TAIL =
   "Recordatorio: tu próxima respuesta al usuario debe ser natural, " +
   "no un reporte sobre este feedback ni sobre qué tools ejecutaste."
 
+function escapeAuditFeedbackMarkers(content: string): string {
+  return content
+    .replaceAll(AUDIT_FEEDBACK_OPEN, "[AUDIT_FEEDBACK_OPEN escaped]")
+    .replaceAll(AUDIT_FEEDBACK_CLOSE, "[AUDIT_FEEDBACK_CLOSE escaped]")
+}
+
 /**
  * Wrap arbitrary audit feedback content with the canonical demarcation
- * markers and the standard "respond naturally" tail. The content is
- * trimmed and the body is preserved verbatim.
+ * markers and the standard "respond naturally" tail. Canonical marker
+ * collisions inside the body are neutralized so untrusted feedback cannot
+ * terminate or restart the envelope early.
  */
 export function wrapAuditFeedback(content: string): string {
   return [
     AUDIT_FEEDBACK_OPEN,
     "",
-    content.trim(),
+    escapeAuditFeedbackMarkers(content.trim()),
     "",
     AUDIT_FEEDBACK_CLOSE,
     "",
