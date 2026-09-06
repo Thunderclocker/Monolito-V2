@@ -147,6 +147,10 @@ export async function bootstrapConfigFromEnv(env: NodeJS.ProcessEnv = process.en
     )
     if (!hasUsableEnv) return
 
+    const { listProfiles, addProfile } = await import("./modelRegistry.ts")
+    const existingProfiles = listProfiles()
+    if (existingProfiles.length > 0) return
+
     const baseUrl = (env.ANTHROPIC_BASE_URL ?? existing.env.ANTHROPIC_BASE_URL ?? "").trim()
     const authToken = (env.ANTHROPIC_AUTH_TOKEN ?? existing.env.ANTHROPIC_AUTH_TOKEN ?? "").trim()
     const model = (env.ANTHROPIC_MODEL ?? existing.env.ANTHROPIC_MODEL ?? "").trim()
@@ -168,9 +172,7 @@ export async function bootstrapConfigFromEnv(env: NodeJS.ProcessEnv = process.en
     // Also create a default profile in CONF_MODELS so getActiveProfile()
     // returns something useful on first run.
     try {
-      const { listProfiles, addProfile } = await import("./modelRegistry.ts")
-      const existingProfiles = listProfiles()
-      if (existingProfiles.length === 0 && baseUrl && authToken) {
+      if (baseUrl && authToken) {
         const lowerUrl = baseUrl.toLowerCase()
         let provider: "minimax" | "ollama" | "openai_compatible" | "anthropic_compatible" = "anthropic_compatible"
         if (lowerUrl.includes("minimax")) provider = "minimax"
