@@ -35,6 +35,12 @@ import {
 
 import type { ToolDefinition } from "../registry.ts"
 
+const DANGEROUS_CONFIG_PATH_SEGMENTS = new Set(["__proto__", "prototype", "constructor"])
+
+function hasDangerousConfigPathSegment(path: string): boolean {
+  return path.split(".").some(segment => DANGEROUS_CONFIG_PATH_SEGMENTS.has(segment))
+}
+
 function getPathValue(obj: unknown, path: string): unknown {
   if (!path) return obj
   const parts = path.split(".")
@@ -155,7 +161,14 @@ export const configTools: ToolDefinition[] = [
     additionalProperties: false,
   },
   concurrencySafe: false,
-  validate: input => validateZod(manageConfigInputZod, input),
+  validate: input => {
+    const validationError = validateZod(manageConfigInputZod, input)
+    if (validationError) return validationError
+    if (input.action === "set" && typeof input.path === "string" && hasDangerousConfigPathSegment(input.path)) {
+      return "path contains a forbidden prototype-pollution segment"
+    }
+    return null
+  },
   async run(input, context) {
     const parsed = parseZod(
       manageConfigInputZod,
