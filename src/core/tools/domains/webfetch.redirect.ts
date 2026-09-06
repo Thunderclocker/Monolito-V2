@@ -1,6 +1,8 @@
 // WebFetch redirect validation: isPermittedRedirect + followWithPermittedRedirects.
 // FC parity: extraído de WebFetch upstream. Same-host+port+registrable-host check.
 
+import { validateUrlStrict } from "./webfetch-validators.ts"
+
 export const MAX_REDIRECTS = 10
 
 /** Extrae el "registrable domain" (eTLD+1) de un host. Implementación simple. */
@@ -16,6 +18,9 @@ export function getRegistrableDomain(host: string): string {
 
 export function isPermittedRedirect(fromUrl: string, toUrl: string): boolean {
   try {
+    const targetValidation = validateUrlStrict(toUrl)
+    if (!targetValidation.valid || targetValidation.url !== toUrl) return false
+
     const from = new URL(fromUrl)
     const to = new URL(toUrl)
     if (from.protocol !== to.protocol) return false
@@ -69,7 +74,7 @@ export async function followWithPermittedRedirects(
       if (!location) break
       const nextUrl = new URL(location, currentUrl).toString()
       if (!isPermittedRedirect(currentUrl, nextUrl)) {
-        throw new Error(`Redirect from ${currentUrl} to ${nextUrl} blocked: cross-host`)
+        throw new Error(`Redirect from ${currentUrl} to ${nextUrl} blocked: target not permitted`)
       }
       currentUrl = nextUrl
       redirectCount++
