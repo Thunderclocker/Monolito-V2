@@ -31,10 +31,14 @@ test("pushPromptHistory refuses sensitive entries", () => {
 
 test("writePromptHistory filters sensitive entries before persistence", () => {
   const rootDir = mkdtempSync(`${tmpdir()}/monolito-history-secret-`)
+  const previousRoot = process.env.MONOLITO_ROOT
+  process.env.MONOLITO_ROOT = rootDir
   try {
     writePromptHistory(rootDir, ["safe prompt", ...sensitiveSamples, "another safe prompt"])
     assert.deepEqual(readPromptHistory(rootDir), ["safe prompt", "another safe prompt"])
   } finally {
+    if (previousRoot === undefined) delete process.env.MONOLITO_ROOT
+    else process.env.MONOLITO_ROOT = previousRoot
     rmSync(rootDir, { recursive: true, force: true })
   }
 })
