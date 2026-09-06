@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { SseMcpClient } from "./client.js"
+import { SseMcpClient } from "./client.ts"
 
 type TestableSseClient = {
   handleSseEvent(rawEvent: string): void
