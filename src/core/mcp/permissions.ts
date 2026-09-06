@@ -2,7 +2,8 @@
 // upstream parity: extraído de mcpClient.ts upstream. Lee policyConfigZod
 // para reglas específicas de MCP.
 
-import { readConfigWing } from "../session/store.ts"
+import { existsSync, readFileSync } from "node:fs"
+import { configWingPath } from "../storage/filePaths.ts"
 import type { ToolContext } from "../tools/internal.ts"
 
 export type McpPermissionDecision = "allow" | "ask" | "deny"
@@ -43,15 +44,15 @@ function readMcpPolicy(rootDir: string): McpPolicyState {
   const cached = SESSION_CACHE.get(rootDir)
   if (cached) return cached
 
-  try {
-    const raw = readConfigWing(rootDir, "CONF_POLICY" as any) as unknown
-    if (typeof raw !== "string" || !raw.trim()) {
-      const state: McpPolicyState = { kind: "absent" }
-      SESSION_CACHE.set(rootDir, state)
-      return state
-    }
+  const policyPath = configWingPath(rootDir, "CONF_POLICY")
+  if (!existsSync(policyPath)) {
+    const state: McpPolicyState = { kind: "absent" }
+    SESSION_CACHE.set(rootDir, state)
+    return state
+  }
 
-    const parsed = JSON.parse(raw) as unknown
+  try {
+    const parsed = JSON.parse(readFileSync(policyPath, "utf8")) as unknown
     const state: McpPolicyState = isMcpPolicy(parsed)
       ? { kind: "valid", policy: parsed }
       : { kind: "invalid" }
