@@ -304,9 +304,15 @@ export class MonolitoV2Daemon {
           } catch {}
         }
 
+        // Prefer restarting via systemd so the new daemon PID stays tracked by the
+        // service manager. Fall back to direct spawn when systemd is unavailable
+        // (e.g. local dev, Docker, non-systemd environments).
+        // Under systemd service units, we MUST spawn via systemd-run to escape the
+        // parent service cgroup and survive its termination.
         const restartScript = [
           "exec >> \"$8\" 2>&1",
           "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done",
+          // --- systemd path ---
           "if systemctl --user is-active monolito.service > /dev/null 2>&1 || systemctl --user is-enabled monolito.service > /dev/null 2>&1; then",
           "  systemctl --user daemon-reload",
           "  systemctl --user start monolito.service",
@@ -320,6 +326,7 @@ export class MonolitoV2Daemon {
           "  systemctl --user start monolito.service",
           "  exit $?",
           "fi",
+          // --- fallback: direct spawn (no systemd) ---
           "\"$2\" --experimental-strip-types \"$3\" --foreground &",
           "child=$!",
           "sleep 2",
@@ -380,6 +387,20 @@ export class MonolitoV2Daemon {
     }, 200)
   }
 
+  /**
+   * Intentional stop. The user (or the runtime, on `/stop`) has asked for
+   * the daemon to come down and STAY down. We:
+   *   1. Run the standard shutdown path (close channels, runtime, server,
+   *      unlink socket/lock/pid/owner when we are the owner).
+   *   2. Drop a sentinel file at `~/.monolito/run/intentional-stop.flag`.
+   *   3. If systemd is managing us, ask it to stop the unit. The unit's
+   *      `ExecStartPre` will see the sentinel on the next start attempt,
+   *      remove it, and abort the start with exit 1. Combined with
+   *      `RestartPreventExitStatus=1` in the unit, systemd does NOT count
+   *      that abort as a crash, so the daemon stays down until the user
+   *      re-runs `monolito` from the CLI.
+   *   4. If we are not under systemd (dev, macOS, containers), just exit.
+   */
   scheduleSelfStop() {
     if (this.stopInFlight) return
     this.stopInFlight = true
@@ -421,6 +442,11 @@ export class MonolitoV2Daemon {
     }
   }
 
+  /**
+   * Remove the intentional-stop sentinel so the unit can start again.
+   * Called on every `scheduleSelfRestart` (config-driven restart) and
+   * on the normal boot path so a stale flag from a prior stop is wiped.
+   */
   private async clearIntentionalStopFlag(): Promise<void> {
     try {
       const paths = getPaths(this.rootDir)
@@ -434,6 +460,10 @@ export class MonolitoV2Daemon {
       const server = createServer(socket => this.handleConnection(socket))
       server.once("error", reject)
       server.listen(socketPath, () => {
+        // Lock the Unix socket to owner-only access. Default is 0755 which
+        // lets any local user on a multi-user host connect and drive the
+        // IPC protocol. The daemon has no auth layer beyond filesystem
+        // permissions on this socket, so this is the only barrier.
         try {
           chmodSync(socketPath, 0o600)
         } catch (err) {
@@ -563,6 +593,7 @@ export class MonolitoV2Daemon {
           const socketSubs = this.socketSubscriptions.get(socket) ?? new Map<string, () => void>()
           if (!socketSubs.has(sid)) {
             const unsubscribe = this.runtime.onEvent(event => {
+              // Broadcast to specific session or global subscribers
               if (event.sessionId === sid || sid === "*") {
                 this.safeWrite(socket, encodeEnvelope({ kind: "event", payload: event }))
               }
