@@ -134,7 +134,7 @@ export class MonolitoV2Daemon {
 
     const tryClaim = () => {
       this.ownerFd = openSync(paths.ownerFile, "wx")
-      writeFileSync(paths.ownerFile, `${JSON.stringify(claim, null, 2)}\n`)
+      writeFileSync(this.ownerFd, `${JSON.stringify(claim, null, 2)}\n`, { encoding: "utf8", flush: true })
     }
 
     try {
