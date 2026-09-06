@@ -1,28 +1,39 @@
-name: Carter Mercado Libre metadata
+name: Carter Mercado Libre listing recovery
 
 on:
   pull_request:
     branches: [ main ]
 
 jobs:
-  fetch-metadata:
+  recover-listings:
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - name: Fetch exact purchased listings
+      - name: Fetch review and listing pages
         shell: bash
         run: |
-          mkdir -p metadata
-          for id in MLA1460572707 MLA1608076332 MLA880805822; do
-            curl --fail --location --retry 3 -A "Mozilla/5.0"               "https://api.mercadolibre.com/items/$id"               -o "metadata/$id.json"
-            curl --fail --location --retry 3 -A "Mozilla/5.0"               "https://api.mercadolibre.com/items/$id/description"               -o "metadata/$id-description.json" || true
-          done
-
-      - name: Upload metadata
+          mkdir -p recovered
+          : > recovered/status.txt
+          fetch() {
+            name="$1"
+            url="$2"
+            code=$(curl --location --retry 2 --connect-timeout 15 --max-time 45               -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36"               -w "%{http_code}" -o "recovered/$name" "$url" || true)
+            printf '%s %s %s\n' "$code" "$name" "$url" | tee -a recovered/status.txt
+          }
+          fetch "gigabyte-review.html" "https://reviews.mercadolibre.com.ar/review/MLA1460572707?rating=0&origin=first_email"
+          fetch "mixio-review.html" "https://reviews.mercadolibre.com.ar/review/MLA1608076332?rating=0&origin=first_email"
+          fetch "atheros-review.html" "https://reviews.mercadolibre.com.ar/review/MLA880805822?rating=0&origin=first_email"
+          fetch "gigabyte-listing.html" "https://articulo.mercadolibre.com.ar/MLA-1460572707-_JM"
+          fetch "mixio-listing.html" "https://articulo.mercadolibre.com.ar/MLA-1608076332-_JM"
+          fetch "atheros-listing.html" "https://articulo.mercadolibre.com.ar/MLA-880805822-_JM"
+          grep -RoiE 'G27[A-Z0-9-]*|MX-[0-9]+|AR9271|Atheros|Gigabyte|Mixio|model[^<]{0,100}|modelo[^<]{0,100}' recovered/*.html > recovered/grep-hits.txt || true
+          cat recovered/status.txt
+          cat recovered/grep-hits.txt || true
+      - name: Upload recovered pages
         uses: actions/upload-artifact@v4
         with:
-          name: carter-ml-purchase-metadata
-          path: metadata/
+          name: carter-ml-listing-recovery
+          path: recovered/
           if-no-files-found: error
           retention-days: 1
