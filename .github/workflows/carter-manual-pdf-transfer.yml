@@ -1,0 +1,29 @@
+name: Carter purchase image recovery
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  recover-images:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download historical product images
+        shell: bash
+        run: |
+          mkdir -p images
+          curl --fail --location --retry 3 "https://http2.mlstatic.com/D_609395-MLA48690831774_122021-I.jpg" -o images/gigabyte.jpg
+          curl --fail --location --retry 3 "https://http2.mlstatic.com/D_700928-MLA73586681621_122023-I.jpg" -o images/mixio.jpg
+          curl --fail --location --retry 3 "https://http2.mlstatic.com/D_810839-MLA80207865571_102024-I.jpg" -o images/atheros.jpg
+          file images/* > images/file-types.txt
+          sha256sum images/* > images/SHA256SUMS.txt
+          cat images/file-types.txt
+      - name: Upload historical images
+        uses: actions/upload-artifact@v4
+        with:
+          name: carter-purchase-images
+          path: images/
+          if-no-files-found: error
+          retention-days: 1
