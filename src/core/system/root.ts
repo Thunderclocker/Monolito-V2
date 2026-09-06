@@ -16,7 +16,7 @@ function loadEnvFile(envPath: string) {
       if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
         val = val.slice(1, -1)
       }
-      if (key) {
+      if (key && process.env[key] === undefined) {
         process.env[key] = val
       }
     }
