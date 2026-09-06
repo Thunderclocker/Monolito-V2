@@ -27,16 +27,8 @@ jobs:
             fi
           }
 
-          dl "Sony_WH-CH520_guia_es.pdf" "https://helpguide.sony.net/mdr/2958/v1/es/print.pdf"
-          dl "Motorola_Moto_G05_user_guide.pdf" "https://help.motorola.com/hc/3517/15/pdf/help-moto-g05-15-global-en-us.pdf"
-          dl "Motorola_Moto_G06_user_guide.pdf" "https://help.motorola.com/hc/3606/15/pdf/help-moto-g06-15-global-en-us.pdf"
-          dl "Redragon_M916_Pro_1K_manual.pdf" "https://cdn.shopify.com/s/files/1/0012/4957/4961/files/K1ING_M916_PRO_1K_Hz_user_manual.pdf?v=1711503404"
-          dl "Redragon_M916_Pro_4K_manual.pdf" "https://cdn.shopify.com/s/files/1/0012/4957/4961/files/M916P-PRO-4K_user_manual.pdf?v=1716255799"
-          dl "Starlink_Mini_guia_instalacion_es.pdf" "https://starlink.com/public-files/installation_guide_mini_kit_es-419.pdf"
-          dl "Starlink_Router_Mini_guia_instalacion_es.pdf" "https://www.starlink.com/public-files/installation_guide_router_mini_es-419.pdf"
-          dl "Philco_PHCS07B_PHCS10B_manual.pdf" "https://magnoliapublic.newsan.com.ar/dam/jcr%3A2154859e-b775-4551-b876-ee460a2935d4/PHCS07B-PHCS10B_Manual_Philco_V03_Baja_NicoSierra.pdf"
-          dl "Imou_IPC-K7CP-5H1WE_Cruiser_SE_Plus_manual.pdf" "https://manuals.plus/imou/ipc-k7cp-5h1we-cruiser-se-plus-360-degree-outdoor-wi-fi-camera-manual.pdf"
-          dl "MSI_Graphics_Card_Quick_Guide.pdf" "https://download.msi.com/archive/mnu_exe/vga/Multi-Language-Quick-Guide.pdf"
+          dl "Imou_Cruiser_SE_Plus_5MP_manual_en.pdf" "https://cdn.tvc.mx/media/1283138/IMOU-DHT0150054-CRUISER-SE-+-5MP-CAMARA-IP-PT-WIFI-FULLCOLOR-MANUAL-DE-USUARIO-INGLES-TVC.pdf"
+          dl "Imou_IPC-K7CP-5H1WE_datasheet.pdf" "https://manuals.plus/m/9444a905b1dc4eefe10be0d49f41d8197ca5d6c0dda72da756f9e8fbc3a4e091.pdf"
 
           find manuals -maxdepth 1 -type f -name '*.pdf' -print0 | sort -z | xargs -0 -r sha256sum > manuals/SHA256SUMS.txt
           file manuals/*.pdf 2>/dev/null | tee manuals/file-types.txt || true
@@ -45,7 +37,7 @@ jobs:
       - name: Upload original PDFs
         uses: actions/upload-artifact@v4
         with:
-          name: carter-manual-pdfs
+          name: carter-imou-pdfs
           path: manuals/
           if-no-files-found: error
           retention-days: 1
