@@ -1,37 +1,29 @@
-name: Carter Mercado Libre metadata proxy
+name: Carter purchase image recovery
 
 on:
   pull_request:
     branches: [ main ]
 
 jobs:
-  fetch-metadata:
+  recover-images:
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - name: Fetch exact listings via reader
+      - name: Download historical product images
         shell: bash
         run: |
-          mkdir -p recovered
-          : > recovered/status.txt
-          fetch() {
-            name="$1"
-            url="$2"
-            code=$(curl --fail --location --retry 2 --connect-timeout 20 --max-time 90               -A "Mozilla/5.0" -w "%{http_code}" -o "recovered/$name" "$url" || true)
-            printf '%s %s %s\n' "$code" "$name" "$url" | tee -a recovered/status.txt
-          }
-          for id in MLA1460572707 MLA1608076332 MLA880805822; do
-            fetch "$id-api.txt" "https://r.jina.ai/http://api.mercadolibre.com/items/$id"
-            fetch "$id-page.txt" "https://r.jina.ai/http://articulo.mercadolibre.com.ar/$id-_JM"
-          done
-          grep -RniE 'title|model|modelo|brand|marca|G27|G32|MX-|AR9271|Atheros|Gigabyte|Mixio|attributes' recovered/* > recovered/hits.txt || true
-          cat recovered/status.txt
-          cat recovered/hits.txt | head -n 300 || true
-      - name: Upload recovered metadata
+          mkdir -p images
+          curl --fail --location --retry 3 "https://http2.mlstatic.com/D_609395-MLA48690831774_122021-I.jpg" -o images/gigabyte.jpg
+          curl --fail --location --retry 3 "https://http2.mlstatic.com/D_700928-MLA73586681621_122023-I.jpg" -o images/mixio.jpg
+          curl --fail --location --retry 3 "https://http2.mlstatic.com/D_810839-MLA80207865571_102024-I.jpg" -o images/atheros.jpg
+          file images/* > images/file-types.txt
+          sha256sum images/* > images/SHA256SUMS.txt
+          cat images/file-types.txt
+      - name: Upload historical images
         uses: actions/upload-artifact@v4
         with:
-          name: carter-ml-metadata-proxy
-          path: recovered/
+          name: carter-purchase-images
+          path: images/
           if-no-files-found: error
           retention-days: 1
