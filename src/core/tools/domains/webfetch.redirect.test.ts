@@ -37,6 +37,12 @@ test("isPermittedRedirect: different protocol blocked", () => {
   assert.equal(isPermittedRedirect("https://example.com/a", "http://example.com/b"), false)
 })
 
+test("isPermittedRedirect: private redirect targets blocked", () => {
+  assert.equal(isPermittedRedirect("https://example.com/a", "https://127.0.0.1/admin"), false)
+  assert.equal(isPermittedRedirect("https://example.com/a", "https://169.254.169.254/latest/meta-data"), false)
+  assert.equal(isPermittedRedirect("https://example.com/a", "https://[::1]/admin"), false)
+})
+
 test("isPermittedRedirect: invalid URLs", () => {
   assert.equal(isPermittedRedirect("not a url", "https://example.com"), false)
   assert.equal(isPermittedRedirect("https://example.com", "not a url"), false)
