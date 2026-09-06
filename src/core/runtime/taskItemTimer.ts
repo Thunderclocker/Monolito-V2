@@ -46,12 +46,19 @@ export class TaskItemTimerController {
     this.hasTaskList = tasks.length > 0
     this.rebuildSnapshot(tasks)
 
-    this.absoluteTimer = setTimeout(() => {
+    const abortForAbsoluteLimit = () => {
       this.callbacks.onLog?.(`Turn absolute limit ${TURN_ABSOLUTE_MAX_MS}ms reached`)
       this.callbacks.onAbort(
         new TurnTimeoutError(`Turn exceeded absolute limit of ${TURN_ABSOLUTE_MAX_MS}ms`),
       )
-    }, TURN_ABSOLUTE_MAX_MS)
+    }
+    const elapsedMs = Math.max(0, Date.now() - turnStartedAtMs)
+    const remainingMs = TURN_ABSOLUTE_MAX_MS - elapsedMs
+    if (remainingMs <= 0) {
+      abortForAbsoluteLimit()
+      return
+    }
+    this.absoluteTimer = setTimeout(abortForAbsoluteLimit, remainingMs)
 
     const inProgress = tasks.find(t => t.status === "in_progress")
     if (inProgress) {
