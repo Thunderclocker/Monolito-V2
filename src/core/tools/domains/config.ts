@@ -155,7 +155,16 @@ export const configTools: ToolDefinition[] = [
     additionalProperties: false,
   },
   concurrencySafe: false,
-  validate: input => validateZod(manageConfigInputZod, input),
+  validate: input => {
+    if (
+      input.action === "set"
+      && typeof input.path === "string"
+      && input.path.split(".").some(segment => ["__proto__", "prototype", "constructor"].includes(segment))
+    ) {
+      return "path contains a forbidden prototype-pollution segment"
+    }
+    return validateZod(manageConfigInputZod, input)
+  },
   async run(input, context) {
     const parsed = parseZod(
       manageConfigInputZod,
