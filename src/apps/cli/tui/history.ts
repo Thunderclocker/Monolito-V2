@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { getPaths } from "../../../core/ipc/protocol.ts"
 import type { PromptHistory } from "./types.ts"
 
@@ -20,9 +20,12 @@ export function readPromptHistory(rootDir: string) {
 }
 
 export function writePromptHistory(rootDir: string, entries: string[]) {
-  const filePath = getHistoryFilePath(rootDir)
-  mkdirSync(getPaths(rootDir).stateDir, { recursive: true })
-  writeFileSync(filePath, JSON.stringify(entries.slice(-CLI_HISTORY_LIMIT), null, 2), "utf8")
+  const paths = getPaths(rootDir)
+  const filePath = `${paths.stateDir}/cli-history.json`
+  mkdirSync(paths.stateDir, { recursive: true, mode: 0o700 })
+  chmodSync(paths.stateDir, 0o700)
+  writeFileSync(filePath, JSON.stringify(entries.slice(-CLI_HISTORY_LIMIT), null, 2), { encoding: "utf8", mode: 0o600 })
+  chmodSync(filePath, 0o600)
 }
 
 export function pushPromptHistory(history: string[], line: string) {
