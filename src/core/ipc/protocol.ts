@@ -258,10 +258,35 @@ export function rotateDaemonLogIfLarge(daemonLogPath: string, maxBytes: number) 
   }
 }
 
+function isValidDaemonLock(value: unknown, rootDir: string): value is DaemonLock {
+  if (!value || typeof value !== "object") return false
+
+  const lock = value as Record<string, unknown>
+  if (!Number.isInteger(lock.pid) || (lock.pid as number) <= 0) return false
+  if (typeof lock.startedAt !== "string" || !Number.isFinite(Date.parse(lock.startedAt))) return false
+
+  const paths = getPaths(rootDir)
+  if (lock.transport === "unix") {
+    return typeof lock.socketPath === "string" && lock.socketPath === paths.socketPath
+  }
+
+  if (lock.transport === "tcp") {
+    return (
+      lock.host === paths.tcpHost &&
+      Number.isInteger(lock.port) &&
+      (lock.port as number) >= 1 &&
+      (lock.port as number) <= 65535
+    )
+  }
+
+  return false
+}
+
 export function readDaemonLock(rootDir: string): DaemonLock | null {
   const path = getPaths(rootDir).lockFile
   try {
-    return JSON.parse(readFileSync(path, "utf8")) as DaemonLock
+    const value = JSON.parse(readFileSync(path, "utf8")) as unknown
+    return isValidDaemonLock(value, rootDir) ? value : null
   } catch {
     return null
   }
