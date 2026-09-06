@@ -224,7 +224,12 @@ export class SseMcpClient implements McpClient {
     const data = dataLines.join("\n").trim()
     if (!data) return
     if (eventName === "endpoint") {
-      const endpoint = new URL(data, this.streamUrl).toString()
+      const streamUrl = new URL(this.streamUrl)
+      const endpointUrl = new URL(data, streamUrl)
+      if (endpointUrl.origin !== streamUrl.origin) {
+        throw new Error("MCP SSE endpoint must remain on the stream origin")
+      }
+      const endpoint = endpointUrl.toString()
       this.endpointUrl = endpoint
       this.resolveEndpoint(endpoint)
       return
@@ -259,8 +264,12 @@ export class SseMcpClient implements McpClient {
         Accept: "application/json, text/event-stream",
       },
       body: JSON.stringify(payload),
+      redirect: "manual",
       signal: this.streamController.signal,
     })
+    if (response.status >= 300 && response.status < 400) {
+      throw new Error("MCP SSE endpoint redirects are not allowed")
+    }
     if (!response.ok) {
       throw new Error(`MCP SSE endpoint rejected request: HTTP ${response.status}`)
     }
