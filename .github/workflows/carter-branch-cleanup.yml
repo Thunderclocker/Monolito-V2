@@ -1,9 +1,9 @@
 name: Carter branch cleanup
 
 on:
-  push:
+  pull_request:
     branches:
-      - carter/work
+      - main
 
 permissions:
   contents: write
