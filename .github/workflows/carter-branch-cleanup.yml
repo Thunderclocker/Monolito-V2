@@ -1,0 +1,32 @@
+name: Carter branch cleanup
+
+on:
+  push:
+    branches:
+      - carter/work
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Delete all branches except main and carter/work
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin '+refs/heads/*:refs/remotes/origin/*' --prune
+          git for-each-ref --format='%(refname:strip=3)' refs/remotes/origin | while IFS= read -r branch; do
+            case "$branch" in
+              HEAD|main|carter/work) continue ;;
+            esac
+            echo "Deleting $branch"
+            git push origin --delete "$branch"
+          done
